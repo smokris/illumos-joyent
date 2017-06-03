@@ -47,6 +47,11 @@ typedef struct tevent_s {
 
 #define	TIMER_HEAD	((tevent_t *)uu_list_first(timer_list))
 
+#ifdef DEBUG
+static boolean_t		timer_is_init;
+static __thread boolean_t	timer_thr_is_init;
+#endif
+
 static uu_list_pool_t 		*timer_pools;
 static __thread uu_list_t	*timer_list;
 static umem_cache_t		*evt_cache;
@@ -78,6 +83,9 @@ ike_timer_init(void)
 	evt_cache = umem_cache_create("timer events", sizeof (tevent_t),
 	    sizeof (size_t), evt_ctor, evt_dtor, NULL, NULL, 0);
 
+#ifdef DEBUG
+	timer_is_init = B_TRUE;
+#endif
 }
 
 /*
@@ -93,6 +101,10 @@ ike_timer_thread_init(void)
 #endif
 
 	VERIFY((timer_list = uu_list_create(timer_pool, NULL, flg)) != NULL);
+
+#ifdef DEBUG
+	timer_thr_is_init = B_TRUE;
+#endif
 }
 
 static int dispatch_cb(void *, void *);
@@ -102,6 +114,9 @@ process_timer(timespec_t *next_time)
 {
 	tevent_t *te;
 	hrtime_t now;
+
+	ASSERT(timer_is_init);
+	ASSERT(timer_thr_is_init);
 
 	while (1) {
 		/*
@@ -162,6 +177,9 @@ cancel_timeout(te_event_t type, void *arg)
 {
 	cancel_arg_t carg;
 
+	ASSERT(timer_is_init);
+	ASSERT(timer_thr_is_init);
+
 	carg.type = type;
 	carg.arg = arg;
 	carg.n = 0;
@@ -191,6 +209,9 @@ schedule_timeout(te_event_t type, tevent_cb_fn fn, void *arg, hrtime_t val)
 	tevent_t *te; = tevent_alloc(type, val, fn, arg);
 	tevent_t *node;
 	uu_list_index_t idx;
+
+	ASSERT(timer_is_init);
+	ASSERT(timer_thr_is_init);
 
 	VERIFY(te != TE_ANY);
 

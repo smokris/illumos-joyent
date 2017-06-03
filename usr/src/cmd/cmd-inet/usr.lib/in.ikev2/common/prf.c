@@ -12,132 +12,179 @@
 /*
  * Copyright 2014 Jason King.
  */
-
-#include <alloca.h>
 #include <sys/debug.h>
-
+#include <security/cryptoki.h>
+#include <umem.h>
+#include <limits.h>
+#include <string.h>
 #include "ikev2.h"
 #include "prf.h"
 
-typedef struct mech_s {
-	CK_MECHANISM_TYPE	mech;
-	CK_MECHANISM_TYPE	hmech;
+typedef struct prf_alg_s {
+	int			i2alg;
+	CK_MECHANISM_TYPE	hash;
+	CK_MECHANISM_TYPE	hmac;
+	size_t			inlen;	/* in bytes */
+	size_t			outlen; /* in bytes */
 	boolean_t		pad;
-	size_t			keysize;
-	size_t			bsize;
-} mech_t;
+} prf_alg_t;
 
-#define	MECHP(_alg, _halg, _ks, _bs) { 		\
-	.mech = _alg,				\
-	.hmech = _halg,				\
-	.pad = B_TRUE,				\
-	.keysize = _ks,				\
-	.bsize = _bs				\
+#define	MECHPAD(_i2, _p11, _in, _out) { 	\
+	.i2alg = IKEV2_XFORMPRF_HMAC_ ## _i2,	\
+	.hash = CKM_ ## _p11,			\
+	.hmac = CKM_ ## _p11 ## _HMAC,		\
+	.inlen = _in,				\
+	.outlen = _out,				\
+	.pad = B_TRUE				\
 }
 
-static const mech_t mechs[] = {
-	MECHP(CKM_MD5_HMAC, CKM_MD5, 64, 16),
-	MECHP(CKM_SHA1_HMAC, CKM_SHA_1, 64, 20),
-	MECHP(CKM_SHA256_HMAC, CKM_SHA256, 64, 32),
-	MECHP(CKM_SHA384_HMAC, CKM_SHA384, 128, 48),
-	MECHP(CKM_SHA512_HMAC, CKM_SHA512, 128, 64)
+static const prf_alg_t prf_tbl[] = {
+	MECHPAD(MD5, MD5, 64, 16),
+	MECHPAD(SHA1, SHA_1, 64, 16),
+	MECHPAD(SHA2_256, SHA256, 64, 32),
+	MECHPAD(SHA2_384, SHA384, 128, 48),
+	MECHPAD(SHA2_512, SHA512, 128, 64)
 };
-#define	N_MECH (sizeof (mechs) / sizeof (mech_t))
-
-static const mech_t *get_mech(CK_MECHANISM_TYPE);
-static CK_RV prfplus_update(prfp_t *);
+#define	N_PRF (sizeof (prf_tbl) / sizeof (prf_alg_t))
 
 extern __thread CK_SESSION_HANDLE p11s;
 
+static const prf_alg_t	*get_alg(int);
+static CK_RV		prfplus_update(prfp_t *);
+
 /*
  * Create a PKCS11 key object that can be used in C_Sign* operations.
- * If the source data is too large, the supplied digest alg will
- * be performed on the source data before creating the key object.
  *
  * Args:
- * 	alg	The digest alg to use if the source data is too large.
- *	src	The source data.
- *	len	The length of the data.
+ * 	alg	The PRF algorithm this will be used with
+ * 	src	An array of buf_t's pointing to the source key
+ * 	n	The number of buf_t's we have
  *	kp	Pointer to CK_OBJECT_HANDLE to write the resulting key
  *		object.
  * Returns:
  * 	CKR_OK	Success
  */
-CV_RV
-prf_genkey(CK_MECHANISM_TYPE alg, const uchar_t *src, size_t len,
-    CK_OBJECT_HANDEL_PTR kp)
+CK_RV
+prf_genkey(int alg, buf_t *restrict src, size_t n,
+    CK_OBJECT_HANDLE_PTR restrict kp)
 {
-	const mech_t	*mech;
+	const prf_alg_t	*algp;
 
 	CK_RV			rc;
 	CK_OBJECT_CLASS		cls = CKO_SECRET_KEY;
 	CK_KEY_TYPE		kt = CKK_GENERIC_SECRET;
 	CK_BBOOL		false_v = CK_FALSE;
-	CK_MECHANISM_TYPE	mech_type[] = { 0 };
+	CK_MECHANISM_TYPE	hmac;
 	CK_ATTRIBUTE		template[] = {
-		{ CKA_VALUE, NULL_PTR, 0 },	/* placeholder */
+		{ CKA_VALUE, NULL_PTR, 0 },	/* filled in later */
 		{ CKA_CLASS, &cls, sizeof (cls) },
 		{ CKA_KEY_TYPE, &kt, sizeof (kt) },
-#if 0
-		/* XXX: should this be set for extra safety? */
-		{ CKA_ALLOWED_MECHANISMS, mech_type, sizeof (mech_type) },
-#endif
+		/* XXX: is this actually needed? */
+		{ CKA_ALLOWED_MECHANISMS, &hmac, sizeof (hmac) },
 		{ CKA_MODIFIABLE, &false_v, sizeof (false_v) }
 	};
-	uchar_t			*key = NULL;
-	size_t			keylen = 0;
-	size_t			keyalloc = 0;
+	buf_t			key = { 0 };
+	size_t			srclen;
+	ulong_t			keylen = 0; /* actual length */
 
 	rc = CKR_OK;
 
-	mech = get_mech(alg);
-
-	/* grab enough memory no matter what */
-	if (mech->keysize > mech->bsize)
-		keyalloc = mech->keysize;
-	else
-		keyalloc = mech->bsize;
-
-	if ((key = alloca(keyalloc)) == NULL)
-		return (CKR_HOST_MEMORY);
+	VERIFY((algp = get_alg(alg)) != NULL);
+	hmac = algp->hmac;
 
 	/*
-	 * prefill with 0s so smaller keys are right padded with 0s
-	 * if necessary
+	 * As (currently), all the supported PRF algorithms are based off
+	 * HMAC functions, per RFC 5996 2.13, the key size is the output
+	 * of the HMAC function.
+	 *
+	 * 
 	 */
-	(void) memset(key, 0, keyalloc);
+	if (!buf_alloc(&key, algp->inlen)) {
+		rc = CKR_HOST_MEMORY;
+		goto done;
+	}
 
-	if (len > mech->keysize) {
-		/* too big, take digest of key and use that */
-		CK_MECHANISM hmech = { mech->hmech, NULL_PTR, 0 };
+	srclen = 0;
+	for (size_t i = 0; i < n; i++)
+		srclen += src[i].len;
 
-		keylen = keyalloc;
-		rc = C_DigestInit(p11s, &hmech);
+	if (srclen <= key.len) {
+		VERIFY(buf_copy(&key, src, n) <= key.len);
+		keylen = srclen;
+	} else {
+		/*
+		 * Per normal HMAC procedure (according RFC4868 at least),
+		 * keys larger than the hash block size (palg->input),
+		 * hash and use the result (which will be smaller than
+		 * the block size).
+		 */
+		CK_MECHANISM	hashmech = { algp->hash, NULL_PTR, 0 };
+		size_t		outlen;
+
+		rc = C_DigestInit(p11s, &hashmech);
 		if (rc != CKR_OK)
 			goto done;
 
-		rc = C_Digest(p11s, src, len, key, &keylen);
-	} else {
-		/* otherwise copy to our local buffer */
-		ASSERT(len < keyalloc);
+		for (size_t i = 0; i < n; i++) {
+			rc = C_DigestUpdate(p11s, src[i].ptr, src[i].len);
+			/* XXX: Should we call C_DigestFinal on error? */
+			if (rc != CKR_OK)
+				goto done;
+		}
+		keylen = key.len;
+		rc = C_DigestFinal(p11s, key.ptr, &keylen);
+		if (rc != CKR_OK)
+			goto done;
 
-		(void) memcpy(key, src, len);
-		if (mech->pad)
-			keylen = mech->keysize;
-		else
-			keylen = len;
+		ASSERT(keylen == algp->outlen);
 	}
 
-	template[0].pValue = key;
+	if ((keylen < algp->inlen) && algp->pad)
+		keylen = algp->inlen;
+
+	template[0].pValue = key.ptr;
 	template[0].ulValueLen = keylen;
-	mech_type[0] = mech->mech;
 
 	rc = C_CreateObject(p11s, template,
 	    sizeof (template) / sizeof (CK_ATTRIBUTE), kp);
 
 done:
-	/* make sure nothing lingers on the stack */
-	(void) memset(key, 0, keyalloc);
+	buf_free(&key);
+	return (rc);
+}
+
+/*
+ * Run the given PRF algorithm for the given key and seed and place
+ * result into out.
+ */
+CK_RV
+prf(int alg, CK_OBJECT_HANDLE key, buf_t *restrict seed, size_t nseed,
+    buf_t *restrict out)
+{
+	const prf_alg_t		*algp;
+	CK_MECHANISM		mech;
+	CK_RV			rc = CKR_OK;
+
+	VERIFY((algp = get_alg(alg)) != NULL);
+	VERIFY(out->len >= algp->outlen);
+
+	mech.mechanism = algp->hmac;
+	mech.pParameter = NULL;
+	mech.ulParameterLen = 0;
+
+	if ((rc = C_SignInit(p11s, &mech, key)) != CKR_OK)
+		return (rc);
+
+	for (size_t i = 0; i < nseed; i++) {
+		rc = C_SignUpdate(p11s, seed[i].ptr, seed[i].len);
+		/* XXX: should we still call C_SignFinal? */
+		if (rc != CKR_OK)
+			return (rc);
+	}
+
+	rc = C_SignFinal(p11s, out->ptr, &out->len);
+	/* If we sized correctly, this should never change */
+	ASSERT(out->len >= algp->outlen);
 	return (rc);
 }
 
@@ -145,134 +192,132 @@ done:
  * Inititalize a prf+ instance for the given algorithm, key, and seed.
  */
 CK_RV
-prfplus_init(prfp_t *prp, int alg, CK_OBJECT_HANDLE key, const uchar_t *seed,
-    size_t seedlen)
+prfplus_init(prfp_t *restrict prfp, int alg, CK_OBJECT_HANDLE key,
+    const buf_t *restrict seed)
 {
-	const mech_t	*mech;
-	int		p11_alg;
+	const prf_alg_t	*algp;
+	CK_RV		rc = CKR_OK;
 
-	(void) memset(prp, 0, sizeof (*prp));
+	(void) memset(prfp, 0, sizeof (*prfp));
 
-	p11_alg = ikev2_prf_to_p11(alg);
-	VERIFY((mech = get_mech(p11_alg)) != NULL);
+	VERIFY((algp = get_alg(alg)) != NULL);
 
-	prp->alg.mechanism = p11_alg;
-	prp->alg.pParameter = NULL;
-	prp->alg.ulParameterLen = 0;
-
-	prp->tlen = mech->bsize;
-	prp->buflen = prp->tlen + seedlen + 1;
-
-	if ((prp->buf = malloc(prp->buflen)) == NULL)
+	if (!buf_alloc(&prfp->tbuf[0], algp->outlen) ||
+	    !buf_alloc(&prfp->tbuf[1], algp->outlen) ||
+	    !buf_alloc(&prfp->seed, seed->len)) {
+		rc = CKR_HOST_MEMORY;
 		goto error;
-	if ((prp->tbuf = malloc(prp->tlen)) == NULL)
-		goto error;
+	}
+
+	/* stash our own copy of the seed */
+	VERIFY(buf_copy(&prfp->seed, seed, 1) == seed->len);
 
 	/*
-	 * RFC5996 defines prf+ as:
-	 * prf+ (K, S) = T1 | T2 | T3 | T4 | ...
-	 * where:
-	 * T1 = prf (K, S | 0x01)
-	 * T2 = prf (K, T1 | S | 0x02)
-	 * T3 = prf (K, T2 | S | 0x03)
-	 * ...
-	 *
-	 * prp->buf stores the the contents of the second argument
-	 * to prf and is sized to be able to told Tn, S, and the iteration.
+	 * Per RFC5996 2.13, prf+(K, S) = T1 | T2 | T3 | T4 | ...
 	 * 
-	 * We copy the initial seed to it's location for T2 (and greater)
-	 * and set prp->tp to the location of the iteration.
+	 * where:
+	 * 	T1 = prf (K, S | 0x01)
+	 * 	T2 = prf (K, T1 | S | 0x02)
+	 * 	T3 = prf (K, T2 | S | 0x03)
+	 * 	T4 = prf (K, T3 | S | 0x04)
 	 *
-	 * For updates, we just copy the previous iteration's T into the
-	 * front of the buffer and call the digest alg.
+	 * As such, we keep a list of buf_t's for each of the three components
+	 * Since the last two never change location, they are set now, while
+	 * the first points to either prfp->tbuf[0] or prfp->tbuf[1], based
+	 * on the value of prfp->n
 	 */
-	(void) memset(prp->buf, 0, prp->buflen);
-	(void) memcpy(prp->buf + prp->tlen, seed, seedlen); 
-	prp->tp = prp->buf + prp->buflen - 1;
-	*prp->tp = 1;
-
-	/* Fill prp->tbuf with T1 */
-	if ((rc = C_SignInit(p11s, &prp->alg, prfp->key)) != CKR_OK)
-		goto error;
+	BUF_DUP(&prfp->prf_arg[1], &prfp->seed);
+	prfp->prf_arg[2].ptr = &prfp->n;
+	prfp->prf_arg[2].len = sizeof (prfp->n);
+	prfp->n = 1;
 
 	/*
-	 * T1 is defined as prf (K, S | 0x01).  Skip front of prp->buf
-	 * that will hold T(n-1) for future iterations.
+	 * Fill prfp->tbuf[1] with T1. T1 is defined as:
+	 * 	T1 = prf (K, S | 0x01)
+	 * Note that this is different from subsequent iterations, hence
+	 * starting at prfp->prf_arg[1], not prfp->arg[0]
 	 */
-	if ((rc = C_Sign(p11s, prp->buf + prp->tlen, seedlen + 1, prp->tbuf,
-	    &prp->tlen)) != CKR_OK)
-		goto error;
-
-	ASSERT(prp->tlen == mech->bsize);
-
+	rc = prf(alg, prfp->key, &prfp->prf_arg[1], 2, &prfp->tbuf[1]);
 	return (rc);
 
 error:
-	prfplus_fini(prp);
+	prfplus_fini(prfp);
 	return (rc);
 }
 
 /*
- * Write out *amt bytes from the prf+ function to buf.
- * *amt is set to the number of bytes actually written.
+ * Fill out with the result of the prf+ function.
  */
 static CK_RV
-prfplus(prfp_t *prfp, uchar_t * restrict buf, size_t * restrict amt)
+prfplus(prfp_t *restrict prfp, buf_t *restrict out)
 {
-	size_t remaining = *amt;
-	CK_RV rc = CKR_OK;
+	const prf_alg_t	*algp;
+	buf_t		t;
+	buf_t		outcopy;
+	CK_RV		rc = CKR_OK;
 
-	*amt = 0;
-	while (remaining > 0) {
-		size_t avail = prfp->tlen - prfp->tpos;
-		size_t chunk = remaining;
+	algp = get_alg(prfp->i2alg);
 
-		if (avail == 0) {
+	/* generate a local cache of out so we can manipulate the ptr and len */
+	BUF_DUP(&outcopy, out);
+
+	while (outcopy.len > 0) {
+		size_t chunk;
+
+		chunk = outcopy.len;
+
+		if (prfp->n & 0x01)
+			BUF_DUP(&t, &prfp->tbuf[1]);
+		else
+			BUF_DUP(&t, &prfp->tbuf[0]);
+
+		t.ptr += prfp->pos;
+		t.len -= prfp->pos;
+
+		if (t.len == 0) {
 			if ((rc = prfplus_update(prfp)) != CKR_OK)
 				goto done;
 			continue;
 		}
 
-		if (chunk > avail)
-			chunk = avail;
+		if (chunk > t.len)
+			chunk = t.len;
 
-		(void) memcpy(buf, prfp->tbuf + prfp->tpos, chunk);
-		prfp->tpos += chunk;
-		remaining -= chunk;
-		*amt += chunk;
+		VERIFY(buf_copy(&outcopy, &t, chunk) == chunk);
+		BUF_ADVANCE(&outcopy, chunk);
+		prfp->pos += chunk;
 	}
 
 done:
 	return (rc);
 }
 
-
+/*
+ * Perform a prf+ iteration
+ */
 static CK_RV
 prfplus_update(prfp_t *prfp)
 {
-	CK_RV rc = CKR_OK;
+	buf_t	*dest;
+	CK_RV	rc = CKR_OK;
 
-	if (prfp->tp == 0xff) {
+	ASSERT(prfp->n >= 1);
+
+	if (prfp->n == 0xff) {
 		/* XXX: log error */
 		return (CKR_GENERAL_ERROR);
 	}
 
-	(void) memcpy(prfp->buf, prfp->tbuf, prfp->tlen);
-	*prp->tp++;
+	if (++prfp->n & 0x01) {
+		BUF_DUP(&prfp->prf_arg[0], &prfp->tbuf[1]);
+		dest = &prfp->tbuf[0];
+	} else {
+		BUF_DUP(&prfp->prf_arg[0], &prfp->tbuf[0]);
+		dest = &prfp->tbuf[1];
+	}
 
-	if ((rc = C_SignInit(p11s, &prfp->alg, prfp->key)) != CKR_OK)
-		return (rc);
-#ifdef DEBUG
-	size_t tlen = prfp->tlen;
-#endif
-
-	if ((rc = C_Sign(p11s, prp->buf, prfp->buflen, prfp->tbuf,
-	    &prfp->tlen)) != CKR_OK)
-		return (rc);
-
-	ASSERT(tlen == prfp->tlen);
-
-	prfp->tpos = 0;
+	rc = prf(prfp->i2alg, prfp->key, prfp->prf_arg, 3, dest);
+	prfp->pos = 0;
 	return (rc);
 }
 
@@ -282,15 +327,9 @@ prfplus_fini(prfp_t *prfp)
 	if (prfp == NULL)
 		return;
 
-	if (prfp->buf != NULL) {
-		(void) memset(prfp->buf, 0, prfp->buflen);
-		free(prfp->buf);
-	}
-	if (prfp->tbuf != NULL) {
-		(void) memset(prfp->tbuf, 0, prp->tlen);
-		free(prfp->tbuf);
-	}
-
+	buf_free(&prfp->tbuf[0]);
+	buf_free(&prfp->tbuf[1]);
+	buf_free(&prfp->seed);
 	(void) memset(prfp, 0, sizeof (*prfp));
 }
 
@@ -314,33 +353,20 @@ ikev2_prf_to_p11(int prf)
 }
 
 size_t
-prf_keylen(CK_MECHANISM_TYPE mech)
-{
-	int i;
-
-	for (i = 0; i < N_MECH; i++) {
-		if (mechs[i].mech == mech)
-			return (mechs[i].keysize);
-	}
-
-	VERIFY(0);
-}
-
-size_t
 ikev2_prf_keylen(int prf)
 {
-	return (prf_keylen(ikev2_prf_to_p11(prf)));
+	return (get_alg(prf)->inlen);
 }
 
 /*
  * Get the information for a given algorithm, or NULL of not found
  */
-static const mech_t *
-get_mech(CK_MECHANISM_TYPE alg)
+static const prf_alg_t *
+get_alg(int i2alg)
 {
-	for (int i = 0; i < N_MECH; i++) {
-		if (mechs[i].mech == alg)
-			return (&mechs[i]);
+	for (int i = 0; i < N_PRF; i++) {
+		if (prf_tbl[i].i2alg == i2alg)
+			return (&prf_tbl[i]);
 	}
 	return (NULL);
 }

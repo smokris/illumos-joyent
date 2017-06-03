@@ -29,23 +29,28 @@ extern "C" {
 #define	_PRFP_T
 struct prfp_s {
 	CK_OBJECT_HANDLE	key;
-	CK_MECHANISM		alg;
-	uchar_t			*buf;
-	uchar_t			*tbuf;
-	size_t			tpos;
-	size_t			buflen;
-	size_t			tlen;
-	uint8_t			*tp;
+	int			i2alg;
+	buf_t			tbuf[2];
+	buf_t			seed;
+	buf_t			prf_arg[3];
+	size_t			pos;
+	uint8_t			n;
 };
 typedef struct prfp_s prfp_t;
 #endif /* _PRFP_T */
 
-CK_RV prf_key(CK_MECHANISM_TYPE, const uchar_t *, size_t, CK_OBJECT_HANDLE_PTR);
+/* These are internal to in.ikev2d, so don't bother with ugly !C99 compat */
+CK_RV	prf_key(CK_MECHANISM_TYPE, buf_t *restrict, size_t,
+	    CK_OBJECT_HANDLE_PTR restrict);
 
-CK_RV	prfplus_init(prfp_t *, int, CK_OBJECT_HANDLE, const uchar_t *, size_t);
+CK_RV	prf(int, CK_OBJECT_HANDLE, buf_t *restrict, size_t, buf_t *restrict);
+
+CK_RV	prfplus_init(prfp_t *restrict, int, CK_OBJECT_HANDLE,
+	    const buf_t *restrict);
 void	prfplus_fini(prfp_t *);
-/* this is an internal .h file, no need for ugly _RESTRICT_KYWD */
-CK_RV	prfplus(prfp_t *, uchar_t * restrict, size_t * restrict);
+CK_RV	prfplus(prfp_t *restrict, buf_t *restrict);
+
+size_t	ikev2_prf_keylen(int);
 
 #ifdef __cplusplus
 }
