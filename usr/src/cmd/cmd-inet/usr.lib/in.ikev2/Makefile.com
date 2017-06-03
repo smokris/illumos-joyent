@@ -26,7 +26,7 @@
 #
 
 PROG = in.ikev2d
-OBJS = debug.o timer.o
+OBJS = debug.o timer.o prf.o
 #OBJS =	main.o pkcs11.o fromto.o ikev2_proto.o pfkey.o door.o ikev2_sa.o \
 #	ikev2_pkt.o preshared.o random.o timer.o buf.o config.o \
 #	ikev2_enum.o dh.o prf.o ikev2_cookie.o ikev2_sa_init.o \
@@ -50,7 +50,7 @@ C99MODE = $(C99_ENABLE)
 CFLAGS += $(CCVERBOSE) -D_REENTRANT
 CFLAGS64 += $(CCVERBOSE) -D_REENTRANT
 LDLIBS += -lnsl -lsecdb -lumem -lxnet -lipsecutil -lpkcs11 -lcryptoutil
-LDLIBS += -lnvpair
+LDLIBS += -lnvpair -luutil
 
 FILEMODE = 0555
 GROUP = bin
