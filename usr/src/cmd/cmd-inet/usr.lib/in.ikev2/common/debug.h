@@ -16,7 +16,6 @@
 #define	_DEBUG_H
 
 #include <inttypes.h>
-#include <stdio.h>
 
 #ifdef __cplusplus
 extern "C" {
