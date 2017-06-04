@@ -45,6 +45,9 @@
 #define DEPTH_DEL_SPI		(4)
 
 
+#define	PKT_IS_V2(p) \
+    (IKE_GET_MAJORV((p)->header.version) == IKE_GET_MAJORV(IKEV2_VERSION))
+
 /* Allocate an outbound IKEv2 pkt for an initiator of the given exchange type */
 pkt_t *
 ikev2_pkt_new_initiator(ikev2_sa_t *i2sa, ikev2_exch_t exch_type)
@@ -64,9 +67,11 @@ ikev2_pkt_new_initiator(ikev2_sa_t *i2sa, ikev2_exch_t exch_type)
 
 /* Allocate a ikev2_pkt_t for an IKEv2 outbound response */
 ikev2_pkt_t *
-ikev2_pkt_new_response(const ikev2_pkt_t *init)
+ikev2_pkt_new_response(const pkt_t *init)
 {
 	pkt_t *pkt;
+
+	ASSERT(PKT_IS_V2(init));
 
 	pkt = pkt_out_alloc(init->header.initiator_spi,
 	    init->header.responder_spi,
@@ -92,16 +97,18 @@ static pkt_walk_ret_t check_payload(uint8_t, buf_t *restrict, void *restrict);
 static boolean_t check_sa_init_payloads(boolean_t, const size_t *);
 
 /* Allocate a ikev2_pkt_t for an inbound datagram in raw */
-ikev2_pkt_t *
+pkt_t *
 ikev2_pkt_new_inbound(const buf_t *raw)
 {
-	struct validate_data	arg = { 0 };
 	const ike_header_t	*hdr = NULL;
-	ikev2_pkt_t		*pkt = NULL;
-	ASSERT(IS_P2ALIGNED(raw, sizeof (uint64_t)));
+	pkt_t			*pkt = NULL;
+	struct validate_data	arg = { 0 };
 
-	hdr = (const ike_header_t *)raw->ptr;
-	ASSERT(hdr->version == IKEV2_VERSION);
+	ASSERT(IS_P2ALIGNED(raw->b_ptr, sizeof (uint64_t)));
+
+	hdr = (const ike_header_t *)raw->b_ptr;
+
+	ASSERT(IKE_GET_MAJORV(hdr->version) == IKE_GET_MAJORV(IKEV2_VERSION));
 
 	/*
 	 * Make sure either the initiator or response flag is set, but

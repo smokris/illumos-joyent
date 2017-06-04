@@ -29,14 +29,6 @@ extern "C" {
 struct pkt;
 struct ikev2_sa;
 
-#ifndef IKEV2_PKT_T
-#define	IKEV2_PKT_T
-typedef struct pkt ikev2_pkt_t;
-#endif
-
-#define	IKEV2_PAYLOAD_PTR(pkt, num) \
-	((pkt)->payloads[(num) - IKEV2_PAYLOAD_MIN])
-
 #define	INBOUND_LOCAL_SPI(hdr) \
 	(((hdr)->flags == IKEV2_FLAG_INITIATOR) ? \
 	    (hdr)->responder_spi : (hdr)->initiator_spi
@@ -45,12 +37,12 @@ typedef struct pkt ikev2_pkt_t;
 	 (((hdr)->flags == IKEV2_FLAG_INITIATOR) ? \
 	    (hdr)->initiator_spi : (hdr)->responder_spi)
 
-ikev2_pkt_t *ikev2_pkt_new_inbound(const buf_t *);
-ikev2_pkt_t *ikev2_pkt_new_initiator(struct ikev2_sa *, ikev2_exch_t);
-ikev2_pkt_t *ikev2_pkt_new_response(const ikev2_pkt_t *);
-void ikev2_pkt_free(ikev2_pkt_t *);
+pkt_t *ikev2_pkt_new_inbound(const buf_t *);
+pkt_t *ikev2_pkt_new_initiator(struct ikev2_sa *, ikev2_exch_t);
+pkt_t *ikev2_pkt_new_response(const pkt_t *);
+void ikev2_pkt_free(pkt_t *);
 
-boolean_t ikev2_get_notify(int, ikev2_pkt_t *restrict, buf_t *restrict);
+boolean_t ikev2_get_notify(int, pkt_t *restrict, buf_t *restrict);
 
 boolean_t ikev2_add_sa(pkt_t *);
 boolean_t ikev2_add_prop(pkt_t *, uint8_t, ikev2_spi_proto_t, uint64_t);
@@ -62,7 +54,7 @@ boolean_t ikev2_add_id_r(pkt_t *restrict, ikev2_id_type_t, const void *);
 boolean_t ikev2_add_cert(pkt_t *restrict, ikev2_cert_t, const buf_t *restrict);
 boolean_t ikev2_add_certreq(pkt_t *restrict, ikev2_cert_t,
     const buf_t *restrict);
-boolean_t ikev2_add_auth(pkt_t *restrict, ikev2_auth_t, const buf_t *restrict );
+boolean_t ikev2_add_auth(pkt_t *restrict, ikev2_auth_t, const buf_t *restrict);
 boolean_t ikev2_add_nonce(pkt_t *restrict, const buf_t *restrict);
 boolean_t ikev2_add_notify(pkt_t *restrict, ikev2_spi_proto_t, size_t,
     ikev2_notify_type_t, uint64_t, const buf_t *restrict);

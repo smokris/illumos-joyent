@@ -85,6 +85,9 @@ struct ikev2_payload {
 #define	IEKV2_PAYLOAD_MIN	IKEV2_PAYLOAD_SA
 #define	IKEV2_PAYLOAD_MAX	IKEV2_PAYLOAD_GSPM
 #define	IKEV2_NUM_PAYLOADS	(IKEV2_PAYLOAD_MAX - IKEV2_PAYLOAD_MIN + 1)
+#define	IKEV2_VALID_PAYLOAD(paytype) \
+	(((paytype) >= IKEV2_PAYLOAD_MIN) && ((paytype) <= IKEV2_PAYLOAD_MAX))
+
 /*
  * SA payload
  */

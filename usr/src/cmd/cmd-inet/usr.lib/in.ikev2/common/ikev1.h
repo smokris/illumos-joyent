@@ -77,6 +77,17 @@ typedef enum ikev1_pay_type ikev1_pay_t;
 #define	IKEV1_VALID_PAYLOAD(p) \
 	(((p) >= IKEV1_PAYLOAD_SA) && ((p) <= IKEV1_PAYLOAD_VENDOR))
 
+#define	IKEV1_SIT_IDENTITY_ONLY	(0x01)
+#define	IKEV1_SIT_SECRECY	(0x02)
+#define	IKEV1_SIT_INTEGRITY	(0x04)
+
+typedef enum ikev1_spi_proto_e {
+	IKEV1_SPI_PROTO_ISAKMP		= 1,
+	IKEv1_SPI_PROTO_IPSEC_AH	= 2,
+	IKEV1_SPI_PROTO_IPSEC_ESP	= 3,
+	IKEV1_SPI_PROTO_IPCOMP		= 4
+} ikev1_spi_proto_t;
+
 typedef struct ike_prop ikev1_prop_t;
 #define	IKEV1_PROP_LAST	0
 #define	IKEV1_PROP_MORE	2
