@@ -91,6 +91,9 @@ struct pkt {
 #define	PKT_PAY_START(pkt) ((uchar_t *)&(pkt)->raw + sizeof (ike_header_t))
 #define	PKT_REMAINING(pkt) ((pkt)->buf.len)
 
+void pkt_hdr_ntoh(ike_header_t *restrict, const ike_header_t *restrict);
+void pkt_hdr_hton(ike_header_t *restrict, const ike_header_t *restrict);
+
 void pkt_init(void);
 void pkt_fini(void);
 

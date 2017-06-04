@@ -444,6 +444,9 @@ extern void ipsec_convert_bslabel_to_hex(bslabel_t *, char **);
 #define	EXIT_BADPERM2(x, y) \
 	ipsecutil_exit(SERVICE_BADPERM, my_fmri, debugfile, \
 	dgettext(TEXT_DOMAIN, x), y)
+#define	EXIT_BADPERM3(x, y, z) \
+	ipsecutil_exit(SERVICE_BADPERM, my_fmri, debugfile, \
+	dgettext(TEXT_DOMAIN, x), y, z)
 #define	EXIT_FATAL(x) \
 	ipsecutil_exit(SERVICE_FATAL, my_fmri, debugfile, \
 	dgettext(TEXT_DOMAIN, x))
@@ -453,6 +456,9 @@ extern void ipsec_convert_bslabel_to_hex(bslabel_t *, char **);
 #define	EXIT_FATAL3(x, y, z) \
 	ipsecutil_exit(SERVICE_FATAL, my_fmri, debugfile, \
 	dgettext(TEXT_DOMAIN, x), y, z)
+#define	EXIT_FATAL4(x, y, z, z2) \
+	ipsecutil_exit(SERVICE_FATAL, my_fmri, debugfile, \
+	dgettext(TEXT_DOMAIN, x), y, z, z2)
 #define	EXIT_RESTART(x) \
 	ipsecutil_exit(SERVICE_RESTART, my_fmri, debugfile, \
 	dgettext(TEXT_DOMAIN, x))

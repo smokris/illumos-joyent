@@ -27,9 +27,6 @@ pkt_t *pkt_in_alloc(const buf_t *);
 pkt_t *pkt_out_alloc(uint64_t, uint64_t, uint8_t, uint8_t, uint32_t);
 void pkt_free(pkt_t *);
 
-void pkt_hdr_hton(ike_header_t *restrict, const ike_header_t *restrict);
-void pkt_hdr_ntoh(ike_header_t *restrict, const ike_header_t *restrict);
-
 void pkt_stack_push(pkt_t *restrict, int, pkt_finish_fn, uintptr_t);
 
 boolean_t pkt_add_payload(pkt_t *, uint8_t, uint8_t);
