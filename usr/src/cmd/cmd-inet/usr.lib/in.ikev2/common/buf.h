@@ -64,6 +64,8 @@ void		buf_range(buf_t * restrict, buf_t * restrict, size_t, size_t);
 boolean_t	buf_alloc(buf_t *, size_t);
 void		buf_free(buf_t *);
 
+int		buf_cmp(const buf_t *restrict, const buf_t *restrict);
+
 #if 0
 void		buf_init(buf_t *, char *, size_t, size_t, boolean_t);
 void		buf_range(buf_t *, size_t, buf_t *);

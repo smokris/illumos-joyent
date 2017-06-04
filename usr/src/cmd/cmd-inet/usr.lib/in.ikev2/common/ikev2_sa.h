@@ -48,23 +48,17 @@ extern "C" {
 
 struct ikev2_sa;
 struct ikev2_child_sa;
+struct ikev2_pkt;
+struct i2sa_bucket_s;
 
+#ifndef IKEV2_SA_T
+#define	IKEV2_SA_T
 typedef struct ikev2_sa ikev2_sa_t;
 typedef struct ikev2_child_sa ikev2_child_sa_t;
-
-#ifndef IKEV2_PKT_T
-struct ikev2_pkt;
-typedef struct ikev2_pkt ikev2_pkt_t;
-#endif
-
-struct i2sa_bucket_s;
 typedef struct i2sa_bucket_s i2sa_bucket_t;
+#endif /* IKEV2_SA_T */
 
-enum {
-	LSPI,		/* Local SPI */
-	RHASH,		/* Remote SPI + addr */
-	N_HTABLE	/* must be last */
-};
+#define	I2SA_NUM_HASH	2	/* The number of IKEv2 SA hashes we have */
 
 /*
  * The IKEv2 SA.
@@ -92,7 +86,8 @@ struct ikev2_sa {
 	 * start here
 	 */
 #define	I2SA_ZERO_START	hash
-	i2sa_bucket_t	*hash[N_HTABLE];
+			/* Link to the bucket we are in for each hash */
+	i2sa_bucket_t	*bucket[I2SA_NUM_HASH];
 
         uint64_t                i_spi;          /* Initiator SPI. */
         uint64_t                r_spi;          /* Responder SPI. */
@@ -114,10 +109,10 @@ struct ikev2_sa {
         uint32_t outmsgid;              /* Next msgid for outbound packets. */
         uint32_t inmsgid;               /* Next expected inbound msgid. */
 
-        pkt_t	*init;  	       /* IKE_SA_INIT packet. */
-        pkt_t	*last_resp_sent;
-        pkt_t	*last_sent;
-        pkt_t	*last_recvd;
+        struct pkt	*init;  	       /* IKE_SA_INIT packet. */
+        struct pkt	*last_resp_sent;
+        struct pkt	*last_sent;
+        struct pkt	*last_recvd;
 
         time_t          birth;          /* When was AUTH completed */
         hrtime_t        softexpire;
@@ -170,7 +165,8 @@ struct ikev2_child_sa {
             (ikev2_sa_free(i2sa), 0))
 
 extern ikev2_sa_t *ikev2_sa_get(uint64_t, uint64_t,
-    struct sockaddr_storage *restrict, struct sockaddr_storage *restrict,
+    const struct sockaddr_storage *restrict,
+    const struct sockaddr_storage *restrict,
     const buf_t *restrict);
 extern ikev2_sa_t *ikev2_sa_alloc(boolean_t, pkt_t *restrict,
     const struct sockaddr_storage *restrict,

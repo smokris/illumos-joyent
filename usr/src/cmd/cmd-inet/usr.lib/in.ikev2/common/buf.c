@@ -73,3 +73,35 @@ buf_free(buf_t *buf)
 	umem_free(buf->ptr, buf->len);
 }
 
+int
+buf_cmp(const buf_t *restrict l, const buf_t *restrict r)
+{
+	size_t minlen;
+	int cmp;
+
+	/* !NULL > NULL, NULL == NULL */
+	if (r == NULL || r->len == 0 || r->ptr == NULL) {
+		if (l != NULL && l->len > 0 && l->ptr != NULL)
+			return (1);
+		else
+			return (0);
+	}
+
+	/* NULL < !NULL */
+	if (l == NULL || l->len == 0 || l->ptr == NULL)
+		return (1);
+
+	minlen = l->len;
+	if (r->len < minlen)
+		minlen = r->len;
+
+	cmp = memcmp(l->ptr, r->ptr, minlen);
+	if (cmp != 0)
+		return ((cmp > 0) ? 1 : - 1);
+
+	if (l->len > r->len)
+		return (1);
+	if (l->len < r->len)
+		return (-1);
+	return (0);
+}

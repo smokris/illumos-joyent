@@ -76,12 +76,16 @@ ike_timer_init(void)
 	/* better be single threaded here! */
 	ASSERT(pthread_self() == 1);
 
-	VERIFY((timer_pools = uu_list_pool_create("timer lists",
+	timer_pools = uu_list_pool_create("timer_event_list",
 	    sizeof (tevent_t), offsetof(tevent_t, node), te_compare,
-	    flg)) != NULL);
+	    flg);
+	if (timer_pools == NULL)
+		EXIT_FATAL("Unable to allocate memory for timer event lists");
 
 	evt_cache = umem_cache_create("timer events", sizeof (tevent_t),
 	    sizeof (size_t), evt_ctor, evt_dtor, NULL, NULL, 0);
+	if (evt_pools == NULL)
+		EXIT_FATAL("Unable to allocate memory for timer event entries");
 
 #ifdef DEBUG
 	timer_is_init = B_TRUE;
