@@ -44,6 +44,7 @@
 #define DEPTH_DEL		(3)
 #define DEPTH_DEL_SPI		(4)
 
+
 /* Allocate an outbound IKEv2 pkt for an initiator of the given exchange type */
 pkt_t *
 ikev2_pkt_new_initiator(ikev2_sa_t *i2sa, ikev2_exch_t exch_type)
@@ -379,7 +380,7 @@ ikev2_add_xf_attr(ikev2_pkt_t *pkt, ikev2_xf_attr_type_t xf_attr_type,
 	default:
 		INVALID(xf_attr_type);
 	}
-	va_end(ap);
+
 	return (ret);
 }
 

@@ -23,7 +23,7 @@
  * Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
  *
- * Copyright 2014 Jason King.  All rights reserved.
+ * Copyright 2015 Jason King.  All rights reserved.
  * Use is subject to license terms.
  */
 
@@ -41,8 +41,6 @@
 
 #define	METASLOT_NAME "Sun Metaslot"
 
-static CK_SLOT_ID_PTR	slots;
-static CK_ULONG		numslots;
 static CK_SLOT_ID	metaslot;
 
 /*
@@ -84,6 +82,25 @@ pkcs11_callback_handler(CK_SESSION_HANDLE session, CK_NOTIFICATION surrender,
 	return (CKR_OK);
 }
 
+static
+boolean_t is_metaslot(CK_SLOT_ID slot, void *args, CK_RV *rv)
+{
+	CK_SLOT_INFO info = { 0 };
+	boolean_t *found = (boolean_t *)args;
+
+	*rv = C_GetSlotInfo(slot, &info);
+	if (*rv != CKR_OK)
+		return (B_FALSE);
+
+	if (strncmp(METASLOT_NAME, (const char *)info.slotDescription,
+	    sizeof(METASLOT_NAME)) != 0)
+		return (B_FALSE);
+
+	metaslot = slot;
+	*found = B_TRUE;
+	return (B_TRUE);
+}
+
 /*
  * Locates the metaslot among the available slots.  If the metaslot
  * is inable to be located, we terminate.
@@ -91,46 +108,16 @@ pkcs11_callback_handler(CK_SESSION_HANDLE session, CK_NOTIFICATION surrender,
 void
 pkcs11_global_init(void)
 {
-	CK_SLOT_INFO	info;
-	CK_RV		rc;
-	boolean_t	found;
+	CK_RV		rv = CKR_OK;
+	boolean_t	found = B_FALSE;
 
-	if ((rc = C_Initialize(NULL)) != CKR_OK) {
-		/* XXX KEBE SAYS this is a fatal error. */
-		pkcs11_error(rc, "C_Initialize");
+	/* Init PKCS#11, find the metaslot, and open an initial session */
+	rv = pkcs11_GetCriteriaSession(is_metaslot, &found, &p11s);
+	if (rv != CKR_OK) {
+		pkcs11_error(rv, "pkcs11_GetCriteriaSession");
 		exit(1);
 	}
 
-	/* Get slot information. */
-	if ((rc = C_GetSlotList(FALSE, NULL, &numslots)) != CKR_OK) {
-		/* XXX KEBE SAYS this is a fatal error. */
-		pkcs11_error(rc, "C_GetSlotList");
-		exit(1);
-	}
-	if ((slots = calloc(numslots, sizeof (CK_SLOT_ID))) == NULL) {
-		syslog(LOG_DAEMON | LOG_WARNING, gettext("Out of memory"));
-		exit(1);
-	}
-	if ((rc = C_GetSlotList(FALSE, slots, &numslots)) != CKR_OK) {
-		pkcs11_error(rc, "C_GetSlotList #2");
-		free(slots);
-		exit(1);
-	}
-
-	found = B_FALSE;
-	for (size_t i = 0; i < numslots; i++) {
-		if ((rc = C_GetSlotInfo(slots[i], &info)) != CKR_OK) {
-			pkcs11_error(rc, "C_GetSlotInfo");
-			continue;
-		}
-
-		if (strncmp(METASLOT_NAME, (const char *)info.slotDescription,
-		    13) == 0) {
-			metaslot = slots[i];
-			found = B_TRUE;
-			break;
-		}
-	}
 	if (!found) {
 		syslog(LOG_WARNING | LOG_DAEMON,
 		    gettext("Unable to locate the metaslot."));

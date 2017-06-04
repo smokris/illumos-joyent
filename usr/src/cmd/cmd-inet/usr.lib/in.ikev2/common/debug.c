@@ -19,9 +19,10 @@
 #include <stdarg.h>
 #include <string.h>
 #include <sys/debug.h>
-#include <alloca.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <errno.h>
+#include <alloca.h>
 
 #include "defs.h"
 #include "debug.h"
@@ -45,6 +46,7 @@ uint32_t	debug_opts = 0;
  *  A	Argument is a sockaddr_u_t.  Print address:port.
  *  e	Argument is an enumerated value specified by 'str'.
  *  i	Argument is an integral value.
+ *  m	The current value of errno (no argument).
  *  p	Argument is a pointer.  Display in hex with leading 0x.
  *  s	Argument is a string.
  *  z	Argument is size_t
@@ -55,6 +57,7 @@ typedef struct fmt_s {
 	va_list		args;
 	int		opt;
 	const char	*opt_str;
+	size_t		opt_len;
 } fmt_t;
 
 static int process_option(fmt_t *);
@@ -63,16 +66,22 @@ static void write_addr(sockaddr_u_t *, boolean_t);
 void
 dbg_printf(const char *fmt_str, ...)
 {
+	va_list ap;
+
+	va_start(ap, fmt_str);
+	dbg_vprintf(fmt_str, ap);
+	va_end(ap);
+}
+
+void
+dbg_vprintf(const char *fmt_str, va_list ap)
+{
 	const char	*p;
 	const char	*s_end;
-	char		*buf = NULL;
-	size_t		buflen = 0;
-	va_list		args;
 	fmt_t		fmt = { 0 };
 
 	fmt.fmt_str = fmt_str;
 
-	va_start(args, fmt_str);
 	flockfile(dbg_file);
 
 	p = fmt_str;
@@ -93,9 +102,12 @@ dbg_printf(const char *fmt_str, ...)
 
 		(void) memset(&fmt, 0, sizeof (fmt));
 		fmt.fmt_str = fmt_str;
-		va_copy(fmt.args, args);
+		va_copy(fmt.args, ap);
 
 restart:
+		fmt.opt_str = NULL;
+		fmt.opt_len = 0;
+
 		switch (p[1]) {
 		case '\0':
 			/* % at end of string */
@@ -108,18 +120,15 @@ restart:
 			continue;
 		case '(':
 			VERIFY((s_end = strchr(p, ')')) != NULL);
-			if (buf == NULL) {
-				buflen = strlen(fmt_str) + 1;
-				VERIFY((buf = alloca(buflen)) != NULL);
-			}
-			(void) strlcpy(buf, span + 1, buflen);
-			fmt.opt_str = buf;	
+			fmt.opt_str = p + 2;
+			fmt.opt_len = (size_t)(s_end - p - 1);
 			p = s_end + 1;
 			goto restart;
 		case 'a':
 		case 'A':
 		case 'e':
 		case 'i':
+		case 'm':
 		case 'p':
 		case 's':
 		case 'z':
@@ -128,7 +137,7 @@ restart:
 			break;
 		default:
 			/* invalid format string */
-			VERIFY(0);
+			INVALID(p[1]);
 		}
 
 		if (process_option(&fmt) != 0)
@@ -139,27 +148,56 @@ done:
 	/* always terminate a message with a newline */
 	(void) putc_unlocked('\n', dbg_file);
 	funlockfile(dbg_file);
-	va_end(args);
 }
 
 static int
 process_option(fmt_t *fmt)
 {
-	switch (fmt->opt) {
-	case 'a': {
-		sockaddr_u_t *su = va_arg(fmt->args, sockaddr_u_t *);
-		write_addr(su, B_FALSE);
-		break;
-	}
-	case 'A': {
-		sockaddr_u_t *su = va_arg(fmt->args, sockaddr_u_t *);
-		write_addr(su, B_TRUE);
-		break;
-	}
-	default:
-		  VERIFY(0);
+	char *opt_str = NULL;
+
+	union {
+		sockaddr_u_t *su;
+		const char *str;
+		const void *p;
+		size_t sz;
+	} u;
+
+	if (fmt->opt_str != NULL) {
+		opt_str = alloca(fmt->opt_len + 1);
+		(void) memset(opt_str, 0, fmt->opt_len + 1);
+		(void) strncpy(opt_str, fmt->opt_str, fmt->opt_len);
 	}
 		
+	switch (fmt->opt) {
+	case 'a':
+	case 'A':
+		u.su = va_arg(fmt->args, sockaddr_u_t *);
+		write_addr(u.su, (fmt->opt == 'A') ? B_TRUE : B_FALSE);
+		break;
+
+	case 'm':
+		(void) fprintf(dbg_file, "%s", strerror(errno));
+		break;
+
+	case 's':
+		u.str = va_arg(fmt->args, const char *);
+		(void) fprintf(dbg_file, "%s", u.str);
+		break;
+
+	case 'p':
+		u.p = va_arg(fmt->args, const void *);
+		(void) fprintf(dbg_file, "0x%p", u.p);
+		break;
+
+	case 'z':
+		u.sz = va_arg(fmt->args, size_t);
+		(void) fprintf(dbg_file, "%zu", u.sz);
+		break;
+
+	default:
+		  INVALID(fmt->opt);
+	}
+
 	return (0);
 }
 
@@ -201,4 +239,4 @@ write_addr(sockaddr_u_t *sa, boolean_t port)
 		(void) fprintf(dbg_file, ":%" PRIu16, sa->sau_sin->sin_port);
 }
 
-
+extern void DBG(int, const char *, ...);

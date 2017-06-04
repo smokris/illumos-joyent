@@ -26,13 +26,21 @@ extern "C" {
 extern uint32_t debug_evt;
 extern uint32_t debug_opts;
 
-#define	DBG(lvl, ...) 					\
-	do {						\
-		if (debug_opts & (lvl))			\
-			dbg_printf(__VA_ARGS__);	\
-	} while (0)
+inline void
+DBG(int level, const char *msg, ...)
+{
+	if (!(debug_opts & level))
+		return;
+
+	va_list ap;
+
+	va_start(ap, msg);
+	dbg_vprintf(msg, ap);
+	va_end(ap);
+}
 
 extern void dbg_printf(const char *, ...);
+extern void dbg_vprintf(const char *, va_list);
 
 #ifdef __cplusplus
 }
