@@ -53,7 +53,7 @@ uint32_t	debug_opts = 0;
 typedef struct fmt_s {
 	const char	*fmt_str;
 	va_list		args;
-	int		fmt;
+	int		opt;
 	const char	*opt_str;
 } fmt_t;
 
@@ -67,12 +67,12 @@ dbg_printf(const char *fmt_str, ...)
 	const char	*s_end;
 	char		*buf = NULL;
 	size_t		buflen = 0;
-	va_args		args;
+	va_list		args;
 	fmt_t		fmt = { 0 };
 
 	fmt.fmt_str = fmt_str;
 
-	va_start(fmt, ap);
+	va_start(args, fmt_str);
 	flockfile(dbg_file);
 
 	p = fmt_str;
@@ -91,9 +91,9 @@ dbg_printf(const char *fmt_str, ...)
 
 		ASSERT(*p == '%');
 
-		(void) memset(fmt, 0, sizeof (fmt));
+		(void) memset(&fmt, 0, sizeof (fmt));
 		fmt.fmt_str = fmt_str;
-		va_copy(fmt.args, ap);
+		va_copy(fmt.args, args);
 
 restart:
 		switch (p[1]) {
@@ -109,7 +109,7 @@ restart:
 		case '(':
 			VERIFY((s_end = strchr(p, ')')) != NULL);
 			if (buf == NULL) {
-				buflen = strlen(fmt) + 1;
+				buflen = strlen(fmt_str) + 1;
 				VERIFY((buf = alloca(buflen)) != NULL);
 			}
 			(void) strlcpy(buf, span + 1, buflen);
@@ -139,7 +139,7 @@ done:
 	/* always terminate a message with a newline */
 	(void) putc_unlocked('\n', dbg_file);
 	funlockfile(dbg_file);
-	va_end(ap);
+	va_end(args);
 }
 
 static int
@@ -167,7 +167,7 @@ static void
 write_addr(sockaddr_u_t *sa, boolean_t port)
 {
 	char buf[INET6_ADDRSTRLEN] = { 0 };
-	const void *addr;
+	const void *addr = NULL;
 	boolean_t ip6 = B_FALSE;
 
 	switch (sa->sau_ss->ss_family) {

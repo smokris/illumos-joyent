@@ -44,12 +44,6 @@
 #define DEPTH_DEL		(3)
 #define DEPTH_DEL_SPI		(4)
 
-ikev2_pkt_t *
-ikev2_pkt_new_inbound(const buf_t *raw)
-{
-	return (pkt_in_alloc(raw));
-}
-
 /* Allocate an outbound IKEv2 pkt for an initiator of the given exchange type */
 pkt_t *
 ikev2_pkt_new_initiator(ikev2_sa_t *i2sa, ikev2_exch_t exch_type)
@@ -85,15 +79,244 @@ ikev2_pkt_new_response(const ikev2_pkt_t *init)
 	return (pkt);
 }
 
+struct validate_data {
+	const buf_t	*raw;
+	size_t		paycount[IKEV2_NUM_PAYLOADS];
+	uchar_t		*payloads[IKEV2_NUM_PAYLOADS];
+	boolean_t	initiator;
+	uint8_t		exch_type;
+};
+
+static pkt_walk_ret_t check_payload(uint8_t, buf_t *restrict, void *restrict);
+static boolean_t check_sa_init_payloads(boolean_t, const size_t *);
+
+/* Allocate a ikev2_pkt_t for an inbound datagram in raw */
+ikev2_pkt_t *
+ikev2_pkt_new_inbound(const buf_t *raw)
+{
+	struct validate_data	arg = { 0 };
+	const ike_header_t	*hdr = NULL;
+	ikev2_pkt_t		*pkt = NULL;
+	ASSERT(IS_P2ALIGNED(raw, sizeof (uint64_t)));
+
+	hdr = (const ike_header_t *)raw->ptr;
+	ASSERT(hdr->version == IKEV2_VERSION);
+
+	/*
+	 * Make sure either the initiator or response flag is set, but
+	 * not both.
+	 */
+	if (((hdr->flags & (IKEV2_FLAG_INITIATOR|IKEV2_FLAG_RESPONSE)) ^
+		(IKEV2_FLAG_INITIATOR|IKEV2_FLAG_RESPONSE)) == 0) {
+		/* XXX: log msg? */
+		return (NULL);
+	}
+
+	arg.raw = raw;
+	arg.exch_type = hdr->exch_type;
+	arg.initiator = !!(hdr->flags & IKEV2_FLAG_INITIATOR);
+
+	if (pkt_payload_walk(raw, check_payload, &arg) != PKT_WALK_OK)
+		return (NULL);
+
+	if (hdr->exch_type == IKEV2_EXCH_IKE_SA_INIT &&
+	    !check_sa_init_payloads(arg.initiator, &arg.paycount))
+		return (NULL);
+
+	/* this will also copy raw into pkt->raw */
+	if ((pkt = pkt_in_alloc(raw)) == NULL)
+		return (NULL);
+
+	ASSERT3U(sizeof (pkt->payloads), ==, sizeof (arg.payloads));
+	(void) memcpy(&pkt->payloads, &arg.payloads, sizeof (arg.payloads));
+
+	/* convert offsets into pointers into raw */
+	for (int i = 0; i < IKEV2_NUM_PAYLOADS; i++) {
+		if (pkt->payloads[i] > 0)
+			pkt->payloads += &pkt->raw;
+	}
+
+	return (pkt);
+}
+
+/*
+ * Cache the payload offsets and do some minimal checking.
+ * By virtue of walking the payloads, we also validate the payload
+ * lengths do not overflow or underflow
+ */
+static pkt_walk_ret_t
+check_payload(uint8_t paytype, const buf_t *restrict pay, void *restrict cookie)
+{
+	struct validate_data *arg = (struct validate_data *)cookie;
+
+	/* Skip unknown payloads.  We will check the critical bit later */
+	if (paytype < IKEV2_PAYLOAD_MIN || paytype > IKEV2_PAYLOAD_MAX)
+		return (PKT_WALK_OK);
+
+	switch (arg->exch_type) {
+	case IKEV2_EXCH_IKE_AUTH:
+	case IKEV2_EXCH_CREATE_CHILD_SA:
+	case IKEV2_EXCH_INFORMATIONAL:
+		/*
+		 * All payloads in these exchanges should be encrypted
+		 * at this early stage.  RFC 5996 isn't quite clear
+		 * what to do.  There seem to be three possibilities:
+		 *
+		 * 1. Drop the packet with no further action.
+		 * 2. IFF the encrypted payload's integrity check passes,
+		 *    and the packet is an initiator, send an INVALID_SYNTAX
+		 *    notification in response.  Otherwise, drop the packet
+		 * 3. Ignore the unencrypted payloads and only process the
+		 *    payloads that passed the integrity check.
+		 *
+		 * As RFC5996 suggests committing minimal CPU state until
+		 * a valid request is present (to help mitigate DOS attacks),
+		 * option 2 would still commit us to performing potentially
+		 * expensive decryption and authentication calculations.
+		 * Option 3 would require us to track which payloads were
+		 * authenticated and which were not.  Since some payloads
+		 * (e.g. notify) can appear multiple times in a packet
+		 * (requiring some sort of iteration to deal with them),
+		 * this seems potentially complicated and prone to potential
+		 * exploit.  Thus we opt for the simple solution of dropping
+		 * the packet.
+		 *
+		 * NOTE: if we successfully authenticate and decrypt a
+		 * packet for one of these exchanges and the decrypted
+		 * and authenticated payloads have range or value issues,
+		 * we may opt at that point to send an INVALID_SYNTAX
+		 * notification, but not here.
+		 */
+		if (paytype != IKEV2_PAYLOAD_SK) {
+			/* XXX: log message? */
+			return (PKT_WALK_ERR);
+		}
+		goto done;
+	case IKEV2_EXCH_SA_INIT:
+		break;
+	default:
+		/* Unknown exchange, bail */
+		/* XXX: log message? */
+		return (PKT_WALK_ERROR);
+	}
+
+	ASSERT(exch_type == IKEV2_EXCH_SA_INIT);
+
+done:
+	paytype -= IKEV2_PAYLOAD_MIN;
+	arg->paycount[paytype]++;
+
+	/* store offset from start of packet */
+	if (arg->payloads[paytype] == NULL)
+		arg->payloads = pay->ptr - arg->raw->ptr;
+
+	return (PKT_WALK_OK);
+}
+
+#define	PAYBIT(pay) ((uint32_t)1 << ((pay) - IKEV2_PAYLOAD_MIN))
+static const uint32_t multi_payloads =
+	PAYBIT(IKEV2_PAYLOAD_NOTIFY) |
+	PAYBIT(IKEV2_PAYLOAD_VENDOR) |
+	PAYBIT(IKEV2_PAYLOAD_CERTREQ);
+#define	IS_MULTI(pay) (!!(multi_payloads & PAYBIT(pay)))
+
+static struct payinfo {
+	uint32_t	required;
+	uint32_t	optional;
+} sa_init_info[] = {
+	{
+		/* required */
+		PAYBIT(IKEV2_PAYLOAD_SA) |
+		PAYBIT(IKEV2_PAYLOAD_KE) |
+		PAYBIT(IKEV2_PAYLOAD_NONCE),
+		/* optional */
+		PAYBIT(IKEV2_PAYLOAD_NOTIFY) |
+		PAYBIT(IKEV2_PAYLOAD_VENDOR) |
+		PAYBIT(IKEV2_PAYLOAD_CERTREQ)
+	},
+	{
+		/* required */
+		PAYBIT(IKEV2_PAYLOAD_NOTIFY),
+		/* optional */
+		PAYBIT(IKEV2_PAYLOAD_VENDOR)
+	}
+};
+
+/* Perform more stringent checks on IKE_SA_INIT packets */
+static boolean_t
+check_sa_init_payloads(boolean_t initiator, const size_t *paycount)
+{
+	uint32_t present;
+	int i, pay;
+	boolean_t multi_ok, allowed_ok;
+
+	present = 0;
+	multi_ok = B_TRUE;
+	for (i = 0, pay = IKEV2_PAYLOAD_MIN;
+	    i < IKEV2_PAYLOAD_COUNT;
+	    i++, pay++) {
+		if (paycount[i] > 1 && !(IS_MULTI(pay))) {
+			/* XXX: log msg? */
+			multi_ok = B_FALSE;
+		}
+
+		if (paycount[i] > 1)
+			present |= PAYBIT(pay);
+	}
+
+#define	MATCH(x, y) (((x) & (y)) == (x))
+#define	ALLOWED(x, y) (((x) | (y)) == (y))
+
+	allowed_ok = B_FALSE;
+	for (i = 0; i < ARRAY_SIZE(sa_init_info); i++) {
+		if (MATCH(present, sa_init_info[i].required) &&
+		    ALLOWED(present, sa_init_info[i].optional))
+			allowed_ok = B_TRUE;
+	}
+
+	/* A bit of a special case.. only allowed on responses */
+	if (initiator && (present & PAYBIT(IKEV2_PAYLOAD_CERTREQ)))
+		allowed_ok = B_FALSE;
+
+	/* XXX: log failure? */
+
+#undef MATCH
+#undef ALLOWED
+
+	return (!!(multi_ok && allowed_ok));
+}
+
 void
 ikev2_pkt_free(ikev2_pkt_t *pkt)
 {
 	pkt_free(pkt);
 }
 
+boolean_t
+ikev2_next_payload(int pay, ikev2_pkt_t *restrict pkt, buf_t *restrict ptr)
+{
+	ikev2_payload_t pay;
+
+	if (ptr->ptr == NULL) {
+		ptr->ptr = IKEV2_PAYLOAD_PTR(pkt, pay);
+		/* XXX: set length */
+	}
+
+	/* XXX: finish */
+	return (B_FALSE);
+}
+
+boolean_t
+ikev2_get_notify(int ntfy, ikev2_pkt_t *restrict pkt, buf_t *restrict ptr)
+{
+	/* TODO: implement me */
+	return (B_FALSE);
+}
+
 static void
 ikev2_add_payload(ikev2_pkt_t *pkt, ikev2_pay_type_t ptype, boolean_t critical)
 {
+	uchar_t *payptr;
 	uint8_t resv = 0;
 
 	ASSERT(IKEV2_VALID_PAYLOAD(ptype));
@@ -101,6 +324,11 @@ ikev2_add_payload(ikev2_pkt_t *pkt, ikev2_pay_type_t ptype, boolean_t critical)
 
 	if (critical)
 		resv |= IKEV2_CRITICAL_PAYLOAD;
+
+	/* Only cache the first one */
+	if ((payptr = IKEV2_PAYLOAD_PTR(pkt, ptype)) == NULL)
+		payptr = pkt->buf.ptr;
+
 	pkt_add_payload(pkt, ptype, resv);
 }
 
@@ -513,3 +741,45 @@ ikev2_add_eap(ikev2_pkt_t *restrict pkt, const buf_t *restrict data, size_t n)
 		APPEND_BUF(pkt, data[i]);
 	return (B_TRUE);
 }
+
+typedef struct validate_data {
+	size_t	paycount[IKEV2_NUM_PAYLOADS];
+	uint8_t	exch_type;
+} validate_data_t;
+
+static pkt_walk_ret_t validate_cb(uint8_t, buf_t *restrict, void *restrict);
+
+static boolean_t
+validate_inbound(buf_t *data)
+{
+	ike_header_t	*hdr;
+	validate_data_t	arg = { 0 };
+	hdr = data->ptr;
+
+	/*
+	 * We allocate the memory, so we should start off on a 64-bit boundary,
+	 * so accessing the header should be ok.
+	 */
+	ASSERT(IS_P2ALIGNED(hdr, uint64_t));
+
+	arg.exch_type = hdr->exch_type;
+	if (pkt_payload_walk(data, validate_cb, &arg) != PKT_WALK_OK)
+		return (B_FALSE);
+
+	switch (arg.exch_type) {
+	case IKEV2_EXCH_IKE_AUTH:
+	case IKEV2_EXCH_CREATE_CHILD_SA:
+	case IKEV2_EXCH_INFORMATIONAL:
+	}
+}
+
+static pkt_walk_ret_t
+validate_cb(uint8_t paytype, buf_t *restrict pay, void *restrict cookie)
+{
+	validate_data_t	*arg = (validate_data_t *)cookie;
+
+	arg->paycount[paytype - IKEV2_NUMPAYLOADS]++;
+
+	return (PKT_WALK_OK);
+}
+

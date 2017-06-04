@@ -36,20 +36,21 @@
 #include <strings.h>
 #include <locale.h>
 #include <stddef.h>
-#include <ipsec_util.h>
 #include <sys/types.h>
 #include <sys/sysmacros.h>
 #include <sys/debug.h>
 #include <limits.h>
+#include <note.h>
+#include <ipsec_util.h>
+#include <libuutil.h>
 
 #include "defs.h"
+#include "buf.h"
 #include "timer.h"
+#include "pkcs11.h"
+#include "ikev2_pkt.h"
 #include "ikev2_sa.h"
-
-#define	IKEV2_SA_HASH_SPI(spi) \
-    P2PHASE_TYPED((spi), num_buckets, uint64_t)
-#define	IKEV2_SA_RHASH(ss, spi) \
-    P2PHASE_TYPED(i2sa_rhash((ss), (spi)), num_buckets, uint64_t)
+#include "random.h"
 
 /* Our hashes */
 enum {
@@ -57,19 +58,27 @@ enum {
 	RHASH
 };
 
-struct i2sa_bucket_s {
+struct i2sa_bucket {
 	pthread_mutex_t		lock;	/* bucket lock */
 	uu_list_t		*chain;	/* hash chain of ikev2_sa_t's */
 };
 
-typedef struct i2sa_cmp_arg_s {
-	const struct sockaddr	*laddr;
-	const struct sockaddr	*raddr;
+typedef struct i2sa_cmp_arg {
+	sockaddr_u_t		laddr;
+	sockaddr_u_t		raddr;
 	const buf_t		*init_pkt;
 	uint64_t		lspi;
 	uint64_t		rspi;
 	int			hash;
 } i2sa_cmp_arg_t;
+
+static const struct {
+	const char	*name;
+	offset_t	offset;
+} pool_names[] = {
+	{ "ikev2_lspi_chain", offsetof(ikev2_sa_t, lspi_node) },
+	{ "ikev2_rhash_chain", offsetof(ikev2_sa_t, rhash_node) }
+};
 
 static volatile uint_t	half_open;	/* # of larval/half open IKEv2 SAs */
 static uint_t		num_buckets;	/* Use same value for all hashes */
@@ -79,13 +88,22 @@ static uu_list_pool_t	*list_pool[I2SA_NUM_HASH];
 static umem_cache_t	*i2sa_cache;
 
 
+#define	IKEV2_SA_HASH_SPI(spi) \
+    P2PHASE_TYPED((spi), num_buckets, uint64_t)
+
+#define	IKEV2_SA_RHASH(ss, spi) \
+    P2PHASE_TYPED(i2sa_rhash((ss), (spi)), num_buckets, uint64_t)
+
 static void	i2sa_init(ikev2_sa_t *);
 static uint32_t	i2sa_rhash(const struct sockaddr_storage *, uint64_t);
 
 static ikev2_sa_t *i2sa_verify(ikev2_sa_t *restrict, uint64_t,
-    const struct sockaddr_storage *, const struct sockaddr_storage *);
+    const struct sockaddr_storage *restrict,
+    const struct sockaddr_storage *restrict);
 static boolean_t i2sa_add_to_hash(int, ikev2_sa_t *);
-static void	i2sa_unlink(ikev2_sa_t *);
+
+static void i2sa_unlink(ikev2_sa_t *);
+static void i2sa_expire_cb(te_event_t, void *data);
 
 static void inc_half_open(void);
 static void dec_half_open(void);
@@ -107,8 +125,8 @@ ikev2_sa_get(uint64_t l_spi, uint64_t r_spi,
 	arg.lspi = l_spi;
 	arg.rspi = r_spi;
 	arg.init_pkt = init_pkt;
-	arg.laddr = l_addr;
-	arg.raddr = r_addr;
+	arg.laddr.sau_ss = (struct sockaddr_storage *)l_addr;
+	arg.raddr.sau_ss = (struct sockaddr_storage *)r_addr;
 
 	if (l_spi != 0) {
 		/*
@@ -155,7 +173,7 @@ ikev2_sa_get(uint64_t l_spi, uint64_t r_spi,
  */
 ikev2_sa_t *
 ikev2_sa_alloc(boolean_t initiator,
-    pkt_t *restrict init_pkt,
+    ikev2_pkt_t *restrict init_pkt,
     const struct sockaddr_storage *restrict laddr,
     const struct sockaddr_storage *restrict raddr)
 {
@@ -172,8 +190,8 @@ ikev2_sa_alloc(boolean_t initiator,
 
 	i2sa->flags |= (initiator) ? I2SA_INITIATOR : 0;
 
-	(void) memcpy(&i2sa->laddr, laddr, sizeof (*laddr));
-	(void) memcpy(&i2sa->raddr, raddr, sizeof (*raddr));
+	(void) memcpy(&i2sa->laddr, laddr, sizeof (i2sa->laddr));
+	(void) memcpy(&i2sa->raddr, raddr, sizeof (i2sa->raddr));
 
 	/* Get a random number for the local SPI that's currently unusued */
 	while (1) {
@@ -234,8 +252,10 @@ ikev2_sa_alloc(boolean_t initiator,
  * function.
  */
 static void
-i2sa_expire_cb(void *data)
+i2sa_expire_cb(te_event_t evt, void *data)
 {
+	NOTE(ARGUNUSED(evt))
+
 	ikev2_sa_t *i2sa = (ikev2_sa_t *)data;
 
 	/* XXX: todo */
@@ -309,6 +329,9 @@ ikev2_sa_set_hashsize(uint_t numbuckets)
 	int i, hashtbl;
 	boolean_t startup;
 
+	for (i = 0; i < I2SA_NUM_HASH; i++)
+		old[i] = hash[i];
+
 	if (old[LSPI] == NULL)
 		startup = B_TRUE;
 	else
@@ -319,7 +342,6 @@ ikev2_sa_set_hashsize(uint_t numbuckets)
 	/* round up to a power of two if not already */
 	if (!ISP2(numbuckets)) {
 		ASSERT(sizeof (numbuckets) == 4);
-
 		--numbuckets;
 		for (i = 1; i <= 16; i++)
 			numbuckets |= (numbuckets >> i);
@@ -327,11 +349,11 @@ ikev2_sa_set_hashsize(uint_t numbuckets)
 	}
 	VERIFY(ISP2(numbuckets));
 
-	for (i = 0; i < I2SA_NUM_BUCKETS; i++)
+	for (i = 0; i < I2SA_NUM_HASH; i++)
 		hash[i] = NULL;
 
 	/* Allocate new buckets */
-	for (i = 0; i < I2SA_NUM_BUCKETS; i++) {
+	for (i = 0; i < I2SA_NUM_HASH; i++) {
 		hash[i] = calloc(numbuckets, sizeof (i2sa_bucket_t));
 		if (hash[i] == NULL)
 			goto nomem;
@@ -343,10 +365,10 @@ ikev2_sa_set_hashsize(uint_t numbuckets)
 	flags |= UU_LIST_DEBUG;
 #endif
 
-	for (hashtbl = 0; hashtbl < I2SA_NUM_BUCKETS; hashtbl++) {
+	for (hashtbl = 0; hashtbl < I2SA_NUM_HASH; hashtbl++) {
 		for (i = 0; i < numbuckets; i++) {
 			hash[hashtbl][i].chain =
-			    uu_list_create(list_pool[hashtbl][i], NULL, flags);
+			    uu_list_create(list_pool[hashtbl], NULL, flags);
 			if (hash[hashtbl][i].chain == NULL)
 				goto nomem;
 
@@ -521,7 +543,7 @@ i2sa_add_to_hash(int hashtbl, ikev2_sa_t *i2sa)
 	I2SA_REFHOLD(i2sa);	/* ref for chain */
 	i2sa->bucket[hashtbl] = bucket;
 	uu_list_insert(bucket->chain, i2sa, idx);
-	VERIFY(pthead_mutex_unlock(&bucket->lock) == 0);
+	VERIFY(pthread_mutex_unlock(&bucket->lock) == 0);
 
 	return (B_TRUE);
 }
@@ -569,7 +591,7 @@ i2sa_hash_remove(int hashtbl, ikev2_sa_t *i2sa)
 {
 	i2sa_bucket_t *bucket;
 
-	VERIFY3S(hidx, <, I2SA_NUM_HASH);
+	VERIFY3S(hashtbl, <, I2SA_NUM_HASH);
 	ASSERT(MUTEX_HELD(i2sa));
 
 	/* We shouldn't be holding the lock if this is the last reference */
@@ -600,25 +622,21 @@ i2sa_rhash(const struct sockaddr_storage *ss, uint64_t spi)
 {
 	uint32_t rc = remote_noise;
 	const uint32_t *ptr = (const uint32_t *)&spi;
+	sockaddr_u_t ssu;
 
 	rc ^= ptr[0];
 	rc ^= ptr[1];
 
+	ssu.sau_ss = (struct sockaddr_storage *)ss;
 	if (ss->ss_family == AF_INET6) {
-		const struct sockaddr_sin6 *s6 =
-			(const struct sockaddr_sin6 *)ss;
-
-		ptr = (const uint32_t *)s6->sin6_addr;
+		ptr = (const uint32_t *)&ssu.sau_sin6->sin6_addr;
 		rc ^= ptr[0];
 		rc ^= ptr[1];
 		rc ^= ptr[2];
 		rc ^= ptr[3];
 	} else {
-		const struct sockaddr_sin *s4 =
-			(const struct sockaddr_sin *)ss;
-
 		ASSERT(ss->ss_family == AF_INET);
-		rc ^= s4->sin_addr.s_addr;
+		rc ^= ssu.sau_sin->sin_addr.s_addr;
 	}
 
 	return (rc);
@@ -659,7 +677,6 @@ static void
 i2sa_init(ikev2_sa_t *i2sa)
 {
 	uchar_t *zero_start;
-	size_t len;
 
 	zero_start = (uchar_t *)i2sa + I2SA_ZERO_OFFSET;
 	(void) memset(zero_start, 0, I2SA_ZERO_LEN);
@@ -674,8 +691,11 @@ i2sa_ctor(void *buf, void *dummy, int flags)
 	ikev2_sa_t *i2sa = (ikev2_sa_t *)&buf;
 
 	VERIFY(pthread_mutex_init(&i2sa->lock, NULL) == 0);
-	uu_list_node_init(buf, &i2sa->node_lspi, i2sa_list_pool);
-	uu_list_node_fini(buf, &i2sa->node_rhash, i2sa_list_pool);
+	for (size_t i = 0; i < ARRAY_SIZE(pool_names); i++) {
+		uu_list_node_init(buf,
+		    (uu_list_node_t *)((uchar_t *)buf + pool_names[i].offset),
+		    list_pool[i]);
+	}
 
 	i2sa_init(i2sa);
 	return (0);
@@ -689,18 +709,19 @@ i2sa_dtor(void *buf, void *dummy)
 	ikev2_sa_t *i2sa = (ikev2_sa_t *)buf;
 
 	VERIFY(pthread_mutex_destroy(&i2sa->lock) == 0);
-	uu_list_node_fini(buf, &i2sa->node_lspi, i2sa_list_pool);
-	uu_list_node_fini(buf, &i2sa->node_rhash, i2sa_list_pool);
+	for (size_t i = 0; i < I2SA_NUM_HASH; i++) {
+		uu_list_node_fini(buf,
+		    (uu_list_node_t *)((uchar_t *)buf + pool_names[i].offset),
+		    list_pool[i]);
+	}
 }
 
 static int
 sockaddr_compare(const struct sockaddr_storage *restrict l,
     const struct sockaddr_storage *restrict r)
 {
-	const struct sockaddr_in *l4 = (const struct sockaddr_in *)l;
-	const struct sockaddr_in *r4 = (const struct sockaddr_in *)r;
-	const struct sockaddr_in6 *l6 = (const struct sockaddr_in6 *)l;
-	const struct sockaddr_in6 *r6 = (const struct sockaddr_in6 *)r;
+	sockaddr_u_t lu;
+	sockaddr_u_t ru;
 	int cmp;
 
 	if (l->ss_family > r->ss_family)
@@ -708,31 +729,36 @@ sockaddr_compare(const struct sockaddr_storage *restrict l,
 	if (l->ss_family < r->ss_family)
 		return (-1);
 
+	lu.sau_ss = (struct sockaddr_storage *)l;
+	ru.sau_ss = (struct sockaddr_storage *)r;
+
 	if (l->ss_family == AF_INET) {
-		cmp = memcmp(l4->sin_addr, r4->sin_addr, XX);
+		cmp = memcmp(&lu.sau_sin->sin_addr, &ru.sau_sin->sin_addr,
+		    sizeof (lu.sau_sin->sin_addr));
 		if (cmp > 0)
 			return (1);
 		if (cmp < 0)
 			return (-1);
 
-		if (l4->sin_port > r4->sin_port)
+		if (lu.sau_sin->sin_port > ru.sau_sin->sin_port)
 			return (1);
-		if (l4->sin_port < r4->sin_port)
+		if (lu.sau_sin->sin_port < ru.sau_sin->sin_port)
 			return (-1);
 		return (0);
 	}
 
 	ASSERT(l->ss_family == AF_INET6);
 
-	cmp = memcmp(l6->sin6_addr, r6->sin6_addr, XX);
+	cmp = memcmp(&lu.sau_sin6->sin6_addr, &ru.sau_sin6->sin6_addr,
+	    sizeof (lu.sau_sin6->sin6_addr));
 	if (cmp > 0)
 		return (1);
 	if (cmp < 0)
 		return (-1);
 
-	if (l6->sin6_port > r6->sin6_port)
+	if (lu.sau_sin6->sin6_port > ru.sau_sin6->sin6_port)
 		return (1);
-	if (l6->sin6_port < r6->sin6_port)
+	if (lu.sau_sin6->sin6_port < ru.sau_sin6->sin6_port)
 		return (-1);
 	return (0);
 }
@@ -745,10 +771,10 @@ sockaddr_compare(const struct sockaddr_storage *restrict l,
  * spot, rarg will be the IKEv2 SA to insert to determine its location.
  */
 static int
-i2sa_compare(void *larg, void *rarg, void *arg)
+i2sa_compare(const void *larg, const void *rarg, void *arg)
 {
-	ikev2_sa_t *l = (ikev2_sa_t *)larg;
-	ikev2_sa_t *r = (ikev2_sa_t *)rarg;
+	const ikev2_sa_t *l = (const ikev2_sa_t *)larg;
+	const ikev2_sa_t *r = (const ikev2_sa_t *)rarg;
 	i2sa_cmp_arg_t *carg = (i2sa_cmp_arg_t *)arg;
 	uint64_t spi;
 	const buf_t *lbuf, *rbuf;
@@ -793,7 +819,7 @@ i2sa_compare(void *larg, void *rarg, void *arg)
 
 	/* more likely to be different, so check these first */
 	cmp = sockaddr_compare(&l->raddr,
-	    (r != NULL) ? &r->raddr : carg->raddr);
+	    (r != NULL) ? &r->raddr : carg->raddr.sau_ss);
 	if (cmp > 0)
 		return (1);
 	if (cmp < 0)
@@ -801,7 +827,7 @@ i2sa_compare(void *larg, void *rarg, void *arg)
 
 	/* a multihomed system might have different local addresses */
         cmp = sockaddr_compare(&l->laddr,
-	    (r != NULL) ? &r->laddr : carg->raddr);
+	    (r != NULL) ? &r->laddr : carg->raddr.sau_ss);
 	if (cmp > 0)
 		return (1);
 	if (cmp < 0)
@@ -815,16 +841,16 @@ i2sa_compare(void *larg, void *rarg, void *arg)
 	 * only time the local SPI is not yet known.
 	 */
 	if (r != NULL) {
-		if (r->init_pkt != NULL)
-			rbuf = &r->init_pkt->buf;
+		if (r->init != NULL)
+			rbuf = &r->init->buf;
 		else
 			rbuf = NULL;
 	} else {
 		rbuf = carg->init_pkt;
 	}
 
-	if (l->init_pkt != NULL)
-		lbuf = &l->init_pkt->buf;
+	if (l->init != NULL)
+		lbuf = &l->init->buf;
 	else
 		lbuf = NULL;
 
@@ -834,25 +860,21 @@ i2sa_compare(void *larg, void *rarg, void *arg)
 void
 ikev2_sa_init(void)
 {
-	const char *pool_names[] = {
-		"ikev2_lspi_chain",
-		"ikev2_rhash_chain",
-		NULL
-	};
 	uint32_t flag = UU_LIST_SORTED;
 
-	VERIFY((i2sa_cache = umem_cache_create("IKEv2 SAs",
-	    sizeof (ikev2_sa_t), i2sa_ctor, i2sa_dtor, NULL, NULL, NULL,
-	    0)) != NULL);
+	if ((i2sa_cache = umem_cache_create("IKEv2 SAs", sizeof (ikev2_sa_t),
+	    0, i2sa_ctor, i2sa_dtor, NULL, NULL, NULL, 0)) == NULL)
+		EXIT_FATAL("Unable to allocate IKEv2 SA cache");
 
 #ifdef DEBUG
 	flag |= UU_LIST_POOL_DEBUG;
 #endif
 
-	for (int i = 0; i < I2SA_NUM_HASH; i++) {
-		list_pool[i] = uu_list_pool_create(pool_names[i],
-		    sizeof (ikev2_sa_t), i2sa_ctor, i2sa_dtor, NULL, NULL,
-		    NULL, 0);
+	for (int i = 0; i < ARRAY_SIZE(pool_names); i++) {
+		list_pool[i] = uu_list_pool_create(pool_names[i].name,
+		    sizeof (ikev2_sa_t), pool_names[i].offset, i2sa_compare,
+		    flag);
+
 		if (list_pool[i] != NULL)
 			EXIT_FATAL("Unable to allocate IKEv2 SA hash chains");
 	}

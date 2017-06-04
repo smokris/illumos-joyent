@@ -105,3 +105,50 @@ buf_cmp(const buf_t *restrict l, const buf_t *restrict r)
 		return (-1);
 	return (0);
 }
+
+boolean_t
+buf_put8(buf_t *buf, uint8_t val)
+{
+	if (buf->len < sizeof (uint8_t))
+		return (B_FALSE);
+
+	*(buf->ptr++) = val;
+	buf->len -= sizeof (uint8_t);
+	return (B_TRUE);
+}
+
+boolean_t
+buf_put64(buf_t *buf, uint64_t val)
+{
+	if (buf->len < sizeof (uint64_t))
+		return (B_FALSE);
+
+	ASSERT3U(buf->len, >=, sizeof (uint64_t));
+	*(buf->ptr++) = (uchar_t)((val >> 56) & 0xffLL);
+	*(buf->ptr++) = (uchar_t)((val >> 48) & 0xffLL);
+	*(buf->ptr++) = (uchar_t)((val >> 40) & 0xffLL);
+	*(buf->ptr++) = (uchar_t)((val >> 32) & 0xffLL);
+	*(buf->ptr++) = (uchar_t)((val >> 24) & 0xffLL);
+	*(buf->ptr++) = (uchar_t)((val >> 16) & 0xffLL);
+	*(buf->ptr++) = (uchar_t)((val >> 8) & 0xffLL);
+	*(buf->ptr++) = (uchar_t)(val & 0xffLL);
+	buf->len -= sizeof (uint64_t);
+	return (B_TRUE);
+}
+
+boolean_t
+buf_put32(buf_t *buf, uint32_t val)
+{
+	if (buf->len < sizeof (uint32_t))
+		return (B_FALSE);
+	*(buf->ptr++) = (uchar_t)((val >> 24) & (uint32_t)0xff);
+	*(buf->ptr++) = (uchar_t)((val >> 16) & (uint32_t)0xff);
+	*(buf->ptr++) = (uchar_t)((val >> 8) & (uint32_t)0xff);
+	*(buf->ptr++) = (uchar_t)(val & (uint32_t)0xffLL);
+	buf->len -= sizeof (uint32_t);
+	return (B_TRUE);
+}
+
+extern void buf_dup(buf_t * restrict dest, buf_t * restrict src);
+extern void buf_advance(buf_t *buf, size_t amt);
+

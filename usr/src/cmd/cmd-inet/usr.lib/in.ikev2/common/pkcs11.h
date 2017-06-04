@@ -91,6 +91,8 @@ typedef struct {
 	size_t			key_sz;
 } auth_param_t;
 
+extern __thread CK_SESSION_HANDLE p11s;
+
 /* PKCS#11 functions. */
 void pkcs11_global_init(void);
 void pkcs11_global_fini(void);

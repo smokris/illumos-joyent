@@ -26,7 +26,7 @@
  * Copyright 2014 Jason King.  All rights reserved.
  */
 
-#ifdef _PKT_H
+#ifndef _PKT_H
 #define	_PKT_H
 
 #include <sys/types.h>
@@ -37,9 +37,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-#define IKEV2_STD_PAYLOADS      16
-#define IKEV2_PAYLOAD_START     33
 
 struct ikev2_sa;
 struct pkt;
@@ -63,6 +60,7 @@ struct pkt_stack {
 };
 #define	PKT_STACK_DEPTH	6
 
+#define	MAX_PACKET_SIZE	8192
 struct pkt {
 	struct ikev2_sa	*sa;	/* NOT refheld */
 
@@ -71,7 +69,7 @@ struct pkt {
 			 * payloads that can appear multiple times,
 			 * this is the first payload of that type.
 			 */
-	uchar_t		*payloads[IKEV2_STD_PAYLOADS];
+	uchar_t		*payloads[IKE_NUM_PAYLOADS];
 
 			/* Copy of ISAKMP header in local byte order */
 	ike_header_t	header;
@@ -85,40 +83,28 @@ struct pkt {
 
 	struct pkt_stack	stack[PKT_STACK_DEPTH];
 	uint_t			stksize;
+
+	uint32_t	msgid;
+	size_t		length;
 };
 
-#define	IKEV2_PAYLOAD_PTR(pkt, num) \
-	((pkt)->payloads[(num) - IKEV2_PAYLOAD_START])
-
-#define	INBOUND_LOCAL_SPI(hdr) \
-	(((hdr)->flags == IKEV2_FLAG_INITIATOR) ? \
-	    (hdr)->responder_spi : (hdr)->initiator_spi)
-#define	INBOUND_REMOTE_SPI(hdr) \
-	(((hdr)->flags == IKEV2_FLAG_INITIATOR) ? \
-	    (hdr)->initiator_spi : (hdr)->reasponder_spi)
+#define	PKT_PAY_START(pkt) ((uchar_t *)&(pkt)->raw + sizeof (ike_header_t))
+#define	PKT_REMAINING(pkt) ((pkt)->buf.len)
 
 void pkt_init(void);
 void pkt_fini(void);
 
-boolean_t ikev2_add_auth(pkt_t *restrict, int /* type */, const buf_t *restrict /* data */);
-boolean_t ikev2_add_nonce(pkt_t *restrict, const buf_t *restrict /* data */);
-boolean_t ikev2_add_notify(pkt_t *restrict, int /* proto */, int /* spi size */, int /* type */, uint32_t /* spi */, const buf_t *restrict /* data */);
+typedef enum pkt_walk_ret {
+	PKT_WALK_ERROR	= -1,
+	PKT_WALK_OK	= 0,
+	PKT_WALK_STOP	= 1
+} pkt_walk_ret_t;
 
-boolean_t ikev2_add_delete(pkt_t *, int /* spis size */, size_t /* num spi */, ...);
-boolean_t ikev2_add_delete_spi(pkt_t *, uint64_t);
-
-boolean_t ikev2_add_vendor(pkt_t *restrict, const buf_t *restrict);
-
-boolean_t ikev2_add_ts_i(pkt_t *);
-boolean_t ikev2_add_ts_r(pkt_t *);
-boolean_t ikev2_add_ts(pkt_t *restrict, int /* type */, int /* proto */, const sockaddr_u_t *restrict /* start */, const sockaddr_u_t *restrict /* end */);
-
-boolean_t ikev2_add_sk(pkt_t *);
-
-boolean_t ikev2_add_config(pkt_t *restrict, int /* type */);
-boolean_t ikev2_add_config_attr(pkt_t *restrict, int /* type */, ... /*val */);
-
-boolean_t ikev2_add_eap(pkt_t *restrict, const buf_t *restrict);
+/* payload type, payload, cookie */
+typedef pkt_walk_ret_t (*pkt_walk_fn_t)(uint8_t, buf_t *restrict,
+    void *restrict);
+pkt_walk_ret_t pkt_payload_walk(buf_t *restrict, pkt_walk_fn_t, void *restrict);
+void pkt_free(pkt_t *);
 
 #ifdef __cplusplus
 }

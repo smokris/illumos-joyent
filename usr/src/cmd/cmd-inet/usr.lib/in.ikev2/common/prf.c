@@ -17,6 +17,7 @@
 #include <umem.h>
 #include <limits.h>
 #include <string.h>
+#include "defs.h"
 #include "ikev2.h"
 #include "prf.h"
 
@@ -119,7 +120,6 @@ prf_genkey(int alg, buf_t *restrict src, size_t n,
 		 * the block size).
 		 */
 		CK_MECHANISM	hashmech = { algp->hash, NULL_PTR, 0 };
-		size_t		outlen;
 
 		rc = C_DigestInit(p11s, &hashmech);
 		if (rc != CKR_OK)
@@ -226,7 +226,7 @@ prfplus_init(prfp_t *restrict prfp, int alg, CK_OBJECT_HANDLE key,
 	 * the first points to either prfp->tbuf[0] or prfp->tbuf[1], based
 	 * on the value of prfp->n
 	 */
-	BUF_DUP(&prfp->prf_arg[1], &prfp->seed);
+	buf_dup(&prfp->prf_arg[1], &prfp->seed);
 	prfp->prf_arg[2].ptr = &prfp->n;
 	prfp->prf_arg[2].len = sizeof (prfp->n);
 	prfp->n = 1;
@@ -248,7 +248,7 @@ error:
 /*
  * Fill out with the result of the prf+ function.
  */
-static CK_RV
+CK_RV
 prfplus(prfp_t *restrict prfp, buf_t *restrict out)
 {
 	const prf_alg_t	*algp;
@@ -259,7 +259,7 @@ prfplus(prfp_t *restrict prfp, buf_t *restrict out)
 	algp = get_alg(prfp->i2alg);
 
 	/* generate a local cache of out so we can manipulate the ptr and len */
-	BUF_DUP(&outcopy, out);
+	buf_dup(&outcopy, out);
 
 	while (outcopy.len > 0) {
 		size_t chunk;
@@ -267,9 +267,9 @@ prfplus(prfp_t *restrict prfp, buf_t *restrict out)
 		chunk = outcopy.len;
 
 		if (prfp->n & 0x01)
-			BUF_DUP(&t, &prfp->tbuf[1]);
+			buf_dup(&t, &prfp->tbuf[1]);
 		else
-			BUF_DUP(&t, &prfp->tbuf[0]);
+			buf_dup(&t, &prfp->tbuf[0]);
 
 		t.ptr += prfp->pos;
 		t.len -= prfp->pos;
@@ -284,7 +284,7 @@ prfplus(prfp_t *restrict prfp, buf_t *restrict out)
 			chunk = t.len;
 
 		VERIFY(buf_copy(&outcopy, &t, chunk) == chunk);
-		BUF_ADVANCE(&outcopy, chunk);
+		buf_advance(&outcopy, chunk);
 		prfp->pos += chunk;
 	}
 
@@ -309,10 +309,10 @@ prfplus_update(prfp_t *prfp)
 	}
 
 	if (++prfp->n & 0x01) {
-		BUF_DUP(&prfp->prf_arg[0], &prfp->tbuf[1]);
+		buf_dup(&prfp->prf_arg[0], &prfp->tbuf[1]);
 		dest = &prfp->tbuf[0];
 	} else {
-		BUF_DUP(&prfp->prf_arg[0], &prfp->tbuf[0]);
+		buf_dup(&prfp->prf_arg[0], &prfp->tbuf[0]);
 		dest = &prfp->tbuf[1];
 	}
 
@@ -347,9 +347,12 @@ ikev2_prf_to_p11(int prf)
 		return (CKM_SHA384_HMAC);
 	case IKEV2_XFORMPRF_HMAC_SHA2_512:
 		return (CKM_SHA512_HMAC);
-	default:
-		VERIFY(0);
 	}
+
+	INVALID("invalid hmac value");
+
+	/*NOTREACHED*/
+	return (0);
 }
 
 size_t

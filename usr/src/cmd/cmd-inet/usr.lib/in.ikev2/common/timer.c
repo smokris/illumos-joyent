@@ -29,10 +29,15 @@
 #include <port.h>
 #include <string.h>
 #include <sys/types.h>
-#include <libuutil.h>
 #include <sys/debug.h>
 #include <umem.h>
+#include <stddef.h>
+#include <locale.h>
+#include <libuutil.h>
+#include <ipsec_util.h>
+#include <note.h>
 
+#include "defs.h"
 #include "timer.h"
 
 typedef struct tevent_s {
@@ -41,7 +46,7 @@ typedef struct tevent_s {
 	hrtime_t	time;	/* When does the event go off */
 	te_event_t	type;	/* Event type */
 
-	void		tevent_cb_fn;
+	tevent_cb_fn	fn;
 	void		*arg;
 } tevent_t;
 
@@ -56,10 +61,10 @@ static uu_list_pool_t 		*timer_pools;
 static __thread uu_list_t	*timer_list;
 static umem_cache_t		*evt_cache;
 
-static int te_compare(void *, void *, void *);
+static int te_compare(const void *,const void *, void *);
 
 static tevent_t *tevent_alloc(te_event_t, hrtime_t, tevent_cb_fn, void *);
-static void tevent_free(teven_t *);
+static void tevent_free(tevent_t *);
 static int evt_ctor(void *, void *, int);
 static void evt_dtor(void *, void *);
 
@@ -82,9 +87,9 @@ ike_timer_init(void)
 	if (timer_pools == NULL)
 		EXIT_FATAL("Unable to allocate memory for timer event lists");
 
-	evt_cache = umem_cache_create("timer events", sizeof (tevent_t),
-	    sizeof (size_t), evt_ctor, evt_dtor, NULL, NULL, 0);
-	if (evt_pools == NULL)
+	evt_cache = umem_cache_create("timer events", sizeof (tevent_t), 0,
+	    evt_ctor, evt_dtor, NULL, NULL, NULL, 0);
+	if (evt_cache == NULL)
 		EXIT_FATAL("Unable to allocate memory for timer event entries");
 
 #ifdef DEBUG
@@ -104,7 +109,8 @@ ike_timer_thread_init(void)
 	flg |= UU_LIST_DEBUG;
 #endif
 
-	VERIFY((timer_list = uu_list_create(timer_pool, NULL, flg)) != NULL);
+	if ((timer_list = uu_list_create(timer_pools, NULL, flg)) == NULL)
+		EXIT_FATAL("Unable to allocate timer event lists");
 
 #ifdef DEBUG
 	timer_thr_is_init = B_TRUE;
@@ -133,9 +139,12 @@ process_timer(timespec_t *next_time)
 		now = gethrtime();
 
 		if ((te = TIMER_HEAD) == NULL) {
+/* XXX: change to config value */
+#define thread_timeout 10
 			next_time->tv_sec = thread_timeout;
 			next_time->tv_nsec = 0;
 			return;
+#undef thread_timeout
 		}
 
 		if (te->time > now) {
@@ -148,7 +157,7 @@ process_timer(timespec_t *next_time)
 		}
 
 		/* dispatch timeouts */
-		uu_list_walk(timer_list, dispatch_cb, *now, UU_WALK_ROBUST);	
+		uu_list_walk(timer_list, dispatch_cb, &now, UU_WALK_ROBUST);	
 	}
 }
 
@@ -165,7 +174,7 @@ dispatch_cb(void *elem, void *arg)
 	uu_list_remove(timer_list, elem);
 	tevent_free(te);
 
-	return (UU_WALK_CONTINUE);	
+	return (UU_WALK_NEXT);	
 }
 
 typedef struct cancel_arg_s {
@@ -204,14 +213,13 @@ cancel_cb(void *elem, void *arg)
 		tevent_free(te);
 		carg->n++;
 	}
-	return (UU_WALK_CONTINUE);
+	return (UU_WALK_NEXT);
 }
 
 boolean_t
 schedule_timeout(te_event_t type, tevent_cb_fn fn, void *arg, hrtime_t val)
 {
-	tevent_t *te; = tevent_alloc(type, val, fn, arg);
-	tevent_t *node;
+	tevent_t *te = tevent_alloc(type, val, fn, arg);
 	uu_list_index_t idx;
 
 	ASSERT(timer_is_init);
@@ -228,10 +236,11 @@ schedule_timeout(te_event_t type, tevent_cb_fn fn, void *arg, hrtime_t val)
 }
 
 static int
-te_compare(void *la, void *ra, void *dummy)
+te_compare(const void *la, const void *ra, void *dummy)
 {
-	tevent_t *l = (tevent_t *)la;
-	tevent_t *r = (tevent_t *)ra;
+	NOTE(ARGUNUSED(dummy))
+	const tevent_t *l = (tevent_t *)la;
+	const tevent_t *r = (tevent_t *)ra;
 
 	if (l->time > r->time)
 		return (1);
@@ -257,7 +266,7 @@ tevent_alloc(te_event_t type, hrtime_t dur, tevent_cb_fn fn, void *arg)
 }
 
 static void
-tevent_free(teven_t *te)
+tevent_free(tevent_t *te)
 {
 	if (te == NULL)
 		return;

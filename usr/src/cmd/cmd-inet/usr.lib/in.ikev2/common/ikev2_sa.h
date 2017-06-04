@@ -37,6 +37,7 @@
 #include <stddef.h>
 #include <security/cryptoki.h>
 #include <atomic.h>
+#include <pthread.h>
 #include <libuutil.h>
 
 #include "ikev2.h"
@@ -48,14 +49,15 @@ extern "C" {
 
 struct ikev2_sa;
 struct ikev2_child_sa;
-struct ikev2_pkt;
-struct i2sa_bucket_s;
+struct i2sa_bucket;
+struct pkt;
+struct buf;
 
 #ifndef IKEV2_SA_T
 #define	IKEV2_SA_T
 typedef struct ikev2_sa ikev2_sa_t;
 typedef struct ikev2_child_sa ikev2_child_sa_t;
-typedef struct i2sa_bucket_s i2sa_bucket_t;
+typedef struct i2sa_bucket i2sa_bucket_t;
 #endif /* IKEV2_SA_T */
 
 #define	I2SA_NUM_HASH	2	/* The number of IKEv2 SA hashes we have */
@@ -85,7 +87,7 @@ struct ikev2_sa {
 	 * Fields that will be zeroed out before returning to the umem_cache
 	 * start here
 	 */
-#define	I2SA_ZERO_START	hash
+#define	I2SA_ZERO_START	bucket
 			/* Link to the bucket we are in for each hash */
 	i2sa_bucket_t	*bucket[I2SA_NUM_HASH];
 
@@ -167,8 +169,8 @@ struct ikev2_child_sa {
 extern ikev2_sa_t *ikev2_sa_get(uint64_t, uint64_t,
     const struct sockaddr_storage *restrict,
     const struct sockaddr_storage *restrict,
-    const buf_t *restrict);
-extern ikev2_sa_t *ikev2_sa_alloc(boolean_t, pkt_t *restrict,
+    const struct buf *restrict);
+extern ikev2_sa_t *ikev2_sa_alloc(boolean_t, struct pkt *restrict,
     const struct sockaddr_storage *restrict,
     const struct sockaddr_storage *restrict);
 

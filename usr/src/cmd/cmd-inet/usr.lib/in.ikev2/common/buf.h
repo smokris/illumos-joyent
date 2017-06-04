@@ -13,52 +13,48 @@
  * Copyright 2014 Jason King.
  */
 
-#ifndef _IKEV2_BUF_H
-#define	_IKEV2_BUF_H
+#ifndef _BUF_H
+#define	_BUF_H
 
 #include <sys/types.h>
+#include <sys/debug.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+struct buf;
+
 #ifndef _BUF_T
 #define	_BUF_T
-struct buf_s;
-typedef struct buf_s buf_t;
-
-#if 0
-struct buf_s {
-	buf_t		*parent;
-	char		*ptr;
-	size_t		len;
-	size_t		alloc;
-	boolean_t	grow;
-	boolean_t	eof;
-};
+typedef struct buf buf_t;
 #endif
 
-struct buf_s {
+struct buf {
 	uchar_t	*ptr;
 	ulong_t	len;	/* equiv. to size_t, but this makes pkcs11 happy */
 };
-#define	BUF_DUP(_dest, _src)			\
-	do {					\
-		(_dest)->ptr = (_src)->ptr;	\
-		(_dest)->len = (_src)->len;	\
-	} while (0)
 
-#define	BUF_ADVANCE(_buf, _n)			\
-	do {					\
-		VERIFY((_buf)->len >= (_n));	\
-		(_buf)->ptr += (_n);		\
-		(_buf)->len -= (_n);		\
-	} while (0)
+inline void
+buf_dup(buf_t * restrict dest, buf_t * restrict src)
+{
+	dest->ptr = src->ptr;
+	dest->len = src->len;
+}
+
+inline void
+buf_advance(buf_t *buf, size_t amt)
+{
+	VERIFY(buf->len >= amt);
+	buf->ptr += amt;
+	buf->len -= amt;
+}
 
 #define	STRUCT_TO_BUF(st) \
-	{ .ptr = &(st), .len = sizeof ((st)) }
-	
-#endif /* _BUF_T */
+	{ .ptr = (uchar_t *)&(st), .len = sizeof ((st)) }
+
+#define	BUF_INIT_BUF(b) \
+	{ .ptr = (b)->ptr, .len = (b)->len }
 
 size_t		buf_copy(buf_t * restrict, const buf_t * restrict, size_t);
 void		buf_clear(buf_t *);
@@ -68,6 +64,10 @@ boolean_t	buf_alloc(buf_t *, size_t);
 void		buf_free(buf_t *);
 
 int		buf_cmp(const buf_t *restrict, const buf_t *restrict);
+
+boolean_t	buf_put8(buf_t *, uint8_t);
+boolean_t	buf_put32(buf_t *, uint32_t);
+boolean_t	buf_put64(buf_t *, uint64_t);
 
 #if 0
 void		buf_init(buf_t *, char *, size_t, size_t, boolean_t);
@@ -91,4 +91,4 @@ size_t		buf_append(char *, size_t, buf_t *);
 }
 #endif
 
-#endif /* _IKEV2_BUF_H */
+#endif /* _BUF_H */

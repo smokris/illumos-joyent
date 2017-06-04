@@ -26,26 +26,7 @@ extern "C" {
 #define	__packed __attribute__((packed))
 
 #define	IKEV2_VERSION		0x20	/* IKE version 2.0 */
-#define	IKEV1_VERSION		0x10	/* IKE version 1.0 */
-
 #define	IKEV2_KEYPAD		"Key Pad for IKEv2"	/* don't change! */
-
-/*
- * IKEv2 pseudo states
- */
-
-#define	IKEV2_STATE_INIT		0	/* new IKE SA */
-#define	IKEV2_STATE_COOKIE		1	/* cookie requested */
-#define	IKEV2_STATE_SA_INIT		2	/* init IKE SA */
-#define	IKEV2_STATE_EAP			3	/* EAP requested */
-#define	IKEV2_STATE_AUTH_REQUEST	4	/* auth received */
-#define	IKEV2_STATE_AUTH_SUCCESS	5	/* authenticated */
-#define	IKEV2_STATE_VALID		6	/* validated peer certs */
-#define	IKEV2_STATE_EAP_VALID		7	/* EAP validated */
-#define	IKEV2_STATE_ESTABLISHED		8	/* active IKE SA */
-#define	IKEV2_STATE_CLOSED		9	/* delete this SA */
-
-extern struct iked_constmap ikev2_state_map[];
 
 /*
  * "IKEv2 Parameters" based on the official RFC-based assignments by IANA
@@ -57,20 +38,18 @@ extern struct iked_constmap ikev2_state_map[];
  */
 
 /* IKEv2 exchange types */
-#define	IKEV2_EXCHANGE_IKE_SA_INIT		34	/* Initial Exchange */
-#define	IKEV2_EXCHANGE_IKE_AUTH			35	/* Authentication */
-#define	IKEV2_EXCHANGE_CREATE_CHILD_SA		36	/* Create Child SA */
-#define	IKEV2_EXCHANGE_INFORMATIONAL		37	/* Informational */
-#define	IKEV2_EXCHANGE_IKE_SESSION_RESUME	38	/* RFC5723 */
-
-extern struct iked_constmap ikev2_exchange_map[];
+typedef enum ikev2_exch_e {
+	IKEV2_EXCH_IKE_SA_INIT		= 34,
+	IKEV2_EXCH_IKE_AUTH		= 35,
+	IKEV2_EXCH_CREATE_CHILD_SA	= 36,
+	IKEV2_EXCH_INFORMATIONAL	= 37,
+	IKEV2_EXCH_IKE_SESSION_RESUME	= 38
+} ikev2_exch_t;
 
 /* IKEv2 message flags */
 #define	IKEV2_FLAG_INITIATOR	0x08	/* Sent by the initiator */
-#define	IKEV2_FLAG_OLDVERSION	0x10	/* Supports a higher IKE version */
+#define	IKEV2_FLAG_VERSION	0x10	/* Supports a higher IKE version */
 #define	IKEV2_FLAG_RESPONSE	0x20	/* Message is a response */
-
-extern struct iked_constmap ikev2_flag_map[];
 
 /*
  * IKEv2 payloads
@@ -103,94 +82,93 @@ struct ikev2_payload {
 #define	IKEV2_PAYLOAD_EAP	48	/* Extensible Authentication */
 #define	IKEV2_PAYLOAD_GSPM	49	/* RFC6467 Generic Secure Password */
 
-extern struct iked_constmap ikev2_payload_map[];
-
+#define	IEKV2_PAYLOAD_MIN	IKEV2_PAYLOAD_SA
+#define	IKEV2_PAYLOAD_MAX	IKEV2_PAYLOAD_GSPM
+#define	IKEV2_NUM_PAYLOADS	(IKEV2_PAYLOAD_MAX - IKEV2_PAYLOAD_MIN + 1)
 /*
  * SA payload
  */
 
 struct ikev2_sa_proposal {
-	uint8_t		sap_more;		/* Last proposal or more */
-	uint8_t		sap_reserved;		/* Must be set to zero */
-	uint16_t	sap_length;		/* Proposal length */
-	uint8_t		sap_proposalnr;	/* Proposal number */
-	uint8_t		sap_protoid;		/* Protocol Id */
-	uint8_t		sap_spisize;		/* SPI size */
-	uint8_t		sap_transforms;	/* Number of transforms */
+	uint8_t		proto_more;		/* Last proposal or more */
+	uint8_t		proto_reserved;		/* Must be set to zero */
+	uint16_t	proto_length;		/* Proposal length */
+	uint8_t		proto_proposalnr;	/* Proposal number */
+	uint8_t		proto_protoid;		/* Protocol Id */
+	uint8_t		proto_spisize;		/* SPI size */
+	uint8_t		proto_transforms;	/* Number of transforms */
 	/* Followed by variable-length SPI */
 	/* Followed by variable-length transforms */
 } __packed;
 
-#define	IKEV2_SAP_LAST	0
-#define	IKEV2_SAP_MORE	2
+#define	IKEV2_PROP_LAST	0
+#define	IKEV2_PROP_MORE	2
 
-#define	IKEV2_SAPROTO_NONE		0	/* None */
-#define	IKEV2_SAPROTO_IKE		1	/* IKEv2 */
-#define	IKEV2_SAPROTO_AH		2	/* AH */
-#define	IKEV2_SAPROTO_ESP		3	/* ESP */
-#define	IKEV2_SAPROTO_FC_ESP_HEADER	4	/* RFC4595 */
-#define	IKEV2_SAPROTO_FC_CT_AUTH	5	/* RFC4595 */
-
-extern struct iked_constmap ikev2_saproto_map[];
+typedef enum ikev2_spi_proto_e {
+	IKEV2_PROTO_NONE		= 0,	/* None */
+	IKEV2_PROTO_IKE			= 1,	/* IKEv2 */
+	IKEV2_PROTO_AH			= 2,	/* AH */
+	IKEV2_PROTO_ESP			= 3,	/* ESP */
+	IKEV2_PROTO_FC_ESP_HEADER	= 4,	/* RFC4595 */
+	IKEV2_PROTO_FC_CT_AUTH		= 5	/* RFC4595 */
+} ikev2_spi_proto_t;
 
 struct ikev2_transform {
-	uint8_t		xfrm_more;		/* Last transform or more */
-	uint8_t		xfrm_reserved;		/* Must be set to zero */
-	uint16_t	xfrm_length;		/* Transform length */
-	uint8_t		xfrm_type;		/* Transform type */
-	uint8_t		xfrm_reserved1;		/* Must be set to zero */
-	uint16_t	xfrm_id;		/* Transform Id */
+	uint8_t		xf_more;		/* Last transform or more */
+	uint8_t		xf_reserved;		/* Must be set to zero */
+	uint16_t	xf_length;		/* Transform length */
+	uint8_t		xf_type;		/* Transform type */
+	uint8_t		xf_reserved1;		/* Must be set to zero */
+	uint16_t	xf_id;		/* Transform Id */
 	/* Followed by variable-length transform attributes */
 } __packed;
 
-#define	IKEV2_XFORM_LAST		0
-#define	IKEV2_XFORM_MORE		3
+#define	IKEV2_XF_LAST		0
+#define	IKEV2_XF_MORE		3
 
-#define	IKEV2_XFORMTYPE_ENCR		1	/* Encryption */
-#define	IKEV2_XFORMTYPE_PRF		2	/* Pseudo-Random Function */
-#define	IKEV2_XFORMTYPE_INTEGR		3	/* Integrity Algorithm */
-#define	IKEV2_XFORMTYPE_DH		4	/* Diffie-Hellman Group */
-#define	IKEV2_XFORMTYPE_ESN		5	/* Extended Sequence Numbers */
-#define	IKEV2_XFORMTYPE_MAX		6
+typedef enum ikev2_xf_type_e {
+	IKEV2_XF_ENCR	= 1,	/* Encryption */
+	IKEV2_XF_PRF	= 2,	/* Pseudo-Random Function */
+	IKEV2_XF_AUTH	= 3,	/* Integrity Algorithm */
+	IKEV2_XF_DH	= 4,	/* Diffie-Hellman Group */
+	IKEV2_XF_ESN	= 5	/* Extended Sequence Numbers */
+} ikev2_xf_type_t;
+#define	IKEV2_XF_MAX		6
 
-extern struct iked_constmap ikev2_xformtype_map[];
-
-#define	IKEV2_XFORMENCR_NONE		0	/* None */
-#define	IKEV2_XFORMENCR_DES_IV64	1	/* RFC1827 */
-#define	IKEV2_XFORMENCR_DES		2	/* RFC2405 */
-#define	IKEV2_XFORMENCR_3DES		3	/* RFC2451 */
-#define	IKEV2_XFORMENCR_RC5		4	/* RFC2451 */
-#define	IKEV2_XFORMENCR_IDEA		5	/* RFC2451 */
-#define	IKEV2_XFORMENCR_CAST		6	/* RFC2451 */
-#define	IKEV2_XFORMENCR_BLOWFISH	7	/* RFC2451 */
-#define	IKEV2_XFORMENCR_3IDEA		8	/* RFC2451 */
-#define	IKEV2_XFORMENCR_DES_IV32	9	/* DESIV32 */
-#define	IKEV2_XFORMENCR_RC4		10	/* RFC2451 */
-#define	IKEV2_XFORMENCR_NULL		11	/* RFC2410 */
-#define	IKEV2_XFORMENCR_AES_CBC		12	/* RFC3602 */
-#define	IKEV2_XFORMENCR_AES_CTR		13	/* RFC3664 */
-#define	IKEV2_XFORMENCR_AES_CCM_8	14	/* RFC5282 */
-#define	IKEV2_XFORMENCR_AES_CCM_12	15	/* RFC5282 */
-#define	IKEV2_XFORMENCR_AES_CCM_16	16	/* RFC5282 */
-#define	IKEV2_XFORMENCR_AES_GCM_8	18	/* RFC5282 */
-#define	IKEV2_XFORMENCR_AES_GCM_12	19	/* RFC5282 */
-#define	IKEV2_XFORMENCR_AES_GCM_16	20	/* RFC5282 */
-#define	IKEV2_XFORMENCR_NULL_AES_GMAC	21	/* RFC4543 */
-#define	IKEV2_XFORMENCR_XTS_AES		22	/* IEEE P1619 */
-#define	IKEV2_XFORMENCR_CAMELLIA_CBC	23	/* RFC5529 */
-#define	IKEV2_XFORMENCR_CAMELLIA_CTR	24	/* RFC5529 */
-#define	IKEV2_XFORMENCR_CAMELLIA_CCM_8	25	/* RFC5529 */
-#define	IKEV2_XFORMENCR_CAMELLIA_CCM_12	26	/* RFC5529 */
-#define	IKEV2_XFORMENCR_CAMELLIA_CCM_16	27	/* RFC5529 */
-
-extern struct iked_constmap ikev2_xformencr_map[];
+typedef enum ikev2_encr_e {
+	IKEV2_ENCR_NONE			= 0,	/* None */
+	IKEV2_ENCR_DES_IV64		= 1,	/* RFC1827 */
+	IKEV2_ENCR_DES			= 2,	/* RFC2405 */
+	IKEV2_ENCR_3DES			= 3,	/* RFC2451 */
+	IKEV2_ENCR_RC5			= 4,	/* RFC2451 */
+	IKEV2_ENCR_IDEA			= 5,	/* RFC2451 */
+	IKEV2_ENCR_CAST			= 6,	/* RFC2451 */
+	IKEV2_ENCR_BLOWFISH		= 7,	/* RFC2451 */
+	IKEV2_ENCR_3IDEA		= 8,	/* RFC2451 */
+	IKEV2_ENCR_DES_IV32		= 9,	/* DESIV32 */
+	IKEV2_ENCR_RC4			= 10,	/* RFC2451 */
+	IKEV2_ENCR_NULL			= 11,	/* RFC2410 */
+	IKEV2_ENCR_AES_CBC		= 12,	/* RFC3602 */
+	IKEV2_ENCR_AES_CTR		= 13,	/* RFC3664 */
+	IKEV2_ENCR_AES_CCM_8		= 14,	/* RFC5282 */
+	IKEV2_ENCR_AES_CCM_12		= 15,	/* RFC5282 */
+	IKEV2_ENCR_AES_CCM_16		= 16,	/* RFC5282 */
+	IKEV2_ENCR_AES_GCM_8		= 18,	/* RFC5282 */
+	IKEV2_ENCR_AES_GCM_12		= 19,	/* RFC5282 */
+	IKEV2_ENCR_AES_GCM_16		= 20,	/* RFC5282 */
+	IKEV2_ENCR_NULL_AES_GMAC	= 21,	/* RFC4543 */
+	IKEV2_ENCR_XTS_AES		= 22,	/* IEEE P1619 */
+	IKEV2_ENCR_CAMELLIA_CBC		= 23,	/* RFC5529 */
+	IKEV2_ENCR_CAMELLIA_CTR		= 24,	/* RFC5529 */
+	IKEV2_ENCR_CAMELLIA_CCM_8	= 25,	/* RFC5529 */
+	IKEV2_ENCR_CAMELLIA_CCM_12	= 26,	/* RFC5529 */
+	IKEV2_ENCR_CAMELLIA_CCM_16	= 27,	/* RFC5529 */
+} ikev2_xf_encr_t;
 
 #define	IKEV2_IPCOMP_OUI		1	/* RFC5996 */
 #define	IKEV2_IPCOMP_DEFLATE		2	/* RFC2394 */
 #define	IKEV2_IPCOMP_LZS		3	/* RFC2395 */
 #define	IKEV2_IPCOMP_LZJH		4	/* RFC3051 */
-
-extern struct iked_constmap ikev2_ipcomp_map[];
 
 #define	IKEV2_XFORMPRF_HMAC_MD5		1	/* RFC2104 */
 #define	IKEV2_XFORMPRF_HMAC_SHA1	2	/* RFC2104 */
@@ -201,25 +179,23 @@ extern struct iked_constmap ikev2_ipcomp_map[];
 #define	IKEV2_XFORMPRF_HMAC_SHA2_512	7	/* RFC4868 */
 #define	IKEV2_XFORMPRF_AES128_CMAC	8	/* RFC4615 */
 
-extern struct iked_constmap ikev2_xformprf_map[];
-
-#define	IKEV2_XFORMAUTH_NONE		0	/* No Authentication */
-#define	IKEV2_XFORMAUTH_HMAC_MD5_96	1	/* RFC2403 */
-#define	IKEV2_XFORMAUTH_HMAC_SHA1_96	2	/* RFC2404 */
-#define	IKEV2_XFORMAUTH_DES_MAC		3	/* DES-MAC */
-#define	IKEV2_XFORMAUTH_KPDK_MD5	4	/* RFC1826 */
-#define	IKEV2_XFORMAUTH_AES_XCBC_96	5	/* RFC3566 */
-#define	IKEV2_XFORMAUTH_HMAC_MD5_128	6	/* RFC4595 */
-#define	IKEV2_XFORMAUTH_HMAC_SHA1_160	7	/* RFC4595 */
-#define	IKEV2_XFORMAUTH_AES_CMAC_96	8	/* RFC4494 */
-#define	IKEV2_XFORMAUTH_AES_128_GMAC	9	/* RFC4543 */
-#define	IKEV2_XFORMAUTH_AES_192_GMAC	10	/* RFC4543 */
-#define	IKEV2_XFORMAUTH_AES_256_GMAC	11	/* RFC4543 */
-#define	IKEV2_XFORMAUTH_HMAC_SHA2_256_128 12	/* RFC4868 */
-#define	IKEV2_XFORMAUTH_HMAC_SHA2_384_192 13	/* RFC4868 */
-#define	IKEV2_XFORMAUTH_HMAC_SHA2_512_256 14	/* RFC4868 */
-
-extern struct iked_constmap ikev2_xformauth_map[];
+typedef enum ikev2_xf_auth_e {
+	IKEV2_AUTH_NONE			= 0,	/* No Authentication */
+	IKEV2_AUTH_HMAC_MD5_96		= 1,	/* RFC2403 */
+	IKEV2_AUTH_HMAC_SHA1_96		= 2,	/* RFC2404 */
+	IKEV2_AUTH_DES_MAC		= 3,	/* DES-MAC */
+	IKEV2_AUTH_KPDK_MD5		= 4,	/* RFC1826 */
+	IKEV2_AUTH_AES_XCBC_96		= 5,	/* RFC3566 */
+	IKEV2_AUTH_HMAC_MD5_128		= 6,	/* RFC4595 */
+	IKEV2_AUTH_HMAC_SHA1_160	= 7,	/* RFC4595 */
+	IKEV2_AUTH_AES_CMAC_96		= 8,	/* RFC4494 */
+	IKEV2_AUTH_AES_128_GMAC		= 9,	/* RFC4543 */
+	IKEV2_AUTH_AES_192_GMAC		= 10,	/* RFC4543 */
+	IKEV2_AUTH_AES_256_GMAC		= 11,	/* RFC4543 */
+	IKEV2_AUTH_HMAC_SHA2_256_128 	= 12,	/* RFC4868 */
+	IKEV2_AUTH_HMAC_SHA2_384_192 	= 13,	/* RFC4868 */
+	IKEV2_AUTH_HMAC_SHA2_512_256 	= 14	/* RFC4868 */
+} ikev2_xf_auth_t;
 
 #define	IKEV2_DH_NONE		0	/* No DH */
 #define	IKEV2_DH_MODP_768		1	/* DH Group 1 */
@@ -246,12 +222,8 @@ extern struct iked_constmap ikev2_xformauth_map[];
 #define	IKEV2_DH_BRAINPOOL_P512R1	30	/* DH Group 30 */
 #define	IKEV2_DH_MAX			31
 
-extern struct iked_constmap ikev2_dh_map[];
-
 #define	IKEV2_XFORMESN_NONE		0	/* No ESN */
 #define	IKEV2_XFORMESN_ESN		1	/* ESN */
-
-extern struct iked_constmap ikev2_xformesn_map[];
 
 struct ikev2_attribute {
 	uint16_t	attr_type;	/* Attribute type */
@@ -262,9 +234,9 @@ struct ikev2_attribute {
 #define	IKEV2_ATTRAF_TLV		0x0000	/* Type-Length-Value format */
 #define	IKEV2_ATTRAF_TV			0x8000	/* Type-Value format */
 
-#define	IKEV2_ATTRTYPE_KEY_LENGTH	14	/* Key length */
-
-extern struct iked_constmap ikev2_attrtype_map[];
+typedef enum ikev2_xf_attr_type {
+	IKEV2_XF_ATTR_KEYLEN	= 14		/* Key length */
+} ikev2_xf_attr_type_t;
 
 /*
  * KE Payload
@@ -285,73 +257,79 @@ struct ikev2_notify {
 	/* Followed by variable length notification data */
 } __packed;
 
-#define	IKEV2_N_UNSUPPORTED_CRITICAL_PAYLOAD	1	/* RFC4306 */
-#define	IKEV2_N_INVALID_IKE_SPI			4	/* RFC4306 */
-#define	IKEV2_N_INVALID_MAJOR_VERSION		5	/* RFC4306 */
-#define	IKEV2_N_INVALID_SYNTAX			7	/* RFC4306 */
-#define	IKEV2_N_INVALID_MESSAGE_ID		9	/* RFC4306 */
-#define	IKEV2_N_INVALID_SPI			11	/* RFC4306 */
-#define	IKEV2_N_NO_PROPOSAL_CHOSEN		14	/* RFC4306 */
-#define	IKEV2_N_INVALID_KE_PAYLOAD		17	/* RFC4306 */
-#define	IKEV2_N_AUTHENTICATION_FAILED		24	/* RFC4306 */
-#define	IKEV2_N_SINGLE_PAIR_REQUIRED		34	/* RFC4306 */
-#define	IKEV2_N_NO_ADDITIONAL_SAS		35	/* RFC4306 */
-#define	IKEV2_N_INTERNAL_ADDRESS_FAILURE	36	/* RFC4306 */
-#define	IKEV2_N_FAILED_CP_REQUIRED		37	/* RFC4306 */
-#define	IKEV2_N_TS_UNACCEPTABLE			38	/* RFC4306 */
-#define	IKEV2_N_INVALID_SELECTORS		39	/* RFC4306 */
-#define	IKEV2_N_UNACCEPTABLE_ADDRESSES		40	/* RFC4555 */
-#define	IKEV2_N_UNEXPECTED_NAT_DETECTED		41	/* RFC4555 */
-#define	IKEV2_N_USE_ASSIGNED_HoA		42	/* RFC5026 */
-#define	IKEV2_N_TEMPORARY_FAILURE		43	/* RFC5996 */
-#define	IKEV2_N_CHILD_SA_NOT_FOUND		44	/* RFC5996 */
-#define	IKEV2_N_INITIAL_CONTACT			16384	/* RFC4306 */
-#define	IKEV2_N_SET_WINDOW_SIZE			16385	/* RFC4306 */
-#define	IKEV2_N_ADDITIONAL_TS_POSSIBLE		16386	/* RFC4306 */
-#define	IKEV2_N_IPCOMP_SUPPORTED		16387	/* RFC4306 */
-#define	IKEV2_N_NAT_DETECTION_SOURCE_IP		16388	/* RFC4306 */
-#define	IKEV2_N_NAT_DETECTION_DESTINATION_IP	16389	/* RFC4306 */
-#define	IKEV2_N_COOKIE				16390	/* RFC4306 */
-#define	IKEV2_N_USE_TRANSPORT_MODE		16391	/* RFC4306 */
-#define	IKEV2_N_HTTP_CERT_LOOKUP_SUPPORTED	16392	/* RFC4306 */
-#define	IKEV2_N_REKEY_SA			16393	/* RFC4306 */
-#define	IKEV2_N_ESP_TFC_PADDING_NOT_SUPPORTED	16394	/* RFC4306 */
-#define	IKEV2_N_NON_FIRST_FRAGMENTS_ALSO	16395	/* RFC4306 */
-#define	IKEV2_N_MOBIKE_SUPPORTED		16396	/* RFC4555 */
-#define	IKEV2_N_ADDITIONAL_IP4_ADDRESS		16397	/* RFC4555 */
-#define	IKEV2_N_ADDITIONAL_IP6_ADDRESS		16398	/* RFC4555 */
-#define	IKEV2_N_NO_ADDITIONAL_ADDRESSES		16399	/* RFC4555 */
-#define	IKEV2_N_UPDATE_SA_ADDRESSES		16400	/* RFC4555 */
-#define	IKEV2_N_COOKIE2				16401	/* RFC4555 */
-#define	IKEV2_N_NO_NATS_ALLOWED			16402	/* RFC4555 */
-#define	IKEV2_N_AUTH_LIFETIME			16403	/* RFC4478 */
-#define	IKEV2_N_MULTIPLE_AUTH_SUPPORTED		16404	/* RFC4739 */
-#define	IKEV2_N_ANOTHER_AUTH_FOLLOWS		16405	/* RFC4739 */
-#define	IKEV2_N_REDIRECT_SUPPORTED		16406	/* RFC5685 */
-#define	IKEV2_N_REDIRECT			16407	/* RFC5685 */
-#define	IKEV2_N_REDIRECTED_FROM			16408	/* RFC5685 */
-#define	IKEV2_N_TICKET_LT_OPAQUE		16409	/* RFC5723 */
-#define	IKEV2_N_TICKET_REQUEST			16410	/* RFC5723 */
-#define	IKEV2_N_TICKET_ACK			16411	/* RFC5723 */
-#define	IKEV2_N_TICKET_NACK			16412	/* RFC5723 */
-#define	IKEV2_N_TICKET_OPAQUE			16413	/* RFC5723 */
-#define	IKEV2_N_LINK_ID				16414	/* RFC5739 */
-#define	IKEV2_N_USE_WESP_MODE			16415	/* RFC-ietf-ipsecme-traffic-visibility-12.txt */
-#define	IKEV2_N_ROHC_SUPPORTED			16416	/* RFC-ietf-rohc-ikev2-extensions-hcoipsec-12.txt */
-#define	IKEV2_N_EAP_ONLY_AUTHENTICATION		16417	/* RFC5998 */
-#define	IKEV2_N_CHILDLESS_IKEV2_SUPPORTED	16418	/* RFC6023 */
-#define	IKEV2_N_QUICK_CRASH_DETECTION		16419	/* RFC6290 */
-#define	IKEV2_N_IKEV2_MESSAGE_ID_SYNC_SUPPORTED	16420	/* RFC6311 */
-#define	IKEV2_N_IPSEC_REPLAY_CTR_SYNC_SUPPORTED	16421	/* RFC6311 */
-#define	IKEV2_N_IKEV2_MESSAGE_ID_SYNC		16422	/* RFC6311 */
-#define	IKEV2_N_IPSEC_REPLAY_CTR_SYNC		16423	/* RFC6311 */
-#define	IKEV2_N_SECURE_PASSWORD_METHODS		16424	/* RFC6467 */
-#define	IKEV2_N_PSK_PERSIST			16425	/* RFC6631 */
-#define	IKEV2_N_PSK_CONFIRM			16426	/* RFC6631 */
-#define	IKEV2_N_ERX_SUPPORTED			16427	/* RFC6867 */
-#define	IKEV2_N_IFOM_CAPABILITY			16428	/* OA3GPP */
-
-extern struct iked_constmap ikev2_n_map[];
+/*
+ * NOTIFY types.  We don't support all of these, however for observability
+ * and debugging purposes, we try to maintain a list of all known values.
+ */
+typedef enum ikev2_notify_type {
+	IKEV2_N_UNSUPPORTED_CRITICAL_PAYLOAD	= 1,		/* RFC4306 */
+	IKEV2_N_INVALID_IKE_SPI			= 4,		/* RFC4306 */
+	IKEV2_N_INVALID_MAJOR_VERSION		= 5,		/* RFC4306 */
+	IKEV2_N_INVALID_SYNTAX			= 7,		/* RFC4306 */
+	IKEV2_N_INVALID_MESSAGE_ID		= 9,		/* RFC4306 */
+	IKEV2_N_INVALID_SPI			= 11,		/* RFC4306 */
+	IKEV2_N_NO_PROPOSAL_CHOSEN		= 14,		/* RFC4306 */
+	IKEV2_N_INVALID_KE_PAYLOAD		= 17,		/* RFC4306 */
+	IKEV2_N_AUTHENTICATION_FAILED		= 24,		/* RFC4306 */
+	IKEV2_N_SINGLE_PAIR_REQUIRED		= 34,		/* RFC4306 */
+	IKEV2_N_NO_ADDITIONAL_SAS		= 35,		/* RFC4306 */
+	IKEV2_N_INTERNAL_ADDRESS_FAILURE	= 36,		/* RFC4306 */
+	IKEV2_N_FAILED_CP_REQUIRED		= 37,		/* RFC4306 */
+	IKEV2_N_TS_UNACCEPTABLE			= 38,		/* RFC4306 */
+	IKEV2_N_INVALID_SELECTORS		= 39,		/* RFC4306 */
+	IKEV2_N_UNACCEPTABLE_ADDRESSES		= 40,		/* RFC4555 */
+	IKEV2_N_UNEXPECTED_NAT_DETECTED		= 41,		/* RFC4555 */
+	IKEV2_N_USE_ASSIGNED_HoA		= 42,		/* RFC5026 */
+	IKEV2_N_TEMPORARY_FAILURE		= 43,		/* RFC5996 */
+	IKEV2_N_CHILD_SA_NOT_FOUND		= 44,		/* RFC5996 */
+	IKEV2_N_INITIAL_CONTACT			= 16384,	/* RFC4306 */
+	IKEV2_N_SET_WINDOW_SIZE			= 16385,	/* RFC4306 */
+	IKEV2_N_ADDITIONAL_TS_POSSIBLE		= 16386,	/* RFC4306 */
+	IKEV2_N_IPCOMP_SUPPORTED		= 16387,	/* RFC4306 */
+	IKEV2_N_NAT_DETECTION_SOURCE_IP		= 16388,	/* RFC4306 */
+	IKEV2_N_NAT_DETECTION_DESTINATION_IP	= 16389,	/* RFC4306 */
+	IKEV2_N_COOKIE				= 16390,	/* RFC4306 */
+	IKEV2_N_USE_TRANSPORT_MODE		= 16391,	/* RFC4306 */
+	IKEV2_N_HTTP_CERT_LOOKUP_SUPPORTED	= 16392,	/* RFC4306 */
+	IKEV2_N_REKEY_SA			= 16393,	/* RFC4306 */
+	IKEV2_N_ESP_TFC_PADDING_NOT_SUPPORTED	= 16394,	/* RFC4306 */
+	IKEV2_N_NON_FIRST_FRAGMENTS_ALSO	= 16395,	/* RFC4306 */
+	IKEV2_N_MOBIKE_SUPPORTED		= 16396,	/* RFC4555 */
+	IKEV2_N_ADDITIONAL_IP4_ADDRESS		= 16397,	/* RFC4555 */
+	IKEV2_N_ADDITIONAL_IP6_ADDRESS		= 16398,	/* RFC4555 */
+	IKEV2_N_NO_ADDITIONAL_ADDRESSES		= 16399,	/* RFC4555 */
+	IKEV2_N_UPDATE_SA_ADDRESSES		= 16400,	/* RFC4555 */
+	IKEV2_N_COOKIE2				= 16401,	/* RFC4555 */
+	IKEV2_N_NO_NATS_ALLOWED			= 16402,	/* RFC4555 */
+	IKEV2_N_AUTH_LIFETIME			= 16403,	/* RFC4478 */
+	IKEV2_N_MULTIPLE_AUTH_SUPPORTED		= 16404,	/* RFC4739 */
+	IKEV2_N_ANOTHER_AUTH_FOLLOWS		= 16405,	/* RFC4739 */
+	IKEV2_N_REDIRECT_SUPPORTED		= 16406,	/* RFC5685 */
+	IKEV2_N_REDIRECT			= 16407,	/* RFC5685 */
+	IKEV2_N_REDIRECTED_FROM			= 16408,	/* RFC5685 */
+	IKEV2_N_TICKET_LT_OPAQUE		= 16409,	/* RFC5723 */
+	IKEV2_N_TICKET_REQUEST			= 16410,	/* RFC5723 */
+	IKEV2_N_TICKET_ACK			= 16411,	/* RFC5723 */
+	IKEV2_N_TICKET_NACK			= 16412,	/* RFC5723 */
+	IKEV2_N_TICKET_OPAQUE			= 16413,	/* RFC5723 */
+	IKEV2_N_LINK_ID				= 16414,	/* RFC5739 */
+	IKEV2_N_USE_WESP_MODE			= 16415,
+			/* RFC-ietf-ipsecme-traffic-visibility-12.txt */
+	IKEV2_N_ROHC_SUPPORTED			= 16416,
+			/* RFC-ietf-rohc-ikev2-extensions-hcoipsec-12.txt */
+	IKEV2_N_EAP_ONLY_AUTHENTICATION		= 16417,	/* RFC5998 */
+	IKEV2_N_CHILDLESS_IKEV2_SUPPORTED	= 16418,	/* RFC6023 */
+	IKEV2_N_QUICK_CRASH_DETECTION		= 16419,	/* RFC6290 */
+	IKEV2_N_IKEV2_MESSAGE_ID_SYNC_SUPPORTED	= 16420,	/* RFC6311 */
+	IKEV2_N_IPSEC_REPLAY_CTR_SYNC_SUPPORTED	= 16421,	/* RFC6311 */
+	IKEV2_N_IKEV2_MESSAGE_ID_SYNC		= 16422,	/* RFC6311 */
+	IKEV2_N_IPSEC_REPLAY_CTR_SYNC		= 16423,	/* RFC6311 */
+	IKEV2_N_SECURE_PASSWORD_METHODS		= 16424,	/* RFC6467 */
+	IKEV2_N_PSK_PERSIST			= 16425,	/* RFC6631 */
+	IKEV2_N_PSK_CONFIRM			= 16426,	/* RFC6631 */
+	IKEV2_N_ERX_SUPPORTED			= 16427,	/* RFC6867 */
+	IKEV2_N_IFOM_CAPABILITY			= 16428		/* OA3GPP */
+} ikev2_notify_type_t;
 
 /*
  * DELETE payload
@@ -372,17 +350,17 @@ struct ikev2_id {
 	/* Followed by the identification data */
 } __packed;
 
-#define	IKEV2_ID_NONE		0	/* No ID */
-#define	IKEV2_ID_IPV4		1	/* RFC4306 (ID_IPV4_ADDR) */
-#define	IKEV2_ID_FQDN		2	/* RFC4306 */
-#define	IKEV2_ID_UFQDN		3	/* RFC4306 (ID_RFC822_ADDR) */
-#define	IKEV2_ID_IPV6		5	/* RFC4306 (ID_IPV6_ADDR) */
-#define	IKEV2_ID_ASN1_DN	9	/* RFC4306 */
-#define	IKEV2_ID_ASN1_GN	10	/* RFC4306 */
-#define	IKEV2_ID_KEY_ID		11	/* RFC4306 */
-#define	IKEV2_ID_FC_NAME	12	/* RFC4595 */
-
-extern struct iked_constmap ikev2_id_map[];
+typedef enum ikev2_id_type {
+	IKEV2_ID_NONE		= 0,	/* No ID */
+	IKEV2_ID_IPV4		= 1,	/* RFC4306 (ID_IPV4_ADDR) */
+	IKEV2_ID_FQDN		= 2,	/* RFC4306 */
+	IKEV2_ID_UFQDN		= 3,	/* RFC4306 (ID_RFC822_ADDR) */
+	IKEV2_ID_IPV6		= 5,	/* RFC4306 (ID_IPV6_ADDR) */
+	IKEV2_ID_ASN1_DN	= 9,	/* RFC4306 */
+	IKEV2_ID_ASN1_GN	= 10,	/* RFC4306 */
+	IKEV2_ID_KEY_ID		= 11,	/* RFC4306 */
+	IKEV2_ID_FC_NAME	= 12	/* RFC4595 */
+} ikev2_id_type_t;
 
 /*
  * CERT/CERTREQ payloads
@@ -407,8 +385,6 @@ struct ikev2_cert {
 #define	IKEV2_CERT_HASHURL_X509_BUNDLE	13	/* RFC4306 */
 #define	IKEV2_CERT_OCSP			14	/* RFC4806 */
 
-extern struct iked_constmap ikev2_cert_map[];
-
 /*
  * TSi/TSr payloads
  */
@@ -430,8 +406,6 @@ struct ikev2_ts {
 #define	IKEV2_TS_IPV6_ADDR_RANGE	8	/* RFC4306 */
 #define	IKEV2_TS_FC_ADDR_RANGE		9	/* RFC4595 */
 
-extern struct iked_constmap ikev2_ts_map[];
-
 /*
  * AUTH payload
  */
@@ -450,8 +424,6 @@ struct ikev2_auth {
 #define	IKEV2_AUTH_ECDSA_512		11	/* RFC4754 */
 #define	IKEV2_AUTH_GSPM			12	/* RFC6467 */
 
-extern struct iked_constmap ikev2_auth_map[];
-
 /*
  * CP payload
  */
@@ -461,12 +433,12 @@ struct ikev2_cp {
 	/* Followed by the attributes */
 } __packed;
 
-#define	IKEV2_CP_REQUEST	1	/* CFG-Request */
-#define	IKEV2_CP_REPLY		2	/* CFG-Reply */
-#define	IKEV2_CP_SET		3	/* CFG-SET */
-#define	IKEV2_CP_ACK		4	/* CFG-ACK */
-
-extern struct iked_constmap ikev2_cp_map[];
+typedef enum ikev2_cfg_type {
+	IKEV2_CP_REQUEST	= 1,	/* CFG-Request */
+	IKEV2_CP_REPLY		= 2,	/* CFG-Reply */
+	IKEV2_CP_SET		= 3,	/* CFG-SET */
+	IKEV2_CP_ACK		= 4	/* CFG-ACK */
+} ikev2_cfg_type_t;
 
 struct ikev2_cfg {
 	uint16_t	cfg_type;	/* first bit must be set to zero */
@@ -474,28 +446,29 @@ struct ikev2_cfg {
 	/* Followed by variable-length data */
 } __packed;
 
-#define	IKEV2_CFG_INTERNAL_IP4_ADDRESS		1	/* RFC5996 */
-#define	IKEV2_CFG_INTERNAL_IP4_NETMASK		2	/* RFC5996 */
-#define	IKEV2_CFG_INTERNAL_IP4_DNS		3	/* RFC5996 */
-#define	IKEV2_CFG_INTERNAL_IP4_NBNS		4	/* RFC5996 */
-#define	IKEV2_CFG_INTERNAL_ADDRESS_EXPIRY	5	/* RFC4306 */
-#define	IKEV2_CFG_INTERNAL_IP4_DHCP		6	/* RFC5996 */
-#define	IKEV2_CFG_APPLICATION_VERSION		7	/* RFC5996 */
-#define	IKEV2_CFG_INTERNAL_IP6_ADDRESS		8	/* RFC5996 */
-#define	IKEV2_CFG_INTERNAL_IP6_DNS		10	/* RFC5996 */
-#define	IKEV2_CFG_INTERNAL_IP6_NBNS		11	/* RFC4306 */
-#define	IKEV2_CFG_INTERNAL_IP6_DHCP		12	/* RFC5996 */
-#define	IKEV2_CFG_INTERNAL_IP4_SUBNET		13	/* RFC5996 */
-#define	IKEV2_CFG_SUPPORTED_ATTRIBUTES		14	/* RFC5996 */
-#define	IKEV2_CFG_INTERNAL_IP6_SUBNET		15	/* RFC5996 */
-#define	IKEV2_CFG_MIP6_HOME_PREFIX		16	/* RFC5026 */
-#define	IKEV2_CFG_INTERNAL_IP6_LINK		17	/* RFC5739 */
-#define	IKEV2_CFG_INTERNAL_IP6_PREFIX		18	/* RFC5739 */
-#define	IKEV2_CFG_HOME_AGENT_ADDRESS		19	/* http://www.3gpp.org/ftp/Specs/html-info/24302.htm */
-#define	IKEV2_CFG_INTERNAL_IP4_SERVER		23456	/* MS-IKEE */
-#define	IKEV2_CFG_INTERNAL_IP6_SERVER		23457	/* MS-IKEE */
-
-extern struct iked_constmap ikev2_cfg_map[];
+typedef enum ikev2_cfg_attr_type {
+	IKEV2_CFG_INTERNAL_IP4_ADDRESS		= 1,	/* RFC5996 */
+	IKEV2_CFG_INTERNAL_IP4_NETMASK		= 2,	/* RFC5996 */
+	IKEV2_CFG_INTERNAL_IP4_DNS		= 3,	/* RFC5996 */
+	IKEV2_CFG_INTERNAL_IP4_NBNS		= 4,	/* RFC5996 */
+	IKEV2_CFG_INTERNAL_ADDRESS_EXPIRY	= 5,	/* RFC4306 */
+	IKEV2_CFG_INTERNAL_IP4_DHCP		= 6,	/* RFC5996 */
+	IKEV2_CFG_APPLICATION_VERSION		= 7,	/* RFC5996 */
+	IKEV2_CFG_INTERNAL_IP6_ADDRESS		= 8,	/* RFC5996 */
+	IKEV2_CFG_INTERNAL_IP6_DNS		= 10,	/* RFC5996 */
+	IKEV2_CFG_INTERNAL_IP6_NBNS		= 11,	/* RFC4306 */
+	IKEV2_CFG_INTERNAL_IP6_DHCP		= 12,	/* RFC5996 */
+	IKEV2_CFG_INTERNAL_IP4_SUBNET		= 13,	/* RFC5996 */
+	IKEV2_CFG_SUPPORTED_ATTRIBUTES		= 14,	/* RFC5996 */
+	IKEV2_CFG_INTERNAL_IP6_SUBNET		= 15,	/* RFC5996 */
+	IKEV2_CFG_MIP6_HOME_PREFIX		= 16,	/* RFC5026 */
+	IKEV2_CFG_INTERNAL_IP6_LINK		= 17,	/* RFC5739 */
+	IKEV2_CFG_INTERNAL_IP6_PREFIX		= 18,	/* RFC5739 */
+	IKEV2_CFG_HOME_AGENT_ADDRESS		= 19,
+		/* http://www.3gpp.org/ftp/Specs/html-info/24302.htm */
+	IKEV2_CFG_INTERNAL_IP4_SERVER		= 23456, /* MS-IKEE */
+	IKEV2_CFG_INTERNAL_IP6_SERVER		= 23457  /* MS-IKEE */
+} ikev2_cfg_attr_type_t;
 
 typedef struct ikev2_payload ikev2_payload_t;
 typedef struct ikev2_sa_proposal ikev2_sa_proposal_t;

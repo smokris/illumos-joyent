@@ -32,9 +32,9 @@
 
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <ikedoor.h>
 
 #if 0
-#include <ikedoor.h>
 #include <cryptoutil.h>
 #endif
 
@@ -66,9 +66,9 @@ typedef union sockaddr_u_s {
             ((((sa1)->ss_family == AF_INET) &&                          \
                 ((struct sockaddr_in *)(sa1))->sin_addr.s_addr ==       \
                 ((struct sockaddr_in *)(sa2))->sin_addr.s_addr) ||      \
-                ((sa1)->ss_family == AF_INET6) &&                       \
+                (((sa1)->ss_family == AF_INET6) &&                      \
                 IN6_ARE_ADDR_EQUAL(&((struct sockaddr_in6 *)(sa1))->sin6_addr,\
-                    &((struct sockaddr_in6 *)(sa2))->sin6_addr)))
+                    &((struct sockaddr_in6 *)(sa2))->sin6_addr))))
 
 /*
  * Compare two AF_INET{,6} sockaddr ports.  Exploit the identical offsets for
@@ -84,6 +84,10 @@ typedef union sockaddr_u_s {
 #define SA_FULL_EQ(sa1, sa2) (SA_ADDR_EQ(sa1, sa2) && SA_PORT_EQ(sa1, sa2))
 
 #define	INVALID(var) assfail("Invalid value of " # var, __FILE__, __LINE__)
+#define	ARRAY_SIZE(x) (sizeof (x) / sizeof (x[0]))
+
+extern char *my_fmri;
+extern FILE *debugfile;
 
 #ifdef  __cplusplus
 }

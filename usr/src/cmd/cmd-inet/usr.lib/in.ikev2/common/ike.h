@@ -62,6 +62,11 @@ struct ike_payload {
 } __packed;
 typedef struct ike_payload ike_payload_t;
 
+#define	IKE_PAYLOAD_NONE	0
+
+/* Of the IKEv1 and IKEv2 payloads we recognize, this is MAX of the two */
+#define	IKE_NUM_PAYLOADS 17
+
 struct ike_prop {
 	uint8_t		prop_more;
 	uint8_t		prop_resv;
@@ -72,6 +77,8 @@ struct ike_prop {
 	uint8_t		prop_numxform;
 } __packed;
 typedef struct ike_prop ike_prop_t;
+#define	IKE_PROP_NONE	(0)
+#define	IKE_PROP_MORE	(2)
 
 struct ike_xform {
 	uint8_t		xf_more;
@@ -82,6 +89,8 @@ struct ike_xform {
 	uint16_t	xf_id;
 } __packed;
 typedef struct ike_xform ike_xform_t;
+#define	IKE_XFORM_NONE	(0)
+#define	IKE_XFORM_MORE	(3)
 
 struct ike_xf_attr {
 	uint16_t	attr_type;

@@ -33,6 +33,7 @@ extern "C" {
 #include <sys/sysmacros.h>
 #include <net/pfkeyv2.h>
 #include <door.h>
+#include <sys/socket.h>
 
 /*
  * This version number is intended to stop the calling process from

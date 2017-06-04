@@ -180,7 +180,7 @@ static dhgroup_t dh_groups[] = {
 		    "\x34\x06\x31\x99\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF"
 	},
 	{
-		.id = IKEV2_DH_MODP6144,
+		.id = IKEV2_DH_MODP_6144,
 		.bits = 6144,
 		.genbits = 8,
 		.generator = (uchar_t *)"\x02",
@@ -322,14 +322,14 @@ static dhgroup_t dh_groups[] = {
 		    "\xFF\xFF\xFF\xFF\xFF\xFF"
 	}
 };
-#define	NUM_DHGROUPS	(sizeof (dh_groups) / sizeof (dhgroup_t))
+#define	NUM_DHGROUPS	(ARRAY_SIZE(dh_groups))
 
 static dhgroup_t *
 dh_get_group(int id)
 {
 	int i;
 
-	for (i = 0; i < ngroups; i++) {
+	for (i = 0; i < NUM_DHGROUPS; i++) {
 		if (dh_groups[i].id == id)
 			return (&dh_groups[i]);
 	}
@@ -356,7 +356,7 @@ dh_genpair(int group, CK_OBJECT_HANDLE_PTR restrict pub,
 	template[1].pValue = dh->generator;
 	template[1].ulValueLen = dh->genbits / 8;
 
-	return (C_GenerateKeyPair(p11s, &mech, template, ATTR_LEN(template),
+	return (C_GenerateKeyPair(p11s, &mech, template, ARRAY_SIZE(template),
 	    NULL_PTR, 0, pub, priv));
 }
 
@@ -377,8 +377,8 @@ dh_derivekey(CK_OBJECT_HANDLE privkey, buf_t *restrict pub,
 		{ CKA_DECRYPT, &trueval, sizeof (trueval) }
 	};
 
-	return (C_DeriveKey(p11s, &mech, privkey, template, ATTR_LEN(template),
-	    seckey));
+	return (C_DeriveKey(p11s, &mech, privkey, template,
+	    ARRAY_SIZE(template), seckey));
 }
 
 size_t
