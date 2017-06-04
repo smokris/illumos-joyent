@@ -83,6 +83,7 @@ typedef union sockaddr_u_s {
  */
 #define SA_FULL_EQ(sa1, sa2) (SA_ADDR_EQ(sa1, sa2) && SA_PORT_EQ(sa1, sa2))
 
+#define	INVALID(var) assfail("Invalid value of " # var, __FILE__, __LINE__)
 
 #ifdef  __cplusplus
 }

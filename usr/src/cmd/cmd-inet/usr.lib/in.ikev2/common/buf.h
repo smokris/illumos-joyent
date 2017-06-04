@@ -55,6 +55,9 @@ struct buf_s {
 		(_buf)->len -= (_n);		\
 	} while (0)
 
+#define	STRUCT_TO_BUF(st) \
+	{ .ptr = &(st), .len = sizeof ((st)) }
+	
 #endif /* _BUF_T */
 
 size_t		buf_copy(buf_t * restrict, const buf_t * restrict, size_t);

@@ -32,23 +32,15 @@
 extern "C" {
 #endif
 
-/*
- * These are largely the same between v1 & v2
- */
+/* Stuff that is the same between IKEv1 and IKEv2 */
 
-#define	IKEV1_MAJOR_VERSION	1
-#define	IKEV1_MINOR_VERSION	0
-#define	IKEV1_VERSION		0x10
+#define	IKE_GET_MAJORV(v)	(((v) & 0xf0) >> 4)
+#define	IKE_GET_MINORV(v)	((v) & 0x0f)
+#define	IKE_VERSION(_maj, _min) (((_maj) & 0xf0 << 4) | (_min) & 0x0f)
 
-#define	IKEV2_MAJOR_VERSION	2
-#define	IKEV2_MINOR_VERSION	0
-#define	IKEV2_VERSION		0x20
-
-#define	ISAKMP_HEADER_LENGTH	28
-
-#define	ISAKMP_GET_MAJORV(v)	(((v) & 0xf0) >> 4)
-#define	ISAKMP_GET_MINORV(v)	((v) & 0x0f)
-#define	ISAKMP_VERSION(_maj, _min) (((_maj) & 0xf0 << 4) | (_min) & 0x0f)
+#ifndef __packed
+#define	__packed __attribute__((packed))
+#endif
 
 struct ike_header {
 	uint64_t	initiator_spi;
@@ -59,9 +51,55 @@ struct ike_header {
 	uint8_t		flags;
 	uint32_t	msgid;
 	uint32_t	length;
-} __attribute__((packed));
-
+} __packed;
 typedef struct ike_header ike_header_t;
+#define	IKE_HEADER_LEN	(sizeof (ike_header_t))
+
+struct ike_payload {
+	uint8_t		pay_next;
+	uint8_t		pay_reserved;
+	uint16_t	pay_length;
+} __packed;
+typedef struct ike_payload ike_payload_t;
+
+struct ike_prop {
+	uint8_t		prop_more;
+	uint8_t		prop_resv;
+	uint16_t	prop_len;
+	uint8_t		prop_num;
+	uint8_t		prop_proto;
+	uint8_t		prop_spilen;
+	uint8_t		prop_numxform;
+} __packed;
+typedef struct ike_prop ike_prop_t;
+
+struct ike_xform {
+	uint8_t		xf_more;
+	uint8_t		xf_resv;
+	uint16_t	xf_len;
+	uint8_t		xf_type;
+	uint8_t		xf_resv2;
+	uint16_t	xf_id;
+} __packed;
+typedef struct ike_xform ike_xform_t;
+
+struct ike_xf_attr {
+	uint16_t	attr_type;
+	uint16_t	attr_len;
+};
+typedef struct ike_xf_attr ike_xf_attr_t;
+#define	IKE_ATTR_TV			(1)
+#define	IKE_ATTR_TLV			(0)
+#define	IKE_ATTR_GET_TYPE(type)		((type) & 0x7fff)
+#define	IKE_ATTR_GET_FORMAT(type)	((type) & 0x8000) >> 15)
+#define	IKE_ATTR_TYPE(fmt, type) \
+	(((fmt) << 15) | ((type) & 0x7fff))
+
+struct ike_ke {
+	uint16_t	ke_group;
+	uint16_t	ke_resv;
+};
+typedef struct ike_ke ike_ke_t;
 
 #ifdef __cplusplus
 }
