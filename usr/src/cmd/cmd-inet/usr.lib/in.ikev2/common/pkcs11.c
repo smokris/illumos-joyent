@@ -23,7 +23,7 @@
  * Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
  *
- * Copyright 2015 Jason King.  All rights reserved.
+ * Copyright 2017 Jason King.  All rights reserved.
  * Use is subject to license terms.
  */
 
@@ -36,6 +36,7 @@
 #include <pthread.h>
 #include <sys/debug.h>
 #include <note.h>
+#include <cryptoutil.h>
 #include "pkcs11.h"
 #include "defs.h"
 
@@ -82,8 +83,8 @@ pkcs11_callback_handler(CK_SESSION_HANDLE session, CK_NOTIFICATION surrender,
 	return (CKR_OK);
 }
 
-static
-boolean_t is_metaslot(CK_SLOT_ID slot, void *args, CK_RV *rv)
+static boolean_t
+is_metaslot(CK_SLOT_ID slot, void *args, CK_RV *rv)
 {
 	CK_SLOT_INFO info = { 0 };
 	boolean_t *found = (boolean_t *)args;
@@ -210,7 +211,7 @@ pkcs11_worker_fini(void)
 			PRTDBG(D_THREAD, ("Unable to grow pkcs11 free list. "
 			    "PKCS#11 session %lu will be leaked.\n", p11s));
 #endif
-			VERIFY(pthread_mutex_unlock(&ses_free_list) == 0);
+			VERIFY(pthread_mutex_unlock(&ses_free_lock) == 0);
 			return;
 		}
 
@@ -219,90 +220,90 @@ pkcs11_worker_fini(void)
 	}
 
 	ses_free_list[ses_nfree++] = p11s;
-	VERIFY(pthread_mutex_unlock(&ses_free_list) == 0);
+	VERIFY(pthread_mutex_unlock(&ses_free_lock) == 0);
 	p11s = CK_INVALID_HANDLE;
 }
 
 static auth_param_t auth_params[] = {
 	{
-		.i2_auth = IKEV2_XF_AUTH_NONE,
+		.i2_auth = IKEV2_AUTH_NONE,
 		.p11_auth = 0,
 		.output_sz = 0,
 		.trunc_sz = 0,
 		.key_sz = 0,
 	},
 	{
-		.i2_auth = IKEV2_XF_AUTH_HMAC_MD5_96,
+		.i2_auth = IKEV2_AUTH_HMAC_MD5_96,
 		.p11_auth = CKM_MD5_HMAC,
 		.output_sz = 16,
 		.trunc_sz = 12,
 		.key_sz = 16
 	},
 	{
-		.i2_auth = IKEV2_XF_AUTH_HMAC_SHA1_96,
+		.i2_auth = IKEV2_AUTH_HMAC_SHA1_96,
 		.p11_auth = CKM_SHA_1_HMAC,
 		.output_sz = 20,
 		.trunc_sz = 12,
 		.key_sz = 20,
 	},
 	{
-		.i2_auth = IKEV2_XF_AUTH_DES_MAC,
+		.i2_auth = IKEV2_AUTH_DES_MAC,
 		.p11_auth = CKM_DES_MAC,
 		.output_sz = 8,
 		.trunc_sz = 8,
 		.key_sz = 8,
 	},
 	{
-		.i2_auth = IKEV2_XF_AUTH_KPDK_MD5,
+		.i2_auth = IKEV2_AUTH_KPDK_MD5,
 		.p11_auth = 0,
 		.output_sz = 0,
 		.trunc_sz = 0,
 		.key_sz = 0
 	},
 	{
-		.i2_auth = IKEV2_XF_AUTH_AES_XCBC_96,
+		.i2_auth = IKEV2_AUTH_AES_XCBC_96,
 		.p11_auth = 0,
 		.output_sz = 16,
 		.trunc_sz = 12,
 		.key_sz = 16
 	},
 	{
-		.i2_auth = IKEV2_XF_AUTH_HMAC_MD5_128,
+		.i2_auth = IKEV2_AUTH_HMAC_MD5_128,
 		.p11_auth = CKM_MD5_HMAC,
 		.output_sz = 16,
 		.trunc_sz = 16,
 		.key_sz = 16
 	},
 	{
-		.i2_auth = IKEV2_XF_AUTH_HMAC_SHA1_160,
+		.i2_auth = IKEV2_AUTH_HMAC_SHA1_160,
 		.p11_auth = CKM_SHA_1_HMAC,
 		.output_sz = 20,
 		.trunc_sz = 20,
 		.key_sz = 20,
 	},
 	{
-		.i2_auth = IKEV2_XF_AUTH_AES_CMAC_96,
+		.i2_auth = IKEV2_AUTH_AES_CMAC_96,
 		.p11_auth = 0,
 		.output_sz = 16,
 		.trunc_sz = 12,
 		.key_sz = 16,
 	},
 	{
-		.i2_auth = IKEV2_XF_AUTH_HMAC_SHA2_256_128,
+		.i2_auth = IKEV2_AUTH_HMAC_SHA2_256_128,
 		.p11_auth = CKM_SHA256_HMAC,
 		.output_sz = 32,
 		.trunc_sz = 16,
 		.key_sz = 32
 	},
 	{
-		.i2_auth = IKEV2_XF_AUTH_HMAC_SHA2_384_192,
+		.i2_auth = IKEV2_AUTH_HMAC_SHA2_384_192,
 		.p11_auth = CKM_SHA384_HMAC,
 		.output_sz = 48,
 		.trunc_sz = 24,
 		.key_sz = 48
 	},
 	{
-		.i2_auth = IKEV2_XF_AUTH_HMAC_SHA2_512_256,
+		.i2_auth = IKEV2_AUTH_HMAC_SHA2_512_256,
 		.p11_auth = CKM_SHA512_HMAC,
 		.output_sz = 64,
 		.trunc_sz = 32,
@@ -312,7 +313,7 @@ static auth_param_t auth_params[] = {
 
 static encr_param_t encr_params[] = {
 	{
-		.i2_encr = IKEV2_XF_ENCR_DES_IV64,
+		.i2_encr = IKEV2_ENCR_DES_IV64,
 		.p11_encr = CKM_DES_CBC,
 		.block_sz = 8,
 		.iv_len = 8,
@@ -322,7 +323,7 @@ static encr_param_t encr_params[] = {
 		.key_incr = 0,
 	},
 	{
-		.i2_encr = IKEV2_XF_ENCR_DES,
+		.i2_encr = IKEV2_ENCR_DES,
 		.p11_encr = CKM_DES_CBC,
 		.block_sz = 8,
 		.iv_len = 0,
@@ -332,7 +333,7 @@ static encr_param_t encr_params[] = {
 		.key_incr = 0,
 	},
 	{
-		.i2_encr = IKEV2_XF_ENCR_3DES,
+		.i2_encr = IKEV2_ENCR_3DES,
 		.p11_encr = CKM_DES3_CBC,
 		.block_sz = 8,
 		.iv_len = 8,
@@ -342,7 +343,7 @@ static encr_param_t encr_params[] = {
 		.key_incr = 0,
 	},
 	{
-		.i2_encr = IKEV2_XF_ENCR_RC5,
+		.i2_encr = IKEV2_ENCR_RC5,
 		.p11_encr = CKM_RC5_CBC,
 		.block_sz = 8,
 		.iv_len = 8,
@@ -352,7 +353,7 @@ static encr_param_t encr_params[] = {
 		.key_incr = 1,
 	},
 	{
-		.i2_encr = IKEV2_XF_ENCR_IDEA,
+		.i2_encr = IKEV2_ENCR_IDEA,
 		.p11_encr = CKM_IDEA_CBC,
 		.block_sz = 8,
 		.iv_len = 8,
@@ -362,7 +363,7 @@ static encr_param_t encr_params[] = {
 		.key_incr = 0,
 	},
 	{
-		.i2_encr = IKEV2_XF_ENCR_CAST,
+		.i2_encr = IKEV2_ENCR_CAST,
 		.p11_encr = CKM_CAST5_CBC,
 		.block_sz = 8,
 		.iv_len = 8,
@@ -372,7 +373,7 @@ static encr_param_t encr_params[] = {
 		.key_incr = 1,
 	},
 	{
-		.i2_encr = IKEV2_XF_ENCR_BLOWFISH,
+		.i2_encr = IKEV2_ENCR_BLOWFISH,
 		.p11_encr = CKM_BLOWFISH_CBC,
 		.block_sz = 8,
 		.iv_len = 8,
@@ -383,7 +384,7 @@ static encr_param_t encr_params[] = {
 	},
 #if 0
 	{
-		.i2_encr = IKEV2_XF_ENCR_3IDEA,
+		.i2_encr = IKEV2_ENCR_3IDEA,
 		.p11_encr = 0,
 		.block_sz = 0,
 		.iv_len = 0,
@@ -391,7 +392,7 @@ static encr_param_t encr_params[] = {
 		.keylen_req = B_FALSE
 	},
 	{
-		.i2_encr = IKEV2_XF_ENCR_DES_IV32,
+		.i2_encr = IKEV2_ENCR_DES_IV32,
 		.p11_encr = CKM_DES_CBC,
 		.block_sz = 8,
 		.iv_len = 4,
@@ -407,7 +408,7 @@ static encr_param_t encr_params[] = {
 		.keylen_req = B_FALSE
 	},
 	{
-		.i2_encr = IKEV2_XF_ENCR_NULL,
+		.i2_encr = IKEV2_ENCR_NULL,
 		.p11_encr = 0,
 		.block_sz = 0,
 		.iv_len = 0,
@@ -416,7 +417,7 @@ static encr_param_t encr_params[] = {
 	},
 #endif
 	{
-		.i2_encr = IKEV2_XF_ENCR_AES_CBC,
+		.i2_encr = IKEV2_ENCR_AES_CBC,
 		.p11_encr = CKM_AES_CBC,
 		.block_sz = 16,
 		.iv_len = 16,
@@ -427,7 +428,7 @@ static encr_param_t encr_params[] = {
 	},
 #if 0
 	{
-		.i2_encr = IKEV2_XF_ENCR_AES_CTR,
+		.i2_encr = IKEV2_ENCR_AES_CTR,
 		.p11_encr = CKM_AES_CTR,
 		.block_sz = 16,
 		.iv_len = 8,
@@ -437,7 +438,7 @@ static encr_param_t encr_params[] = {
 #endif
 
 	{
-		.i2_encr = IKEV2_XF_ENCR_AES_CCM_8,
+		.i2_encr = IKEV2_ENCR_AES_CCM_8,
 		.p11_encr = CKM_AES_CCM,
 		.block_sz = 16,
 		.iv_len = 12,
@@ -447,7 +448,7 @@ static encr_param_t encr_params[] = {
 		.key_default = 0,
 	},
 	{
-		.i2_encr = IKEV2_XF_ENCR_AES_CCM_12,
+		.i2_encr = IKEV2_ENCR_AES_CCM_12,
 		.p11_encr = CKM_AES_CCM,
 		.block_sz = 16,
 		.iv_len = 12,
@@ -457,7 +458,7 @@ static encr_param_t encr_params[] = {
 		.key_default = 0
 	},
 	{
-		.i2_encr = IKEV2_XF_ENCR_AES_CCM_16,
+		.i2_encr = IKEV2_ENCR_AES_CCM_16,
 		.p11_encr = CKM_AES_CCM,
 		.block_sz = 16,
 		.iv_len = 12,
@@ -476,7 +477,7 @@ static encr_param_t encr_params[] = {
 		.keylen_req = B_FALSE
 	},
 	{
-		.i2_encr = IKEV2_XF_ENCR_AES_GCM_ICV8,
+		.i2_encr = IKEV2_ENCR_AES_GCM_ICV8,
 		.p11_encr = 0, /* CKM_AES_GCM */
 		.block_sz = 16,
 		.iv_len = 8,
@@ -484,7 +485,7 @@ static encr_param_t encr_params[] = {
 		.keylen_req = B_FALSE
 	},
 	{
-		.i2_encr = IKEV2_XF_ENCR_AES_GCM_ICV12,
+		.i2_encr = IKEV2_ENCR_AES_GCM_ICV12,
 		.p11_encr = 0, /* CKM_AES_GCM */
 		.block_sz = 16,
 		.iv_len = 12,
@@ -492,7 +493,7 @@ static encr_param_t encr_params[] = {
 		.keylen_req = B_FALSE
 	},
 	{
-		.i2_encr = IKEV2_XF_ENCR_AES_GCM_ICV16,
+		.i2_encr = IKEV2_ENCR_AES_GCM_ICV16,
 		.p11_encr = 0, /* CKM_AES_GCM */
 		.block_sz = 16,
 		.iv_len = 16,
@@ -500,7 +501,7 @@ static encr_param_t encr_params[] = {
 		.keylen_req = B_FALSE
 	},
 	{
-		.i2_encr = IKEV2_XF_ENCR_NULL_AUTH_AES_GMAC,
+		.i2_encr = IKEV2_ENCR_NULL_AUTH_AES_GMAC,
 		.p11_encr = 0,
 		.block_sz = 16,
 		.iv_len = 0,
@@ -508,7 +509,7 @@ static encr_param_t encr_params[] = {
 		.keylen_req = B_FALSE
 	},
 	{
-		.i2_encr = IKEV2_XF_ENCR_IEEE_P1619_XTS_AES,
+		.i2_encr = IKEV2_ENCR_IEEE_P1619_XTS_AES,
 		.p11_encr = 0,
 		.block_sz = 0,
 		.iv_len = 0,
@@ -516,7 +517,7 @@ static encr_param_t encr_params[] = {
 		.keylen_req = B_FALSE
 	},
 	{
-		.i2_encr = IKEV2_XF_ENCR_CAMELLIA_CBC,
+		.i2_encr = IKEV2_ENCR_CAMELLIA_CBC,
 		.p11_encr = CKM_CAMELLIA_CBC,
 		.block_sz = 0,
 		.iv_len = 0,
@@ -524,7 +525,7 @@ static encr_param_t encr_params[] = {
 		.keylen_req = B_FALSE
 	},
 	{
-		.i2_encr = IKEV2_XF_ENCR_CAMELLIA_CTR,
+		.i2_encr = IKEV2_ENCR_CAMELLIA_CTR,
 		.p11_encr = CKM_CAMELLIA_CTR,
 		.block_sz = 0,
 		.iv_len = 0,
@@ -532,7 +533,7 @@ static encr_param_t encr_params[] = {
 		.keylen_req = B_FALSE
 	},
 	{
-		.i2_encr = IKEV2_XF_ENCR_CAMELLIA_CCM_8,
+		.i2_encr = IKEV2_ENCR_CAMELLIA_CCM_8,
 		.p11_encr = 0,
 		.block_sz = 0,
 		.iv_len = 0,
@@ -540,7 +541,7 @@ static encr_param_t encr_params[] = {
 		.keylen_req = B_FALSE
 	},
 	{
-		.i2_encr = IKEV2_XF_ENCR_CAMELLIA_CCM_12,
+		.i2_encr = IKEV2_ENCR_CAMELLIA_CCM_12,
 		.p11_encr = 0,
 		.block_sz = 0,
 		.iv_len = 0,
@@ -548,7 +549,7 @@ static encr_param_t encr_params[] = {
 		.keylen_req = B_FALSE
 	},
 	{
-		.i2_encr = IKEV2_XF_ENCR_CAMELLIA_CCM_16,
+		.i2_encr = IKEV2_ENCR_CAMELLIA_CCM_16,
 		.p11_encr = 0,
 		.block_sz = 0,
 		.iv_len = 0,
@@ -575,9 +576,6 @@ encr_param_t *
 ikev2_get_encr_param(ikev2_xf_encr_t alg)
 {
 	int i;
-
-	if (alg < IKEV2_XF_ENCR_MIN || alg > IKEV2_XF_ENCR_MAX)
-		return (NULL);
 
 	for (i = 0; i < sizeof (encr_params) / sizeof (encr_param_t); i++) {
 		if (encr_params[i].i2_encr == alg)
@@ -616,8 +614,8 @@ pkcs11_destroy_obj(const char *name, CK_OBJECT_HANDLE_PTR objp, int level)
  * required to write out the complete digest.
  */
 boolean_t
-pkcs11_digest(CK_MECHANISM_TYPE alg, buf_t *restrict in, size_t n_in
-    buf_t *restrict, int level)
+pkcs11_digest(CK_MECHANISM_TYPE alg, const buf_t *restrict in, size_t n_in,
+    buf_t *restrict out, int level)
 {
 	CK_MECHANISM	mech;
 	CK_RV		ret;
@@ -645,10 +643,10 @@ pkcs11_digest(CK_MECHANISM_TYPE alg, buf_t *restrict in, size_t n_in
 		}
 	}
 
-	CK_ULONG len = out.len;
+	CK_ULONG len = out->len;
 
-	ret = C_DigestFinal(p11s, out.ptr, &len);
-	out.len = (size_t)len;
+	ret = C_DigestFinal(p11s, out->ptr, &len);
+	out->len = (size_t)len;
 
 	if (ret != CKR_OK) {
 #ifdef notyet

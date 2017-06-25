@@ -71,7 +71,7 @@ void pkcs11_global_init(void);
 void pkcs11_global_fini(void);
 
 boolean_t pkcs11_worker_init(void);
-void pkcs11_worker_fini(void *);
+void pkcs11_worker_fini(void);
 
 boolean_t pkcs11_digest(CK_MECHANISM_TYPE, const buf_t *restrict, size_t,
     buf_t *restrict, int);
