@@ -53,7 +53,8 @@ static const prf_alg_t	*get_alg(int);
 static CK_RV		prfplus_update(prfp_t *);
 
 /*
- * Create a PKCS11 key object that can be used in C_Sign* operations.
+ * Create a PKCS11 key object that can be used in C_Sign* operations with
+ * a scatter/gather-like listing of source input.
  *
  * Args:
  * 	alg	The PRF algorithm this will be used with
@@ -92,54 +93,27 @@ prf_genkey(int alg, buf_t *restrict src, size_t n,
 	VERIFY((algp = get_alg(alg)) != NULL);
 	hmac = algp->hmac;
 
-	/*
-	 * As (currently), all the supported PRF algorithms are based off
-	 * HMAC functions, per RFC 5996 2.13, the key size is the output
-	 * of the HMAC function.
-	 *
-	 * 
-	 */
-	if (!buf_alloc(&key, algp->inlen)) {
-		rc = CKR_HOST_MEMORY;
-		goto done;
-	}
-
 	srclen = 0;
 	for (size_t i = 0; i < n; i++)
 		srclen += src[i].len;
 
-	if (srclen <= key.len) {
-		VERIFY(buf_copy(&key, src, n) <= key.len);
+	if (srclen < algp->inlen && algp->pad)
+		keylen = algp->inlen;
+	else
 		keylen = srclen;
-	} else {
-		/*
-		 * Per normal HMAC procedure (according RFC4868 at least),
-		 * keys larger than the hash block size (palg->input),
-		 * hash and use the result (which will be smaller than
-		 * the block size).
-		 */
-		CK_MECHANISM	hashmech = { algp->hash, NULL_PTR, 0 };
 
-		rc = C_DigestInit(p11s(), &hashmech);
-		if (rc != CKR_OK)
-			goto done;
-
-		for (size_t i = 0; i < n; i++) {
-			rc = C_DigestUpdate(p11s(), src[i].ptr, src[i].len);
-			/* XXX: Should we call C_DigestFinal on error? */
-			if (rc != CKR_OK)
-				goto done;
-		}
-		keylen = key.len;
-		rc = C_DigestFinal(p11s(), key.ptr, &keylen);
-		if (rc != CKR_OK)
-			goto done;
-
-		ASSERT(keylen == algp->outlen);
+	if (!buf_alloc(&key, keylen)) {
+		rc = CKR_HOST_MEMORY;
+		goto done;
 	}
 
-	if ((keylen < algp->inlen) && algp->pad)
-		keylen = algp->inlen;
+	/*
+	 * The HMAC standards specify what an implementation should do when
+	 * the given key length doesn't match the preferred key length (either
+	 * pad or run the digest alg on the key to yield a value of the desired
+	 * length), so we should not need to worry about this.
+	 */
+	VERIFY(buf_copy(&key, src, n) <= key.len);
 
 	template[0].pValue = key.ptr;
 	template[0].ulValueLen = keylen;

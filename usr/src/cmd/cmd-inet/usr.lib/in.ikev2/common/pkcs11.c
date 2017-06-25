@@ -36,7 +36,6 @@
 #include <pthread.h>
 #include <sys/debug.h>
 #include <note.h>
-#include <cryptoutil.h>
 #include "pkcs11.h"
 #include "defs.h"
 

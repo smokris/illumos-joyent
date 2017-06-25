@@ -24,7 +24,7 @@
  * Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
  *
- * Copyright 2014 Jason King.
+ * Copyright 2017 Jason King.
  */
 
 #ifndef _IKEV2D_DEFS_H
@@ -33,11 +33,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <ikedoor.h>
-
-#if 0
 #include <cryptoutil.h>
-#endif
-
 #include <security/cryptoki.h>
 #include <stdio.h>
 #include <assert.h>
