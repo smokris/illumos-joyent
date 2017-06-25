@@ -23,7 +23,7 @@
  * Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
  *
- * Copyright 2014 Jason King.  All rights reserved.
+ * Copyright 2017 Jason King.  All rights reserved.
  * Use is subject to license terms.
  */
 
@@ -39,33 +39,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-/* XXX: Temporary definitions until AES_[GC]CM support is putback */
-
-#define	CKM_AES_CCM	0x80000001
-#define	CKM_AES_GCM	0x80000002
-
-/* BEGIN CSTYLED */
-typedef struct CK_CCM_PARAMS {
-    CK_ULONG    ulDataLen;
-    CK_BYTE_PTR pNonce;
-    CK_ULONG    ulNonceLen;
-    CK_BYTE_PTR pAAD;
-    CK_ULONG    ulAADLen;
-    CK_ULONG    ulMACLen;
-} CK_CCM_PARAMS;
-
-typedef struct CK_GCM_PARAMS {
-    CK_BYTE_PTR pIv;
-    CK_ULONG    ulIvLen;
-    CK_BYTE_PTR pAAD;
-    CK_ULONG    ulAADLen;
-    CK_ULONG    ulTagBits;
-} CK_GCM_PARAMS;
-
-typedef CK_CCM_PARAMS * CK_CCM_PARAMS_PTR;
-typedef CK_GCM_PARAMS * CK_GCM_PARAMS_PTR;
-/* END CSTYLED */
 
 typedef struct {
 	ikev2_xf_encr_t		i2_encr;

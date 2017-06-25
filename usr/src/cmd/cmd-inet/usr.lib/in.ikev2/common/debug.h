@@ -26,6 +26,9 @@ extern "C" {
 extern uint32_t debug_evt;
 extern uint32_t debug_opts;
 
+extern void dbg_printf(const char *, ...);
+extern void dbg_vprintf(const char *, va_list);
+
 inline void
 DBG(int level, const char *msg, ...)
 {
@@ -38,9 +41,6 @@ DBG(int level, const char *msg, ...)
 	dbg_vprintf(msg, ap);
 	va_end(ap);
 }
-
-extern void dbg_printf(const char *, ...);
-extern void dbg_vprintf(const char *, va_list);
 
 #ifdef __cplusplus
 }

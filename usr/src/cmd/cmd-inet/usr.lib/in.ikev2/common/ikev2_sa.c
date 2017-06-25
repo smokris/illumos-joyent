@@ -23,7 +23,7 @@
  * Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
  *
- * Copyright 2014 Jason King.  All rights reserved.
+ * Copyright 2017 Jason King.  All rights reserved.
  * Use is subject to license terms.
  */
 
@@ -173,7 +173,7 @@ ikev2_sa_get(uint64_t l_spi, uint64_t r_spi,
  */
 ikev2_sa_t *
 ikev2_sa_alloc(boolean_t initiator,
-    ikev2_pkt_t *restrict init_pkt,
+    pkt_t *restrict init_pkt,
     const struct sockaddr_storage *restrict laddr,
     const struct sockaddr_storage *restrict raddr)
 {
