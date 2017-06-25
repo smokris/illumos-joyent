@@ -64,14 +64,14 @@ typedef struct {
 	size_t			key_sz;
 } auth_param_t;
 
-extern __thread CK_SESSION_HANDLE p11s;
-
 /* PKCS#11 functions. */
 void pkcs11_global_init(void);
 void pkcs11_global_fini(void);
 
 boolean_t pkcs11_worker_init(void);
-void pkcs11_worker_fini(void);
+void pkcs11_worker_fini(void *);
+
+CK_SESSION_HANDLE p11s(void);
 
 boolean_t pkcs11_digest(CK_MECHANISM_TYPE, const buf_t *restrict, size_t,
     buf_t *restrict, int);

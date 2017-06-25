@@ -20,6 +20,7 @@
 #include "defs.h"
 #include "ikev2.h"
 #include "prf.h"
+#include "pkcs11.h"
 
 typedef struct prf_alg_s {
 	int			i2alg;
@@ -47,8 +48,6 @@ static const prf_alg_t prf_tbl[] = {
 	MECHPAD(SHA2_512, SHA512, 128, 64)
 };
 #define	N_PRF (sizeof (prf_tbl) / sizeof (prf_alg_t))
-
-extern __thread CK_SESSION_HANDLE p11s;
 
 static const prf_alg_t	*get_alg(int);
 static CK_RV		prfplus_update(prfp_t *);
@@ -121,18 +120,18 @@ prf_genkey(int alg, buf_t *restrict src, size_t n,
 		 */
 		CK_MECHANISM	hashmech = { algp->hash, NULL_PTR, 0 };
 
-		rc = C_DigestInit(p11s, &hashmech);
+		rc = C_DigestInit(p11s(), &hashmech);
 		if (rc != CKR_OK)
 			goto done;
 
 		for (size_t i = 0; i < n; i++) {
-			rc = C_DigestUpdate(p11s, src[i].ptr, src[i].len);
+			rc = C_DigestUpdate(p11s(), src[i].ptr, src[i].len);
 			/* XXX: Should we call C_DigestFinal on error? */
 			if (rc != CKR_OK)
 				goto done;
 		}
 		keylen = key.len;
-		rc = C_DigestFinal(p11s, key.ptr, &keylen);
+		rc = C_DigestFinal(p11s(), key.ptr, &keylen);
 		if (rc != CKR_OK)
 			goto done;
 
@@ -145,7 +144,7 @@ prf_genkey(int alg, buf_t *restrict src, size_t n,
 	template[0].pValue = key.ptr;
 	template[0].ulValueLen = keylen;
 
-	rc = C_CreateObject(p11s, template,
+	rc = C_CreateObject(p11s(), template,
 	    sizeof (template) / sizeof (CK_ATTRIBUTE), kp);
 
 done:
@@ -172,17 +171,17 @@ prf(int alg, CK_OBJECT_HANDLE key, buf_t *restrict seed, size_t nseed,
 	mech.pParameter = NULL;
 	mech.ulParameterLen = 0;
 
-	if ((rc = C_SignInit(p11s, &mech, key)) != CKR_OK)
+	if ((rc = C_SignInit(p11s(), &mech, key)) != CKR_OK)
 		return (rc);
 
 	for (size_t i = 0; i < nseed; i++) {
-		rc = C_SignUpdate(p11s, seed[i].ptr, seed[i].len);
+		rc = C_SignUpdate(p11s(), seed[i].ptr, seed[i].len);
 		/* XXX: should we still call C_SignFinal? */
 		if (rc != CKR_OK)
 			return (rc);
 	}
 
-	rc = C_SignFinal(p11s, out->ptr, &out->len);
+	rc = C_SignFinal(p11s(), out->ptr, &out->len);
 	/* If we sized correctly, this should never change */
 	ASSERT(out->len >= algp->outlen);
 	return (rc);

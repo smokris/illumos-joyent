@@ -60,8 +60,7 @@ static CK_SESSION_HANDLE_PTR	ses_free_list;
 static int			ses_nfree;
 static int			ses_alloc;
 
-/* TLS session handle for each worker */
-__thread CK_SESSION_HANDLE	p11s;
+static pthread_key_t		p11_key = PTHREAD_ONCE_KEY_NP;
 
 /*
  * Now using libcryptoutil's pkcs11_strerror().
@@ -109,11 +108,12 @@ is_metaslot(CK_SLOT_ID slot, void *args, CK_RV *rv)
 void
 pkcs11_global_init(void)
 {
+	CK_SESSION_HANDLE p11h = CK_INVALID_HANDLE;
 	CK_RV		rv = CKR_OK;
 	boolean_t	found = B_FALSE;
 
 	/* Init PKCS#11, find the metaslot, and open an initial session */
-	rv = pkcs11_GetCriteriaSession(is_metaslot, &found, &p11s);
+	rv = pkcs11_GetCriteriaSession(is_metaslot, &found, &p11h);
 	if (rv != CKR_OK) {
 		pkcs11_error(rv, "pkcs11_GetCriteriaSession");
 		exit(1);
@@ -124,6 +124,9 @@ pkcs11_global_init(void)
 		    gettext("Unable to locate the metaslot."));
 		exit(1);
 	}
+
+	VERIFY3S(pthread_key_create_once_np(&p11_key, pkcs11_worker_fini), ==, 0);
+	VERIFY3S(pthread_setspecific(p11_key, (const void *)p11h), ==, 0);
 }
 
 /*
@@ -156,9 +159,7 @@ pkcs11_global_fini(void)
 boolean_t
 pkcs11_worker_init(void)
 {
-	/* Make sure we never try to use a garbage value */
-	/* XXX: this might be good to move to a global thread init */
-	p11s = CK_INVALID_HANDLE;
+	CK_SESSION_HANDLE p11h = CK_INVALID_HANDLE;
 
 	/*
 	 * for simplicity, we push and pop sessions from the end
@@ -166,18 +167,21 @@ pkcs11_worker_init(void)
 	 */
 	VERIFY(pthread_mutex_lock(&ses_free_lock) == 0);
 	if (ses_nfree > 0) {
-		p11s = ses_free_list[--ses_nfree];
+		p11h = ses_free_list[--ses_nfree];
 		VERIFY(pthread_mutex_unlock(&ses_free_lock) == 0);
-		return (B_TRUE);
+		goto done;
 	}
 	VERIFY(pthread_mutex_unlock(&ses_free_lock) == 0);
 
 	CK_RV rc = C_OpenSession(metaslot, CKF_SERIAL_SESSION, NULL,
-	    pkcs11_callback_handler, &p11s);
+	    pkcs11_callback_handler, &p11h);
 	if (rc != CKR_OK) {
 		pkcs11_error(rc, "C_OpenSession");
 		return (B_FALSE);
 	}
+
+done:
+	VERIFY3S(pthread_setspecific(p11_key, (const void *)p11h), ==, 0);
 	return (B_TRUE);
 }
 
@@ -189,8 +193,10 @@ pkcs11_worker_init(void)
 
 #define	SES_FREE_CHUNK 8	/* Used when expanding the session free list */
 void
-pkcs11_worker_fini(void)
+pkcs11_worker_fini(void *arg)
 {
+	CK_SESSION_HANDLE p11h = (CK_SESSION_HANDLE)arg;
+
 	VERIFY(pthread_mutex_lock(&ses_free_lock) == 0);
 	if (ses_nfree + 1 > ses_alloc) {
 		size_t nelem = ses_alloc + SES_FREE_CHUNK;
@@ -219,9 +225,14 @@ pkcs11_worker_fini(void)
 		ses_alloc = nelem;
 	}
 
-	ses_free_list[ses_nfree++] = p11s;
+	ses_free_list[ses_nfree++] = p11h;
 	VERIFY(pthread_mutex_unlock(&ses_free_lock) == 0);
-	p11s = CK_INVALID_HANDLE;
+}
+
+CK_SESSION_HANDLE
+p11s(void)
+{
+	return ((CK_SESSION_HANDLE)pthread_getspecific(p11_key));
 }
 
 static auth_param_t auth_params[] = {
@@ -596,7 +607,7 @@ pkcs11_destroy_obj(const char *name, CK_OBJECT_HANDLE_PTR objp, int level)
 	if (objp == NULL || *objp == CK_INVALID_HANDLE)
 		return;
 
-	if ((ret = C_DestroyObject(p11s, *objp)) != CKR_OK) {
+	if ((ret = C_DestroyObject(p11s(), *objp)) != CKR_OK) {
 #ifdef notyet
 		PRTDBG(level, ("Unable to destroy %s: %s", name,
 		    pkcs11_strerror(rc)));
@@ -624,7 +635,7 @@ pkcs11_digest(CK_MECHANISM_TYPE alg, const buf_t *restrict in, size_t n_in,
 	mech.pParameter = NULL_PTR;
 	mech.ulParameterLen = 0;
 
-	if ((ret = C_DigestInit(p11s, &mech)) != CKR_OK) {
+	if ((ret = C_DigestInit(p11s(), &mech)) != CKR_OK) {
 #ifdef notyet
 		PRTDBG(level, ("C_DigestInit failed: %s.",
 		    pkcs11_strerror(ret)));
@@ -633,7 +644,7 @@ pkcs11_digest(CK_MECHANISM_TYPE alg, const buf_t *restrict in, size_t n_in,
 	}
 
 	for (size_t i = 0; i < n_in; i++) {
-		ret = C_DigestUpdate(p11s, in[i].ptr, in[i].len);
+		ret = C_DigestUpdate(p11s(), in[i].ptr, in[i].len);
 		if (ret != CKR_OK) {
 #ifdef notyet
 			PRTDBG(level, ("C_DigestUpdate failed: %s.",
@@ -645,7 +656,7 @@ pkcs11_digest(CK_MECHANISM_TYPE alg, const buf_t *restrict in, size_t n_in,
 
 	CK_ULONG len = out->len;
 
-	ret = C_DigestFinal(p11s, out->ptr, &len);
+	ret = C_DigestFinal(p11s(), out->ptr, &len);
 	out->len = (size_t)len;
 
 	if (ret != CKR_OK) {
