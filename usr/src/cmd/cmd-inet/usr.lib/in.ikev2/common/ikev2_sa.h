@@ -23,8 +23,8 @@
  * Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
  *
- * Copyright 2014 Jason King.  All rights reserved.
- * Use is subject to license terms.
+ * Copyright 2014 Jason King.
+ * Copyright 2017 Joyent, Inc.
  */
 
 #ifndef _IKEV2D_IKEV2_SA_H
@@ -83,11 +83,6 @@ struct ikev2_sa {
 	uu_list_node_t	lspi_node;
 	uu_list_node_t	rhash_node;
 
-	/*
-	 * Fields that will be zeroed out before returning to the umem_cache
-	 * start here
-	 */
-#define	I2SA_ZERO_START	bucket
 			/* Link to the bucket we are in for each hash */
 	i2sa_bucket_t	*bucket[I2SA_NUM_HASH];
 
@@ -133,8 +128,6 @@ struct ikev2_sa {
         CK_OBJECT_HANDLE sk_pi;
         CK_OBJECT_HANDLE sk_pr;
 };
-#define	I2SA_ZERO_OFFSET offsetof(ikev2_sa_t, I2SA_ZERO_START)
-#define	I2SA_ZERO_LEN (sizeof (ikev2_sa_t) - I2SA_ZERO_OFFSET)
 
 struct ikev2_child_sa {
         ikev2_child_sa_t        *next;

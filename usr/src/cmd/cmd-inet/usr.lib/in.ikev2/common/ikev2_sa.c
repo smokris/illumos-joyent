@@ -23,8 +23,8 @@
  * Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
  *
- * Copyright 2017 Jason King.  All rights reserved.
- * Use is subject to license terms.
+ * Copyright 2017 Jason King.
+ * Copyright 2017 Joyent, Inc.
  */
 
 /*
@@ -104,6 +104,9 @@ static boolean_t i2sa_add_to_hash(int, ikev2_sa_t *);
 
 static void i2sa_unlink(ikev2_sa_t *);
 static void i2sa_expire_cb(te_event_t, void *data);
+
+static int i2sa_ctor(void *, void *, int);
+static void i2sa_dtor(void *, void *);
 
 static void inc_half_open(void);
 static void dec_half_open(void);
@@ -318,7 +321,8 @@ ikev2_sa_free(ikev2_sa_t *i2sa)
 
 	/* TODO: free child SAs */
 
-        i2sa_init(i2sa);
+	i2sa_dtor(i2sa, NULL);
+        i2sa_ctor(i2sa, NULL, 0);
         umem_cache_free(i2sa_cache, i2sa);
 }
 
@@ -669,26 +673,14 @@ dec_half_open(void)
 	 */
 }
 
-/*
- * Reset all the fields of an IKEv2 SA.  Used during umem construction, as
- * well as before an SA is returned to the umem cache, per umem requirements.
- */
-static void
-i2sa_init(ikev2_sa_t *i2sa)
-{
-	uchar_t *zero_start;
-
-	zero_start = (uchar_t *)i2sa + I2SA_ZERO_OFFSET;
-	(void) memset(zero_start, 0, I2SA_ZERO_LEN);
-	i2sa->msgwin = 1;
-}
-
 static int
 i2sa_ctor(void *buf, void *dummy, int flags)
 {
 	_NOTE(ARGUNUSUED(dummy, flags))
 
 	ikev2_sa_t *i2sa = (ikev2_sa_t *)&buf;
+
+	(void) memset(i2sa, 0, sizeof (*i2sa));
 
 	VERIFY(pthread_mutex_init(&i2sa->lock, NULL) == 0);
 	for (size_t i = 0; i < ARRAY_SIZE(pool_names); i++) {
@@ -697,7 +689,7 @@ i2sa_ctor(void *buf, void *dummy, int flags)
 		    list_pool[i]);
 	}
 
-	i2sa_init(i2sa);
+	i2sa->msgwin = 1;
 	return (0);
 }
 
