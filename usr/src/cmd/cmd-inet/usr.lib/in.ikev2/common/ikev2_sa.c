@@ -144,11 +144,11 @@ ikev2_sa_get(uint64_t l_spi, uint64_t r_spi,
 		arg.hash = RHASH;
 	}
 
-	VERIFY(pthread_mutex_lock(&bucket->lock) == 0);
+	PTH(pthread_mutex_lock(&bucket->lock));
 	sa = (ikev2_sa_t *)uu_list_find(bucket->chain, NULL, &arg, NULL);
 	if (sa != NULL)
 		I2SA_REFHOLD(sa);
-	VERIFY(pthread_mutex_unlock(&bucket->lock) == 0);
+	PTH(pthread_mutex_unlock(&bucket->lock));
 
 	return (i2sa_verify(sa, r_spi, l_addr, r_addr));
 }
@@ -186,7 +186,7 @@ ikev2_sa_alloc(boolean_t initiator,
 		return (NULL);
 
 	/* Keep anyone else out while we initialize */
-	VERIFY(pthread_mutex_lock(&i2sa->lock) == 0);
+	PTH(pthread_mutex_lock(&i2sa->lock));
 
 	ASSERT((init_pkt == NULL) ||
 	    (init_pkt->hdr.exch_type == IKEV2_EXCHANGE_IKE_SA_INIT));
@@ -235,9 +235,9 @@ ikev2_sa_alloc(boolean_t initiator,
 		/* XXX: log error */
 
 		/* remove from hashes */
-		VERIFY(pthread_mutex_lock(&i2sa->lock) == 0);
+		PTH(pthread_mutex_lock(&i2sa->lock));
 		i2sa_unlink(i2sa);
-		VERIFY(pthread_mutex_unlock(&i2sa->lock) == 0);
+		PTH(pthread_mutex_unlock(&i2sa->lock));
 
 		/* should be free'd once these references are released */
 		ASSERT(i2sa->refcnt == 2);
@@ -376,8 +376,7 @@ ikev2_sa_set_hashsize(uint_t numbuckets)
 			if (hash[hashtbl][i].chain == NULL)
 				goto nomem;
 
-			VERIFY(pthread_mutex_init(&hash[hashtbl][i].lock,
-			    NULL) == 0);
+			PTH(pthread_mutex_init(&hash[hashtbl][i].lock, NULL));
 		}
 	}
 
@@ -420,8 +419,7 @@ ikev2_sa_set_hashsize(uint_t numbuckets)
 				I2SA_REFRELE(i2sa);
 			}
 
-			VERIFY(pthread_mutex_destroy(&old[hashtbl][i].lock) ==
-			    0);
+			PTH(pthread_mutex_destroy(&old[hashtbl][i].lock));
 			uu_list_destroy(old[hashtbl][i].chain);
 		}
 	}
@@ -521,7 +519,7 @@ i2sa_add_to_hash(int hashtbl, ikev2_sa_t *i2sa)
 	VERIFY3S(hashtbl, <, I2SA_NUM_HASH);
 
 	bucket = i2sa_get_bucket(hashtbl, i2sa);
-	VERIFY(pthread_mutex_lock(&bucket->lock) == 0);
+	PTH(pthread_mutex_lock(&bucket->lock));
 
 	arg.hash = hashtbl;
 
@@ -540,14 +538,14 @@ i2sa_add_to_hash(int hashtbl, ikev2_sa_t *i2sa)
 		 * XXX: Should we do anything different for an rhash
 		 * match?
 		 */
-		VERIFY(pthread_mutex_unlock(&bucket->lock) == 0);
+		PTH(pthread_mutex_unlock(&bucket->lock));
 		return (B_FALSE);
 	}
 
 	I2SA_REFHOLD(i2sa);	/* ref for chain */
 	i2sa->bucket[hashtbl] = bucket;
 	uu_list_insert(bucket->chain, i2sa, idx);
-	VERIFY(pthread_mutex_unlock(&bucket->lock) == 0);
+	PTH(pthread_mutex_unlock(&bucket->lock));
 
 	return (B_TRUE);
 }
@@ -602,10 +600,10 @@ i2sa_hash_remove(int hashtbl, ikev2_sa_t *i2sa)
 	ASSERT(i2sa->refcnt > 1);
 
 	bucket = i2sa_get_bucket(hashtbl, i2sa);
-	VERIFY(pthread_mutex_lock(&bucket->lock) == 0);
+	PTH(pthread_mutex_lock(&bucket->lock));
 	uu_list_remove(bucket->chain, i2sa);
 	i2sa->bucket[hashtbl] = NULL;
-	VERIFY(pthread_mutex_unlock(&bucket->lock) == 0);
+	PTH(pthread_mutex_unlock(&bucket->lock));
 	I2SA_REFRELE(i2sa);
 }
 
@@ -682,7 +680,7 @@ i2sa_ctor(void *buf, void *dummy, int flags)
 
 	(void) memset(i2sa, 0, sizeof (*i2sa));
 
-	VERIFY(pthread_mutex_init(&i2sa->lock, NULL) == 0);
+	PTH(pthread_mutex_init(&i2sa->lock, NULL));
 	for (size_t i = 0; i < ARRAY_SIZE(pool_names); i++) {
 		uu_list_node_init(buf,
 		    (uu_list_node_t *)((uchar_t *)buf + pool_names[i].offset),
@@ -700,7 +698,7 @@ i2sa_dtor(void *buf, void *dummy)
 
 	ikev2_sa_t *i2sa = (ikev2_sa_t *)buf;
 
-	VERIFY(pthread_mutex_destroy(&i2sa->lock) == 0);
+	PTH(pthread_mutex_destroy(&i2sa->lock));
 	for (size_t i = 0; i < I2SA_NUM_HASH; i++) {
 		uu_list_node_fini(buf,
 		    (uu_list_node_t *)((uchar_t *)buf + pool_names[i].offset),

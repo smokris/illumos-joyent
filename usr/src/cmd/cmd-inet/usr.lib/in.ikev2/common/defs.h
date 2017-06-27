@@ -25,6 +25,7 @@
  * Use is subject to license terms.
  *
  * Copyright 2017 Jason King.
+ * Copyright 2017 Joyent, Inc.
  */
 
 #ifndef _IKEV2D_DEFS_H
@@ -81,6 +82,16 @@ typedef union sockaddr_u_s {
 
 #define	INVALID(var) assfail("Invalid value of " # var, __FILE__, __LINE__)
 #define	ARRAY_SIZE(x) (sizeof (x) / sizeof (x[0]))
+
+/*
+ * Simple wrapper for pthread calls that should never fail under 
+ * normal conditions.
+ */
+#define	PTH(fn) do {							\
+	int __pthread_rc = fn;						\
+	if (__pthread_rc < 0)						\
+		assfail(#fn " call failed", __FILE__, __LINE__);	\
+_NOTE(CONSTCOND) } while (0)
 
 extern char *my_fmri;
 extern FILE *debugfile;

@@ -124,8 +124,8 @@ pkcs11_global_init(void)
 		exit(1);
 	}
 
-	VERIFY3S(pthread_key_create_once_np(&p11_key, pkcs11_worker_fini), ==, 0);
-	VERIFY3S(pthread_setspecific(p11_key, (const void *)p11h), ==, 0);
+	PTH(pthread_key_create_once_np(&p11_key, pkcs11_worker_fini));
+	PTH(pthread_setspecific(p11_key, (const void *)p11h));
 }
 
 /*
@@ -164,13 +164,13 @@ pkcs11_worker_init(void)
 	 * for simplicity, we push and pop sessions from the end
 	 * of the list.
 	 */
-	VERIFY(pthread_mutex_lock(&ses_free_lock) == 0);
+	PTH(pthread_mutex_lock(&ses_free_lock));
 	if (ses_nfree > 0) {
 		p11h = ses_free_list[--ses_nfree];
-		VERIFY(pthread_mutex_unlock(&ses_free_lock) == 0);
+		PTH(pthread_mutex_unlock(&ses_free_lock));
 		goto done;
 	}
-	VERIFY(pthread_mutex_unlock(&ses_free_lock) == 0);
+	PTH(pthread_mutex_unlock(&ses_free_lock));
 
 	CK_RV rc = C_OpenSession(metaslot, CKF_SERIAL_SESSION, NULL,
 	    pkcs11_callback_handler, &p11h);
@@ -180,7 +180,7 @@ pkcs11_worker_init(void)
 	}
 
 done:
-	VERIFY3S(pthread_setspecific(p11_key, (const void *)p11h), ==, 0);
+	PTH(pthread_setspecific(p11_key, (const void *)p11h));
 	return (B_TRUE);
 }
 
@@ -196,7 +196,7 @@ pkcs11_worker_fini(void *arg)
 {
 	CK_SESSION_HANDLE p11h = (CK_SESSION_HANDLE)arg;
 
-	VERIFY(pthread_mutex_lock(&ses_free_lock) == 0);
+	PTH(pthread_mutex_lock(&ses_free_lock));
 	if (ses_nfree + 1 > ses_alloc) {
 		size_t nelem = ses_alloc + SES_FREE_CHUNK;
 		size_t nsize = nelem * sizeof (CK_SESSION_HANDLE);
@@ -216,7 +216,7 @@ pkcs11_worker_fini(void *arg)
 			PRTDBG(D_THREAD, ("Unable to grow pkcs11 free list. "
 			    "PKCS#11 session %lu will be leaked.\n", p11s));
 #endif
-			VERIFY(pthread_mutex_unlock(&ses_free_lock) == 0);
+			PTH(pthread_mutex_unlock(&ses_free_lock));
 			return;
 		}
 
@@ -225,7 +225,7 @@ pkcs11_worker_fini(void *arg)
 	}
 
 	ses_free_list[ses_nfree++] = p11h;
-	VERIFY(pthread_mutex_unlock(&ses_free_lock) == 0);
+	PTH(pthread_mutex_unlock(&ses_free_lock));
 }
 
 CK_SESSION_HANDLE
