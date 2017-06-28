@@ -94,8 +94,20 @@ typedef union sockaddr_u_s {
 		assfail(#fn " call failed", __FILE__, __LINE__);	\
 _NOTE(CONSTCOND) } while (0)
 
+#define	STDERR(bunyan, msg) \
+	(void) bunyan_error((bunyan), (msg), \
+	BUNYAN_T_STRING, "errmsg", strerror(errno), \
+	BUNYAN_T_INT32, "errno", (int32_t)(errno), \
+	BUNYAN_T_END)
+
+typedef enum event {
+	EVENT_NONE,
+	EVENT_SIGNAL
+} event_t;
+
 extern char *my_fmri;
 extern bunyan_logger_t *log;
+extern int port;
 
 #ifdef  __cplusplus
 }
