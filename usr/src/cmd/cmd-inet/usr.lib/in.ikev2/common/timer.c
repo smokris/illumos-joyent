@@ -22,6 +22,9 @@
 /*
  * Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ *
+ * Copyright 2017 Jason King.
+ * Copyright 2017 Joyent, Inc.
  */
 
 #include <pthread.h>
@@ -50,20 +53,14 @@ typedef struct tevent_s {
 	void		*arg;
 } tevent_t;
 
-#define	TIMER_HEAD	((tevent_t *)uu_list_first(timer_list))
-
-#ifdef DEBUG
-static boolean_t		timer_is_init;
-static __thread boolean_t	timer_thr_is_init;
-#endif
-
 static uu_list_pool_t 		*timer_pools;
-static __thread uu_list_t	*timer_list;
+static pthread_key_t		timer_key = PTHREAD_ONCE_KEY_NP;
 static umem_cache_t		*evt_cache;
 
 static int te_compare(const void *,const void *, void *);
 
 static tevent_t *tevent_alloc(te_event_t, hrtime_t, tevent_cb_fn, void *);
+static void timer_fini(void *);
 static void tevent_free(tevent_t *);
 static int evt_ctor(void *, void *, int);
 static void evt_dtor(void *, void *);
@@ -94,9 +91,7 @@ ike_timer_init(void)
 		errx(EXIT_FAILURE, "Unable to allocate memory for timer event "
 		    "entries");
 
-#ifdef DEBUG
-	timer_is_init = B_TRUE;
-#endif
+	PTH(pthread_key_create_once_np(&timer_key, timer_fini));
 }
 
 /*
@@ -105,21 +100,32 @@ ike_timer_init(void)
 void
 ike_timer_thread_init(void)
 {
+	uu_list_t *list = NULL;
 	uint32_t flg = UU_LIST_SORTED;
 
 #ifdef DEBUG
 	flg |= UU_LIST_DEBUG;
 #endif
 
-	if ((timer_list = uu_list_create(timer_pools, NULL, flg)) == NULL)
+	if ((list = uu_list_create(timer_pools, NULL, flg)) == NULL)
 		errx(EXIT_FAILURE, "Unable to allocate timer event lists");
 
-#ifdef DEBUG
-	timer_thr_is_init = B_TRUE;
-#endif
+	PTH(pthread_setspecific(timer_key, list));
 }
 
 static int dispatch_cb(void *, void *);
+
+static inline uu_list_t *
+timer_list(void)
+{
+	return (pthread_getspecific(timer_key));
+}
+
+static inline tevent_t *
+timer_head(void)
+{
+	return (uu_list_first(timer_list()));
+}
 
 void
 process_timer(timespec_t *next_time)
@@ -140,7 +146,7 @@ process_timer(timespec_t *next_time)
 		 */
 		now = gethrtime();
 
-		if ((te = TIMER_HEAD) == NULL) {
+		if ((te = timer_head()) == NULL) {
 /* XXX: change to config value */
 #define thread_timeout 10
 			next_time->tv_sec = thread_timeout;
@@ -159,7 +165,7 @@ process_timer(timespec_t *next_time)
 		}
 
 		/* dispatch timeouts */
-		uu_list_walk(timer_list, dispatch_cb, &now, UU_WALK_ROBUST);	
+		uu_list_walk(timer_list(), dispatch_cb, &now, UU_WALK_ROBUST);
 	}
 }
 
@@ -173,7 +179,7 @@ dispatch_cb(void *elem, void *arg)
 		return (UU_WALK_DONE);
 
 	te->fn(te->type, te->arg);
-	uu_list_remove(timer_list, elem);
+	uu_list_remove(timer_list(), elem);
 	tevent_free(te);
 
 	return (UU_WALK_NEXT);	
@@ -199,7 +205,7 @@ cancel_timeout(te_event_t type, void *arg)
 	carg.arg = arg;
 	carg.n = 0;
 
-	(void) uu_list_walk(timer_list, cancel_cb, &carg, UU_WALK_ROBUST);
+	(void) uu_list_walk(timer_list(), cancel_cb, &carg, UU_WALK_ROBUST);
 	return (carg.n);
 }
 
@@ -211,7 +217,7 @@ cancel_cb(void *elem, void *arg)
 
 	if (carg->type == TE_ANY ||
 	    ((carg->type == te->type) && (carg->arg == te->arg))) {
-		uu_list_remove(timer_list, elem);
+		uu_list_remove(timer_list(), elem);
 		tevent_free(te);
 		carg->n++;
 	}
@@ -221,6 +227,7 @@ cancel_cb(void *elem, void *arg)
 boolean_t
 schedule_timeout(te_event_t type, tevent_cb_fn fn, void *arg, hrtime_t val)
 {
+	uu_list_t *list = timer_list();
 	tevent_t *te = tevent_alloc(type, val, fn, arg);
 	uu_list_index_t idx;
 
@@ -232,8 +239,8 @@ schedule_timeout(te_event_t type, tevent_cb_fn fn, void *arg, hrtime_t val)
 	if ((te = tevent_alloc(type, val, fn, arg)) == NULL)
 		return (B_FALSE);
 
-	(void) uu_list_find(timer_list, te, NULL, &idx);
-	uu_list_insert(timer_list, te, idx);
+	(void) uu_list_find(list, te, NULL, &idx);
+	uu_list_insert(list, te, idx);
 	return (B_TRUE);
 }
 
@@ -268,16 +275,22 @@ tevent_alloc(te_event_t type, hrtime_t dur, tevent_cb_fn fn, void *arg)
 }
 
 static void
+timer_fini(void *arg)
+{
+	uu_list_t *list = arg;
+
+	(void) cancel_timeout(TE_ANY, NULL);
+	uu_list_destroy(list);
+}
+
+static void
 tevent_free(tevent_t *te)
 {
 	if (te == NULL)
 		return;
 
-	te->time = 0;
-	te->type = 0;
-	te->fn = NULL;
-	te->arg = NULL;
-
+	evt_dtor(te, NULL);
+	evt_ctor(te, NULL, 0);
 	umem_cache_free(evt_cache, te);
 }
 
@@ -288,7 +301,6 @@ evt_ctor(void *buf, void *cb, int flags)
 
 	(void) memset(te, 0, sizeof (*te));
 	uu_list_node_init(buf, &te->node, timer_pools);
-
 	return (0);
 }
 
@@ -298,6 +310,4 @@ evt_dtor(void *buf, void *cb)
 	tevent_t *te = (tevent_t *)buf;
 
 	uu_list_node_fini(buf, &te->node, timer_pools);
-	(void) memset(te, 0, sizeof (*te));
 }
-
