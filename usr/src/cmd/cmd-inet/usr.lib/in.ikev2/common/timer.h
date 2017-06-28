@@ -22,6 +22,9 @@
 /*
  * Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ *
+ * Copyright 2017 Jason King.
+ * Copyright 2017 Joyent, Inc.
  */
 /*
  * Timer events are sorted into a single mutex-protected list.
@@ -53,8 +56,8 @@ extern int		cancel_timeout(te_event_t, void *);
 extern boolean_t	schedule_timeout(te_event_t, tevent_cb_fn, void *,
     hrtime_t);
 
-extern void ikev2_timer_init(void);
-extern void ikev2_timer_thread_init(void);
+extern void ike_timer_init(void);
+extern void ike_timer_thread_init(void);
 
 #ifdef  __cplusplus
 }

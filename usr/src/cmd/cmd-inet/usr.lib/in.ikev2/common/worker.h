@@ -27,7 +27,7 @@ struct pkt;
 void worker_init(size_t, size_t);
 void worker_suspend(void);
 void worker_resume(void);
-void worker_add(void);
+boolean_t worker_add(void);
 void worker_del(void);
 void worker_stop(void);
 boolean_t worker_dispatch(struct pkt *);
