@@ -46,15 +46,11 @@ static void random_low_impl(void *, size_t);
 void
 random_init(void)
 {
-	low_random = open("/dev/urandom", 0);
-	if (low_random == -1) {
-		EXIT_FATAL2("/dev/urandom open failed: %s", strerror(errno));
-	}
+	if ((low_random = open("/dev/urandom", 0)) == -1)
+		err(EXIT_FAILURE, "/dev/urandom open failed");
 
-	high_random = open("/dev/random", 0);
-	if (high_random == -1) {
-		EXIT_FATAL2("/dev/random open failed: %s", strerror(errno));
-	}
+	if ((high_random = open("/dev/random", 0)) == -1)
+		err(EXIT_FAILURE, "/dev/random open failed");
 }
 
 uint64_t
@@ -80,14 +76,12 @@ random_high_impl(void *buf, size_t nbytes)
 {
 	ssize_t rc;
 
-	rc = read(high_random, buf, nbytes);
-	if (rc == -1) {
-		EXIT_FATAL2("/dev/random read failed: %s", strerror(errno));
-	}
+	if ((rc = read(high_random, buf, nbytes)) == -1)
+		err(EXIT_FAILURE, "/dev/random read failed");
+
 	if (rc < nbytes) {
-		EXIT_FATAL3(
-		    "/dev/random read insufficient bytes, %d instead of %d.",
-		    rc, nbytes);
+		errx(EXIT_FAILURE, "/dev/random read insufficient bytes, "
+		    "%zd instead of %zu.", rc, nbytes);
 	}
 }
 
@@ -102,14 +96,12 @@ random_low_impl(void *buf, size_t nbytes)
 {
 	ssize_t rc;
 
-	rc = read(low_random, buf, nbytes);
-	if (rc == -1) {
-		EXIT_FATAL2("/dev/urandom read failed: %s", strerror(errno));
-	}
+	if ((rc = read(low_random, buf, nbytes)) == -1)
+		err(EXIT_FAILURE, "/dev/urandom read failed");
+
 	if (rc < nbytes) {
-		EXIT_FATAL3(
-		    "/dev/urandom read insufficient bytes, %d instead of %d.",
-		    rc, nbytes);
+		errx(EXIT_FAILURE, "/dev/urandom read insufficient bytes, "
+		    "%zd instead of %zu.", rc, nbytes);
 	}
 }
 

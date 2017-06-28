@@ -23,8 +23,8 @@
  * Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
  *
- * Copyright 2017 Jason King.  All rights reserved.
- * Use is subject to license terms.
+ * Copyright 2017 Jason King.
+ * Copyright 2017 Joyent, Inc.
  */
 
 #include <syslog.h>
@@ -61,14 +61,21 @@ static int			ses_alloc;
 
 static pthread_key_t		p11_key = PTHREAD_ONCE_KEY_NP;
 
+#define	PKCS11_FUNC		"func"
+#define	PKCS11_RC		"retcode"
+#define	PKCS11_ERRMSG		"errmsg"
+
 /*
  * Now using libcryptoutil's pkcs11_strerror().
  */
 static void
-pkcs11_error(CK_RV errval, char *prepend)
+pkcs11_error(CK_RV errval, char *func)
 {
-	syslog(LOG_WARNING | LOG_DAEMON, "%s: %s.", prepend,
-	    pkcs11_strerror(errval));
+	bunyan_error(log, "PKCS#11 call failed",
+	    BUNYAN_T_STRING, PKCS11_FUNC, func,
+	    BUNYAN_T_UINT64, PKCS11_RC, (uint64_t)errval,
+	    BUNYAN_T_STRING, PKCS11_ERRMSG, pkcs11_strerror(errval),
+	    BUNYAN_T_END);
 }
 
 static CK_RV
@@ -110,17 +117,22 @@ pkcs11_global_init(void)
 	CK_SESSION_HANDLE p11h = CK_INVALID_HANDLE;
 	CK_RV		rv = CKR_OK;
 	boolean_t	found = B_FALSE;
+	int		rc;
 
 	/* Init PKCS#11, find the metaslot, and open an initial session */
 	rv = pkcs11_GetCriteriaSession(is_metaslot, &found, &p11h);
 	if (rv != CKR_OK) {
-		pkcs11_error(rv, "pkcs11_GetCriteriaSession");
+		bunyan_fatal(log, "PKCS#11 call failed",
+		    BUNYAN_T_STRING, PKCS11_FUNC, "pkcs11_GetCriteriaSession",
+		    BUNYAN_T_UINT64, PKCS11_RC, (uint64_t)rv,
+		    BUNYAN_T_STRING, PKCS11_ERRMSG, pkcs11_strerror(rv),
+		    BUNYAN_T_END);
 		exit(1);
 	}
 
 	if (!found) {
-		syslog(LOG_WARNING | LOG_DAEMON,
-		    gettext("Unable to locate the metaslot."));
+		bunyan_fatal(log, "Unable to locate the metaslot",
+		    BUNYAN_T_END);
 		exit(1);
 	}
 
@@ -211,14 +223,8 @@ pkcs11_worker_fini(void *arg)
 
 		CK_SESSION_HANDLE *temp = realloc(ses_free_list, nsize);
 
-		if (temp == NULL) {
-#if notyet
-			PRTDBG(D_THREAD, ("Unable to grow pkcs11 free list. "
-			    "PKCS#11 session %lu will be leaked.\n", p11s));
-#endif
-			PTH(pthread_mutex_unlock(&ses_free_lock));
-			return;
-		}
+		if (temp == NULL)
+			err(EXIT_FAILURE, "out of memory");
 
 		ses_free_list = temp;
 		ses_alloc = nelem;
@@ -607,10 +613,7 @@ pkcs11_destroy_obj(const char *name, CK_OBJECT_HANDLE_PTR objp, int level)
 		return;
 
 	if ((ret = C_DestroyObject(p11s(), *objp)) != CKR_OK) {
-#ifdef notyet
-		PRTDBG(level, ("Unable to destroy %s: %s", name,
-		    pkcs11_strerror(rc)));
-#endif
+		pkcs11_error(ret, "C_DestroyObject");
 	} else {
 		*objp = CK_INVALID_HANDLE;
 	}
@@ -635,20 +638,14 @@ pkcs11_digest(CK_MECHANISM_TYPE alg, const buf_t *restrict in, size_t n_in,
 	mech.ulParameterLen = 0;
 
 	if ((ret = C_DigestInit(p11s(), &mech)) != CKR_OK) {
-#ifdef notyet
-		PRTDBG(level, ("C_DigestInit failed: %s.",
-		    pkcs11_strerror(ret)));
-#endif
+		pkcs11_error(ret, "C_DigestInit");
 		return (B_FALSE);
 	}
 
 	for (size_t i = 0; i < n_in; i++) {
 		ret = C_DigestUpdate(p11s(), in[i].ptr, in[i].len);
 		if (ret != CKR_OK) {
-#ifdef notyet
-			PRTDBG(level, ("C_DigestUpdate failed: %s.",
-			    pkcs11_strerror(ret)));
-#endif
+			pkcs11_error(ret, "C_DigestUpdate");
 			return (B_FALSE);
 		}
 	}
@@ -659,10 +656,7 @@ pkcs11_digest(CK_MECHANISM_TYPE alg, const buf_t *restrict in, size_t n_in,
 	out->len = (size_t)len;
 
 	if (ret != CKR_OK) {
-#ifdef notyet
-		PRTDBG(level, ("C_DigestFinal failed: %s.",
-		    pkcs11_strerror(ret)));
-#endif
+		pkcs11_error(ret, "C_DigestFinal");
 		return (B_FALSE);
 	}
 	return (B_TRUE);

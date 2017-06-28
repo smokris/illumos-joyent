@@ -43,7 +43,6 @@
 #include <note.h>
 #include <ipsec_util.h>
 #include <libuutil.h>
-
 #include "defs.h"
 #include "buf.h"
 #include "timer.h"
@@ -87,6 +86,13 @@ static i2sa_bucket_t	*hash[I2SA_NUM_HASH];
 static uu_list_pool_t	*list_pool[I2SA_NUM_HASH];
 static umem_cache_t	*i2sa_cache;
 
+#define	I2SA_KEY_LADDR		"laddr"
+#define	I2SA_KEY_LPORT		"lport"
+#define	I2SA_KEY_RADDR		"raddr"
+#define	I2SA_KEY_RPORT		"rport"
+#define	I2SA_KEY_LSPI		"lspi"
+#define	I2SA_KEY_RSPI		"rspi"
+#define	I2SA_KEY_INITIATOR	"initiator"
 
 #define	IKEV2_SA_HASH_SPI(spi) \
     P2PHASE_TYPED((spi), num_buckets, uint64_t)
@@ -105,6 +111,8 @@ static boolean_t i2sa_add_to_hash(int, ikev2_sa_t *);
 static void i2sa_unlink(ikev2_sa_t *);
 static void i2sa_expire_cb(te_event_t, void *data);
 
+static boolean_t i2sa_key_add_addr(ikev2_sa_t *, const char *, const char *,
+    const struct sockaddr_storage *);
 static int i2sa_ctor(void *, void *, int);
 static void i2sa_dtor(void *, void *);
 
@@ -185,6 +193,11 @@ ikev2_sa_alloc(boolean_t initiator,
 	if ((i2sa = umem_cache_alloc(i2sa_cache, UMEM_DEFAULT)) == NULL)
 		return (NULL);
 
+	if ((bunyan_child(log, &i2sa->i2sa_log) != 0)) {
+		umem_cache_free(i2sa_cache, i2sa);
+		return (NULL);
+	}
+
 	/* Keep anyone else out while we initialize */
 	PTH(pthread_mutex_lock(&i2sa->lock));
 
@@ -224,6 +237,16 @@ ikev2_sa_alloc(boolean_t initiator,
 
 	inc_half_open();
 
+	if (!i2sa_key_add_addr(i2sa, I2SA_KEY_LADDR, I2SA_KEY_LPORT, laddr) ||
+	    !i2sa_key_add_addr(i2sa, I2SA_KEY_RADDR, I2SA_KEY_RPORT, raddr) ||
+	    bunyan_key_add(i2sa->i2sa_log,
+	    BUNYAN_T_UINT64, I2SA_KEY_LSPI, I2SA_LOCAL_SPI(i2sa),
+	    BUNYAN_T_UINT64, I2SA_KEY_RSPI, I2SA_REMOTE_SPI(i2sa),
+	    BUNYAN_T_BOOLEAN, I2SA_KEY_INITIATOR,
+	    (i2sa->flags & I2SA_INITIATOR) ? B_TRUE : B_FALSE,
+	    BUNYAN_T_END) != 0)
+		goto fail;
+
 	/*
 	 * Start SA expiration timer.
 	 * XXX: Should this be reset after we've successfully authenticated?
@@ -232,7 +255,8 @@ ikev2_sa_alloc(boolean_t initiator,
 	I2SA_REFHOLD(i2sa);	/* for the timer */
 	if (!schedule_timeout(TE_SA_EXPIRE, i2sa_expire_cb, i2sa,
 	    /* XXX: fixme */ 999 * NANOSEC)) {
-		/* XXX: log error */
+		bunyan_warn(i2sa->i2sa_log, "aborting larval IKEv2 SA creation",
+		    BUNYAN_T_END);
 
 		/* remove from hashes */
 		PTH(pthread_mutex_lock(&i2sa->lock));
@@ -242,12 +266,15 @@ ikev2_sa_alloc(boolean_t initiator,
 		/* should be free'd once these references are released */
 		ASSERT(i2sa->refcnt == 2);
 		I2SA_REFRELE(i2sa); /* timer */
-		I2SA_REFRELE(i2sa); /* caller */
-
-		return (NULL);
+		goto fail;
 	}
 
 	return (i2sa);
+
+fail:
+	ASSERT(i2sa->refcnt == 1);
+	I2SA_REFRELE(i2sa);
+	return (NULL);
 }
 
 /*
@@ -320,6 +347,8 @@ ikev2_sa_free(ikev2_sa_t *i2sa)
 #undef  DESTROY
 
 	/* TODO: free child SAs */
+
+	bunyan_fini(i2sa->i2sa_log);
 
 	i2sa_dtor(i2sa, NULL);
         i2sa_ctor(i2sa, NULL, 0);
@@ -432,9 +461,10 @@ ikev2_sa_set_hashsize(uint_t numbuckets)
 
 nomem:
 	if (startup)
-		EXIT_FATAL("Exiting due to insufficient memory");
+		errx(EXIT_FAILURE, "out of memory");
 
-	/* XXX: write msg */
+	/* This will probably fail too, but worth a shot */
+	(void) bunyan_error(log, "out of memory", BUNYAN_T_STRING);
 
 	/*
 	 * Free what the new stuff we've constructed so far, and put the
@@ -847,6 +877,35 @@ i2sa_compare(const void *larg, const void *rarg, void *arg)
 	return (buf_cmp(lbuf, rbuf));
 }
 
+static boolean_t
+i2sa_key_add_addr(ikev2_sa_t *i2sa, const char *addr_key, const char *port_key,
+    const struct sockaddr_storage *addr)
+{
+	sockaddr_u_t sau;
+	sau.sau_ss = (struct sockaddr_storage *)addr;
+	int rc = 0;
+
+	switch (addr->ss_family) {
+	case AF_INET:
+		rc = bunyan_key_add(i2sa->i2sa_log,
+		    BUNYAN_T_IP, addr_key, &sau.sau_sin->sin_addr,
+		    BUNYAN_T_UINT32, port_key, (uint32_t)sau.sau_sin->sin_port,
+		    BUNYAN_T_END);
+		break;
+	case AF_INET6:
+		rc = bunyan_key_add(i2sa->i2sa_log,
+		    BUNYAN_T_IP6, addr_key, &sau.sau_sin6->sin6_addr,
+		    BUNYAN_T_UINT32, port_key,
+		    (uint32_t)sau.sau_sin6->sin6_port,
+		    BUNYAN_T_END);
+		break;
+	default:
+		INVALID("addr->ss_family");
+	}
+
+	return ((rc == 0) ? B_TRUE : B_FALSE);
+}
+
 void
 ikev2_sa_init(void)
 {
@@ -854,7 +913,7 @@ ikev2_sa_init(void)
 
 	if ((i2sa_cache = umem_cache_create("IKEv2 SAs", sizeof (ikev2_sa_t),
 	    0, i2sa_ctor, i2sa_dtor, NULL, NULL, NULL, 0)) == NULL)
-		EXIT_FATAL("Unable to allocate IKEv2 SA cache");
+		err(EXIT_FAILURE, "Unable to allocate IKEv2 SA cache");
 
 #ifdef DEBUG
 	flag |= UU_LIST_POOL_DEBUG;
@@ -866,7 +925,8 @@ ikev2_sa_init(void)
 		    flag);
 
 		if (list_pool[i] != NULL)
-			EXIT_FATAL("Unable to allocate IKEv2 SA hash chains");
+			err(EXIT_FAILURE,
+			    "Unable to allocate IKEv2 SA hash chains");
 	}
 }
 

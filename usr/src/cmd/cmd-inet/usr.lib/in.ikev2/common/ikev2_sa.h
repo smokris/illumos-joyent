@@ -83,6 +83,8 @@ struct ikev2_sa {
 	uu_list_node_t	lspi_node;
 	uu_list_node_t	rhash_node;
 
+	bunyan_logger_t	*i2sa_log;
+
 			/* Link to the bucket we are in for each hash */
 	i2sa_bucket_t	*bucket[I2SA_NUM_HASH];
 

@@ -39,6 +39,7 @@
 #include <stdio.h>
 #include <assert.h>
 #include <umem.h>
+#include <bunyan.h>
 
 #ifdef  __cplusplus
 extern "C" {
@@ -94,7 +95,7 @@ typedef union sockaddr_u_s {
 _NOTE(CONSTCOND) } while (0)
 
 extern char *my_fmri;
-extern FILE *debugfile;
+extern bunyan_logger_t *log;
 
 #ifdef  __cplusplus
 }
