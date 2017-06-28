@@ -39,9 +39,13 @@
 #include "pkcs11.h"
 #include "defs.h"
 
-#define	METASLOT_NAME "Sun Metaslot"
+/*
+ * per usr/src/lib/pkcs11/libpkcs11/common/metaGlobal.h, the metaslot
+ * is always slot 0
+ */
+#define	METASLOT_ID	(0)
 
-static CK_SLOT_ID	metaslot;
+CK_INFO		pkcs11_info = { 0 };
 
 /*
  * PKCS#11 allows us to share public objects between sessions within
@@ -65,47 +69,12 @@ static pthread_key_t		p11_key = PTHREAD_ONCE_KEY_NP;
 #define	PKCS11_RC		"retcode"
 #define	PKCS11_ERRMSG		"errmsg"
 
-/*
- * Now using libcryptoutil's pkcs11_strerror().
- */
-static void
-pkcs11_error(CK_RV errval, char *func)
-{
-	bunyan_error(log, "PKCS#11 call failed",
-	    BUNYAN_T_STRING, PKCS11_FUNC, func,
-	    BUNYAN_T_UINT64, PKCS11_RC, (uint64_t)errval,
-	    BUNYAN_T_STRING, PKCS11_ERRMSG, pkcs11_strerror(errval),
-	    BUNYAN_T_END);
-}
-
-static CK_RV
-pkcs11_callback_handler(CK_SESSION_HANDLE session, CK_NOTIFICATION surrender,
-    void *context)
-{
-	_NOTE(ARGUNUSED(session, context));
-	assert(surrender == CKN_SURRENDER);
-
-	return (CKR_OK);
-}
-
-static boolean_t
-is_metaslot(CK_SLOT_ID slot, void *args, CK_RV *rv)
-{
-	CK_SLOT_INFO info = { 0 };
-	boolean_t *found = (boolean_t *)args;
-
-	*rv = C_GetSlotInfo(slot, &info);
-	if (*rv != CKR_OK)
-		return (B_FALSE);
-
-	if (strncmp(METASLOT_NAME, (const char *)info.slotDescription,
-	    sizeof(METASLOT_NAME)) != 0)
-		return (B_FALSE);
-
-	metaslot = slot;
-	*found = B_TRUE;
-	return (B_TRUE);
-}
+static void fmtstr(char *, size_t, CK_UTF8CHAR *, size_t);
+static void pkcs11_error(CK_RV, const char *);
+static void pkcs11_fatal(CK_RV, const char *);
+static CK_RV pkcs11_callback_handler(CK_SESSION_HANDLE, CK_NOTIFICATION,
+    void *);
+static void log_slotinfo(CK_SLOT_ID);
 
 /*
  * Locates the metaslot among the available slots.  If the metaslot
@@ -114,30 +83,158 @@ is_metaslot(CK_SLOT_ID slot, void *args, CK_RV *rv)
 void
 pkcs11_global_init(void)
 {
-	CK_SESSION_HANDLE p11h = CK_INVALID_HANDLE;
-	CK_RV		rv = CKR_OK;
-	boolean_t	found = B_FALSE;
-	int		rc;
-
-	/* Init PKCS#11, find the metaslot, and open an initial session */
-	rv = pkcs11_GetCriteriaSession(is_metaslot, &found, &p11h);
-	if (rv != CKR_OK) {
-		bunyan_fatal(log, "PKCS#11 call failed",
-		    BUNYAN_T_STRING, PKCS11_FUNC, "pkcs11_GetCriteriaSession",
-		    BUNYAN_T_UINT64, PKCS11_RC, (uint64_t)rv,
-		    BUNYAN_T_STRING, PKCS11_ERRMSG, pkcs11_strerror(rv),
-		    BUNYAN_T_END);
-		exit(1);
-	}
-
-	if (!found) {
-		bunyan_fatal(log, "Unable to locate the metaslot",
-		    BUNYAN_T_END);
-		exit(1);
-	}
+	CK_SESSION_HANDLE	p11h = CK_INVALID_HANDLE;
+	CK_RV			rv = CKR_OK;
+	CK_ULONG 		nslot = 0;
+	CK_C_INITIALIZE_ARGS	args = {
+		NULL_PTR,		/* CreateMutex */
+		NULL_PTR,		/* DestroyMutex */
+		NULL_PTR,		/* LockMutex */
+		NULL_PTR,		/* UnlockMutex */
+		CKF_OS_LOCKING_OK,	/* flags */
+		NULL_PTR		/* reserved */
+	};
 
 	PTH(pthread_key_create_once_np(&p11_key, pkcs11_worker_fini));
 	PTH(pthread_setspecific(p11_key, (const void *)p11h));
+
+	if ((rv = C_Initialize(&args)) != CKR_OK)
+		pkcs11_fatal(rv, "C_Initialize");
+
+	if ((rv = C_GetInfo(&pkcs11_info)) != CKR_OK)
+		pkcs11_fatal(rv, "C_Info");
+
+	if ((rv = C_GetSlotList(CK_FALSE, NULL, &nslot)) != CKR_OK)
+		pkcs11_fatal(rv, "C_GetSlotList");
+
+	CK_SLOT_ID slots[nslot];
+
+	if ((rv = C_GetSlotList(CK_FALSE, slots, &nslot)) != CKR_OK)
+		pkcs11_fatal(rv, "C_GetSlotList");
+
+	{
+		char manf[35];
+		char libdesc[35];
+
+		fmtstr(manf, sizeof (manf), pkcs11_info.manufacturerID,
+		    sizeof (pkcs11_info.manufacturerID));
+		fmtstr(libdesc, sizeof (libdesc),
+		    pkcs11_info.libraryDescription,
+		    sizeof (pkcs11_info.libraryDescription));
+
+		(void) bunyan_debug(log, "PKCS#11 provider info",
+		    BUNYAN_T_STRING, "manufacturer", manf,
+		    BUNYAN_T_UINT32, "version.major",
+		    (uint32_t)pkcs11_info.cryptokiVersion.major,
+		    BUNYAN_T_UINT32, "version.minor",
+		    (uint32_t)pkcs11_info.cryptokiVersion.minor,
+		    BUNYAN_T_UINT64, "flags",
+		    (uint64_t)pkcs11_info.flags,
+		    BUNYAN_T_STRING, "library", libdesc,
+		    BUNYAN_T_UINT32, "lib.major",
+		    (uint32_t)pkcs11_info.libraryVersion.major,
+		    BUNYAN_T_UINT32, "lib.minor",
+		    (uint32_t)pkcs11_info.libraryVersion.minor,
+		    BUNYAN_T_UINT32, "numslots", nslot,
+		    BUNYAN_T_END);
+	}
+
+	for (size_t i = 0; i < nslot; i++)
+		log_slotinfo(slots[i]);
+}
+
+static void
+log_slotinfo(CK_SLOT_ID slot)
+{
+	CK_SLOT_INFO info = { 0 };
+	char manuf[35]; /* sizeof info.manufacturerID + '' + NUL */
+	CK_RV rv;
+
+	rv = C_GetSlotInfo(slot, &info);
+	if (rv != CKR_OK) {
+		pkcs11_error(rv, "C_GetSlotInfo");
+		return;
+	}
+
+	{
+		char desc[67];	/* sizeof info.description + '' + NUL */
+		fmtstr(desc, sizeof (desc), info.slotDescription,
+		    sizeof (info.slotDescription));
+		fmtstr(manuf, sizeof (manuf), info.manufacturerID,
+		    sizeof (info.manufacturerID));
+
+		(void) bunyan_debug(log, "PKCS#11 Slot Info",
+		    BUNYAN_T_UINT64, "slot", (uint64_t)slot,
+		    BUNYAN_T_STRING, "description", desc,
+		    BUNYAN_T_STRING, "manufacturer", manuf,
+		    BUNYAN_T_UINT32, "hwversion.major",
+		    (uint32_t)info.hardwareVersion.major,
+		    BUNYAN_T_UINT32, "hwversion.minor",
+		    (uint32_t)info.hardwareVersion.minor,
+		    BUNYAN_T_UINT32, "fwversion.major",
+		    (uint32_t)info.firmwareVersion.major,
+		    BUNYAN_T_UINT32, "fwversion.minor",
+		    (uint32_t)info.firmwareVersion.minor,
+		    BUNYAN_T_UINT64, "flags", (uint64_t)info.flags,
+		    BUNYAN_T_BOOLEAN, "present",
+		    !!(info.flags & CKF_TOKEN_PRESENT),
+		    BUNYAN_T_BOOLEAN, "removable",
+		    !!(info.flags & CKF_REMOVABLE_DEVICE),
+		    BUNYAN_T_BOOLEAN, "hwslot", !!(info.flags & CKF_HW_SLOT),
+		    BUNYAN_T_END);
+	}
+
+	if (!(info.flags & CKF_TOKEN_PRESENT))
+		return;
+
+	CK_TOKEN_INFO tinfo = { 0 };
+	rv = C_GetTokenInfo(slot, &tinfo);
+	if (rv != CKR_OK)
+		pkcs11_error(rv, "C_GetTokenInfo");
+
+	char label[35];		/* sizeof tinfo.label + '' + NUL */
+	char model[19];		/* sizeof tinfo.model + '' + NUL */
+	char serial[19];	/* sizeof tinfo.serialNumber + '' + NUL */
+	char utctime[19];	/* sizeof tinfo.utsTime + '' + NUL */
+
+	fmtstr(manuf, sizeof (manuf), tinfo.manufacturerID,
+	    sizeof (tinfo.manufacturerID));
+	fmtstr(label, sizeof (label), tinfo.label, sizeof (tinfo.label));
+	fmtstr(model, sizeof (model), tinfo.model, sizeof (tinfo.model));
+	fmtstr(serial, sizeof (serial), tinfo.serialNumber,
+	    sizeof (tinfo.serialNumber));
+	fmtstr(utctime, sizeof (utctime), tinfo.utcTime,
+	    sizeof (tinfo.utcTime));
+
+#define	F(_inf, _flg) BUNYAN_T_BOOLEAN, #_flg, !!((_inf).flags & (_flg))
+
+	(void) bunyan_debug(log, "PKCS#11 token info",
+	    BUNYAN_T_UINT32, "slot", (uint32_t) slot,
+	    BUNYAN_T_STRING, "label", label,
+	    BUNYAN_T_STRING, "manuf", manuf,
+	    BUNYAN_T_STRING, "model", model,
+	    BUNYAN_T_STRING, "serial", serial,
+	    BUNYAN_T_UINT64, "flags", (uint64_t)tinfo.flags,
+	    F(info, CKF_RNG),
+	    F(info, CKF_WRITE_PROTECTED),
+	    F(info, CKF_LOGIN_REQUIRED),
+	    F(info, CKF_USER_PIN_INITIALIZED),
+	    F(info, CKF_RESTORE_KEY_NOT_NEEDED),
+	    F(info, CKF_CLOCK_ON_TOKEN),
+	    F(info, CKF_PROTECTED_AUTHENTICATION_PATH),
+	    F(info, CKF_DUAL_CRYPTO_OPERATIONS),
+	    F(info, CKF_TOKEN_INITIALIZED),
+	    F(info, CKF_SECONDARY_AUTHENTICATION),
+	    F(info, CKF_USER_PIN_COUNT_LOW),
+	    F(info, CKF_USER_PIN_FINAL_TRY),
+	    F(info, CKF_USER_PIN_LOCKED),
+	    F(info, CKF_USER_PIN_TO_BE_CHANGED),
+	    F(info, CKF_SO_PIN_COUNT_LOW),
+	    F(info, CKF_SO_PIN_FINAL_TRY),
+	    F(info, CKF_SO_PIN_LOCKED),
+	    F(info, CKF_SO_PIN_TO_BE_CHANGED),
+	    F(info, CKF_ERROR_STATE),
+	    BUNYAN_T_END);
 }
 
 /*
@@ -184,7 +281,7 @@ pkcs11_worker_init(void)
 	}
 	PTH(pthread_mutex_unlock(&ses_free_lock));
 
-	CK_RV rc = C_OpenSession(metaslot, CKF_SERIAL_SESSION, NULL,
+	CK_RV rc = C_OpenSession(METASLOT_ID, CKF_SERIAL_SESSION, NULL,
 	    pkcs11_callback_handler, &p11h);
 	if (rc != CKR_OK) {
 		pkcs11_error(rc, "C_OpenSession");
@@ -660,4 +757,54 @@ pkcs11_digest(CK_MECHANISM_TYPE alg, const buf_t *restrict in, size_t n_in,
 		return (B_FALSE);
 	}
 	return (B_TRUE);
+}
+
+static CK_RV
+pkcs11_callback_handler(CK_SESSION_HANDLE session, CK_NOTIFICATION surrender,
+    void *context)
+{
+	_NOTE(ARGUNUSED(session, context));
+	VERIFY3U(surrender, ==, CKN_SURRENDER);
+
+	return (CKR_OK);
+}
+
+/*
+ * Now using libcryptoutil's pkcs11_strerror().
+ */
+static void
+pkcs11_error(CK_RV errval, const char *func)
+{
+	bunyan_error(log, "PKCS#11 call failed",
+	    BUNYAN_T_STRING, PKCS11_FUNC, func,
+	    BUNYAN_T_UINT64, PKCS11_RC, (uint64_t)errval,
+	    BUNYAN_T_STRING, PKCS11_ERRMSG, pkcs11_strerror(errval),
+	    BUNYAN_T_END);
+}
+
+static void
+pkcs11_fatal(CK_RV errval, const char *func)
+{
+	bunyan_error(log, "PKCS#11 call failed",
+	    BUNYAN_T_STRING, PKCS11_FUNC, func,
+	    BUNYAN_T_UINT64, PKCS11_RC, (uint64_t)errval,
+	    BUNYAN_T_STRING, PKCS11_ERRMSG, pkcs11_strerror(errval),
+	    BUNYAN_T_END);
+	exit(1);
+}
+
+/*
+ * Sadly, string fields in PKCS#11 structs are not NUL-terminated and
+ * are space padded, so this converts it into a more traditional C-string
+ * with quoting so space padding is evident
+ */
+static void
+fmtstr(char *buf, size_t buflen, CK_UTF8CHAR *src, size_t srclen)
+{
+	ASSERT3U(srclen + 3, <=, buflen);
+
+	(void) memset(buf, 0, buflen);
+	buf[0] = '\'';
+	(void) memcpy(buf + 1, src, srclen);
+	(void) strlcat(buf, "'", buflen);
 }
