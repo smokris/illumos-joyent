@@ -50,6 +50,7 @@
 #include "ikev2_pkt.h"
 #include "ikev2_sa.h"
 #include "random.h"
+#include "worker.h"
 
 /* Our hashes */
 enum {
@@ -370,7 +371,8 @@ ikev2_sa_set_hashsize(uint_t numbuckets)
 	else
 		startup = B_FALSE;
 
-	/* XXX: suspend threads if !startup */
+	if (!startup)
+		worker_suspend();
 
 	/* round up to a power of two if not already */
 	if (!ISP2(numbuckets)) {
@@ -456,7 +458,7 @@ ikev2_sa_set_hashsize(uint_t numbuckets)
 	for (hashtbl = 0; hashtbl < I2SA_NUM_HASH; hashtbl++)
 		free(old[hashtbl]);
 
-	/* XXX: resume threads */
+	worker_resume();
 	return;
 
 nomem:
@@ -481,7 +483,7 @@ nomem:
 		hash[hashtbl] = old[hashtbl];
 	}
 
-	/* XXX: resume threads */
+	worker_resume();
 }
 
 /*

@@ -45,6 +45,8 @@
 extern "C" {
 #endif
 
+#define	MAX_PACKET_SIZE	(8192)	/* largest datagram we expect */
+
 #ifndef SOCKADDR_U_T
 #define	SOCKADDR_U_T
 typedef union sockaddr_u_s {

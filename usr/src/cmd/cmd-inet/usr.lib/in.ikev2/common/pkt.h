@@ -60,7 +60,6 @@ struct pkt_stack {
 };
 #define	PKT_STACK_DEPTH	6
 
-#define	MAX_PACKET_SIZE	8192
 struct pkt {
 	struct ikev2_sa	*sa;	/* NOT refheld */
 

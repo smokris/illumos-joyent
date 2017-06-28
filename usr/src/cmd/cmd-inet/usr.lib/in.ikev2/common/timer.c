@@ -147,19 +147,16 @@ process_timer(timespec_t *next_time)
 		now = gethrtime();
 
 		if ((te = timer_head()) == NULL) {
-/* XXX: change to config value */
-#define thread_timeout 10
-			next_time->tv_sec = thread_timeout;
+			next_time->tv_sec = 0;
 			next_time->tv_nsec = 0;
 			return;
-#undef thread_timeout
 		}
 
 		if (te->time > now) {
 			/* no events to run */
 			hrtime_t delta = te->time - now;
 
-			next_time->tv_sec = delta / (hrtime_t)NANOSEC;
+			next_time->tv_sec = NSEC2SEC(delta);
 			next_time->tv_nsec = delta % (hrtime_t)NANOSEC;
 			return;
 		}
