@@ -96,11 +96,11 @@ main_loop(void)
 
 		(void) bunyan_trace(log, "received event",
 		    BUNYAN_T_STRING, "source",
-		    port_source_str(pe.portev_events),
+		    port_source_str(pe.portev_source),
 		    BUNYAN_T_UINT32, "source val", (uint32_t)pe.portev_events,
 		    BUNYAN_T_END);
 
-	 	switch (pe.portev_events) {
+	 	switch (pe.portev_source) {
 		case PORT_SOURCE_USER:
 			event(pe.portev_events, pe.portev_user);
 			break;
