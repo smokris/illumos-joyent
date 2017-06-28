@@ -96,7 +96,7 @@ _NOTE(CONSTCOND) } while (0)
 
 #define	STDERR(bunyan, msg) \
 	(void) bunyan_error((bunyan), (msg), \
-	BUNYAN_T_STRING, "errmsg", strerror(errno), \
+	BUNYAN_T_STRING, "err", strerror(errno), \
 	BUNYAN_T_INT32, "errno", (int32_t)(errno), \
 	BUNYAN_T_END)
 

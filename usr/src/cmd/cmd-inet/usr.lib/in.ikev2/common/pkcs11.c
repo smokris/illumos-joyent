@@ -66,8 +66,8 @@ static int			ses_alloc;
 static pthread_key_t		p11_key = PTHREAD_ONCE_KEY_NP;
 
 #define	PKCS11_FUNC		"func"
-#define	PKCS11_RC		"retcode"
-#define	PKCS11_ERRMSG		"errmsg"
+#define	PKCS11_RC		"errnum"
+#define	PKCS11_ERRMSG		"err"
 
 static void fmtstr(char *, size_t, CK_UTF8CHAR *, size_t);
 static void pkcs11_error(CK_RV, const char *);
@@ -165,7 +165,7 @@ log_slotinfo(CK_SLOT_ID slot)
 
 		(void) bunyan_debug(log, "PKCS#11 Slot Info",
 		    BUNYAN_T_UINT64, "slot", (uint64_t)slot,
-		    BUNYAN_T_STRING, "description", desc,
+		    BUNYAN_T_STRING, "desc", desc,
 		    BUNYAN_T_STRING, "manufacturer", manuf,
 		    BUNYAN_T_UINT32, "hwversion.major",
 		    (uint32_t)info.hardwareVersion.major,
