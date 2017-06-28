@@ -52,6 +52,16 @@ typedef void (*pkt_finish_fn)(struct pkt *restrict, buf_t *restrict, uintptr_t,
     size_t);
 #endif
 
+typedef enum pkt_stack_item {
+	PSI_PACKET,
+	PSI_SK,
+	PSI_SA,
+	PSI_PAYLOAD,
+	PSI_PROP,
+	PSI_XFORM,
+	PSI_XFORM_ATTR,
+} pkt_stack_item_t;
+
 struct pkt_stack {
 	pkt_finish_fn	stk_finish;
 	buf_t		stk_buf;
@@ -60,6 +70,7 @@ struct pkt_stack {
 };
 #define	PKT_STACK_DEPTH	6
 
+#define	MAX_PACKET_SIZE	(8192)	/* largest datagram we accept */
 struct pkt {
 	struct ikev2_sa	*sa;	/* NOT refheld */
 
