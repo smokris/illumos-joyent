@@ -40,6 +40,7 @@
 #include <assert.h>
 #include <umem.h>
 #include <bunyan.h>
+#include <libintl.h>
 
 #ifdef  __cplusplus
 extern "C" {

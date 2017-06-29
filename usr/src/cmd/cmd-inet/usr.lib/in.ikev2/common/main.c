@@ -54,6 +54,12 @@ main(int argc, char **argv)
 {
 	int rc;
 
+	(void) setlocale(LC_ALL, "");
+#if !defined(TEXT_DOMAIN)
+#define	TEXT_DOMAIN "SYS_TEST"
+#endif
+	(void) textdomain(TEXT_DOMAIN);
+
 	if ((port = port_create()) < 0)
 		err(EXIT_FAILURE, "port_create() failed");
 
