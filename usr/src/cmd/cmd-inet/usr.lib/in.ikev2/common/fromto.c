@@ -48,20 +48,36 @@
 #include <net/if.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
-
+#include "defs.h"
 #include "buf.h"
 
 #define	ABUF_OF(sa) (((sa)->ss_family == AF_INET) ?	\
 	    (void *)&((struct sockaddr_in *)(sa))->sin_addr :	\
 	    (void *)&((struct sockaddr_in6 *)(sa))->sin6_addr)
 
-/* XXX temp */
-#define	PRTDBG(x, ...)
+#define	SS_PORT(_ss) \
+	(((_ss)->ss_family == AF_INET) ? \
+	((struct sockaddr_in *)(_ss))->sin_port : \
+	((struct sockaddr_in6 *)(_ss))->sin6_port)
+
+#define	_BUNYAN_TYPE(_ss) \
+	((_ss)->ss_family == AF_INET) ? BUNYAN_T_IP : BUNYAN_T_IP6
+	
+#define	NETERR(_log, _msg, _sock, _src, _dest)		\
+	(void) bunyan_error((_log), _msg,		\
+	BUNYAN_T_STRING, "err", strerror(errno),	\
+	BUNYAN_T_INT32, "errno", (int32_t)errno,	\
+	BUNYAN_T_STRING, "func", __func__,		\
+	BUNYAN_T_STRING, "file", __FILE__,		\
+	BUNYAN_T_INT32, "line", __LINE__,		\
+	BUNYAN_T_INT32, "socket", (int32_t)(_sock),	\
+	_BUNYAN_TYPE(_src), "src", ABUF_OF((_src)),	\
+	_BUNYAN_TYPE(_dest), "dest", ABUF_OF((_dest)),	\
+	BUNYAN_T_END)
 
 /*
  * Receive packet, with src/dst information.  It is assumed that necessary
@@ -83,14 +99,10 @@ recvfromto(int s, buf_t *buf, int flags,
 	struct in6_pktinfo *pi;
 	struct sockaddr_in6 *sin6;
 	struct sockaddr_in *sin;
-#if 0
-	char pbuf[INET6_ADDRSTRLEN + IFNAMSIZ + 2];
-#endif
 
 	sslen = sizeof (ss);
 	if (getsockname(s, (struct sockaddr *)&ss, &sslen) < 0) {
-		PRTDBG(D_NET, ("recvfromto() getsockname failure: %s",
-		    strerror(errno)));
+		NETERR(log, "getsockname() failed", s, from, to);
 		return (-1);
 	}
 
@@ -106,8 +118,7 @@ recvfromto(int s, buf_t *buf, int flags,
 	m.msg_control = (caddr_t)cm;
 	m.msg_controllen = sizeof (cmsgbuf);
 	if ((len = recvmsg(s, &m, flags)) < 0) {
-		PRTDBG(D_NET, ("recvfromto() recvmsg failure: %s",
-		    strerror(errno)));
+		NETERR(log, "recvmsg() failed", s, from, to);
 		return (-1);
 	}
 	if (len > buf->len) {
@@ -115,8 +126,18 @@ recvfromto(int s, buf_t *buf, int flags,
 		 * size_t and ssize_t should always be "long", but not in 32-
 		 * bit apps for some bizarre reason.
 		 */
-		PRTDBG(D_NET, ("Received message of %ld, greater than %lu.\n",
-		    (long)len, (ulong_t)buflen));
+		(void) bunyan_warn(log, "Received oversized message",
+		    BUNYAN_T_STRING, "func", __func__,
+		    BUNYAN_T_STRING, "file", __FILE__,
+		    BUNYAN_T_INT32, "line", __LINE__,
+		    BUNYAN_T_INT32, "socket", (int32_t)s,
+		    _BUNYAN_TYPE(from), "src", ABUF_OF(from),
+		    BUNYAN_T_UINT32, "srcport", (uint32_t)SS_PORT(from),
+		    _BUNYAN_TYPE(to), "dest", ABUF_OF(to),
+		    BUNYAN_T_UINT32, "destport", (uint32_t)SS_PORT(to),
+		    BUNYAN_T_UINT32, "msglen", (uint32_t)len,
+		    BUNYAN_T_UINT32, "buflen", (uint32_t)buf->len,
+		    BUNYAN_T_END);
 		errno = E2BIG;	/* Not returned from normal recvmsg()... */
 		return (-1);
 	}
@@ -165,12 +186,17 @@ recvfromto(int s, buf_t *buf, int flags,
 		}
 	}
 
-	PRTDBG(D_NET, ("Received packet from %s(%d)",
-	    inet_ntop(ss.ss_family, ABUF_OF(from), pbuf, sizeof (pbuf)),
-	    ntohs(((struct sockaddr_in *)from)->sin_port)));
-	PRTDBG(D_NET, ("\t to %s(%d)",
-	    inet_ntop(ss.ss_family, ABUF_OF(to), pbuf, sizeof (pbuf)),
-	    ntohs(((struct sockaddr_in *)to)->sin_port)));
+	(void) bunyan_debug(log, "Received datagram",
+	    BUNYAN_T_STRING, "func", __func__,
+	    BUNYAN_T_STRING, "file", __FILE__,
+	    BUNYAN_T_INT32, "line", __LINE__,
+	    BUNYAN_T_INT32, "socket", (int32_t)s,
+	    _BUNYAN_TYPE(from), "src", ABUF_OF(from),
+	    BUNYAN_T_UINT32, "srcport", (uint32_t)SS_PORT(from),
+	    _BUNYAN_TYPE(to), "dest", ABUF_OF(to),
+	    BUNYAN_T_UINT32, "destport", (uint32_t)SS_PORT(to),
+	    BUNYAN_T_UINT32, "msglen", (uint32_t)len,
+	    BUNYAN_T_END);
 	return (len);
 }
 
@@ -187,17 +213,28 @@ sendfromto(int s, const buf_t *buf, struct sockaddr_storage *src,
 	struct in_pktinfo *pi;
 
 	if (src->ss_family != dst->ss_family) {
-		PRTDBG(D_NET, ("sendfromto(): address family mismatch."));
+		(void) bunyan_error(log,
+		    "sendfromto(): address family mismatch",
+		    BUNYAN_T_INT32, "socket", (int32_t)s,
+		    _BUNYAN_TYPE(src), "src", ABUF_OF(src),
+		    BUNYAN_T_UINT32, "srcport", (uint32_t)SS_PORT(src),
+		    BUNYAN_T_UINT32, "srcaf", (uint32_t)src->ss_family,
+		    _BUNYAN_TYPE(dst), "dest", ABUF_OF(dst),
+		    BUNYAN_T_UINT32, "destport", (uint32_t)SS_PORT(dst),
+		    BUNYAN_T_UINT32, "destaf", (uint32_t)src->ss_family,
+		    BUNYAN_T_END);
+
 		errno = EADDRNOTAVAIL;	/* XXX KEBE ASKS - Better ideas? */
 		return (-1);
 	}
 
-	PRTDBG(D_NET, ("Sending packet from %s(%d)",
-	    inet_ntop(src->ss_family, ABUF_OF(src), (char *)cmsgbuf,
-	    sizeof (cmsgbuf)), ntohs(((struct sockaddr_in *)src)->sin_port)));
-	PRTDBG(D_NET, ("\t to %s(%d)",
-	    inet_ntop(dst->ss_family, ABUF_OF(dst), (char *)cmsgbuf,
-	    sizeof (cmsgbuf)), ntohs(((struct sockaddr_in *)dst)->sin_port)));
+	(void) bunyan_debug(log, "Sending packet",
+		    BUNYAN_T_INT32, "socket", (int32_t)s,
+		    _BUNYAN_TYPE(src), "src", ABUF_OF(src),
+		    BUNYAN_T_UINT32, "srcport", (uint32_t)SS_PORT(src),
+		    _BUNYAN_TYPE(dst), "dest", ABUF_OF(dst),
+		    BUNYAN_T_UINT32, "destport", (uint32_t)SS_PORT(dst),
+		    BUNYAN_T_END);
 
 	m.msg_name = (caddr_t)dst;
 	iov[0].iov_base = buf->ptr;

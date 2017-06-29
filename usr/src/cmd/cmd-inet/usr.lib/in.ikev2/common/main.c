@@ -135,6 +135,8 @@ main_loop(void)
 			INVALID("pe.portev_source");
 		}
 	}
+
+	(void) bunyan_info(log, "Exiting", BUNYAN_T_END);
 }
 
 static void

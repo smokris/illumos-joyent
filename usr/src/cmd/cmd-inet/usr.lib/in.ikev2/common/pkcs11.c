@@ -66,7 +66,6 @@ static void log_slotinfo(CK_SLOT_ID);
 void
 pkcs11_init(void)
 {
-	CK_SESSION_HANDLE	p11h = CK_INVALID_HANDLE;
 	CK_RV			rv = CKR_OK;
 	CK_ULONG 		nslot = 0;
 	CK_C_INITIALIZE_ARGS	args = {
@@ -126,6 +125,10 @@ pkcs11_init(void)
 	    pkcs11_callback_handler, &p11h);
 	if (rv != CKR_OK)
 		pkcs11_fatal(rv, "C_OpenSession");
+
+	(void) bunyan_trace(log, "PKCS#11 session opened",
+	    BUNYAN_T_UINT64, "pkcs11 handle", (uint64_t)p11h,
+	    BUNYAN_T_END);
 }
 
 static void
@@ -231,6 +234,10 @@ pkcs11_fini(void)
 	rv = C_CloseSession(p11h);
 	if (rv != CKR_OK)
 		pkcs11_error(rv, "C_CloseSession");
+
+	rv = C_Finalize(NULL_PTR);
+	if (rv != CKR_OK)
+		pkcs11_error(rv, "C_Finalize");
 }
 
 static auth_param_t auth_params[] = {

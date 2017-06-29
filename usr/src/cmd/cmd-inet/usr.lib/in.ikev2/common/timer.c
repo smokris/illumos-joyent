@@ -39,6 +39,7 @@
 #include <libuutil.h>
 #include <ipsec_util.h>
 #include <note.h>
+#include <ucontext.h>
 
 #include "defs.h"
 #include "timer.h"
@@ -64,6 +65,7 @@ static void timer_fini(void *);
 static void tevent_free(tevent_t *);
 static int evt_ctor(void *, void *, int);
 static void evt_dtor(void *, void *);
+static const char *te_str(te_event_t);
 
 void
 ike_timer_init(void)
@@ -127,15 +129,25 @@ timer_head(void)
 	return (uu_list_first(timer_list()));
 }
 
+struct dispatch_arg {
+	bunyan_logger_t *log;
+	hrtime_t now;
+};
+
 void
-process_timer(timespec_t *next_time)
+process_timer(timespec_t *next_time, bunyan_logger_t *tlog)
 {
+	struct dispatch_arg data = { 0 };
 	tevent_t *te;
 	hrtime_t now;
 
 	ASSERT(timer_is_init);
 	ASSERT(timer_thr_is_init);
 
+	(void) bunyan_trace(tlog, "Checking for timeout events",
+	    BUNYAN_T_END);
+
+	/*CONSTCOND*/
 	while (1) {
 		/*
 		 * since dispatching takes a non-zero amount of time, it is
@@ -149,6 +161,8 @@ process_timer(timespec_t *next_time)
 		if ((te = timer_head()) == NULL) {
 			next_time->tv_sec = 0;
 			next_time->tv_nsec = 0;
+			(void) bunyan_trace(tlog, "Event list empty; returning",
+			    BUNYAN_T_END);
 			return;
 		}
 
@@ -158,11 +172,19 @@ process_timer(timespec_t *next_time)
 
 			next_time->tv_sec = NSEC2SEC(delta);
 			next_time->tv_nsec = delta % (hrtime_t)NANOSEC;
+			(void) bunyan_debug(tlog,
+			    "No events ready to dispatch",
+			    BUNYAN_T_UINT32, "events queued",
+			    (uint32_t)uu_list_numnodes(timer_list()),
+			    BUNYAN_T_UINT64, "ns until next event", delta,
+			    BUNYAN_T_END);
 			return;
 		}
 
 		/* dispatch timeouts */
-		uu_list_walk(timer_list(), dispatch_cb, &now, UU_WALK_ROBUST);
+		data.now = now;
+		data.log = tlog;
+		uu_list_walk(timer_list(), dispatch_cb, &data, UU_WALK_ROBUST);
 	}
 }
 
@@ -170,10 +192,20 @@ static int
 dispatch_cb(void *elem, void *arg)
 {
 	tevent_t *te = (tevent_t *)elem;
-	const hrtime_t *now = (const hrtime_t *)arg;
+	struct dispatch_arg *data = arg;
 
-	if (te->time > *now)
+	if (te->time > data->now)
 		return (UU_WALK_DONE);
+
+	char buf[128] = { 0 };
+	(void)addrtosymstr(te->fn, buf, sizeof (buf));
+	(void)bunyan_debug(data->log, "Dispatching timer event",
+	    BUNYAN_T_STRING, "event", te_str(te->type),
+	    BUNYAN_T_UINT32, "event num", (uint32_t)te->type,
+	    BUNYAN_T_POINTER, "fn", te->fn,
+	    BUNYAN_T_STRING, "fnname", buf,
+	    BUNYAN_T_POINTER, "arg", te->arg,
+	    BUNYAN_T_END);
 
 	te->fn(te->type, te->arg);
 	uu_list_remove(timer_list(), elem);
@@ -183,6 +215,7 @@ dispatch_cb(void *elem, void *arg)
 }
 
 typedef struct cancel_arg_s {
+	bunyan_logger_t	*log;
 	te_event_t	type;
 	void		*arg;
 	size_t		n;
@@ -191,13 +224,20 @@ typedef struct cancel_arg_s {
 static int cancel_cb(void *, void *);
 
 int
-cancel_timeout(te_event_t type, void *arg)
+cancel_timeout(te_event_t type, void *arg, bunyan_logger_t *tlog)
 {
 	cancel_arg_t carg;
 
 	ASSERT(timer_is_init);
 	ASSERT(timer_thr_is_init);
 
+	(void)bunyan_trace(tlog, "Cancelling timeouts",
+	    BUNYAN_T_STRING, "event", te_str(type),
+	    BUNYAN_T_UINT32, "event num", (uint32_t)type,
+	    BUNYAN_T_POINTER, "arg", arg,
+	    BUNYAN_T_END);
+
+	carg.log = tlog;
 	carg.type = type;
 	carg.arg = arg;
 	carg.n = 0;
@@ -215,6 +255,13 @@ cancel_cb(void *elem, void *arg)
 	if (carg->type == TE_ANY ||
 	    ((carg->type == te->type) && (carg->arg == te->arg))) {
 		uu_list_remove(timer_list(), elem);
+
+		(void) bunyan_debug(carg->log, "Removed timeout",
+		    BUNYAN_T_STRING, "event", te_str(te->type),
+		    BUNYAN_T_UINT32, "event num", (uint32_t)te->type,
+		    BUNYAN_T_POINTER, "arg", te->arg,
+		    BUNYAN_T_END);
+
 		tevent_free(te);
 		carg->n++;
 	}
@@ -276,7 +323,7 @@ timer_fini(void *arg)
 {
 	uu_list_t *list = arg;
 
-	(void) cancel_timeout(TE_ANY, NULL);
+	(void) cancel_timeout(TE_ANY, NULL, log);
 	uu_list_destroy(list);
 }
 
@@ -307,4 +354,20 @@ evt_dtor(void *buf, void *cb)
 	tevent_t *te = (tevent_t *)buf;
 
 	uu_list_node_fini(buf, &te->node, timer_pools);
+}
+
+static const char *
+te_str(te_event_t te)
+{
+#define	STR(x) case x: return (#x)
+	switch (te) {
+	STR(TE_TEST);
+	STR(TE_ANY);
+	STR(TE_SA_EXPIRE);
+	STR(TE_COOKIE_GEN);
+	STR(TE_TRANSMIT);
+	STR(TE_PFKEY);
+	default:
+		return ("UNKNOWN");
+	}
 }

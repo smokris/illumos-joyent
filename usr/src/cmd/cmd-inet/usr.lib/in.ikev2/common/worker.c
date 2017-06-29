@@ -58,6 +58,7 @@ static size_t	queuelen;
 
 static worker_t *worker_init_one(size_t);
 static void *worker(void *);
+static const char *worker_cmd_str(worker_cmd_t);
 
 void
 worker_init(size_t n_workers, size_t queue_sz)
@@ -85,6 +86,9 @@ worker_init(size_t n_workers, size_t queue_sz)
 
 		if (w == NULL)
 			err(EXIT_FAILURE, "out of memory");
+
+		bunyan_key_add(w->w_log, BUNYAN_T_UINT32, "worker",
+		    (uint32_t)i);
 
 		workers[i] = w;
 	}
@@ -162,15 +166,22 @@ worker_dispatch(pkt_t *pkt)
 {
 	worker_t *w = NULL;
 	worker_queue_t *wq = NULL;
+	size_t n = 0;
 
 	PTH(pthread_rwlock_rdlock(&worker_lock));
-	w = workers[worker_hash(pkt)];
+	n = worker_hash(pkt);
+	w = workers[n];
 	wq = &w->w_queue;
 	PTH(pthread_mutex_lock(&wq->wq_lock));
 
 	if (WQ_FULL(wq)) {
 		PTH(pthread_mutex_unlock(&wq->wq_lock));
 		PTH(pthread_rwlock_unlock(&worker_lock));
+
+		(void) bunyan_debug(log, "dispatch failed (queue full)",
+		    BUNYAN_T_UINT32, "worker", (uint32_t)n,
+		    BUNYAN_T_POINTER, "pkt", pkt,
+		    BUNYAN_T_END);
 		return (B_FALSE);
 	}
 
@@ -181,6 +192,10 @@ worker_dispatch(pkt_t *pkt)
 	PTH(pthread_mutex_unlock(&wq->wq_lock));
 	PTH(pthread_rwlock_unlock(&worker_lock));
 
+	(void) bunyan_debug(w->w_log, "Dispatching packet to worker",
+		    BUNYAN_T_UINT32, "worker", (uint32_t)n,
+		    BUNYAN_T_POINTER, "pkt", pkt,
+		    BUNYAN_T_END);
 	return (B_TRUE);
 }
 
@@ -194,11 +209,14 @@ worker(void *arg)
 
 	ike_timer_thread_init();
 
+	(void) bunyan_trace(w->w_log, "Worker starting", BUNYAN_T_END);
+
 	PTH(pthread_mutex_lock(&wq->wq_lock));
 
 	/*CONSTCOND*/
 	while (1) {
-		process_timer(&ts);
+		wq->wq_cmd = WC_NONE;
+		process_timer(&ts, w->w_log);
 
 		if (ts.tv_sec == 0 && ts.tv_nsec == 0) {
 			PTH(pthread_cond_wait(&wq->wq_cv, &wq->wq_lock));
@@ -208,6 +226,12 @@ worker(void *arg)
 			    &ts);
 			VERIFY(rc == 0 || rc == ETIMEDOUT);
 		}
+
+		if (wq->wq_cmd != WC_NONE)
+			(void) bunyan_info(w->w_log, "Received command",
+			    BUNYAN_T_STRING, "cmd", worker_cmd_str(wq->wq_cmd),
+			    BUNYAN_T_UINT32, "cmdval", (uint32_t)wq->wq_cmd,
+			    BUNYAN_T_END);
 
 		switch (wq->wq_cmd) {
 		case WC_NONE:
@@ -243,6 +267,8 @@ worker_add(void)
 	size_t new_workers_alloc = 0;
 	size_t len = 0, qlen = 0;
 
+	(void) bunyan_trace(log, "Creating new worker", BUNYAN_T_END);
+
 	if (workers_alloc == nworkers) {
 		new_workers_alloc = workers_alloc + 1;
 		len = new_workers_alloc * sizeof (worker_t *);
@@ -276,6 +302,9 @@ worker_add(void)
 	workers[nworkers++] = w;
 
 	PTH(pthread_rwlock_unlock(&worker_lock));	
+
+	(void) bunyan_debug(w->w_log, "Worker created", BUNYAN_T_END);
+
 	return (B_TRUE);
 }
 
@@ -284,3 +313,16 @@ worker_del(void)
 {
 }
 
+static const char *
+worker_cmd_str(worker_cmd_t wc)
+{
+#define	STR(x) case x: return (#x)
+	switch (wc) {
+	STR(WC_NONE);
+	STR(WC_SUSPEND);
+	STR(WC_QUIT);
+	default:
+		return ("UNKNOWN");
+	}
+#undef STR
+}
