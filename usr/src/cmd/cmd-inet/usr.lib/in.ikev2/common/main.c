@@ -24,6 +24,8 @@
 #include <libgen.h>
 #include <sys/types.h>
 #include <sys/debug.h>
+#include <locale.h>
+#include <ucontext.h>
 #include "pkcs11.h"
 #include "defs.h"
 #include "timer.h"
@@ -78,6 +80,9 @@ main(int argc, char **argv)
 	pkt_init();
 	ike_timer_init();
 
+	/* XXX: make these configurable */
+	worker_init(8, 8);
+
 	main_loop();
 
 	pkt_fini();
@@ -117,16 +122,25 @@ main_loop(void)
 			event(pe.portev_events, pe.portev_user);
 			break;
 
-		case PORT_SOURCE_FD:
+		case PORT_SOURCE_FD: {
+			char buf[128] = { 0 };
+			(void) addrtosymstr(pe.portev_user, buf, sizeof (buf));
+
 			(void) bunyan_trace(log, "received event",
 			    BUNYAN_T_STRING, "source",
 			    port_source_str(pe.portev_source),
 			    BUNYAN_T_UINT32, "source val",
 			    (uint32_t)pe.portev_events,
 			    BUNYAN_T_INT32, "fd", (int32_t)pe.portev_object,
+			    BUNYAN_T_STRING, "cb", buf,
+			    BUNYAN_T_POINTER, "cbval", pe.portev_user,
 			    BUNYAN_T_END);
 
+			void (*fn)(int) = (void (*)(int))pe.portev_user;
+			int fd = (int)pe.portev_object;
+			fn(fd);
 			break;
+		}
 
 		case PORT_SOURCE_ALERT:
 			(void) bunyan_trace(log, "received event",
@@ -155,6 +169,13 @@ event(event_t evt, void *arg)
 		do_signal((int)(uintptr_t)arg);
 		break;
 	}
+}
+
+void
+schedule_socket(int fd, void (*cb)(int))
+{
+	if (port_associate(port, PORT_SOURCE_FD, fd, POLLIN, cb) < 0)
+		STDERR(log, "port_associate() failed");
 }
 
 static void

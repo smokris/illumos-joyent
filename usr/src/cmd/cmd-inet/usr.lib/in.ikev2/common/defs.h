@@ -113,6 +113,8 @@ extern char *my_fmri;
 extern bunyan_logger_t *log;
 extern int port;
 
+void schedule_socket(int, void(*)(int));
+
 #ifdef  __cplusplus
 }
 #endif

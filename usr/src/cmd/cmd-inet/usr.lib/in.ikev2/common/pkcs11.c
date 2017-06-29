@@ -708,4 +708,7 @@ fmtstr(char *buf, size_t buflen, CK_UTF8CHAR *src, size_t srclen)
 
 	(void) memset(buf, 0, buflen);
 	(void) memcpy(buf, src, srclen);
+
+	for (char *p = buf + strlen(buf) - 1; p >= buf && *p == ' '; p--)
+		*p = '\0';
 }
