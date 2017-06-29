@@ -40,6 +40,7 @@ static void do_signal(int);
 static void main_loop(void);
 
 static const char *port_source_str(ushort_t);
+static const char *event_str(event_t);
 
 static boolean_t done;
 static pthread_t signal_tid;
@@ -94,18 +95,44 @@ main_loop(void)
 			continue;
 		}
 
-		(void) bunyan_trace(log, "received event",
-		    BUNYAN_T_STRING, "source",
-		    port_source_str(pe.portev_source),
-		    BUNYAN_T_UINT32, "source val", (uint32_t)pe.portev_events,
-		    BUNYAN_T_END);
-
 	 	switch (pe.portev_source) {
 		case PORT_SOURCE_USER:
+			(void) bunyan_trace(log, "received event",
+			    BUNYAN_T_STRING, "source",
+			    port_source_str(pe.portev_source),
+			    BUNYAN_T_UINT32, "source val",
+			    (uint32_t)pe.portev_events,
+			    BUNYAN_T_STRING, "event",
+			    event_str(pe.portev_events),
+			    BUNYAN_T_UINT32, "event num",
+			    (int32_t)pe.portev_events,
+			    BUNYAN_T_POINTER, "event arg", pe.portev_user,
+			    BUNYAN_T_END);
 			event(pe.portev_events, pe.portev_user);
 			break;
+
 		case PORT_SOURCE_FD:
+			(void) bunyan_trace(log, "received event",
+			    BUNYAN_T_STRING, "source",
+			    port_source_str(pe.portev_source),
+			    BUNYAN_T_UINT32, "source val",
+			    (uint32_t)pe.portev_events,
+			    BUNYAN_T_INT32, "fd", (int32_t)pe.portev_object,
+			    BUNYAN_T_END);
+
 			break;
+
+		case PORT_SOURCE_ALERT:
+			(void) bunyan_trace(log, "received event",
+			    BUNYAN_T_STRING, "source",
+			    port_source_str(pe.portev_source),
+			    BUNYAN_T_UINT32, "source val",
+			    (uint32_t)pe.portev_events,
+			    BUNYAN_T_END);
+			break;
+
+		default:
+			INVALID("pe.portev_source");
 		}
 	}
 }
@@ -213,6 +240,18 @@ port_source_str(ushort_t src)
 	default:
 		return ("UNKNOWN");
 	}
-
 #undef STR
+}
+
+static const char *
+event_str(event_t evt)
+{
+#define	STR(x) case x: return (#x)
+
+	switch (evt) {
+	STR(EVENT_NONE);
+	STR(EVENT_SIGNAL);
+	default:
+		return ("UNKNOWN");
+	}
 }

@@ -113,8 +113,8 @@ pkcs11_global_init(void)
 		pkcs11_fatal(rv, "C_GetSlotList");
 
 	{
-		char manf[35];
-		char libdesc[35];
+		char manf[33];
+		char libdesc[33];
 
 		fmtstr(manf, sizeof (manf), pkcs11_info.manufacturerID,
 		    sizeof (pkcs11_info.manufacturerID));
@@ -147,7 +147,7 @@ static void
 log_slotinfo(CK_SLOT_ID slot)
 {
 	CK_SLOT_INFO info = { 0 };
-	char manuf[35]; /* sizeof info.manufacturerID + '' + NUL */
+	char manuf[33]; /* sizeof info.manufacturerID NUL */
 	CK_RV rv;
 
 	rv = C_GetSlotInfo(slot, &info);
@@ -157,13 +157,13 @@ log_slotinfo(CK_SLOT_ID slot)
 	}
 
 	{
-		char desc[67];	/* sizeof info.description + '' + NUL */
+		char desc[65];	/* sizeof info.description + NUL */
 		fmtstr(desc, sizeof (desc), info.slotDescription,
 		    sizeof (info.slotDescription));
 		fmtstr(manuf, sizeof (manuf), info.manufacturerID,
 		    sizeof (info.manufacturerID));
 
-		(void) bunyan_debug(log, "PKCS#11 Slot Info",
+		(void) bunyan_debug(log, "PKCS#11 slot Info",
 		    BUNYAN_T_UINT64, "slot", (uint64_t)slot,
 		    BUNYAN_T_STRING, "desc", desc,
 		    BUNYAN_T_STRING, "manufacturer", manuf,
@@ -192,10 +192,10 @@ log_slotinfo(CK_SLOT_ID slot)
 	if (rv != CKR_OK)
 		pkcs11_error(rv, "C_GetTokenInfo");
 
-	char label[35];		/* sizeof tinfo.label + '' + NUL */
-	char model[19];		/* sizeof tinfo.model + '' + NUL */
-	char serial[19];	/* sizeof tinfo.serialNumber + '' + NUL */
-	char utctime[19];	/* sizeof tinfo.utsTime + '' + NUL */
+	char label[33];		/* sizeof tinfo.label + NUL */
+	char model[17];		/* sizeof tinfo.model + NUL */
+	char serial[17];	/* sizeof tinfo.serialNumber + NUL */
+	char utctime[17];	/* sizeof tinfo.utsTime + NUL */
 
 	fmtstr(manuf, sizeof (manuf), tinfo.manufacturerID,
 	    sizeof (tinfo.manufacturerID));
@@ -235,6 +235,7 @@ log_slotinfo(CK_SLOT_ID slot)
 	    F(info, CKF_SO_PIN_TO_BE_CHANGED),
 	    F(info, CKF_ERROR_STATE),
 	    BUNYAN_T_END);
+#undef F
 }
 
 /*
@@ -801,10 +802,8 @@ pkcs11_fatal(CK_RV errval, const char *func)
 static void
 fmtstr(char *buf, size_t buflen, CK_UTF8CHAR *src, size_t srclen)
 {
-	ASSERT3U(srclen + 3, <=, buflen);
+	ASSERT3U(srclen + 1, <=, buflen);
 
 	(void) memset(buf, 0, buflen);
-	buf[0] = '\'';
-	(void) memcpy(buf + 1, src, srclen);
-	(void) strlcat(buf, "'", buflen);
+	(void) memcpy(buf, src, srclen);
 }
