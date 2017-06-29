@@ -45,25 +45,8 @@
  */
 #define	METASLOT_ID	(0)
 
-CK_INFO		pkcs11_info = { 0 };
-
-/*
- * PKCS#11 allows us to share public objects between sessions within
- * the same process.  However, when a session is closed, any objects
- * created by that session are destroyed.  This obviously would
- * create a problem for IKEv2 SAs if we shrink our thread pool size.
- *
- * To address this, we maintain a pool of free PKCS#11 sessions, and
- * attempt to allocate from that first, only calling C_CreateSession
- * if there are no sessions in the free pool.  Upon thread termination,
- * the session is returned to the free pool.
- */
-static pthread_mutex_t		ses_free_lock = PTHREAD_MUTEX_INITIALIZER;
-static CK_SESSION_HANDLE_PTR	ses_free_list;
-static int			ses_nfree;
-static int			ses_alloc;
-
-static pthread_key_t		p11_key = PTHREAD_ONCE_KEY_NP;
+CK_INFO			pkcs11_info = { 0 };
+CK_SESSION_HANDLE	p11h = CK_INVALID_HANDLE;
 
 #define	PKCS11_FUNC		"func"
 #define	PKCS11_RC		"errnum"
@@ -81,7 +64,7 @@ static void log_slotinfo(CK_SLOT_ID);
  * is inable to be located, we terminate.
  */
 void
-pkcs11_global_init(void)
+pkcs11_init(void)
 {
 	CK_SESSION_HANDLE	p11h = CK_INVALID_HANDLE;
 	CK_RV			rv = CKR_OK;
@@ -94,9 +77,6 @@ pkcs11_global_init(void)
 		CKF_OS_LOCKING_OK,	/* flags */
 		NULL_PTR		/* reserved */
 	};
-
-	PTH(pthread_key_create_once_np(&p11_key, pkcs11_worker_fini));
-	PTH(pthread_setspecific(p11_key, (const void *)p11h));
 
 	if ((rv = C_Initialize(&args)) != CKR_OK)
 		pkcs11_fatal(rv, "C_Initialize");
@@ -141,6 +121,11 @@ pkcs11_global_init(void)
 
 	for (size_t i = 0; i < nslot; i++)
 		log_slotinfo(slots[i]);
+
+	rv = C_OpenSession(METASLOT_ID, CKF_SERIAL_SESSION, NULL,
+	    pkcs11_callback_handler, &p11h);
+	if (rv != CKR_OK)
+		pkcs11_fatal(rv, "C_OpenSession");
 }
 
 static void
@@ -238,104 +223,14 @@ log_slotinfo(CK_SLOT_ID slot)
 #undef F
 }
 
-/*
- * Closes all open PKCS#11 Sessions.
- *
- * This assumes that all worker threads have terminated prior to being
- * invoked.  If not, some sessions may not be explicitly closed.
- */
 void
-pkcs11_global_fini(void)
+pkcs11_fini(void)
 {
-	CK_RV rc;
+	CK_RV rv;
 
-	for (size_t i = 0; i < ses_nfree; i++) {
-		if ((rc = C_CloseSession(ses_free_list[i])) != CKR_OK)
-			pkcs11_error(rc, "C_CloseSession");
-	}
-}
-
-/*
- * Create a PKCS#11 session for a worker thread.
- *
- * This will search the free list for an unused PKCS#11 session
- * and assign the session to the p11s TLS variable.  If no sessions
- * are on the free list, a new session will be created.  This is called
- * by the worker thread.
- *
- * On sucess, B_TRUE is returned.  Otherwise B_FALSE is returned.
- */
-boolean_t
-pkcs11_worker_init(void)
-{
-	CK_SESSION_HANDLE p11h = CK_INVALID_HANDLE;
-
-	/*
-	 * for simplicity, we push and pop sessions from the end
-	 * of the list.
-	 */
-	PTH(pthread_mutex_lock(&ses_free_lock));
-	if (ses_nfree > 0) {
-		p11h = ses_free_list[--ses_nfree];
-		PTH(pthread_mutex_unlock(&ses_free_lock));
-		goto done;
-	}
-	PTH(pthread_mutex_unlock(&ses_free_lock));
-
-	CK_RV rc = C_OpenSession(METASLOT_ID, CKF_SERIAL_SESSION, NULL,
-	    pkcs11_callback_handler, &p11h);
-	if (rc != CKR_OK) {
-		pkcs11_error(rc, "C_OpenSession");
-		return (B_FALSE);
-	}
-
-done:
-	PTH(pthread_setspecific(p11_key, (const void *)p11h));
-	return (B_TRUE);
-}
-
-/*
- * Append a PKCS#11 session into the free list and set the TLS session
- * handle p11s to CK_INVALID_SESSION.  Called when a worker thread is
- * terminated.
- */
-
-#define	SES_FREE_CHUNK 8	/* Used when expanding the session free list */
-void
-pkcs11_worker_fini(void *arg)
-{
-	CK_SESSION_HANDLE p11h = (CK_SESSION_HANDLE)arg;
-
-	PTH(pthread_mutex_lock(&ses_free_lock));
-	if (ses_nfree + 1 > ses_alloc) {
-		size_t nelem = ses_alloc + SES_FREE_CHUNK;
-		size_t nsize = nelem * sizeof (CK_SESSION_HANDLE);
-
-		/*
-		 * we would almost definitely error out creating a PKCS#11
-		 * session before we could possibly overflow the free list,
-		 * however to be absolutely safe, we bail horribly if we do.
-		 */
-		VERIFY3U(nsize, >, nelem);
-		VERIFY3U(nsize, >, sizeof (CK_SESSION_HANDLE));
-
-		CK_SESSION_HANDLE *temp = realloc(ses_free_list, nsize);
-
-		if (temp == NULL)
-			err(EXIT_FAILURE, "out of memory");
-
-		ses_free_list = temp;
-		ses_alloc = nelem;
-	}
-
-	ses_free_list[ses_nfree++] = p11h;
-	PTH(pthread_mutex_unlock(&ses_free_lock));
-}
-
-CK_SESSION_HANDLE
-p11s(void)
-{
-	return ((CK_SESSION_HANDLE)pthread_getspecific(p11_key));
+	rv = C_CloseSession(p11h);
+	if (rv != CKR_OK)
+		pkcs11_error(rv, "C_CloseSession");
 }
 
 static auth_param_t auth_params[] = {
@@ -710,7 +605,7 @@ pkcs11_destroy_obj(const char *name, CK_OBJECT_HANDLE_PTR objp, int level)
 	if (objp == NULL || *objp == CK_INVALID_HANDLE)
 		return;
 
-	if ((ret = C_DestroyObject(p11s(), *objp)) != CKR_OK) {
+	if ((ret = C_DestroyObject(p11h, *objp)) != CKR_OK) {
 		pkcs11_error(ret, "C_DestroyObject");
 	} else {
 		*objp = CK_INVALID_HANDLE;
@@ -735,13 +630,13 @@ pkcs11_digest(CK_MECHANISM_TYPE alg, const buf_t *restrict in, size_t n_in,
 	mech.pParameter = NULL_PTR;
 	mech.ulParameterLen = 0;
 
-	if ((ret = C_DigestInit(p11s(), &mech)) != CKR_OK) {
+	if ((ret = C_DigestInit(p11h, &mech)) != CKR_OK) {
 		pkcs11_error(ret, "C_DigestInit");
 		return (B_FALSE);
 	}
 
 	for (size_t i = 0; i < n_in; i++) {
-		ret = C_DigestUpdate(p11s(), in[i].ptr, in[i].len);
+		ret = C_DigestUpdate(p11h, in[i].ptr, in[i].len);
 		if (ret != CKR_OK) {
 			pkcs11_error(ret, "C_DigestUpdate");
 			return (B_FALSE);
@@ -750,7 +645,7 @@ pkcs11_digest(CK_MECHANISM_TYPE alg, const buf_t *restrict in, size_t n_in,
 
 	CK_ULONG len = out->len;
 
-	ret = C_DigestFinal(p11s(), out->ptr, &len);
+	ret = C_DigestFinal(p11h, out->ptr, &len);
 	out->len = (size_t)len;
 
 	if (ret != CKR_OK) {

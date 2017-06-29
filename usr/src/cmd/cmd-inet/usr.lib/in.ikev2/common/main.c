@@ -68,14 +68,14 @@ main(int argc, char **argv)
 
 	signal_init();
 	random_init();
-	pkcs11_global_init();
+	pkcs11_init();
 	pkt_init();
 	ike_timer_init();
 
 	main_loop();
 
 	pkt_fini();
-	pkcs11_global_fini();
+	pkcs11_fini();
 
 	return (0);
 }

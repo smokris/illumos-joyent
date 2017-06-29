@@ -192,7 +192,6 @@ worker(void *arg)
 	timespec_t ts = { 0 };
 	boolean_t done = B_FALSE;
 
-	(void) pkcs11_worker_init();
 	ike_timer_thread_init();
 
 	PTH(pthread_mutex_lock(&wq->wq_lock));

@@ -64,18 +64,15 @@ typedef struct {
 	size_t			key_sz;
 } auth_param_t;
 
+extern CK_INFO pkcs11_info;
+extern CK_SESSION_HANDLE p11h;
+
 /* PKCS#11 functions. */
-void pkcs11_global_init(void);
-void pkcs11_global_fini(void);
-
-boolean_t pkcs11_worker_init(void);
-void pkcs11_worker_fini(void *);
-
-CK_SESSION_HANDLE p11s(void);
+void pkcs11_init(void);
+void pkcs11_fini(void);
 
 boolean_t pkcs11_digest(CK_MECHANISM_TYPE, const buf_t *restrict, size_t,
     buf_t *restrict, int);
-
 void pkcs11_destroy_obj(const char *, CK_OBJECT_HANDLE_PTR, int);
 
 encr_param_t *ikev2_get_encr_param(ikev2_xf_encr_t);

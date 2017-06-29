@@ -118,7 +118,7 @@ prf_genkey(int alg, buf_t *restrict src, size_t n,
 	template[0].pValue = key.ptr;
 	template[0].ulValueLen = keylen;
 
-	rc = C_CreateObject(p11s(), template,
+	rc = C_CreateObject(p11h, template,
 	    sizeof (template) / sizeof (CK_ATTRIBUTE), kp);
 
 done:
@@ -145,17 +145,17 @@ prf(int alg, CK_OBJECT_HANDLE key, buf_t *restrict seed, size_t nseed,
 	mech.pParameter = NULL;
 	mech.ulParameterLen = 0;
 
-	if ((rc = C_SignInit(p11s(), &mech, key)) != CKR_OK)
+	if ((rc = C_SignInit(p11h, &mech, key)) != CKR_OK)
 		return (rc);
 
 	for (size_t i = 0; i < nseed; i++) {
-		rc = C_SignUpdate(p11s(), seed[i].ptr, seed[i].len);
+		rc = C_SignUpdate(p11h, seed[i].ptr, seed[i].len);
 		/* XXX: should we still call C_SignFinal? */
 		if (rc != CKR_OK)
 			return (rc);
 	}
 
-	rc = C_SignFinal(p11s(), out->ptr, &out->len);
+	rc = C_SignFinal(p11h, out->ptr, &out->len);
 	/* If we sized correctly, this should never change */
 	ASSERT(out->len >= algp->outlen);
 	return (rc);
