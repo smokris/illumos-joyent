@@ -98,6 +98,7 @@ pkt_in_alloc(const buf_t *buf)
 
 	if (buf->len > sizeof (pkt->raw)) {
 		/* XXX: msg */
+		errno = 
 		return (NULL);
 	}
 
@@ -127,7 +128,7 @@ payload_finish(pkt_t *restrict pkt, buf_t *restrict buf, uintptr_t arg,
 	ASSERT3U(pkt->buf.ptr, >, buf->ptr);
 	ASSERT3U(pkt->buf.ptr - buf->ptr, <, 0x10000);
 
-	buf_copy(&paybuf, buf, paybuf.len);
+	buf_copy(&paybuf, buf, 1);
 	pay.pay_next = (uint8_t)arg;
        	pay.pay_length = htons((uint16_t)(pkt->buf.ptr - buf->ptr));
 	buf_copy(buf, &paybuf, 1);
@@ -223,11 +224,11 @@ pkt_add_xform(pkt_t *pkt, uint8_t xftype, uint8_t xfid)
 
 	pkt_stack_push(pkt, PSI_XFORM, pkt_xf_finish,
 	    (uintptr_t)IKE_XFORM_MORE);
-	ASSERT(xfid < USHORT_MAX);
+	ASSERT3U(xfid, <, USHORT_MAX);
 	/* mostly for completeness */
-	xf.xf_type = IKE_XFORM_NONE;
+	xf.xf_more = IKE_XFORM_NONE;
 	xf.xf_type = xftype;
-	xf.xf_type = htons((uint16_t) xfid);
+	xf.xf_id = htons((uint16_t) xfid);
 	APPEND_STRUCT(pkt, xf);
 	return (B_TRUE);
 }
@@ -302,7 +303,7 @@ pkt_hdr_ntoh(ike_header_t *restrict dest,
 {
 	ASSERT(IS_P2ALIGNED(dest, sizeof (uint64_t)));
 	ASSERT(IS_P2ALIGNED(src, sizeof (uint64_t)));
-	ASSERT(src != dest);
+	ASSERT3P(src, !=, dest);
 
 	dest->initiator_spi = ntohll(src->initiator_spi);
 	dest->responder_spi = ntohll(src->responder_spi);
@@ -320,7 +321,7 @@ pkt_hdr_hton(ike_header_t *restrict dest,
 {
 	ASSERT(IS_P2ALIGNED(dest, sizeof (uint64_t)));
 	ASSERT(IS_P2ALIGNED(src, sizeof (uint64_t)));
-	ASSERT(src != dest);
+	ASSERT3P(src, !=, dest);
 
 	dest->initiator_spi = htonll(src->initiator_spi);
 	dest->responder_spi = htonll(src->responder_spi);
@@ -530,7 +531,7 @@ pkt_stack_push(pkt_t *pkt, pkt_stack_item_t type, pkt_finish_fn finish,
 
 	stk->stk_finish = finish;
 	buf_dup(&stk->stk_buf, &pkt->buf);
-	stk->stk_count = count;
+	stk->stk_count = count + 1;
 	stk->stk_type = type;
 }
 
@@ -538,7 +539,7 @@ pkt_stack_push(pkt_t *pkt, pkt_stack_item_t type, pkt_finish_fn finish,
  * This is where the magic happens.  Pop off what's saved in pkt->stack
  * and run all the post processing until the rank of the top item in
  * the stack is lower than the rank of what we're about to add (contained in
- * type).
+ * type).  Return the running count of structures of the same rank as type.
  */
 static size_t
 pkt_stack_unwind(pkt_t *pkt, pkt_stack_item_t type, uintptr_t swaparg)
@@ -554,17 +555,22 @@ pkt_stack_unwind(pkt_t *pkt, pkt_stack_item_t type, uintptr_t swaparg)
 		if (stk->stk_finish != NULL)
 			stk->stk_finish(pkt, &stk->stk_buf,
 			    (stk_rank == rank) ? swaparg : 0, count);
+
+		/*
+		 * This was initialized to 0, and is deliberately set after
+		 * calling the post-processing callback so that the
+		 * post-processing callback called in the next iteration
+		 * of the loop (if it happens) gets the count of embedded
+		 * structures (e.g. proposal post-processing function gets
+		 * the count of embedded transform structures).
+		 */
 		count = stk->stk_count;
 	}
 
 	ASSERT3U(pkt_stack_rank(pkt), <, rank);
 
-	/* if there was an entry of the same depth (i.e. we are going to
-	 * swap it out with our own), return it's swap count + 1 for the
-	 * swap we're about to do
-	 */
 	if (stk != NULL && stk_rank == rank)
-		return (stk->stk_count + 1);
+		return (stk->stk_count);
 	return (0);
 }
 
