@@ -51,8 +51,8 @@ typedef struct worker {
 
 static pthread_rwlock_t worker_lock = PTHREAD_RWLOCK_INITIALIZER;
 
+size_t	nworkers;
 static worker_t	**workers;
-static size_t	nworkers;
 static size_t	workers_alloc;
 static size_t	queuelen;
 
@@ -155,21 +155,14 @@ worker_resume(void)
 
 }
 
-static size_t
-worker_hash(pkt_t *pkt)
-{
-	return (0);
-}
-
 boolean_t
-worker_dispatch(pkt_t *pkt)
+worker_dispatch(pkt_t *pkt, size_t n)
 {
 	worker_t *w = NULL;
 	worker_queue_t *wq = NULL;
-	size_t n = 0;
 
 	PTH(pthread_rwlock_rdlock(&worker_lock));
-	n = worker_hash(pkt);
+	VERIFY3U(n, <, nworkers);
 	w = workers[n];
 	wq = &w->w_queue;
 	PTH(pthread_mutex_lock(&wq->wq_lock));

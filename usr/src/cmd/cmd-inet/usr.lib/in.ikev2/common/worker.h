@@ -24,13 +24,15 @@ extern "C" {
 
 struct pkt;
 
+extern size_t nworkers;
+
 void worker_init(size_t, size_t);
 void worker_suspend(void);
 void worker_resume(void);
 boolean_t worker_add(void);
 void worker_del(void);
 void worker_stop(void);
-boolean_t worker_dispatch(struct pkt *);
+boolean_t worker_dispatch(struct pkt *, size_t);
 
 #ifdef __cplusplus
 }
