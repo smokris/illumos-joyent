@@ -27,7 +27,8 @@ pkt_t *pkt_in_alloc(const buf_t *);
 pkt_t *pkt_out_alloc(uint64_t, uint64_t, uint8_t, uint8_t, uint32_t);
 void pkt_free(pkt_t *);
 
-void pkt_stack_push(pkt_t *restrict, int, pkt_finish_fn, uintptr_t);
+void pkt_stack_push(pkt_t *restrict, pkt_stack_item_t, pkt_finish_fn,
+    uintptr_t);
 
 boolean_t pkt_add_payload(pkt_t *, uint8_t, uint8_t);
 boolean_t pkt_add_prop(pkt_t *, uint8_t, uint8_t, size_t, uint64_t);

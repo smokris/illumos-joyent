@@ -10,9 +10,9 @@
  */
 
 /*
- * Copyright 2014 Jason King.  All rights reserved.
+ * Copyright 2017 Jason King.
+ * Copyright 2017 Joyent, Inc.
  */
-
 #include <stddef.h>
 #include <assert.h>
 #include <umem.h>
@@ -29,21 +29,16 @@
 #include <pthread.h>
 #include <sys/debug.h>
 #include <note.h>
+#include <err.h>
 #include "ikev2.h"
 #include "ikev2_sa.h"
 #include "pkt.h"
 #include "pkt_impl.h"
 #include "pkcs11.h"
 
-#define	DEPTH_NONE		(0)
-#define	DEPTH_SK		(1)
-#define	DEPTH_PAYLOAD		(2)
-#define	DEPTH_PROP		(3)
-#define	DEPTH_XFORM		(4)
-#define	DEPTH_XFORM_ATTR	(5)
-
 static umem_cache_t	*pkt_cache;
 
+static size_t pkt_item_rank(pkt_stack_item_t);
 static void pkt_finish(pkt_t *restrict, buf_t *restrict, uintptr_t, size_t);
 static int pkt_reset(void *);
 
@@ -73,7 +68,7 @@ pkt_out_alloc(uint64_t i_spi, uint64_t r_spi, uint8_t version,
 	 * finish callback before anything else.
 	 */
 	buf_advance(&pkt->buf, sizeof (ike_header_t));
-	pkt_stack_push(pkt, DEPTH_NONE, pkt_finish, 0);
+	pkt_stack_push(pkt, PSI_PACKET, pkt_finish, 0);
 	return (pkt);
 }
 
@@ -121,16 +116,6 @@ pkt_in_alloc(const buf_t *buf)
 	return (pkt);
 }
 
-void
-pkt_free(pkt_t *pkt)
-{
-	if (pkt == NULL)
-		return;
-
-	pkt_reset(pkt);
-	umem_cache_free(pkt_cache, pkt);
-}
-
 static void
 payload_finish(pkt_t *restrict pkt, buf_t *restrict buf, uintptr_t arg,
     size_t numsub)
@@ -164,7 +149,9 @@ pkt_add_payload(pkt_t *pkt, uint8_t ptype, uint8_t resv)
 	 * Otherwise we'll set it when we replace the current top of
 	 * the stack
 	 */
-	pkt_stack_push(pkt, DEPTH_PAYLOAD, payload_finish, (uintptr_t)ptype);
+	pkt_stack_item_t type =
+	    (ptype == IKEV2_PAYLOAD_SA) ? PSI_SA : PSI_PAYLOAD;
+	pkt_stack_push(pkt, type, payload_finish, (uintptr_t)ptype);
 	pay.pay_next = IKE_PAYLOAD_NONE;
 	pay.pay_reserved = resv;
 	APPEND_STRUCT(pkt, pay);
@@ -182,7 +169,7 @@ pkt_add_prop(pkt_t *pkt, uint8_t propnum, uint8_t proto, size_t spilen,
 	if (PKT_REMAINING(pkt) < sizeof (prop) + spilen)
 		return (B_FALSE);
 
-	pkt_stack_push(pkt, DEPTH_PROP, prop_finish, (uintptr_t)IKE_PROP_MORE);
+	pkt_stack_push(pkt, PSI_PROP, prop_finish, (uintptr_t)IKE_PROP_MORE);
 
 	prop.prop_more = IKE_PROP_NONE;
 	prop.prop_num = propnum;
@@ -234,7 +221,7 @@ pkt_add_xform(pkt_t *pkt, uint8_t xftype, uint8_t xfid)
 	if (PKT_REMAINING(pkt) < sizeof (xf))
 		return (B_FALSE);
 
-	pkt_stack_push(pkt, DEPTH_XFORM, pkt_xf_finish,
+	pkt_stack_push(pkt, PSI_XFORM, pkt_xf_finish,
 	    (uintptr_t)IKE_XFORM_MORE);
 	ASSERT(xfid < USHORT_MAX);
 	/* mostly for completeness */
@@ -272,7 +259,7 @@ pkt_add_xf_attr_tv(pkt_t *pkt, uint_t type, uint_t val)
 	if (PKT_REMAINING(pkt) < sizeof (attr))
 		return (B_FALSE);
 
-	pkt_stack_push(pkt, DEPTH_XFORM_ATTR, NULL, 0);
+	pkt_stack_push(pkt, PSI_XFORM_ATTR, NULL, 0);
 	attr.attr_type = htons(IKE_ATTR_TYPE(IKE_ATTR_TV, type));
 	attr.attr_len = htons(val);
 	APPEND_STRUCT(pkt, attr);
@@ -290,7 +277,7 @@ pkt_add_xf_attr_tlv(pkt_t *pkt, uint_t type, const buf_t *attrval)
 	if (PKT_REMAINING(pkt) < sizeof (attr) + attrval->len)
 		return (B_FALSE);
 
-	pkt_stack_push(pkt, DEPTH_XFORM_ATTR, NULL, 0);
+	pkt_stack_push(pkt, PSI_XFORM_ATTR, NULL, 0);
 	attr.attr_type = htons(IKE_ATTR_TYPE(IKE_ATTR_TLV, type));
 	attr.attr_len = htons(attrval->len);
 	APPEND_STRUCT(pkt, attr);
@@ -352,44 +339,102 @@ pkt_hdr_hton(ike_header_t *restrict dest,
  * substructures can themselves contain a potentially arbitrary number of
  * sub-sub structures.
  *
- * Due to the format of the headers for payloads and the various sub-*
- * structures, their value cannot be known a priori (e.g. the next payload
- * header value cannot be known until a subsequent payload is added).  In
- * other cases, certain values could be known a priori, but due to the
- * presense of substructures, it might be cumbersome to calculate (many of
- * the length fields fall into this category).
+ * One of the vexing aspects of the IKE specification is that the design of
+ * these structures makes it cumbersome to know a priori what some of the values
+ * should be until all the embedded structures have been added.  For example
+ * the payload header looks like this (taken from RFC 7296):
  *
- * To keep the API for constructing packets simple and straightforward,
- * for each type of structure (packet, payload, proposal, etc.) we push
- * a pkt_stack_t onto pkt->stack which contains the location within pkt->raw
- * of the start of the particular structure, and a function to invoke
- * once we are finished constructing the particular structure.
+ *                    1                   2                   3
+ *  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ * | Next Payload  |C|  RESERVED   |         Payload Length        |
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
  *
- * To distinguish between different substructures, each sort of structure
- * is assigned a depth.  Every time we begin to construct a structure, we
- * unwind the stack until we are at a lower depth than the structure we
- * are constructing.  As the stack unwinds, the finish functions for each
- * depth are called, and can then utilize the save position of the start
- * of the structure along with the current position (in pkt->buf) to
- * populate any required fields.
+ * The 'next payload' field (the type of payload in the payload structure
+ * that immediately follows this payload)  cannot be set until it is known
+ * what the * next payload will be (if any).  Similarly, the length of the
+ * current payload cannot be easily calculated until all embedded structures
+ * for this payload are known.  As Bruce Schneier et. al. have pointed out,
+ * this design is overly complicated and does not provide any improvement in
+ * security.  However, we are (sadly) stuck with it.
  *
- * In addition, when we pop an entry off the stack of the same depth
- * of the structure we are constructing (in effect swapping it's entry
- * with our own), we can pass an argument to the finish function of the
- * entry we are popping.  For example, when constructing payloads,
- * we pop off any entries for substructures, and if one of the entries we
- * popped was for the previous payload, we call it's finish function with
- * an argument containing the type of our payload, which allows it to set
- * it's next payload field.
+ * To keep the code involved in a given exchange from being buried in
+ * loads of complicated tedium dealing with this, we have created a
+ * hopefully not too clever way to handle setting those fields so 
+ * the exhanging handling code rarely needs to worry about it.  It allows
+ * for code similar to:
  *
- * Since we often also need to know the number of immediate substructures
- * we've created when constructing a superstructure (is that a word?),
- * when we are effectively swapping an entry on the stack for one of
- * the same depth, we keep count of the number of swaps until we unwind
- * past it.  As we unwind, we also pass the number of swaps (which ends up
- * being the number of immediate substructures we've created) to the
- * finish function of the immediate enclosing structure.
+ * ikev2_add_sa(pkt, ...);
+ * ikev2_add_proposal(pkt, IKEV2_PROTO_ESP, ...);
+ * ikev2_add_xform(pkt, IKEV2_XF_ENCR, IKEV2_ENCR_AES_CBC);
+ * ikev2_add_xform_attr(pkt, IKEV2_XF_ATTR_KEYLEN, 256)
+ * ikev2_add_nonce(pkt, ....)
+ * ...
+ * ikev2_send(pkt, ...); 
+ *
+ * For any of the IKE structures, generally one or more of the following
+ * questions cannot be answered until subsequent structures are added:
+ *
+ * 	1. Some sort of information about the next structure of the same
+ * 	type (e.g. type of the next payload, if another proposal is present
+ * 	after the current proposal, etc).
+ * 	2. What is the size of this structure (with all embedded structures)?
+ * 	3. How many substructures are present in this structure?
+ *
+ * To be able to answer these questions, the general approach is that
+ * information about the state of the datagram at the time a structure is
+ * appeneded is saved in the pkt_t, and a post-processing function/callback is
+ * invoked after any embedded structures have been added.  This callback
+ * is given the number of embedded structures that have been added, as well as
+ * the position of the start of the structure this callback is invoked for.
+ * This allows the callback to determine both the size of the structure
+ * as well as the number of substructures.  In addition, an argument given
+ * while pushing a subsequent structure of the same type (payload, xform, etc)
+ * is passed to the callback -- this allows the callback to answer question
+ * #1 e.g. when pushing a new payload, it's type is the argument that's
+ * given to the callback invoked for the previous payload.
+ *
+ * To make this all work, each type of structure is assigned a 'rank' for
+ * lack of a better term (suggestions welcome).  Lower ranked structures can
+ * embed compatible higher ranked structures.  Since IKE structures cannot
+ * embed themselves, when we attempt to append a structure of equal or lower
+ * rank to the last structure appended, we know we are done embedding
+ * structures into the previous structure of equal or lower rank. If we are
+ * adding a structure of higher rank than the last structure added, we know we
+ * are embedding a structure.  If it's the same rank, we are pushing a simiar
+ * type of object and should bump the count of objects.
  */
+
+static size_t
+pkt_item_rank(pkt_stack_item_t type)
+{
+	switch (type) {
+	case PSI_NONE:
+		return (0);
+	case PSI_PACKET:
+		return (1);
+	case PSI_SK:
+		return (2);
+	/*
+	 * same rank, but distinct to allow verification that SA payloads
+	 * can only occur either at the start of a datagram, or as the
+	 * first item inside an SK payload
+	 */
+	case PSI_SA:
+	case PSI_PAYLOAD:
+		return (3);
+	case PSI_PROP:
+		return (4);
+	case PSI_XFORM:
+		return (5);
+	case PSI_XFORM_ATTR:
+		return (6);
+	default:
+		INVALID("type");
+	}
+	/*NOTREACHED*/
+	return (SIZE_MAX);
+}
 
 static boolean_t
 pkt_stack_empty(pkt_t *pkt)
@@ -397,12 +442,12 @@ pkt_stack_empty(pkt_t *pkt)
 	return (pkt->stksize == 0 ? B_TRUE : B_FALSE);
 }
 
-static int
-pkt_stack_depth(pkt_t *pkt)
+static pkt_stack_t *
+pkt_stack_top(pkt_t *pkt)
 {
 	if (pkt_stack_empty(pkt))
-		return (0);
-	return (pkt->stack[pkt->stksize - 1].stk_depth);
+		return (NULL);
+	return (&pkt->stack[pkt->stksize - 1]);
 }
 
 static pkt_stack_t *
@@ -413,48 +458,114 @@ pkt_stack_pop(pkt_t *pkt)
 	return (&pkt->stack[--pkt->stksize]);
 }
 
-static size_t
-pkt_stack_unwind(pkt_t *pkt, int depth, uintptr_t swaparg)
+static int
+pkt_stack_rank(pkt_t *pkt)
 {
-	pkt_stack_t	*stk = NULL;
-	size_t		count = 0;
+	pkt_stack_t *stk = pkt_stack_top(pkt);
+	pkt_stack_item_t type = (stk != NULL) ? stk->stk_type : PSI_NONE;
 
-	while (!pkt_stack_empty(pkt) && pkt_stack_depth(pkt) >= depth) {
-		stk = pkt_stack_pop(pkt);
-		if (stk->stk_finish != NULL)
-			stk->stk_finish(pkt, &stk->stk_buf,
-			    (stk->stk_depth == depth) ? swaparg : 0, count);
-		count = stk->stk_count;
-	}
-
-	ASSERT(pkt_stack_empty(pkt) || pkt_stack_depth(pkt) < depth);
-
-	/* if there was an entry of the same depth (i.e. we are going to
-	 * swap it out with our own), return it's swap count + 1 for the
-	 * swap we're about to do
-	 */
-	if (stk != NULL && stk->stk_depth == depth)
-		return (stk->stk_count + 1);
-	return (0);
+	return (pkt_item_rank(type));
 }
 
+static size_t pkt_stack_unwind(pkt_t *, pkt_stack_item_t, uintptr_t);
+
+/*
+ * Save structure information as we append a new payload
+ * Args:
+ * 	pkt	The packet in question
+ * 	type	The type of structure being added
+ * 	finish	The post-processing callback to run for this structure
+ * 	swaparg	The argument passed to the callback function of the previous
+ * 		post-processing callback for the same type of structure.
+ */
 void
-pkt_stack_push(pkt_t *pkt, int depth, pkt_finish_fn finish, uintptr_t swaparg)
+pkt_stack_push(pkt_t *pkt, pkt_stack_item_t type, pkt_finish_fn finish,
+    uintptr_t swaparg)
 {
 	pkt_stack_t	*stk;
 	size_t		count;
+	pkt_stack_item_t top_type = PSI_NONE;
 
-	count = pkt_stack_unwind(pkt, depth, swaparg);
+	if (pkt_stack_top(pkt) != NULL)
+		top_type = pkt_stack_top(pkt)->stk_type;
 
-	ASSERT(pkt_stack_depth(pkt) < depth);
-	ASSERT(pkt->stksize < PKT_STACK_DEPTH);
+	/*
+	 * If we're adding stuff in the wrong spot, that's a very egregious
+	 * bug, so die if we do
+	 */
+	switch (type) {
+	case PSI_PACKET:
+		VERIFY3S(top_type, ==, PSI_NONE);
+		break;
+	case PSI_SK:
+		VERIFY3S(top_type, ==, PSI_PACKET);
+		break;
+	case PSI_SA:
+		VERIFY(top_type == PSI_PACKET || top_type == PSI_SK);
+		break;
+	case PSI_PAYLOAD:
+		VERIFY(top_type != PSI_PACKET && top_type != PSI_NONE);
+		break;
+	case PSI_PROP:
+		VERIFY(top_type == PSI_SA || top_type == PSI_PROP ||
+		    top_type == PSI_XFORM || top_type == PSI_XFORM_ATTR);
+		break;
+	case PSI_XFORM:
+		VERIFY(top_type == PSI_XFORM || top_type == PSI_PROP ||
+		    top_type == PSI_XFORM_ATTR);
+		break;
+	case PSI_XFORM_ATTR:
+		VERIFY(top_type == PSI_XFORM || top_type == PSI_XFORM_ATTR);
+		break;
+	default:
+		INVALID("type");
+	}
+
+	count = pkt_stack_unwind(pkt, type, swaparg);
+
+	ASSERT3U(pkt_stack_rank(pkt), <, pkt_item_rank(type));
+	ASSERT3U(pkt->stksize, <, PKT_STACK_DEPTH);
 
 	stk = &pkt->stack[pkt->stksize++];
 
 	stk->stk_finish = finish;
 	buf_dup(&stk->stk_buf, &pkt->buf);
 	stk->stk_count = count;
-	stk->stk_depth = depth;
+	stk->stk_type = type;
+}
+
+/*
+ * This is where the magic happens.  Pop off what's saved in pkt->stack
+ * and run all the post processing until the rank of the top item in
+ * the stack is lower than the rank of what we're about to add (contained in
+ * type).
+ */
+static size_t
+pkt_stack_unwind(pkt_t *pkt, pkt_stack_item_t type, uintptr_t swaparg)
+{
+	pkt_stack_t	*stk = NULL;
+	size_t		count = 0;
+	size_t		rank = pkt_item_rank(type);
+	size_t		stk_rank = 0;
+
+	while (!pkt_stack_empty(pkt) &&
+	    (stk_rank = pkt_stack_rank(pkt)) >= rank) {
+		stk = pkt_stack_pop(pkt);
+		if (stk->stk_finish != NULL)
+			stk->stk_finish(pkt, &stk->stk_buf,
+			    (stk_rank == rank) ? swaparg : 0, count);
+		count = stk->stk_count;
+	}
+
+	ASSERT3U(pkt_stack_rank(pkt), <, rank);
+
+	/* if there was an entry of the same depth (i.e. we are going to
+	 * swap it out with our own), return it's swap count + 1 for the
+	 * swap we're about to do
+	 */
+	if (stk != NULL && stk_rank == rank)
+		return (stk->stk_count + 1);
+	return (0);
 }
 
 pkt_walk_ret_t
@@ -525,22 +636,25 @@ pkt_payload_walk(buf_t *restrict buf, pkt_walk_fn_t cb, void *restrict cookie)
 }
 
 static int
-pkt_reset(void *buf)
+pkt_ctor(void *buf, void *ignore, int flags)
 {
-	pkt_t *pkt = (pkt_t *)buf;
+	_NOTE(ARGUNUSUED(ignore, flags))
 
+	pkt_t *pkt = buf;
 	(void) memset(pkt, 0, sizeof (pkt_t));
-	pkt->buf.ptr = (uchar_t *)&pkt->raw;
+	pkt->buf.ptr = (uchar_t *)pkt->raw;
 	pkt->buf.len = sizeof (pkt->raw);
 	return (0);
 }
 
-static int
-pkt_ctor(void *buf, void *ignore, int flags)
+void
+pkt_free(pkt_t *pkt)
 {
-	_NOTE(ARGUNUSUED(ignore, flags))
-	pkt_reset(buf);
-	return (0);
+	if (pkt == NULL)
+		return;
+
+	pkt_ctor(pkt, NULL, 0);
+	umem_cache_free(pkt_cache, pkt);
 }
 
 void
@@ -548,7 +662,8 @@ pkt_init(void)
 {
 	pkt_cache = umem_cache_create("pkt cache", sizeof (pkt_t),
 	    sizeof (uint64_t), pkt_ctor, NULL, NULL, NULL, NULL, 0);
-	VERIFY(pkt_cache != NULL);
+	if (pkt_cache == NULL)
+		err(EXIT_FAILURE, "Unable to create pkt umem cache");
 }
 
 void
