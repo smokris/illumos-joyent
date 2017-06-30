@@ -1,6 +1,8 @@
 /*
  * Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ *
+ * Copyright 2017 Joyent, Inc.
  */
 
 /* Portions of the following are... */
@@ -66,19 +68,19 @@
 
 #define	_BUNYAN_TYPE(_ss) \
 	((_ss)->ss_family == AF_INET) ? BUNYAN_T_IP : BUNYAN_T_IP6
-	
-#define	NETERR(_log, _msg, _sock, _src, _dest)		\
-	(void) bunyan_error((_log), _msg,		\
-	BUNYAN_T_STRING, "err", strerror(errno),	\
-	BUNYAN_T_INT32, "errno", (int32_t)errno,	\
-	BUNYAN_T_STRING, "func", __func__,		\
-	BUNYAN_T_STRING, "file", __FILE__,		\
-	BUNYAN_T_INT32, "line", __LINE__,		\
-	BUNYAN_T_INT32, "socket", (int32_t)(_sock),	\
-	_BUNYAN_TYPE(_src), "src", ABUF_OF((_src)),	\
-	_BUNYAN_TYPE(_dest), "dest", ABUF_OF((_dest)),	\
-	BUNYAN_T_END)
 
+#define	NETLOG(_level, _log, _msg, _sock, _src, _dest, ...)	\
+	(void) bunyan_##_level ((_log), _msg,			\
+	BUNYAN_T_STRING, "func", __func__,			\
+	BUNYAN_T_STRING, "file", __FILE__,			\
+	BUNYAN_T_INT32, "line", __LINE__,			\
+	BUNYAN_T_INT32, "socket", (int32_t)(_sock),		\
+	_BUNYAN_TYPE(_src), "src", ABUF_OF((_src)),		\
+	BUNYAN_T_UINT32, "srcport", (uint32_t)SS_PORT(_src),	\
+	_BUNYAN_TYPE(_dest), "dest", ABUF_OF((_dest)),		\
+	BUNYAN_T_UINT32, "destport", (uint32_t)SS_PORT(_dest),	\
+	## __VA_ARGS__,						\
+	BUNYAN_T_END)
 /*
  * Receive packet, with src/dst information.  It is assumed that necessary
  * setsockopt()s (e.g. IP_SEC_OPT(NEVER)) have already performed on socket.
@@ -102,7 +104,14 @@ recvfromto(int s, buf_t *buf, int flags,
 
 	sslen = sizeof (ss);
 	if (getsockname(s, (struct sockaddr *)&ss, &sslen) < 0) {
-		NETERR(log, "getsockname() failed", s, from, to);
+		(void) bunyan_error(log, "getsockname() failed",
+		    BUNYAN_T_STRING, "err", strerror(errno),
+		    BUNYAN_T_INT32, "errno", (int32_t)(errno),
+		    BUNYAN_T_INT32, "socket", (int32_t)s,
+		    BUNYAN_T_STRING, "func", __func__,
+		    BUNYAN_T_STRING, "file", __FILE__,
+		    BUNYAN_T_INT32, "line", __LINE__,
+		    BUNYAN_T_END);
 		return (-1);
 	}
 
@@ -118,7 +127,9 @@ recvfromto(int s, buf_t *buf, int flags,
 	m.msg_control = (caddr_t)cm;
 	m.msg_controllen = sizeof (cmsgbuf);
 	if ((len = recvmsg(s, &m, flags)) < 0) {
-		NETERR(log, "recvmsg() failed", s, from, to);
+		NETLOG(error, log, "recvmsg() failed", s, from, to,
+		    BUNYAN_T_STRING, "err", strerror(errno),
+		    BUNYAN_T_INT32, "errno", (int32_t)errno);
 		return (-1);
 	}
 	if (len > buf->len) {
@@ -126,18 +137,9 @@ recvfromto(int s, buf_t *buf, int flags,
 		 * size_t and ssize_t should always be "long", but not in 32-
 		 * bit apps for some bizarre reason.
 		 */
-		(void) bunyan_warn(log, "Received oversized message",
-		    BUNYAN_T_STRING, "func", __func__,
-		    BUNYAN_T_STRING, "file", __FILE__,
-		    BUNYAN_T_INT32, "line", __LINE__,
-		    BUNYAN_T_INT32, "socket", (int32_t)s,
-		    _BUNYAN_TYPE(from), "src", ABUF_OF(from),
-		    BUNYAN_T_UINT32, "srcport", (uint32_t)SS_PORT(from),
-		    _BUNYAN_TYPE(to), "dest", ABUF_OF(to),
-		    BUNYAN_T_UINT32, "destport", (uint32_t)SS_PORT(to),
+		NETLOG(warn, log, "Received oversized message", s, from, to,
 		    BUNYAN_T_UINT32, "msglen", (uint32_t)len,
-		    BUNYAN_T_UINT32, "buflen", (uint32_t)buf->len,
-		    BUNYAN_T_END);
+		    BUNYAN_T_UINT32, "buflen", (uint32_t)buf->len);
 		errno = E2BIG;	/* Not returned from normal recvmsg()... */
 		return (-1);
 	}
@@ -186,17 +188,8 @@ recvfromto(int s, buf_t *buf, int flags,
 		}
 	}
 
-	(void) bunyan_debug(log, "Received datagram",
-	    BUNYAN_T_STRING, "func", __func__,
-	    BUNYAN_T_STRING, "file", __FILE__,
-	    BUNYAN_T_INT32, "line", __LINE__,
-	    BUNYAN_T_INT32, "socket", (int32_t)s,
-	    _BUNYAN_TYPE(from), "src", ABUF_OF(from),
-	    BUNYAN_T_UINT32, "srcport", (uint32_t)SS_PORT(from),
-	    _BUNYAN_TYPE(to), "dest", ABUF_OF(to),
-	    BUNYAN_T_UINT32, "destport", (uint32_t)SS_PORT(to),
-	    BUNYAN_T_UINT32, "msglen", (uint32_t)len,
-	    BUNYAN_T_END);
+	NETLOG(debug, log, "Received datagram", s, from, to,
+	    BUNYAN_T_UINT32, "msglen", (uint32_t)len);
 	return (len);
 }
 
@@ -211,30 +204,31 @@ sendfromto(int s, const buf_t *buf, struct sockaddr_storage *src,
 	struct cmsghdr *cm = (struct cmsghdr *)&cmsgbuf;
 	struct in6_pktinfo *pi6;
 	struct in_pktinfo *pi;
+	ssize_t n;
+
+	if (src->ss_family != AF_INET && src->ss_family != AF_INET6) {
+		(void) bunyan_error(log, "Unsupported address family",
+		    BUNYAN_T_STRING, "func", __func__,
+		    BUNYAN_T_STRING, "file", __FILE__,
+		    BUNYAN_T_INT32, "line", __LINE__,
+		    BUNYAN_T_UINT32, "af", (uint32_t)src->ss_family,
+		    BUNYAN_T_END);
+		errno = EAFNOSUPPORT;
+		return (-1);
+	}
 
 	if (src->ss_family != dst->ss_family) {
-		(void) bunyan_error(log,
-		    "sendfromto(): address family mismatch",
-		    BUNYAN_T_INT32, "socket", (int32_t)s,
-		    _BUNYAN_TYPE(src), "src", ABUF_OF(src),
-		    BUNYAN_T_UINT32, "srcport", (uint32_t)SS_PORT(src),
+		NETLOG(error, log, "Address family mismatch",
+		    s, src, dst,
 		    BUNYAN_T_UINT32, "srcaf", (uint32_t)src->ss_family,
-		    _BUNYAN_TYPE(dst), "dest", ABUF_OF(dst),
-		    BUNYAN_T_UINT32, "destport", (uint32_t)SS_PORT(dst),
-		    BUNYAN_T_UINT32, "destaf", (uint32_t)src->ss_family,
-		    BUNYAN_T_END);
+		    BUNYAN_T_UINT32, "destaf", (uint32_t)src->ss_family);
 
 		errno = EADDRNOTAVAIL;	/* XXX KEBE ASKS - Better ideas? */
 		return (-1);
 	}
 
-	(void) bunyan_debug(log, "Sending packet",
-		    BUNYAN_T_INT32, "socket", (int32_t)s,
-		    _BUNYAN_TYPE(src), "src", ABUF_OF(src),
-		    BUNYAN_T_UINT32, "srcport", (uint32_t)SS_PORT(src),
-		    _BUNYAN_TYPE(dst), "dest", ABUF_OF(dst),
-		    BUNYAN_T_UINT32, "destport", (uint32_t)SS_PORT(dst),
-		    BUNYAN_T_END);
+	NETLOG(debug, log, "Sending datagram", s, src, dst,
+	    BUNYAN_T_UINT32, "msglen", (uint32_t)buf->len);
 
 	m.msg_name = (caddr_t)dst;
 	iov[0].iov_base = buf->ptr;
@@ -278,9 +272,15 @@ sendfromto(int s, const buf_t *buf, struct sockaddr_storage *src,
 		pi->ipi_spec_dst.s_addr = 0;
 		pi->ipi_ifindex = 0;
 	} else {
-		errno = EAFNOSUPPORT;
-		return (-1);
+		/*NOTREACHED*/
+		INVALID("src->ss_family");
 	}
 
-	return (sendmsg(s, &m, 0));
+	n = sendmsg(s, &m, 0);
+	if (n < 0)
+		NETLOG(error, log, "sendmsg() failed", s, src, dst,
+		    BUNYAN_T_STRING, "err", strerror(errno),
+		    BUNYAN_T_UINT32, "errno", (int32_t)errno);
+
+	return (n);
 }

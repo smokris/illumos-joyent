@@ -95,13 +95,14 @@ typedef union sockaddr_u_s {
 		assfail(#fn " call failed", __FILE__, __LINE__);	\
 _NOTE(CONSTCOND) } while (0)
 
-#define	STDERR(bunyan, msg) \
-	(void) bunyan_error((bunyan), (msg), \
-	BUNYAN_T_STRING, "err", strerror(errno), \
-	BUNYAN_T_INT32, "errno", (int32_t)(errno), \
-	BUNYAN_T_STRING, "func", __func__, \
-	BUNYAN_T_STRING, "file", __FILE__, \
-	BUNYAN_T_INT32, "line", __LINE__, \
+#define	STDERR(_lvl, _log, _msg, ...)			\
+	(void) bunyan_##_lvl((_log), (_msg),		\
+	BUNYAN_T_STRING, "err", strerror(errno),	\
+	BUNYAN_T_INT32, "errno", (int32_t)(errno),	\
+	BUNYAN_T_STRING, "func", __func__,		\
+	BUNYAN_T_STRING, "file", __FILE__,		\
+	BUNYAN_T_INT32, "line", __LINE__,		\
+	## __VA_ARGS__,					\
 	BUNYAN_T_END)
 
 typedef enum event {

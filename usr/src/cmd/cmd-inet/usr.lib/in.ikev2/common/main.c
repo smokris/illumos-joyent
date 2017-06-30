@@ -102,7 +102,7 @@ main_loop(void)
 	/*CONSTCOND*/
 	while (!done) {
 		if (port_get(port, &pe, NULL) < 0) {
-			STDERR(log, "port_get() failed");
+			STDERR(error, log, "port_get() failed");
 			continue;
 		}
 
@@ -175,7 +175,7 @@ void
 schedule_socket(int fd, void (*cb)(int))
 {
 	if (port_associate(port, PORT_SOURCE_FD, fd, POLLIN, cb) < 0)
-		STDERR(log, "port_associate() failed");
+		STDERR(error, log, "port_associate() failed");
 }
 
 static void
@@ -216,7 +216,7 @@ signal_thread(void *arg)
 	/*CONSTCOND*/
 	while (1) {
 		if (sigwait(&sigset, &signo) != 0) {
-			STDERR(log, "sigwait() failed");
+			STDERR(error, log, "sigwait() failed");
 			continue;
 		}
 
@@ -230,7 +230,7 @@ signal_thread(void *arg)
 		    BUNYAN_T_END);
 
 		if (port_send(port, EVENT_SIGNAL, (void *)(uintptr_t)signo) < 0)
-			STDERR(log, "port_send() failed");
+			STDERR(error, log, "port_send() failed");
 	}
 
 	/*NOTREACHED*/
