@@ -30,21 +30,6 @@
 #include "pkt_impl.h"
 #include "ikev2_pkt.h"
 
-#define DEPTH_NONE		(0)
-#define DEPTH_SK		(1)
-#define DEPTH_PAYLOAD		(2)
-
-#define DEPTH_PROP		(3)
-#define DEPTH_XFORM		(4)
-#define DEPTH_XFORM_ATTR	(5)
-
-#define DEPTH_TS		(3)
-#define DEPTH_TS_VAL		(4)
-
-#define DEPTH_DEL		(3)
-#define DEPTH_DEL_SPI		(4)
-
-
 #define	PKT_IS_V2(p) \
     (IKE_GET_MAJORV((p)->header.version) == IKE_GET_MAJORV(IKEV2_VERSION))
 

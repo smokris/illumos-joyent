@@ -98,7 +98,7 @@ pkt_in_alloc(const buf_t *buf)
 
 	if (buf->len > sizeof (pkt->raw)) {
 		/* XXX: msg */
-		errno = 
+		errno = EOVERFLOW;
 		return (NULL);
 	}
 
