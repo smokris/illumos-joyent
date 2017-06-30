@@ -22,6 +22,9 @@
 /*
  * Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ *
+ * Copyright 2017 Jason King.
+ * Copyright 2017 Joyent, Inc.
  */
 
 #include <sys/types.h>
@@ -36,7 +39,6 @@
 #include <atomic.h>
 #include <pthread.h>
 #include <sys/stropts.h>	/* For I_NREAD */
-#include <sys/cladm.h>		/* For cluster support. */
 
 #include "defs.h"
 #include "ikev2.h"
@@ -70,18 +72,6 @@ int pfkey;
 
 /* our msgids */
 static volatile uint32_t msgid = 0;
-
-#if 0
-/*
- * Cluster support for PF_KEY messages.
- *
- * NOTE:  cluster_socket is a write-only channel, so we do not need to put
- * it on the main event port.
- */
-static int cluster_socket;	/* Default initializer == 0. */
-#define	in_cluster_mode (cluster_socket != 0)
-static struct sockaddr_in cli_addr;
-#endif
 
 static int pfreq_ctor(void *, void *, int);
 static pfreq_t *pfreq_new(pfreq_cb_t *, void *);
@@ -451,27 +441,6 @@ pfkey_send_error(const sadb_msg_t *src, uint8_t reason)
 		    "%s.", strerror(errno)));
 }
 
-#if 0
-static void
-check_cluster_mode(void)
-{
-	int bootflags;
-
-	if ((_cladm(CL_INITIALIZE, CL_GET_BOOTFLAG, &bootflags) != 0) ||
-	    (bootflags & CLUSTER_BOOTED)) {
-		cluster_socket = socket(AF_INET, SOCK_DGRAM, 0);
-		if (cluster_socket == -1) {
-			PRTDBG(D_OP, ("Cluster socket open failed.\n"));
-			cluster_socket = 0;
-			return;
-		}
-		cli_addr.sin_family = AF_INET;
-		cli_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-		cli_addr.sin_port = htons(CLUSTER_UDP_PORT);
-	}
-}
-#endif
-
 void
 pf_key_init(void)
 {
@@ -494,10 +463,6 @@ pf_key_init(void)
 	if ((pfport = port_create()) == -1)
 		EXIT_FATAL2("pf_key_init(): port_create() failed: %s",
 		    strerror(errno));
-
-#if 0
-	check_cluster_mode();
-#endif
 
 	/*
 	 * Extended REGISTER for AH/ESP combination(s).
