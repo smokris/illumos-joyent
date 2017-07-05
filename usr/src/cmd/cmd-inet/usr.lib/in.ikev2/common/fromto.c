@@ -102,6 +102,8 @@ recvfromto(int s, buf_t *buf, int flags,
 	struct sockaddr_in6 *sin6;
 	struct sockaddr_in *sin;
 
+	BUF_IS_WRITE(buf);
+
 	sslen = sizeof (ss);
 	if (getsockname(s, (struct sockaddr *)&ss, &sslen) < 0) {
 		(void) bunyan_error(log, "getsockname() failed",
@@ -120,8 +122,8 @@ recvfromto(int s, buf_t *buf, int flags,
 
 	m.msg_name = (caddr_t)from;
 	m.msg_namelen = *fromlen;
-	iov[0].iov_base = (caddr_t)buf->ptr;
-	iov[0].iov_len = buf->len;
+	iov[0].iov_base = (caddr_t)buf->b_ptr;
+	iov[0].iov_len = buf_left(buf);
 	m.msg_iov = iov;
 	m.msg_iovlen = 1;
 	m.msg_control = (caddr_t)cm;
@@ -132,17 +134,19 @@ recvfromto(int s, buf_t *buf, int flags,
 		    BUNYAN_T_INT32, "errno", (int32_t)errno);
 		return (-1);
 	}
-	if (len > buf->len) {
+	if (len > buf_left(buf)) {
 		/*
 		 * size_t and ssize_t should always be "long", but not in 32-
 		 * bit apps for some bizarre reason.
 		 */
 		NETLOG(warn, log, "Received oversized message", s, from, to,
 		    BUNYAN_T_UINT32, "msglen", (uint32_t)len,
-		    BUNYAN_T_UINT32, "buflen", (uint32_t)buf->len);
+		    BUNYAN_T_UINT32, "buflen", (uint32_t)buf_left(buf));
+
 		errno = E2BIG;	/* Not returned from normal recvmsg()... */
 		return (-1);
 	}
+	buf_skip(buf, len);
 
 	*fromlen = m.msg_namelen;
 
@@ -190,6 +194,7 @@ recvfromto(int s, buf_t *buf, int flags,
 
 	NETLOG(debug, log, "Received datagram", s, from, to,
 	    BUNYAN_T_UINT32, "msglen", (uint32_t)len);
+
 	return (len);
 }
 
@@ -205,6 +210,8 @@ sendfromto(int s, const buf_t *buf, struct sockaddr_storage *src,
 	struct in6_pktinfo *pi6;
 	struct in_pktinfo *pi;
 	ssize_t n;
+
+	BUF_IS_READ(buf);
 
 	if (src->ss_family != AF_INET && src->ss_family != AF_INET6) {
 		(void) bunyan_error(log, "Unsupported address family",
@@ -228,11 +235,11 @@ sendfromto(int s, const buf_t *buf, struct sockaddr_storage *src,
 	}
 
 	NETLOG(debug, log, "Sending datagram", s, src, dst,
-	    BUNYAN_T_UINT32, "msglen", (uint32_t)buf->len);
+	    BUNYAN_T_UINT32, "msglen", (uint32_t)buf_left(buf));
 
 	m.msg_name = (caddr_t)dst;
-	iov[0].iov_base = buf->ptr;
-	iov[0].iov_len = buf->len;
+	iov[0].iov_base = buf->b_ptr;
+	iov[0].iov_len = buf_left(buf);
 	m.msg_iov = iov;
 	m.msg_iovlen = 1;
 	m.msg_control = (caddr_t)cm;

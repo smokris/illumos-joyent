@@ -38,28 +38,6 @@ boolean_t pkt_add_xform_attr_tlv(pkt_t *restrict, uint16_t,
     const buf_t *restrict);
 boolean_t pkt_add_cert(pkt_t *restrict, uint8_t, const buf_t *restrict);
 
-/* append a struct into the raw buffer of pkt */
-inline void
-append_struct(pkt_t * restrict pkt, const void * restrict st, size_t len)
-{
-	buf_t *dest = &pkt->buf;
-	buf_t src = { .ptr = (uchar_t *)st, .len = len };
-
-	VERIFY(buf_copy(dest, &src, 1) == len);
-	buf_advance(dest, len);
-}
-#define	APPEND_STRUCT(pkt, s) append_struct(pkt, &(s), sizeof (s))
-
-/* append a buf_t to the raw buffer of pkt */
-inline void
-append_buf(pkt_t * restrict pkt, const buf_t * restrict src)
-{
-	buf_t *b = &pkt->buf;
-
-	VERIFY(buf_copy(b, src, 1) == src->len);
-	buf_advance(b, src->len);
-}
-
 #ifdef __cplusplus
 }
 #endif

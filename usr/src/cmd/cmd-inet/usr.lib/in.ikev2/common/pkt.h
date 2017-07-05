@@ -101,7 +101,16 @@ struct pkt {
 };
 
 #define	PKT_PAY_START(pkt) ((uchar_t *)&(pkt)->raw + sizeof (ike_header_t))
-#define	PKT_REMAINING(pkt) ((pkt)->buf.len)
+#define	PKT_REMAINING(pkt) (buf_left(&(pkt)->buf))
+#define	PKT_APPEND_STRUCT(_pkt, _struct) do {		\
+	buf_t _src = {					\
+		.b_buf = (uchar_t *)&(_struct),		\
+		.b_ptr = (uchar_t *)&(_struct), 	\
+		.b_len = sizeof(_struct)		\
+	};						\
+	(void) buf_cat(&(_pkt)->buf, &_src, 1);		\
+	/*CONSTCOND*/					\
+} while (0);
 
 void pkt_hdr_ntoh(ike_header_t *restrict, const ike_header_t *restrict);
 void pkt_hdr_hton(ike_header_t *restrict, const ike_header_t *restrict);

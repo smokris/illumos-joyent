@@ -11,6 +11,7 @@
 
 /*
  * Copyright 2014 Jason King.
+ * Copyright 2017 Joyent, Inc.
  */
 
 #ifndef _BUF_H
@@ -23,56 +24,96 @@
 extern "C" {
 #endif
 
-struct buf;
+typedef struct buf {
+	uchar_t	*b_buf;
+	uchar_t *b_ptr;
+	size_t	b_len;
+	ulong_t	b_flags;
+} buf_t;
+#define	BUF_READ	(1UL << 0)
+#define	BUF_WRITE	(1UL << 1)
+#define	BUF_EOF		(1UL << 2)
+#define	BUF_ALLOCED	(1UL << 3)
 
-#ifndef _BUF_T
-#define	_BUF_T
-typedef struct buf buf_t;
-#endif
+#define	STRUCT_TO_BUF(st) { 		\
+	.b_buf = (uchar_t *)&(st),	\
+	.b_ptr = (uchar_t *)&(st),	\
+	.b_len = sizeof ((st)),		\
+	.b_flags = 0			\
+}
 
-struct buf {
-	uchar_t	*ptr;
-	ulong_t	len;	/* equiv. to size_t, but this makes pkcs11 happy */
-};
+#define	BUF_IS_WRITE(b) \
+	VERIFY(((b)->b_flags & BUF_WRITE) && !((b)->b_flags & BUF_READ))
+#define	BUF_IS_READ(b) \
+	VERIFY(((b)->b_flags & BUF_READ) && !((b)->b_flags & BUF_WRITE))
 
-inline void
-buf_dup(buf_t * restrict dest, buf_t * restrict src)
+inline boolean_t
+buf_eof(const buf_t *b)
 {
-	dest->ptr = src->ptr;
-	dest->len = src->len;
+	return (!!(b->b_flags & BUF_EOF));
 }
 
 inline void
-buf_advance(buf_t *buf, size_t amt)
+buf_skip(buf_t *buf, size_t amt)
 {
-	VERIFY(buf->len >= amt);
-	buf->ptr += amt;
-	buf->len -= amt;
+	if (buf_eof(buf))
+		return;
+
+	uchar_t *end = buf->b_buf + buf->b_len;
+	buf->b_ptr += amt;
+	
+	if (buf->b_ptr > end) {
+		buf->b_ptr = end;
+		buf->b_flags |= BUF_EOF;
+	}
 }
 
-#define	STRUCT_TO_BUF(st) \
-	{ .ptr = (uchar_t *)&(st), .len = sizeof ((st)) }
+inline void
+buf_reset(buf_t *buf)
+{
+	buf->b_ptr = buf->b_buf;
+	buf->b_flags &= ~(BUF_EOF);
+}
 
-#define	BUF_INIT_BUF(b) \
-	{ .ptr = (b)->ptr, .len = (b)->len }
+inline size_t
+buf_left(const buf_t *buf)
+{
+	if (buf->b_flags & BUF_EOF)
+		return (0);
+	return (buf->b_len - (size_t)(buf->b_ptr - buf->b_buf));
+}
 
-size_t		buf_copy(buf_t * restrict, const buf_t * restrict, size_t);
+inline void
+buf_set_read(buf_t *buf)
+{
+	buf->b_flags &= ~(BUF_READ|BUF_WRITE);
+	buf->b_flags |= BUF_READ;
+}
+
+inline void
+buf_set_write(buf_t *buf)
+{
+	buf->b_flags &= ~(BUF_READ|BUF_WRITE);
+	buf->b_flags |= BUF_WRITE;
+}
+
+size_t		buf_cat(buf_t *restrict, const buf_t *restrict, size_t);
+size_t		buf_copy(buf_t *restrict, const buf_t *restrict, size_t);
 void		buf_clear(buf_t *);
-void		buf_range(buf_t * restrict, buf_t * restrict, size_t, size_t);
+void		buf_range(buf_t *restrict, buf_t *restrict, size_t, size_t);
 
 boolean_t	buf_alloc(buf_t *, size_t);
 void		buf_free(buf_t *);
 
 int		buf_cmp(const buf_t *restrict, const buf_t *restrict);
 
-boolean_t	buf_put8(buf_t *, uint8_t);
-boolean_t	buf_put32(buf_t *, uint32_t);
-boolean_t	buf_put64(buf_t *, uint64_t);
+void		buf_put8(buf_t *, uint8_t);
+void		buf_put32(buf_t *, uint32_t);
+void		buf_put64(buf_t *, uint64_t);
 
 #if 0
 void		buf_init(buf_t *, char *, size_t, size_t, boolean_t);
 void		buf_range(buf_t *, size_t, buf_t *);
-boolean_t	buf_eof(buf_t *);
 
 uint8_t		buf_get8(buf_t *);
 uint16_t	buf_get16(buf_t *);
@@ -80,10 +121,7 @@ uint32_t	buf_get32(buf_t *);
 uint64_t	buf_get64(buf_t *);
 size_t		buf_copyfrom(buf_t *, char *, size_t);
 
-void		buf_put8(buf_t *, uint8_t);
 void		buf_put16(buf_t *, uint16_t);
-void		buf_put32(buf_t *, uint32_t);
-void		buf_put64(buf_t *, uint64_t);
 size_t		buf_append(char *, size_t, buf_t *);
 #endif
 

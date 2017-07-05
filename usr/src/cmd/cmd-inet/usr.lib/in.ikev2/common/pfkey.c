@@ -39,6 +39,8 @@
 #include <atomic.h>
 #include <pthread.h>
 #include <sys/stropts.h>	/* For I_NREAD */
+#include <libuutil.h>
+#include <bunyan.h>
 
 #include "defs.h"
 #include "ikev2.h"
@@ -47,25 +49,19 @@
 #include "pkcs11.h"
 #include "thread_group.h"
 
-struct pfreq_s;
-typedef struct pfreq_s pfreq_t;
-struct pfreq_s {
-	pfreq_t		*next;
-	pfreq_t		**ptpn;
-	pfreq_cb_t	*cb;
-	void		*data;
-	uint32_t	msgid;
-};
+struct pfreq;
+typedef struct pfreq {
+	uu_list_node_t	pf_node;
+	pfreq_cb_t	*pf_cb;
+	void		*pf_data;
+	uint32_t	pf_msgid;
+} pfreq_t;
 
-static umem_cache_t *pfreq_cache;
-static pthread_mutex_t pfreq_lock = PTHREAD_MUTEX_INITIALIZER;
-static pfreq_t *pfreqs;
-
-/* PF_KEY cares a lot about the pid, so keep it here. */
-static pid_t pid;
-
-/* PF_KEY thread event port */
-int pfport;
+static bunyan_logger_t	*pflog;
+static uu_list_pool_t	*pfreq_pool;
+static umem_cache_t	*pfreq_cache;
+static pthread_mutex_t	pfreq_lock = PTHREAD_MUTEX_INITIALIZER;
+static uu_list_t	*pfreq_list;
 
 /* PF_KEY socket. */
 int pfkey;
@@ -92,11 +88,6 @@ static const char *pfkey_opcodes[] = {
 	"RESERVED", "GETSPI", "UPDATE", "ADD", "DELETE", "GET",
 	"ACQUIRE", "REGISTER", "EXPIRE", "FLUSH", "DUMP", "X_PROMISC",
 	"X_INVERSE_ACQUIRE", "X_UPDATEPAIR", "X_DELPAIR"
-};
-
-static ucache_init_t cache_init = {
-	"pfkey request cache", &pfreq_cache, sizeof (pfreq_t), 8, pfreq_ctor,
-	NULL, NULL, NULL
 };
 
 static const char *
@@ -242,7 +233,7 @@ extract_exts(sadb_msg_t *samsg, parsedmsg_t *pmsg, int numexts, ...)
 }
 
 static void
-inbound_pfkey(int s, void *arg)
+pfkey_inbound(int s, void *arg)
 {
 	_NOTE(ARGUNUSED(arg))
 
@@ -1042,4 +1033,71 @@ pfreq_free(pfreq_t *req)
 {
 	(void) memset(req, 0, sizeof (pfreq_t));
 	umem_cache_free(pfreq_cache, req);
+}
+
+void
+pfkey_init(void)
+{
+	uint64_t buffer[128];
+	sadb_msg_t *samsg = (sadb_msg_t *)buffer;
+	sadb_x_ereg_t *ereg = (sadb_x_ereg_t *)(samsg + 1);
+	boolean_t ah_ack = B_FALSE;
+	boolean_t esp_ack = B_FALSE;
+	uint32_t flag = 0;
+	ssize_t n;
+	int rc;
+
+	CTASSERT(sizeof (buffer) >= sizeof (*samsg) + sizeof (*ereg));
+
+#ifdef DEBUG
+	flg |= UU_LIST_POOL_DEBUG;
+#endif
+
+	pfreq_pool = uu_list_pool_create("pfreq list", sizeof (pfreq_t),
+	    offsetof(pfreq_t, pf_node), pf_compare, flag);
+	if (pfreq_pool == NULL)
+		err(EXIT_FAILURE, "Unable to create pfreq list pool");
+
+	pfreq_cache = umem_cache_create("pfreq cache", sizeof (pfreq_t),
+	    pfreq_ctor, NULL, NULL, NULL, NULL, 0);
+	if (pfreq_cache == NULL)
+		err(EXIT_FAILURE, "Unable to create pfreq cache");
+
+	pfkey = socket(PF_KEY, SOCK_RAW, PF_KEY_V2);
+	if (pfkey == -1)
+		err(EXIT_FAILURE, "Unable to create pf_key socket");
+
+	rc = bunyan_child(log, &pflog,
+	    BUNYAN_T_INT32, "socketfd", (int32_t)pfkey,
+	    BUNYAN_T_END);
+	if (rc != 0)
+		errx(EXIT_FAILURE, "Unable to create child logger: %s",
+		    strerror(rc));
+
+	/*
+	 * Extended REGISTER for AH/ESP combination(s).
+	 */
+	samsg->sadb_msg_version = PF_KEY_V2;
+	samsg->sadb_msg_type = SADB_REGISTER;
+	samsg->sadb_msg_errno = 0;
+	samsg->sadb_msg_satype = SADB_SATYPE_UNSPEC;
+	samsg->sadb_msg_reserved = 0;
+	samsg->sadb_msg_seq = 1;
+	samsg->sadb_msg_pid = pid;
+	samsg->sadb_msg_len = SADB_8TO64(sizeof (*samsg) + sizeof (*ereg));
+
+	ereg->sadb_x_ereg_len = SADB_8TO64(sizeof (*ereg));
+	ereg->sadb_x_ereg_exttype = SADB_X_EXT_EREG;
+	ereg->sadb_x_ereg_satypes[0] = SADB_SATYPE_ESP;
+	ereg->sadb_x_ereg_satypes[1] = SADB_SATYPE_AH;
+	ereg->sadb_x_ereg_satypes[2] = SADB_SATYPE_UNSPEC;
+
+	n = write(pfkey, buffer, sizeof (*samsg) + sizeof (*ereg));
+	if (n < 0)
+		err(EXIT_FAILURE, "Extended register write error");
+	if (n < sizeof (*samsg) + sizeof (*ereg))
+		errx(EXIT_FAILURE, "Unable to write extended register message");
+
+	
+	schedule_socket(pfkey, pfkey_inbound);
 }

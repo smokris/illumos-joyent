@@ -364,11 +364,13 @@ CK_RV
 dh_derivekey(CK_OBJECT_HANDLE privkey, buf_t *restrict pub,
     CK_OBJECT_HANDLE_PTR restrict seckey)
 {
+	BUF_IS_READ(pub);
+
 	CK_OBJECT_CLASS key_class = CKO_SECRET_KEY;
 	CK_KEY_TYPE key_type = CKK_GENERIC_SECRET;
 	CK_ULONG key_len = 0;
 	CK_BBOOL trueval = CK_TRUE;
-	CK_MECHANISM mech = { CKM_DH_PKCS_DERIVE, pub->ptr, pub->len };
+	CK_MECHANISM mech = { CKM_DH_PKCS_DERIVE, pub->b_ptr, pub->b_len };
 	CK_ATTRIBUTE template[] = {
 		{ CKA_CLASS, &key_class, sizeof (key_class) },
 		{ CKA_KEY_TYPE, &key_type, sizeof (key_type) },

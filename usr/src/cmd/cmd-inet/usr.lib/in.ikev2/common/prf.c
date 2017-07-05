@@ -95,7 +95,7 @@ prf_genkey(int alg, buf_t *restrict src, size_t n,
 
 	srclen = 0;
 	for (size_t i = 0; i < n; i++)
-		srclen += src[i].len;
+		srclen += buf_left(&src[i]);
 
 	if (srclen < algp->inlen && algp->pad)
 		keylen = algp->inlen;
@@ -106,6 +106,7 @@ prf_genkey(int alg, buf_t *restrict src, size_t n,
 		rc = CKR_HOST_MEMORY;
 		goto done;
 	}
+	buf_set_write(&key);
 
 	/*
 	 * The HMAC standards specify what an implementation should do when
@@ -113,9 +114,9 @@ prf_genkey(int alg, buf_t *restrict src, size_t n,
 	 * pad or run the digest alg on the key to yield a value of the desired
 	 * length), so we should not need to worry about this.
 	 */
-	VERIFY(buf_copy(&key, src, n) <= key.len);
+	VERIFY3U(buf_copy(&key, src, n), <=, keylen);
 
-	template[0].pValue = key.ptr;
+	template[0].pValue = key.b_buf;
 	template[0].ulValueLen = keylen;
 
 	rc = C_CreateObject(p11h, template,
@@ -137,9 +138,10 @@ prf(int alg, CK_OBJECT_HANDLE key, buf_t *restrict seed, size_t nseed,
 	const prf_alg_t		*algp;
 	CK_MECHANISM		mech;
 	CK_RV			rc = CKR_OK;
+	CK_ULONG		len;
 
-	VERIFY((algp = get_alg(alg)) != NULL);
-	VERIFY(out->len >= algp->outlen);
+	VERIFY3P((algp = get_alg(alg)), !=, NULL);
+	VERIFY3U(out->b_len, >=, algp->outlen);
 
 	mech.mechanism = algp->hmac;
 	mech.pParameter = NULL;
@@ -148,16 +150,22 @@ prf(int alg, CK_OBJECT_HANDLE key, buf_t *restrict seed, size_t nseed,
 	if ((rc = C_SignInit(p11h, &mech, key)) != CKR_OK)
 		return (rc);
 
-	for (size_t i = 0; i < nseed; i++) {
-		rc = C_SignUpdate(p11h, seed[i].ptr, seed[i].len);
+	for (size_t i = 0; i < nseed; i++, seed) {
+		BUF_IS_READ(seed);
+		rc = C_SignUpdate(p11h, seed->b_ptr, buf_left(seed));
 		/* XXX: should we still call C_SignFinal? */
 		if (rc != CKR_OK)
 			return (rc);
 	}
 
-	rc = C_SignFinal(p11h, out->ptr, &out->len);
-	/* If we sized correctly, this should never change */
-	ASSERT(out->len >= algp->outlen);
+	BUF_IS_WRITE(out);
+
+	len = buf_left(out);
+	rc = C_SignFinal(p11h, out->b_ptr, &len);
+	if (rc == CKR_OK)
+		VERIFY3U(len, ==, buf_left(out));
+
+	buf_skip(out, len);
 	return (rc);
 }
 
@@ -177,13 +185,14 @@ prfplus_init(prfp_t *restrict prfp, int alg, CK_OBJECT_HANDLE key,
 
 	if (!buf_alloc(&prfp->tbuf[0], algp->outlen) ||
 	    !buf_alloc(&prfp->tbuf[1], algp->outlen) ||
-	    !buf_alloc(&prfp->seed, seed->len)) {
+	    !buf_alloc(&prfp->seed, buf_left(seed))) {
 		rc = CKR_HOST_MEMORY;
 		goto error;
 	}
 
 	/* stash our own copy of the seed */
-	VERIFY(buf_copy(&prfp->seed, seed, 1) == seed->len);
+	(void) buf_copy(&prfp->seed, seed, 1);
+	VERIFY(!buf_eof(&prfp->seed));
 
 	/*
 	 * Per RFC5996 2.13, prf+(K, S) = T1 | T2 | T3 | T4 | ...
@@ -199,10 +208,13 @@ prfplus_init(prfp_t *restrict prfp, int alg, CK_OBJECT_HANDLE key,
 	 * the first points to either prfp->tbuf[0] or prfp->tbuf[1], based
 	 * on the value of prfp->n
 	 */
-	buf_dup(&prfp->prf_arg[1], &prfp->seed);
-	prfp->prf_arg[2].ptr = &prfp->n;
-	prfp->prf_arg[2].len = sizeof (prfp->n);
+	prfp->prf_arg[1] = prfp->seed;
+	prfp->prf_arg[2].b_ptr = prfp->prf_arg[2].b_buf = &prfp->n;
+	prfp->prf_arg[2].b_len = sizeof (prfp->n);
 	prfp->n = 1;
+
+	buf_set_read(&prfp->prf_arg[1]);
+	buf_set_read(&prfp->prf_arg[2]);
 
 	/*
 	 * Fill prfp->tbuf[1] with T1. T1 is defined as:
@@ -232,32 +244,33 @@ prfplus(prfp_t *restrict prfp, buf_t *restrict out)
 	algp = get_alg(prfp->i2alg);
 
 	/* generate a local cache of out so we can manipulate the ptr and len */
-	buf_dup(&outcopy, out);
+	outcopy = *out;
+	buf_set_write(&outcopy);
 
-	while (outcopy.len > 0) {
+	while (buf_left(&outcopy) > 0) {
 		size_t chunk;
 
-		chunk = outcopy.len;
+		chunk = buf_left(&outcopy);
 
 		if (prfp->n & 0x01)
-			buf_dup(&t, &prfp->tbuf[1]);
+			t = prfp->tbuf[1];
 		else
-			buf_dup(&t, &prfp->tbuf[0]);
+			t = prfp->tbuf[0];
 
-		t.ptr += prfp->pos;
-		t.len -= prfp->pos;
+		t.b_ptr += prfp->pos;
+		t.b_len -= prfp->pos;
 
-		if (t.len == 0) {
+		if (t.b_len == 0) {
 			if ((rc = prfplus_update(prfp)) != CKR_OK)
 				goto done;
 			continue;
 		}
 
-		if (chunk > t.len)
-			chunk = t.len;
+		if (chunk > t.b_len)
+			chunk = t.b_len;
 
 		VERIFY(buf_copy(&outcopy, &t, chunk) == chunk);
-		buf_advance(&outcopy, chunk);
+		buf_skip(&outcopy, chunk);
 		prfp->pos += chunk;
 	}
 
@@ -282,10 +295,10 @@ prfplus_update(prfp_t *prfp)
 	}
 
 	if (++prfp->n & 0x01) {
-		buf_dup(&prfp->prf_arg[0], &prfp->tbuf[1]);
+		prfp->prf_arg[1] = prfp->tbuf[1];
 		dest = &prfp->tbuf[0];
 	} else {
-		buf_dup(&prfp->prf_arg[0], &prfp->tbuf[0]);
+		prfp->prf_arg[0] = prfp->tbuf[0];
 		dest = &prfp->tbuf[1];
 	}
 

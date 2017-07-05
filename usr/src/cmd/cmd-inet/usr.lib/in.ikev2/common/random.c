@@ -88,7 +88,8 @@ random_high_impl(void *buf, size_t nbytes)
 void
 random_high(buf_t *buf)
 {
-	random_high_impl(buf->ptr, buf->len);
+	buf_reset(buf);
+	random_high_impl(buf->b_buf, buf->b_len);
 }
 
 static void
@@ -108,7 +109,8 @@ random_low_impl(void *buf, size_t nbytes)
 void
 random_low(buf_t *buf)
 {
-	random_low_impl(buf->ptr, buf->len);
+	buf_reset(buf);
+	random_low_impl(buf->b_ptr, buf->b_len);
 }
 
 extern uint32_t random_high_32(void);

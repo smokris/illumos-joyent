@@ -627,7 +627,7 @@ pkcs11_destroy_obj(const char *name, CK_OBJECT_HANDLE_PTR objp, int level)
  * required to write out the complete digest.
  */
 boolean_t
-pkcs11_digest(CK_MECHANISM_TYPE alg, const buf_t *restrict in, size_t n_in,
+pkcs11_digest(CK_MECHANISM_TYPE alg, const buf_t *restrict in, size_t n,
     buf_t *restrict out, int level)
 {
 	CK_MECHANISM	mech;
@@ -642,23 +642,34 @@ pkcs11_digest(CK_MECHANISM_TYPE alg, const buf_t *restrict in, size_t n_in,
 		return (B_FALSE);
 	}
 
-	for (size_t i = 0; i < n_in; i++) {
-		ret = C_DigestUpdate(p11h, in[i].ptr, in[i].len);
+	for (size_t i = 0; i < n; i++) {
+		ret = C_DigestUpdate(p11h, in[i].b_ptr, buf_left(&in[i]));
 		if (ret != CKR_OK) {
 			pkcs11_error(ret, "C_DigestUpdate");
 			return (B_FALSE);
 		}
 	}
 
-	CK_ULONG len = out->len;
+	CK_ULONG len = buf_left(out);
 
-	ret = C_DigestFinal(p11h, out->ptr, &len);
-	out->len = (size_t)len;
-
+	ret = C_DigestFinal(p11h, out->b_ptr, &len);
 	if (ret != CKR_OK) {
 		pkcs11_error(ret, "C_DigestFinal");
 		return (B_FALSE);
 	}
+
+	if (len > buf_left(out)) {
+		bunyan_error(log, "Output buffer for C_Digest was too small",
+		    BUNYAN_T_STRING, "func", __func__,
+		    BUNYAN_T_STRING, "file", __FILE__,
+		    BUNYAN_T_INT32, "line", __LINE__,
+		    BUNYAN_T_UINT32, "outsz", (uint32_t)buf_left(out),
+		    BUNYAN_T_UINT32, "digestsz", (uint32_t)len,
+		    BUNYAN_T_END);
+		return (B_FALSE);
+	}
+
+	buf_skip(out, len);
 	return (B_TRUE);
 }
 

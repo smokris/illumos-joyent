@@ -10,57 +10,104 @@
  */
 
 /*
- * Copyright 2014 Jason King.
+ * Copyright 2017 Jason King.
+ * Copyright 2017 Joyent, Inc.
  */
 #include <sys/debug.h>
 #include <string.h>
 #include <umem.h>
 #include "buf.h"
 
-size_t
-buf_copy(buf_t * restrict dest, const buf_t * restrict src, size_t n)
+static inline boolean_t
+eof_check(buf_t *buf, size_t len)
 {
-	uchar_t *p = dest->ptr;
+	if (buf_eof(buf))
+		return (B_TRUE);
+	if (buf->b_ptr + len > buf->b_buf + buf->b_len) {
+		buf->b_flags |= BUF_EOF;
+		return (B_TRUE);
+	}
+	return (B_FALSE);
+}
+
+size_t
+buf_cat(buf_t *restrict dest, const buf_t *restrict src, size_t n)
+{
 	size_t total = 0;
 
-	for (size_t i = 0; i < n; i++) {
-		size_t amt = src[i].len;
+	BUF_IS_WRITE(dest);
 
-		if (total + amt > dest->len)
-			amt = dest->len - total;
+	for (size_t i = 0; i < n; i++, src++) {
+		size_t amt = buf_left(src);
+
+		BUF_IS_READ(src);
+		if (eof_check(dest, amt))
+			return (total);
+
+		(void) memcpy(dest->b_ptr, src->b_ptr, amt);
+		dest->b_ptr += amt;
+		total += amt;
+	}
+
+	return (total);
+}
+
+size_t
+buf_copy(buf_t *restrict dest, const buf_t *restrict src, size_t n)
+{
+	uchar_t *p = dest->b_buf;
+	size_t total = 0;
+
+	BUF_IS_WRITE(dest);
+
+	dest->b_ptr = dest->b_buf;
+	return (buf_cat(dest, src, n));
+	for (size_t i = 0; i < n; i++) {
+		size_t amt = src[i].b_len;
+
+		if (total + amt > dest->b_len)
+			amt = dest->b_len - total;
 		if (amt == 0)
 			break;
 
-		(void) memcpy(p, src[i].ptr, amt);
+		(void) memcpy(p, src[i].b_buf, amt);
 		total += amt;
 		p += amt;
 	}
 
+	
+	/* XXX: what to do about b_ptr? */
 	return (total);
 }
 
 void
 buf_clear(buf_t *buf)
 {
-	if (buf == NULL || buf->ptr == NULL || buf->len == 0)
+	if (buf == NULL || buf->b_buf == NULL || buf->b_len == 0)
 		return;
-	(void) memset(buf->ptr, 0, buf->len);
+
+	(void) memset(buf->b_buf, 0, buf->b_len);
+	buf->b_ptr = NULL;
+	buf->b_flags &= ~(BUF_EOF);
 }
 
 void
 buf_range(buf_t * restrict dest, buf_t * restrict src, size_t off, size_t len)
 {
 	ASSERT(off + len <= src->len);
-	dest->ptr = src->ptr + off;
-	dest->len = src->len - off;
+	dest->b_ptr = dest->b_buf = src->b_ptr + off;
+	dest->b_len = src->b_len - off;
+	dest->b_flags = src->b_flags & ~(BUF_ALLOCED);
 }
 
 boolean_t
 buf_alloc(buf_t *buf, size_t len)
 {
-	if ((buf->ptr = umem_zalloc(len, UMEM_DEFAULT)) == NULL)
+	if ((buf->b_buf = umem_zalloc(len, UMEM_DEFAULT)) == NULL)
 		return (B_FALSE);
-	buf->len = len;
+	buf->b_ptr = buf->b_buf;
+	buf->b_len = len;
+	buf->b_flags = BUF_ALLOCED;
 	return (B_TRUE);
 }
 
@@ -69,8 +116,10 @@ buf_free(buf_t *buf)
 {
 	if (buf == NULL)
 		return;
+
+	VERIFY(buf->b_flags & BUF_ALLOCED);
 	buf_clear(buf);
-	umem_free(buf->ptr, buf->len);
+	umem_free(buf->b_buf, buf->b_len);
 }
 
 int
@@ -80,75 +129,75 @@ buf_cmp(const buf_t *restrict l, const buf_t *restrict r)
 	int cmp;
 
 	/* !NULL > NULL, NULL == NULL */
-	if (r == NULL || r->len == 0 || r->ptr == NULL) {
-		if (l != NULL && l->len > 0 && l->ptr != NULL)
+	if (r == NULL || r->b_len == 0 || r->b_ptr == NULL) {
+		if (l != NULL && l->b_len > 0 && l->b_ptr != NULL)
 			return (1);
 		else
 			return (0);
 	}
 
 	/* NULL < !NULL */
-	if (l == NULL || l->len == 0 || l->ptr == NULL)
+	if (l == NULL || l->b_len == 0 || l->b_ptr == NULL)
 		return (1);
 
-	minlen = l->len;
-	if (r->len < minlen)
-		minlen = r->len;
+	minlen = l->b_len;
+	if (r->b_len < minlen)
+		minlen = r->b_len;
 
-	cmp = memcmp(l->ptr, r->ptr, minlen);
+	cmp = memcmp(l->b_buf, r->b_buf, minlen);
 	if (cmp != 0)
 		return ((cmp > 0) ? 1 : - 1);
 
-	if (l->len > r->len)
+	if (l->b_len > r->b_len)
 		return (1);
-	if (l->len < r->len)
+	if (l->b_len < r->b_len)
 		return (-1);
 	return (0);
 }
 
-boolean_t
+void
 buf_put8(buf_t *buf, uint8_t val)
 {
-	if (buf->len < sizeof (uint8_t))
-		return (B_FALSE);
+	BUF_IS_WRITE(buf);
+	if (eof_check(buf, sizeof (uint8_t)))
+		return;
 
-	*(buf->ptr++) = val;
-	buf->len -= sizeof (uint8_t);
-	return (B_TRUE);
+	*(buf->b_ptr++) = val;
 }
 
-boolean_t
+void
 buf_put64(buf_t *buf, uint64_t val)
 {
-	if (buf->len < sizeof (uint64_t))
-		return (B_FALSE);
+	BUF_IS_WRITE(buf);
+	if (eof_check(buf, sizeof (uint64_t)))
+		return;
 
-	ASSERT3U(buf->len, >=, sizeof (uint64_t));
-	*(buf->ptr++) = (uchar_t)((val >> 56) & 0xffLL);
-	*(buf->ptr++) = (uchar_t)((val >> 48) & 0xffLL);
-	*(buf->ptr++) = (uchar_t)((val >> 40) & 0xffLL);
-	*(buf->ptr++) = (uchar_t)((val >> 32) & 0xffLL);
-	*(buf->ptr++) = (uchar_t)((val >> 24) & 0xffLL);
-	*(buf->ptr++) = (uchar_t)((val >> 16) & 0xffLL);
-	*(buf->ptr++) = (uchar_t)((val >> 8) & 0xffLL);
-	*(buf->ptr++) = (uchar_t)(val & 0xffLL);
-	buf->len -= sizeof (uint64_t);
-	return (B_TRUE);
+	*(buf->b_ptr++) = (uchar_t)((val >> 56) & 0xffLL);
+	*(buf->b_ptr++) = (uchar_t)((val >> 48) & 0xffLL);
+	*(buf->b_ptr++) = (uchar_t)((val >> 40) & 0xffLL);
+	*(buf->b_ptr++) = (uchar_t)((val >> 32) & 0xffLL);
+	*(buf->b_ptr++) = (uchar_t)((val >> 24) & 0xffLL);
+	*(buf->b_ptr++) = (uchar_t)((val >> 16) & 0xffLL);
+	*(buf->b_ptr++) = (uchar_t)((val >> 8) & 0xffLL);
+	*(buf->b_ptr++) = (uchar_t)(val & 0xffLL);
 }
 
-boolean_t
+void
 buf_put32(buf_t *buf, uint32_t val)
 {
-	if (buf->len < sizeof (uint32_t))
-		return (B_FALSE);
-	*(buf->ptr++) = (uchar_t)((val >> 24) & (uint32_t)0xff);
-	*(buf->ptr++) = (uchar_t)((val >> 16) & (uint32_t)0xff);
-	*(buf->ptr++) = (uchar_t)((val >> 8) & (uint32_t)0xff);
-	*(buf->ptr++) = (uchar_t)(val & (uint32_t)0xffLL);
-	buf->len -= sizeof (uint32_t);
-	return (B_TRUE);
+	BUF_IS_WRITE(buf);
+	if (eof_check(buf, sizeof (uint32_t)))
+		return;
+
+	*(buf->b_ptr++) = (uchar_t)((val >> 24) & (uint32_t)0xff);
+	*(buf->b_ptr++) = (uchar_t)((val >> 16) & (uint32_t)0xff);
+	*(buf->b_ptr++) = (uchar_t)((val >> 8) & (uint32_t)0xff);
+	*(buf->b_ptr++) = (uchar_t)(val & (uint32_t)0xffLL);
 }
 
-extern void buf_dup(buf_t * restrict dest, buf_t * restrict src);
-extern void buf_advance(buf_t *buf, size_t amt);
-
+extern boolean_t buf_eof(const buf_t *);
+extern size_t buf_left(const buf_t *);
+extern void buf_reset(buf_t *);
+extern void buf_skip(buf_t *, size_t);
+extern void buf_set_read(buf_t *);
+extern void buf_set_write(buf_t *);
