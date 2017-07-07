@@ -87,7 +87,7 @@ buf_clear(buf_t *buf)
 		return;
 
 	(void) memset(buf->b_buf, 0, buf->b_len);
-	buf->b_ptr = NULL;
+	buf->b_ptr = buf->b_buf;
 	buf->b_flags &= ~(BUF_EOF);
 }
 

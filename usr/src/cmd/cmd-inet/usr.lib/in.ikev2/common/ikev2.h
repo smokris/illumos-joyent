@@ -82,7 +82,7 @@ struct ikev2_payload {
 #define	IKEV2_PAYLOAD_EAP	48	/* Extensible Authentication */
 #define	IKEV2_PAYLOAD_GSPM	49	/* RFC6467 Generic Secure Password */
 
-#define	IEKV2_PAYLOAD_MIN	IKEV2_PAYLOAD_SA
+#define	IKEV2_PAYLOAD_MIN	IKEV2_PAYLOAD_SA
 #define	IKEV2_PAYLOAD_MAX	IKEV2_PAYLOAD_GSPM
 #define	IKEV2_NUM_PAYLOADS	(IKEV2_PAYLOAD_MAX - IKEV2_PAYLOAD_MIN + 1)
 #define	IKEV2_VALID_PAYLOAD(paytype) \

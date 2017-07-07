@@ -49,7 +49,6 @@ static pthread_t signal_tid;
 
 bunyan_logger_t *log = NULL;
 int port = -1;
-int insock = -1, in6sock = -1, innatsock = -1;
 
 int
 main(int argc, char **argv)
@@ -172,7 +171,7 @@ event(event_t evt, void *arg)
 }
 
 void
-schedule_socket(int fd, void (*cb)(int))
+schedule_socket(int fd, void (*cb)(int, void *))
 {
 	if (port_associate(port, PORT_SOURCE_FD, fd, POLLIN, cb) < 0)
 		STDERR(error, log, "port_associate() failed");
@@ -284,3 +283,7 @@ event_str(event_t evt)
 		return ("UNKNOWN");
 	}
 }
+
+extern uint32_t ss_port(const struct sockaddr_storage *);
+extern const void *ss_addr(const struct sockaddr_storage *);
+extern int ss_bunyan(const struct sockaddr_storage *);

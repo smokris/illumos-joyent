@@ -47,6 +47,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/int_fmtio.h>
+#include <sys/debug.h>
 #include <net/if.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -55,38 +56,21 @@
 #include <string.h>
 #include <errno.h>
 #include "defs.h"
-#include "buf.h"
+#include "fromto.h"
+#include "ike.h"
 
-#define	ABUF_OF(sa) (((sa)->ss_family == AF_INET) ?	\
-	    (void *)&((struct sockaddr_in *)(sa))->sin_addr :	\
-	    (void *)&((struct sockaddr_in6 *)(sa))->sin6_addr)
-
-#define	SS_PORT(_ss) \
-	(((_ss)->ss_family == AF_INET) ? \
-	((struct sockaddr_in *)(_ss))->sin_port : \
-	((struct sockaddr_in6 *)(_ss))->sin6_port)
-
-#define	_BUNYAN_TYPE(_ss) \
-	((_ss)->ss_family == AF_INET) ? BUNYAN_T_IP : BUNYAN_T_IP6
-
-#define	NETLOG(_level, _log, _msg, _sock, _src, _dest, ...)	\
-	(void) bunyan_##_level ((_log), _msg,			\
-	BUNYAN_T_STRING, "func", __func__,			\
-	BUNYAN_T_STRING, "file", __FILE__,			\
-	BUNYAN_T_INT32, "line", __LINE__,			\
-	BUNYAN_T_INT32, "socket", (int32_t)(_sock),		\
-	_BUNYAN_TYPE(_src), "src", ABUF_OF((_src)),		\
-	BUNYAN_T_UINT32, "srcport", (uint32_t)SS_PORT(_src),	\
-	_BUNYAN_TYPE(_dest), "dest", ABUF_OF((_dest)),		\
-	BUNYAN_T_UINT32, "destport", (uint32_t)SS_PORT(_dest),	\
-	## __VA_ARGS__,						\
+#define	SOCKLOG(level, log, msg, sock, from, to, ...)	\
+	NETLOG(level, log, msg, from, to,		\
+	BUNYAN_T_INT32, "socket", (int32_t)(sock),	\
+	## __VA_ARGS__,					\
 	BUNYAN_T_END)
+
 /*
  * Receive packet, with src/dst information.  It is assumed that necessary
  * setsockopt()s (e.g. IP_SEC_OPT(NEVER)) have already performed on socket.
  */
 ssize_t
-recvfromto(int s, buf_t *buf, int flags,
+recvfromto(int s, uchar_t *buf, size_t buflen, int flags,
     struct sockaddr_storage *from, socklen_t *fromlen,
     struct sockaddr_storage *to, socklen_t *tolen)
 {
@@ -102,18 +86,10 @@ recvfromto(int s, buf_t *buf, int flags,
 	struct sockaddr_in6 *sin6;
 	struct sockaddr_in *sin;
 
-	BUF_IS_WRITE(buf);
-
 	sslen = sizeof (ss);
 	if (getsockname(s, (struct sockaddr *)&ss, &sslen) < 0) {
-		(void) bunyan_error(log, "getsockname() failed",
-		    BUNYAN_T_STRING, "err", strerror(errno),
-		    BUNYAN_T_INT32, "errno", (int32_t)(errno),
-		    BUNYAN_T_INT32, "socket", (int32_t)s,
-		    BUNYAN_T_STRING, "func", __func__,
-		    BUNYAN_T_STRING, "file", __FILE__,
-		    BUNYAN_T_INT32, "line", __LINE__,
-		    BUNYAN_T_END);
+		STDERR(error, log, "getsockname() failed",
+		    BUNYAN_T_INT32, "socket", (int32_t)s);
 		return (-1);
 	}
 
@@ -122,31 +98,36 @@ recvfromto(int s, buf_t *buf, int flags,
 
 	m.msg_name = (caddr_t)from;
 	m.msg_namelen = *fromlen;
-	iov[0].iov_base = (caddr_t)buf->b_ptr;
-	iov[0].iov_len = buf_left(buf);
+	iov[0].iov_base = buf;
+	iov[0].iov_len = buflen;
 	m.msg_iov = iov;
 	m.msg_iovlen = 1;
 	m.msg_control = (caddr_t)cm;
 	m.msg_controllen = sizeof (cmsgbuf);
 	if ((len = recvmsg(s, &m, flags)) < 0) {
-		NETLOG(error, log, "recvmsg() failed", s, from, to,
+		SOCKLOG(error, log, "recvmsg() failed", s, from, to,
 		    BUNYAN_T_STRING, "err", strerror(errno),
 		    BUNYAN_T_INT32, "errno", (int32_t)errno);
 		return (-1);
 	}
-	if (len > buf_left(buf)) {
+	if (len > buflen) {
 		/*
 		 * size_t and ssize_t should always be "long", but not in 32-
 		 * bit apps for some bizarre reason.
 		 */
-		NETLOG(warn, log, "Received oversized message", s, from, to,
+		SOCKLOG(warn, log, "Received oversized message", s, from, to,
 		    BUNYAN_T_UINT32, "msglen", (uint32_t)len,
-		    BUNYAN_T_UINT32, "buflen", (uint32_t)buf_left(buf));
+		    BUNYAN_T_UINT32, "buflen", (uint32_t)buflen);
 
 		errno = E2BIG;	/* Not returned from normal recvmsg()... */
 		return (-1);
 	}
-	buf_skip(buf, len);
+
+	if (len < sizeof (ike_header_t)) {
+		SOCKLOG(warn, log, "Received undersized message", s, from, to,
+		    BUNYAN_T_UINT32, "msglen", (uint32_t)len);
+		return (-1);
+	}
 
 	*fromlen = m.msg_namelen;
 
@@ -192,7 +173,7 @@ recvfromto(int s, buf_t *buf, int flags,
 		}
 	}
 
-	NETLOG(debug, log, "Received datagram", s, from, to,
+	SOCKLOG(debug, log, "Received datagram", s, from, to,
 	    BUNYAN_T_UINT32, "msglen", (uint32_t)len);
 
 	return (len);
@@ -200,8 +181,8 @@ recvfromto(int s, buf_t *buf, int flags,
 
 /* send packet, with fixing src/dst address pair. */
 ssize_t
-sendfromto(int s, const buf_t *buf, struct sockaddr_storage *src,
-    struct sockaddr_storage *dst)
+sendfromto(int s, const uchar_t *buf, size_t buflen,
+    struct sockaddr_storage *src, struct sockaddr_storage *dst)
 {
 	uint32_t cmsgbuf[64] = { 0 };
 	struct msghdr m = { 0 };
@@ -210,8 +191,6 @@ sendfromto(int s, const buf_t *buf, struct sockaddr_storage *src,
 	struct in6_pktinfo *pi6;
 	struct in_pktinfo *pi;
 	ssize_t n;
-
-	BUF_IS_READ(buf);
 
 	if (src->ss_family != AF_INET && src->ss_family != AF_INET6) {
 		(void) bunyan_error(log, "Unsupported address family",
@@ -225,7 +204,7 @@ sendfromto(int s, const buf_t *buf, struct sockaddr_storage *src,
 	}
 
 	if (src->ss_family != dst->ss_family) {
-		NETLOG(error, log, "Address family mismatch",
+		SOCKLOG(error, log, "Address family mismatch",
 		    s, src, dst,
 		    BUNYAN_T_UINT32, "srcaf", (uint32_t)src->ss_family,
 		    BUNYAN_T_UINT32, "destaf", (uint32_t)src->ss_family);
@@ -234,12 +213,12 @@ sendfromto(int s, const buf_t *buf, struct sockaddr_storage *src,
 		return (-1);
 	}
 
-	NETLOG(debug, log, "Sending datagram", s, src, dst,
-	    BUNYAN_T_UINT32, "msglen", (uint32_t)buf_left(buf));
+	SOCKLOG(debug, log, "Sending datagram", s, src, dst,
+	    BUNYAN_T_UINT32, "msglen", buflen);
 
 	m.msg_name = (caddr_t)dst;
-	iov[0].iov_base = buf->b_ptr;
-	iov[0].iov_len = buf_left(buf);
+	iov[0].iov_base = (caddr_t)buf;
+	iov[0].iov_len = buflen;
 	m.msg_iov = iov;
 	m.msg_iovlen = 1;
 	m.msg_control = (caddr_t)cm;
@@ -285,7 +264,7 @@ sendfromto(int s, const buf_t *buf, struct sockaddr_storage *src,
 
 	n = sendmsg(s, &m, 0);
 	if (n < 0)
-		NETLOG(error, log, "sendmsg() failed", s, src, dst,
+		SOCKLOG(error, log, "sendmsg() failed", s, src, dst,
 		    BUNYAN_T_STRING, "err", strerror(errno),
 		    BUNYAN_T_UINT32, "errno", (int32_t)errno);
 

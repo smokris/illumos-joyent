@@ -27,7 +27,7 @@
 
 PROG = in.ikev2d
 OBJS = timer.o prf.o ikev2_sa.o dh.o buf.o random.o pkt.o fromto.o \
-	pkcs11.o worker.o main.o
+	pkcs11.o worker.o main.o inbound.o
 #OBJS =	main.o pkcs11.o fromto.o ikev2_proto.o pfkey.o door.o ikev2_sa.o \
 #	ikev2_pkt.o preshared.o random.o timer.o buf.o config.o \
 #	ikev2_enum.o dh.o prf.o ikev2_cookie.o ikev2_sa_init.o \

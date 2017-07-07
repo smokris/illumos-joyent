@@ -10,23 +10,28 @@
  */
 
 /*
- * Copyright 2015 Jason King.  All rights reserved.
- * Use is subject to license terms.
+ * Copyright 2017 Joyent, Inc
  */
 
-#ifndef _INBOUND_H
-#define _INBOUND_H
+#ifndef _FROMTO_H
+#define	_FROMTO_H
+
+#include <sys/types.h>
+#include <sys/socket.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-extern int ikesock4, ikesock6, nattsock;
+ssize_t recvfromto(int, uchar_t *restrict, size_t, int,
+    struct sockaddr_storage *restrict, socklen_t *restrict,
+    struct sockaddr_storage *restrict, socklen_t *restrict);
 
-void inbound_init(void);
+ssize_t sendfromto(int, const uchar_t *restrict, size_t,
+    struct sockaddr_storage *restrict, struct sockaddr_storage *restrict);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* _INBOUND_H */
+#endif /* _FROMTO_H */

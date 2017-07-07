@@ -10,7 +10,8 @@
  */
 
 /*
- * Copyright 2014 Jason King.  All rights reserved.
+ * Copyright 2017 Jason King.
+ * Copyright 2017 Joyent, Inc.
  */
 
 #ifndef _IKEV2_PKT_H
@@ -37,7 +38,7 @@ struct ikev2_sa;
 	 (((hdr)->flags == IKEV2_FLAG_INITIATOR) ? \
 	    (hdr)->initiator_spi : (hdr)->responder_spi)
 
-pkt_t *ikev2_pkt_new_inbound(const buf_t *);
+pkt_t *ikev2_pkt_new_inbound(const uchar_t *, size_t);
 pkt_t *ikev2_pkt_new_initiator(struct ikev2_sa *, ikev2_exch_t);
 pkt_t *ikev2_pkt_new_response(const pkt_t *);
 void ikev2_pkt_free(pkt_t *);

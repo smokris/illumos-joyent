@@ -33,6 +33,7 @@
 
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/debug.h>
 #include <ikedoor.h>
 #include <cryptoutil.h>
 #include <security/cryptoki.h>
@@ -60,21 +61,21 @@ typedef union sockaddr_u_s {
  * pointers are passed, and also verifies the address families match and
  * are either AF_INET or AF_INET6.
  */
-#define SA_ADDR_EQ(sa1, sa2)                                            \
-        (((sa1)->ss_family == (sa2)->ss_family) &&                      \
-            ((((sa1)->ss_family == AF_INET) &&                          \
-                ((struct sockaddr_in *)(sa1))->sin_addr.s_addr ==       \
-                ((struct sockaddr_in *)(sa2))->sin_addr.s_addr) ||      \
-                (((sa1)->ss_family == AF_INET6) &&                      \
-                IN6_ARE_ADDR_EQUAL(&((struct sockaddr_in6 *)(sa1))->sin6_addr,\
-                    &((struct sockaddr_in6 *)(sa2))->sin6_addr))))
+#define SA_ADDR_EQ(sa1, sa2)						\
+	(((sa1)->ss_family == (sa2)->ss_family) &&			\
+	    ((((sa1)->ss_family == AF_INET) &&				\
+		((struct sockaddr_in *)(sa1))->sin_addr.s_addr ==	\
+		((struct sockaddr_in *)(sa2))->sin_addr.s_addr) ||	\
+		(((sa1)->ss_family == AF_INET6) &&			\
+		IN6_ARE_ADDR_EQUAL(&((struct sockaddr_in6 *)(sa1))->sin6_addr,\
+		    &((struct sockaddr_in6 *)(sa2))->sin6_addr))))
 
 /*
  * Compare two AF_INET{,6} sockaddr ports.  Exploit the identical offsets for
  * sin_port/sin6_port.  (Does not check sockaddr families a priori.)
  */
 #define SA_PORT_EQ(sa1, sa2) (((struct sockaddr_in *)(sa1))->sin_port == \
-            ((struct sockaddr_in *)(sa2))->sin_port)
+	    ((struct sockaddr_in *)(sa2))->sin_port)
 
 /*
  * Compare two AF_INET{,6} sockaddrs (including ports).  Exploit the
@@ -105,6 +106,67 @@ _NOTE(CONSTCOND) } while (0)
 	## __VA_ARGS__,					\
 	BUNYAN_T_END)
 
+static inline uint32_t
+ss_port(const struct sockaddr_storage *ss)
+{
+	sockaddr_u_t sau;
+	sau.sau_ss = (struct sockaddr_storage *)ss;
+	switch (ss->ss_family) {
+	case AF_INET:
+		return ((uint32_t)sau.sau_sin->sin_port);
+	case AF_INET6:
+		return ((uint32_t)sau.sau_sin6->sin6_port);
+	default:
+		INVALID("ss->ss_family");
+		/*NOTREACHED*/
+		return (NULL);
+	}
+}
+
+static inline const void *
+ss_addr(const struct sockaddr_storage *ss)
+{
+	sockaddr_u_t sau;
+	sau.sau_ss = (struct sockaddr_storage *)ss;
+	switch (ss->ss_family) {
+	case AF_INET:
+		return (&sau.sau_sin->sin_addr);
+	case AF_INET6:
+		return (&sau.sau_sin6->sin6_addr);
+	default:
+		INVALID("ss->ss_family");
+		/*NOTREACHED*/
+		return (NULL);
+	}
+}
+
+static inline int
+ss_bunyan(const struct sockaddr_storage *ss)
+{
+	switch (ss->ss_family) {
+	case AF_INET:
+		return (BUNYAN_T_IP);
+	case AF_INET6:
+		return (BUNYAN_T_IP6);
+	default:
+		INVALID("ss->ss_family");
+		/*NOTREACHED*/
+		return (BUNYAN_T_END);
+	}
+}
+
+#define NETLOG(_level, _log, _msg, _src, _dest, ...)	\
+	(void) bunyan_##_level ((_log), (_msg),		\
+	BUNYAN_T_STRING, "func", __func__,		\
+	BUNYAN_T_STRING, "file", __FILE__,		\
+	BUNYAN_T_INT32, "line", __LINE__,		\
+	ss_bunyan(_src), "src", ss_addr(_src),		\
+	BUNYAN_T_UINT32, "srcport", ss_port(_src),	\
+	ss_bunyan(_dest), "dest", ss_addr(_dest),	\
+	BUNYAN_T_UINT32, "destport", ss_port(_dest),	\
+	## __VA_ARGS__,					\
+	BUNYAN_T_END)
+
 typedef enum event {
 	EVENT_NONE,
 	EVENT_SIGNAL
@@ -114,7 +176,7 @@ extern char *my_fmri;
 extern bunyan_logger_t *log;
 extern int port;
 
-void schedule_socket(int, void(*)(int));
+void schedule_socket(int, void(*)(int, void *));
 
 #ifdef  __cplusplus
 }
