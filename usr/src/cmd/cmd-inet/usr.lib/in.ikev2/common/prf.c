@@ -196,7 +196,7 @@ prfplus_init(prfp_t *restrict prfp, int alg, CK_OBJECT_HANDLE key,
 
 	/*
 	 * Per RFC5996 2.13, prf+(K, S) = T1 | T2 | T3 | T4 | ...
-	 * 
+	 *
 	 * where:
 	 * 	T1 = prf (K, S | 0x01)
 	 * 	T2 = prf (K, T1 | S | 0x02)

@@ -105,7 +105,7 @@ main_loop(void)
 			continue;
 		}
 
-	 	switch (pe.portev_source) {
+		switch (pe.portev_source) {
 		case PORT_SOURCE_USER:
 			(void) bunyan_trace(log, "received event",
 			    BUNYAN_T_STRING, "source",
@@ -225,7 +225,7 @@ signal_thread(void *arg)
 
 		(void) bunyan_info(log, "signal received",
 		    BUNYAN_T_STRING, "signal", sigbuf,
-		    BUNYAN_T_INT32, "signum" , (int32_t)signo,
+		    BUNYAN_T_INT32, "signum", (int32_t)signo,
 		    BUNYAN_T_END);
 
 		if (port_send(port, EVENT_SIGNAL, (void *)(uintptr_t)signo) < 0)
@@ -255,7 +255,7 @@ signal_init(void)
 static const char *
 port_source_str(ushort_t src)
 {
-#define STR(x) case x: return (#x)
+#define	STR(x) case x: return (#x)
 
 	switch (src) {
 	STR(PORT_SOURCE_AIO);

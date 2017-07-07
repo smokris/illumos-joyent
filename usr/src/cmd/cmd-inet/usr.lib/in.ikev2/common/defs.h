@@ -28,8 +28,8 @@
  * Copyright 2017 Joyent, Inc.
  */
 
-#ifndef _IKEV2D_DEFS_H
-#define _IKEV2D_DEFS_H
+#ifndef _DEFS_H
+#define	_DEFS_H
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -61,7 +61,7 @@ typedef union sockaddr_u_s {
  * pointers are passed, and also verifies the address families match and
  * are either AF_INET or AF_INET6.
  */
-#define SA_ADDR_EQ(sa1, sa2)						\
+#define	SA_ADDR_EQ(sa1, sa2)						\
 	(((sa1)->ss_family == (sa2)->ss_family) &&			\
 	    ((((sa1)->ss_family == AF_INET) &&				\
 		((struct sockaddr_in *)(sa1))->sin_addr.s_addr ==	\
@@ -74,20 +74,20 @@ typedef union sockaddr_u_s {
  * Compare two AF_INET{,6} sockaddr ports.  Exploit the identical offsets for
  * sin_port/sin6_port.  (Does not check sockaddr families a priori.)
  */
-#define SA_PORT_EQ(sa1, sa2) (((struct sockaddr_in *)(sa1))->sin_port == \
+#define	SA_PORT_EQ(sa1, sa2) (((struct sockaddr_in *)(sa1))->sin_port == \
 	    ((struct sockaddr_in *)(sa2))->sin_port)
 
 /*
  * Compare two AF_INET{,6} sockaddrs (including ports).  Exploit the
  * identical offsets for sin_port/sin6_port.
  */
-#define SA_FULL_EQ(sa1, sa2) (SA_ADDR_EQ(sa1, sa2) && SA_PORT_EQ(sa1, sa2))
+#define	SA_FULL_EQ(sa1, sa2) (SA_ADDR_EQ(sa1, sa2) && SA_PORT_EQ(sa1, sa2))
 
 #define	INVALID(var) assfail("Invalid value of " # var, __FILE__, __LINE__)
 #define	ARRAY_SIZE(x) (sizeof (x) / sizeof (x[0]))
 
 /*
- * Simple wrapper for pthread calls that should never fail under 
+ * Simple wrapper for pthread calls that should never fail under
  * normal conditions.
  */
 #define	PTH(fn) do {							\
@@ -96,6 +96,7 @@ typedef union sockaddr_u_s {
 		assfail(#fn " call failed", __FILE__, __LINE__);	\
 _NOTE(CONSTCOND) } while (0)
 
+/* BEGIN CSTYLED */
 #define	STDERR(_lvl, _log, _msg, ...)			\
 	(void) bunyan_##_lvl((_log), (_msg),		\
 	BUNYAN_T_STRING, "err", strerror(errno),	\
@@ -105,6 +106,7 @@ _NOTE(CONSTCOND) } while (0)
 	BUNYAN_T_INT32, "line", __LINE__,		\
 	## __VA_ARGS__,					\
 	BUNYAN_T_END)
+/* END CSTYLED */
 
 static inline uint32_t
 ss_port(const struct sockaddr_storage *ss)
@@ -155,8 +157,9 @@ ss_bunyan(const struct sockaddr_storage *ss)
 	}
 }
 
-#define NETLOG(_level, _log, _msg, _src, _dest, ...)	\
-	(void) bunyan_##_level ((_log), (_msg),		\
+/* BEGIN CSTYLED */
+#define	NETLOG(_level, _log, _msg, _src, _dest, ...)	\
+	(void) bunyan_##_level((_log), (_msg),		\
 	BUNYAN_T_STRING, "func", __func__,		\
 	BUNYAN_T_STRING, "file", __FILE__,		\
 	BUNYAN_T_INT32, "line", __LINE__,		\
@@ -166,6 +169,7 @@ ss_bunyan(const struct sockaddr_storage *ss)
 	BUNYAN_T_UINT32, "destport", ss_port(_dest),	\
 	## __VA_ARGS__,					\
 	BUNYAN_T_END)
+/* END CSTYLED */
 
 typedef enum event {
 	EVENT_NONE,
@@ -182,5 +186,4 @@ void schedule_socket(int, void(*)(int, void *));
 }
 #endif
 
-#endif  /* _IKEV2D_DEFS_H */
-
+#endif  /* _DEFS_H */

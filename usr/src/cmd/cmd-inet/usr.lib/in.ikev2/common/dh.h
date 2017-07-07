@@ -14,7 +14,7 @@
  */
 
 #ifndef _DH_H
-#define _DH_H
+#define	_DH_H
 
 #include <sys/types.h>
 #include <security/cryptoki.h>

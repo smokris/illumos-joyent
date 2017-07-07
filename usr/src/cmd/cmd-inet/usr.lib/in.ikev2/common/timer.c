@@ -58,7 +58,7 @@ static uu_list_pool_t 		*timer_pools;
 static pthread_key_t		timer_key = PTHREAD_ONCE_KEY_NP;
 static umem_cache_t		*evt_cache;
 
-static int te_compare(const void *,const void *, void *);
+static int te_compare(const void *, const void *, void *);
 
 static tevent_t *tevent_alloc(te_event_t, hrtime_t, tevent_cb_fn, void *);
 static void timer_fini(void *);
@@ -198,8 +198,8 @@ dispatch_cb(void *elem, void *arg)
 		return (UU_WALK_DONE);
 
 	char buf[128] = { 0 };
-	(void)addrtosymstr(te->fn, buf, sizeof (buf));
-	(void)bunyan_debug(data->log, "Dispatching timer event",
+	(void) addrtosymstr(te->fn, buf, sizeof (buf));
+	(void) bunyan_debug(data->log, "Dispatching timer event",
 	    BUNYAN_T_STRING, "event", te_str(te->type),
 	    BUNYAN_T_UINT32, "event num", (uint32_t)te->type,
 	    BUNYAN_T_POINTER, "fn", te->fn,
@@ -211,7 +211,7 @@ dispatch_cb(void *elem, void *arg)
 	uu_list_remove(timer_list(), elem);
 	tevent_free(te);
 
-	return (UU_WALK_NEXT);	
+	return (UU_WALK_NEXT);
 }
 
 typedef struct cancel_arg_s {
@@ -231,7 +231,7 @@ cancel_timeout(te_event_t type, void *arg, bunyan_logger_t *tlog)
 	ASSERT(timer_is_init);
 	ASSERT(timer_thr_is_init);
 
-	(void)bunyan_trace(tlog, "Cancelling timeouts",
+	(void) bunyan_trace(tlog, "Cancelling timeouts",
 	    BUNYAN_T_STRING, "event", te_str(type),
 	    BUNYAN_T_UINT32, "event num", (uint32_t)type,
 	    BUNYAN_T_POINTER, "arg", arg,

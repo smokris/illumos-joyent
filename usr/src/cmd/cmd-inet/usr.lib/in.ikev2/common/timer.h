@@ -31,8 +31,8 @@
  * They are insertion-sorted by next-to-expire.
  */
 
-#ifndef _IKEV2_TIMER_H
-#define _IKEV2_TIMER_H
+#ifndef _TIMER_H
+#define	_TIMER_H
 
 #include <bunyan.h>
 #include <sys/types.h>
@@ -42,12 +42,12 @@ extern "C" {
 #endif
 
 typedef enum {
-        TE_TEST = -1,   /* For code testing only, arg == NULL */
-        TE_ANY,         /* MUST NOT be passed to schedule_timeout() */
-        TE_SA_EXPIRE,   /* SA expiration */
-        TE_COOKIE_GEN,  /* Cookie generation */
-        TE_TRANSMIT,    /* Transmit timeout */
-        TE_PFKEY        /* pfkey timeout */
+	TE_TEST = -1,   /* For code testing only, arg == NULL */
+	TE_ANY,		/* MUST NOT be passed to schedule_timeout() */
+	TE_SA_EXPIRE,   /* SA expiration */
+	TE_COOKIE_GEN,  /* Cookie generation */
+	TE_TRANSMIT,    /* Transmit timeout */
+	TE_PFKEY	/* pfkey timeout */
 } te_event_t;
 
 typedef void (*tevent_cb_fn)(te_event_t, void *);
@@ -64,4 +64,4 @@ extern void ike_timer_thread_init(void);
 }
 #endif
 
-#endif  /* _IKEV2_TIMER_H */
+#endif  /* _TIMER_H */

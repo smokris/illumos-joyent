@@ -106,7 +106,7 @@ struct pkt {
 	buf_t _src = {					\
 		.b_buf = (uchar_t *)&(_struct),		\
 		.b_ptr = (uchar_t *)&(_struct), 	\
-		.b_len = sizeof(_struct)		\
+		.b_len = sizeof (_struct)		\
 	};						\
 	(void) buf_cat(&(_pkt)->buf, &_src, 1);		\
 	/*CONSTCOND*/					\

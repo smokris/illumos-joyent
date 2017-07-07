@@ -468,7 +468,9 @@ typedef enum ikev2_cfg_attr_type {
 	IKEV2_CFG_INTERNAL_IP6_LINK		= 17,	/* RFC5739 */
 	IKEV2_CFG_INTERNAL_IP6_PREFIX		= 18,	/* RFC5739 */
 	IKEV2_CFG_HOME_AGENT_ADDRESS		= 19,
+/* BEGIN CSTYLED */
 		/* http://www.3gpp.org/ftp/Specs/html-info/24302.htm */
+/* END CSTYLED */
 	IKEV2_CFG_INTERNAL_IP4_SERVER		= 23456, /* MS-IKEE */
 	IKEV2_CFG_INTERNAL_IP6_SERVER		= 23457  /* MS-IKEE */
 } ikev2_cfg_attr_type_t;

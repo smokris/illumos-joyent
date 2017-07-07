@@ -35,7 +35,7 @@ struct ikev2_sa;
 	    (hdr)->responder_spi : (hdr)->initiator_spi
 
 #define	INBOUND_REMOTE_SPI(hdr) \
-	 (((hdr)->flags == IKEV2_FLAG_INITIATOR) ? \
+	(((hdr)->flags == IKEV2_FLAG_INITIATOR) ? \
 	    (hdr)->initiator_spi : (hdr)->responder_spi)
 
 pkt_t *ikev2_pkt_new_inbound(const uchar_t *, size_t);
@@ -67,7 +67,9 @@ boolean_t ikev2_add_vendor(pkt_t *restrict, const buf_t *restrict);
 
 boolean_t ikev2_add_ts_i(pkt_t *);
 boolean_t ikev2_add_ts_r(pkt_t *);
-boolean_t ikev2_add_ts(pkt_t *restrict, int /* type */, int /* proto */, const sockaddr_u_t *restrict /* start */, const sockaddr_u_t *restrict /* end */);
+boolean_t ikev2_add_ts(pkt_t *restrict, int /* type */, int /* proto */,
+    const sockaddr_u_t *restrict /* start */,
+    const sockaddr_u_t *restrict /* end */);
 
 boolean_t ikev2_add_sk(pkt_t *);
 

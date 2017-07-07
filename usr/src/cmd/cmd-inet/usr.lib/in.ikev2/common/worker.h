@@ -38,4 +38,4 @@ boolean_t worker_dispatch(struct pkt *, size_t);
 }
 #endif
 
-#endif /* _PROTOTYPE_H */
+#endif /* _WORKER_H */

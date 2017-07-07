@@ -27,8 +27,8 @@
  * Copyright 2017 Joyent, Inc.
  */
 
-#ifndef _IKEV2D_IKEV2_SA_H
-#define _IKEV2D_IKEV2_SA_H
+#ifndef _IKEV2_SA_H
+#define	_IKEV2_SA_H
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -78,7 +78,7 @@ struct ikev2_sa {
 	 * Fields that should not be zeroed out between trips before
 	 * returning to the umem_cache should go at the top of this struct.
 	 */
-        pthread_mutex_t lock;
+	pthread_mutex_t lock;
 
 	uu_list_node_t	lspi_node;
 	uu_list_node_t	rhash_node;
@@ -88,81 +88,81 @@ struct ikev2_sa {
 			/* Link to the bucket we are in for each hash */
 	i2sa_bucket_t	*bucket[I2SA_NUM_HASH];
 
-        uint64_t                i_spi;          /* Initiator SPI. */
-        uint64_t                r_spi;          /* Responder SPI. */
-        uint32_t                flags;
-        volatile uint32_t       refcnt;
+	uint64_t		i_spi;	  /* Initiator SPI. */
+	uint64_t		r_spi;	  /* Responder SPI. */
+	uint32_t		flags;
+	volatile uint32_t	refcnt;
 
-        struct sockaddr_storage laddr;  /* Local address & port. */
-        struct sockaddr_storage raddr;  /* Remote address & port. */
+	struct sockaddr_storage laddr;  /* Local address & port. */
+	struct sockaddr_storage raddr;  /* Remote address & port. */
 
-        /* Current number of outstanding messages prior to outmsgid. */
-        int             msgwin;
+	/* Current number of outstanding messages prior to outmsgid. */
+	int		msgwin;
 
-        int		encr;           /* Encryption algorithm */
-        size_t          encr_key_len;   /* Key length (bytes) for encr */
-        int		auth;           /* Authentication algorithm */
-        int		prf;            /* PRF algorithm */
-        int		dhgrp;          /* Diffie-Hellman group. */
+	int		encr;		/* Encryption algorithm */
+	size_t		encr_key_len;	/* Key length (bytes) for encr */
+	int		auth;		/* Authentication algorithm */
+	int		prf;		/* PRF algorithm */
+	int		dhgrp;		/* Diffie-Hellman group. */
 
-        uint32_t outmsgid;              /* Next msgid for outbound packets. */
-        uint32_t inmsgid;               /* Next expected inbound msgid. */
+	uint32_t outmsgid;		/* Next msgid for outbound packets. */
+	uint32_t inmsgid;		/* Next expected inbound msgid. */
 
-        struct pkt	*init;  	       /* IKE_SA_INIT packet. */
-        struct pkt	*last_resp_sent;
-        struct pkt	*last_sent;
-        struct pkt	*last_recvd;
+	struct pkt	*init;  	/* IKE_SA_INIT packet. */
+	struct pkt	*last_resp_sent;
+	struct pkt	*last_sent;
+	struct pkt	*last_recvd;
 
-        time_t          birth;          /* When was AUTH completed */
-        hrtime_t        softexpire;
-        hrtime_t        hardexpire;
+	time_t		birth;		/* When was AUTH completed */
+	hrtime_t	softexpire;
+	hrtime_t	hardexpire;
 
-        ikev2_child_sa_t        *child_sas;
+	ikev2_child_sa_t	*child_sas;
 
-        CK_OBJECT_HANDLE dh_pubkey;
-        CK_OBJECT_HANDLE dh_privkey;
-        CK_OBJECT_HANDLE dh_key;
-        CK_OBJECT_HANDLE sk_d;
-        CK_OBJECT_HANDLE sk_ai;
-        CK_OBJECT_HANDLE sk_ar;
-        CK_OBJECT_HANDLE sk_ei;
-        CK_OBJECT_HANDLE sk_er;
-        CK_OBJECT_HANDLE sk_pi;
-        CK_OBJECT_HANDLE sk_pr;
+	CK_OBJECT_HANDLE dh_pubkey;
+	CK_OBJECT_HANDLE dh_privkey;
+	CK_OBJECT_HANDLE dh_key;
+	CK_OBJECT_HANDLE sk_d;
+	CK_OBJECT_HANDLE sk_ai;
+	CK_OBJECT_HANDLE sk_ar;
+	CK_OBJECT_HANDLE sk_ei;
+	CK_OBJECT_HANDLE sk_er;
+	CK_OBJECT_HANDLE sk_pi;
+	CK_OBJECT_HANDLE sk_pr;
 };
 
 struct ikev2_child_sa {
-        ikev2_child_sa_t        *next;
-        ikev2_spi_proto_t       satype;
-        uint32_t                spi;
+	ikev2_child_sa_t	*next;
+	ikev2_spi_proto_t	satype;
+	uint32_t		spi;
 	/* XXX: more to come probably */
 };
 
 /* SA flags */
-#define I2SA_INITIATOR  0x1     /* Am I the initiator of this IKE SA? */
-#define I2SA_NAT_LOCAL  0x2     /* I am behind a NAT. */
-#define I2SA_NAT_REMOTE 0x4     /* My peer is behind a NAT. */
-#define I2SA_CONDEMNED  0x8     /* SA is unlinked from a tree. */
-#define I2SA_AUTHENTICATED      0x10    /* SA has been authenticated */
+#define	I2SA_INITIATOR		0x1	/* Am I the initiator of this IKE SA? */
+#define	I2SA_NAT_LOCAL		0x2	/* I am behind a NAT. */
+#define	I2SA_NAT_REMOTE		0x4	/* My peer is behind a NAT. */
+#define	I2SA_CONDEMNED		0x8	/* SA is unlinked from a tree. */
+#define	I2SA_AUTHENTICATED	0x10	/* SA has been authenticated */
 
-#define I2SA_LOCAL_SPI(i2sa) \
-        (((i2sa)->flags & I2SA_INITIATOR) ? (i2sa)->i_spi : \
-            (i2sa)->r_spi)
+#define	I2SA_LOCAL_SPI(i2sa) \
+	(((i2sa)->flags & I2SA_INITIATOR) ? (i2sa)->i_spi : \
+	    (i2sa)->r_spi)
 
-#define I2SA_REMOTE_SPI(i2sa) \
-        (((i2sa)->flags & I2SA_INITIATOR) ? (i2sa)->r_spi : \
-            (i2sa)->i_spi)
+#define	I2SA_REMOTE_SPI(i2sa) \
+	(((i2sa)->flags & I2SA_INITIATOR) ? (i2sa)->r_spi : \
+	    (i2sa)->i_spi)
 
 #define	I2SA_HAS_NAT(i2sa) \
 	(!!((i2sa)->flags && (I2SA_NAT_LOCAL|I2SA_NAT_REMOTE)))
 
-#define I2SA_REFHOLD(i2sa) \
-        atomic_inc_32(&(i2sa)->refcnt)
+#define	I2SA_REFHOLD(i2sa) \
+	atomic_inc_32(&(i2sa)->refcnt)
 
 /* Stupid C tricks stolen from <assert.h>. */
-#define I2SA_REFRELE(i2sa) \
-        (void) ((atomic_dec_32_nv(&(i2sa)->refcnt) != 0) || \
-            (ikev2_sa_free(i2sa), 0))
+#define	I2SA_REFRELE(i2sa) \
+	(void) ((atomic_dec_32_nv(&(i2sa)->refcnt) != 0) || \
+	    (ikev2_sa_free(i2sa), 0))
 
 extern ikev2_sa_t *ikev2_sa_get(uint64_t, uint64_t,
     const struct sockaddr_storage *restrict,
@@ -182,5 +182,4 @@ extern void	ikev2_sa_set_hashsize(uint_t);
 }
 #endif
 
-#endif  /* _IKEV2D_IKEV2_SA_H */
-
+#endif  /* _IKEV2_SA_H */

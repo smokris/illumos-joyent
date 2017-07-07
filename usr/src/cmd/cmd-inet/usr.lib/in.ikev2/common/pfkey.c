@@ -445,7 +445,7 @@ pf_key_init(void)
 
 	if (!ucache_init(&cache_init))
 		EXIT_FATAL3("umem_cache_create(%s) failed: %s", cache_init.name,
-		strerror(errno));
+		    strerror(errno));
 
 	pfkey = socket(PF_KEY, SOCK_RAW, PF_KEY_V2);
 	if (pfkey == -1)
@@ -1098,6 +1098,6 @@ pfkey_init(void)
 	if (n < sizeof (*samsg) + sizeof (*ereg))
 		errx(EXIT_FAILURE, "Unable to write extended register message");
 
-	
+
 	schedule_socket(pfkey, pfkey_inbound);
 }

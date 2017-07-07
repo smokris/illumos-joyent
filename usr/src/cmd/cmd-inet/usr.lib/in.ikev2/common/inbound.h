@@ -15,7 +15,7 @@
  */
 
 #ifndef _INBOUND_H
-#define _INBOUND_H
+#define	_INBOUND_H
 
 #ifdef __cplusplus
 extern "C" {

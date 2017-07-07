@@ -186,9 +186,9 @@ worker_dispatch(pkt_t *pkt, size_t n)
 	PTH(pthread_rwlock_unlock(&worker_lock));
 
 	(void) bunyan_debug(w->w_log, "Dispatching packet to worker",
-		    BUNYAN_T_UINT32, "worker", (uint32_t)n,
-		    BUNYAN_T_POINTER, "pkt", pkt,
-		    BUNYAN_T_END);
+	    BUNYAN_T_UINT32, "worker", (uint32_t)n,
+	    BUNYAN_T_POINTER, "pkt", pkt,
+	    BUNYAN_T_END);
 	return (B_TRUE);
 }
 
@@ -244,7 +244,7 @@ worker(void *arg)
 
 		while (!WQ_EMPTY(wq)) {
 		}
-	}	
+	}
 
 	w->w_done;
 	PTH(pthread_cond_signal(&wq->wq_cv));
@@ -294,7 +294,7 @@ worker_add(void)
 	VERIFY3U(workers_alloc, >, nworkers);
 	workers[nworkers++] = w;
 
-	PTH(pthread_rwlock_unlock(&worker_lock));	
+	PTH(pthread_rwlock_unlock(&worker_lock));
 
 	(void) bunyan_debug(w->w_log, "Worker created", BUNYAN_T_END);
 

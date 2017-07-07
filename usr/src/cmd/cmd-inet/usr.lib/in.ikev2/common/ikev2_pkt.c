@@ -10,7 +10,8 @@
  */
 
 /*
- * Copyright 2014 Jason King.  All rights reserved.
+ * Copyright 2017 Jason King.
+ * Copyright 2017 Joyent, Inc.
  */
 
 #include <stddef.h>
@@ -27,11 +28,14 @@
 #include <pthread.h>
 #include <sys/debug.h>
 #include <note.h>
+#include "defs.h"
 #include "pkt_impl.h"
+#include "ikev2.h"
+#include "ikev2_sa.h"
 #include "ikev2_pkt.h"
 
 #define	PKT_IS_V2(p) \
-    (IKE_GET_MAJORV((p)->header.version) == IKE_GET_MAJORV(IKEV2_VERSION))
+	(IKE_GET_MAJORV((p)->header.version) == IKE_GET_MAJORV(IKEV2_VERSION))
 
 /* Allocate an outbound IKEv2 pkt for an initiator of the given exchange type */
 pkt_t *
@@ -51,7 +55,7 @@ ikev2_pkt_new_initiator(ikev2_sa_t *i2sa, ikev2_exch_t exch_type)
 }
 
 /* Allocate a ikev2_pkt_t for an IKEv2 outbound response */
-ikev2_pkt_t *
+pkt_t *
 ikev2_pkt_new_response(const pkt_t *init)
 {
 	pkt_t *pkt;
@@ -61,7 +65,7 @@ ikev2_pkt_new_response(const pkt_t *init)
 	pkt = pkt_out_alloc(init->header.initiator_spi,
 	    init->header.responder_spi,
 	    IKEV2_VERSION,
-	    init->header.exchange_type,
+	    init->header.exch_type,
 	    init->header.msgid);
 	if (pkt == NULL)
 		return (NULL);
@@ -83,15 +87,15 @@ static boolean_t check_sa_init_payloads(boolean_t, const size_t *);
 
 /* Allocate a ikev2_pkt_t for an inbound datagram in raw */
 pkt_t *
-ikev2_pkt_new_inbound(const buf_t *raw)
+ikev2_pkt_new_inbound(const uchar_t *buf, size_t buflen)
 {
 	const ike_header_t	*hdr = NULL;
 	pkt_t			*pkt = NULL;
 	struct validate_data	arg = { 0 };
 
-	ASSERT(IS_P2ALIGNED(raw->b_ptr, sizeof (uint64_t)));
+	ASSERT(IS_P2ALIGNED(buf, sizeof (uint64_t)));
 
-	hdr = (const ike_header_t *)raw->b_ptr;
+	hdr = (const ike_header_t *)buf;
 
 	ASSERT(IKE_GET_MAJORV(hdr->version) == IKE_GET_MAJORV(IKEV2_VERSION));
 
@@ -100,20 +104,22 @@ ikev2_pkt_new_inbound(const buf_t *raw)
 	 * not both.
 	 */
 	if (((hdr->flags & (IKEV2_FLAG_INITIATOR|IKEV2_FLAG_RESPONSE)) ^
-		(IKEV2_FLAG_INITIATOR|IKEV2_FLAG_RESPONSE)) == 0) {
+	    (IKEV2_FLAG_INITIATOR|IKEV2_FLAG_RESPONSE)) == 0) {
 		/* XXX: log msg? */
 		return (NULL);
 	}
 
-	arg.raw = raw;
+	arg.raw.b_ptr = raw;
+	arg.raw.b_len = buflen;
 	arg.exch_type = hdr->exch_type;
 	arg.initiator = !!(hdr->flags & IKEV2_FLAG_INITIATOR);
 
-	if (pkt_payload_walk(raw, check_payload, &arg) != PKT_WALK_OK)
+	if (pkt_payload_walk((buf_t *)raw, check_payload, &arg) != PKT_WALK_OK)
 		return (NULL);
 
 	if (hdr->exch_type == IKEV2_EXCH_IKE_SA_INIT &&
-	    !check_sa_init_payloads(arg.initiator, &arg.paycount))
+	    !check_sa_init_payloads(arg.initiator,
+	    (const size_t *)&arg.paycount))
 		return (NULL);
 
 	/* this will also copy raw into pkt->raw */
@@ -182,10 +188,10 @@ check_payload(uint8_t paytype, const buf_t *restrict pay, void *restrict cookie)
 		 */
 		if (paytype != IKEV2_PAYLOAD_SK) {
 			/* XXX: log message? */
-			return (PKT_WALK_ERR);
+			return (PKT_WALK_ERROR);
 		}
 		goto done;
-	case IKEV2_EXCH_SA_INIT:
+	case IKEV2_EXCH_IKE_SA_INIT:
 		break;
 	default:
 		/* Unknown exchange, bail */
@@ -201,7 +207,7 @@ done:
 
 	/* store offset from start of packet */
 	if (arg->payloads[paytype] == NULL)
-		arg->payloads = pay->ptr - arg->raw->ptr;
+		arg->payloads = pay->b_ptr - arg->raw->b_ptr;
 
 	return (PKT_WALK_OK);
 }
@@ -246,7 +252,7 @@ check_sa_init_payloads(boolean_t initiator, const size_t *paycount)
 	present = 0;
 	multi_ok = B_TRUE;
 	for (i = 0, pay = IKEV2_PAYLOAD_MIN;
-	    i < IKEV2_PAYLOAD_COUNT;
+	    i < IKEV2_NUM_PAYLOADS;
 	    i++, pay++) {
 		if (paycount[i] > 1 && !(IS_MULTI(pay))) {
 			/* XXX: log msg? */
@@ -286,12 +292,12 @@ ikev2_pkt_free(ikev2_pkt_t *pkt)
 }
 
 boolean_t
-ikev2_next_payload(int pay, ikev2_pkt_t *restrict pkt, buf_t *restrict ptr)
+ikev2_next_payload(int pay, pkt_t *restrict pkt, buf_t *restrict ptr)
 {
 	ikev2_payload_t pay;
 
-	if (ptr->ptr == NULL) {
-		ptr->ptr = IKEV2_PAYLOAD_PTR(pkt, pay);
+	if (ptr->b_ptr == NULL) {
+		ptr->b_ptr = IKEV2_PAYLOAD_PTR(pkt, pay);
 		/* XXX: set length */
 	}
 
@@ -300,35 +306,35 @@ ikev2_next_payload(int pay, ikev2_pkt_t *restrict pkt, buf_t *restrict ptr)
 }
 
 boolean_t
-ikev2_get_notify(int ntfy, ikev2_pkt_t *restrict pkt, buf_t *restrict ptr)
+ikev2_get_notify(int ntfy, pkt_t *restrict pkt, buf_t *restrict ptr)
 {
 	/* TODO: implement me */
 	return (B_FALSE);
 }
 
 static void
-ikev2_add_payload(ikev2_pkt_t *pkt, ikev2_pay_type_t ptype, boolean_t critical)
+ikev2_add_payload(pkt_t *pkt, ikev2_pay_type_t ptype, boolean_t critical)
 {
 	uchar_t *payptr;
 	uint8_t resv = 0;
 
 	ASSERT(IKEV2_VALID_PAYLOAD(ptype));
-	ASSERT3U(pkt->buf.len, >=, sizeof (ikev2_payload_t));
+	ASSERT3U(pkt->buf.b_len, >=, sizeof (ikev2_payload_t));
 
 	if (critical)
 		resv |= IKEV2_CRITICAL_PAYLOAD;
 
 	/* Only cache the first one */
 	if ((payptr = IKEV2_PAYLOAD_PTR(pkt, ptype)) == NULL)
-		payptr = pkt->buf.ptr;
+		payptr = pkt->buf.b_ptr;
 
 	pkt_add_payload(pkt, ptype, resv);
 }
 
 boolean_t
-ikev2_add_sa(ikev2_pkt_t *pkt)
+ikev2_add_sa(pkt_t *pkt)
 {
-	if (pkt->buf.len < sizeof (ikev2_payload_t))
+	if (pkt->buf.b_len < sizeof (ikev2_payload_t))
 		return (B_FALSE);
 	ikev2_add_payload(pkt, IKEV2_PAYLOAD_SA, B_FALSE);
 }
@@ -632,7 +638,7 @@ ts_finish(pkt_t *restrict pkt, buf_t *restrict buf, uintptr_t swaparg,
 	ASSERT3U(numts, <, 0x100);
 
 	buf_copy(&tsbuf, buf);
-	ts.ts_num = (uint8_t) numts;
+	ts.ts_num = (uint8_t)numts;
 	buf_copy(buf, &tsbuf);
 }
 
@@ -775,4 +781,3 @@ validate_cb(uint8_t paytype, buf_t *restrict pay, void *restrict cookie)
 
 	return (PKT_WALK_OK);
 }
-

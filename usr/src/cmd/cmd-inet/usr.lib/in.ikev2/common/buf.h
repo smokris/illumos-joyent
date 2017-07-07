@@ -61,7 +61,7 @@ buf_skip(buf_t *buf, size_t amt)
 
 	uchar_t *end = buf->b_buf + buf->b_len;
 	buf->b_ptr += amt;
-	
+
 	if (buf->b_ptr > end) {
 		buf->b_ptr = end;
 		buf->b_flags |= BUF_EOF;

@@ -75,7 +75,7 @@ buf_copy(buf_t *restrict dest, const buf_t *restrict src, size_t n)
 		p += amt;
 	}
 
-	
+
 	/* XXX: what to do about b_ptr? */
 	return (total);
 }
@@ -92,7 +92,7 @@ buf_clear(buf_t *buf)
 }
 
 void
-buf_range(buf_t * restrict dest, buf_t * restrict src, size_t off, size_t len)
+buf_range(buf_t *restrict dest, buf_t *restrict src, size_t off, size_t len)
 {
 	ASSERT(off + len <= src->len);
 	dest->b_ptr = dest->b_buf = src->b_ptr + off;

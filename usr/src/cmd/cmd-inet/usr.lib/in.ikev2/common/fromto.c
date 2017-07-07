@@ -59,11 +59,14 @@
 #include "fromto.h"
 #include "ike.h"
 
+/* BEGIN CSTYLED */
+/* cstyle doesn't deal with ## __VA_ARGS__ well */
 #define	SOCKLOG(level, log, msg, sock, from, to, ...)	\
 	NETLOG(level, log, msg, from, to,		\
 	BUNYAN_T_INT32, "socket", (int32_t)(sock),	\
 	## __VA_ARGS__,					\
 	BUNYAN_T_END)
+/* END CSTYLED */
 
 /*
  * Receive packet, with src/dst information.  It is assumed that necessary

@@ -316,35 +316,35 @@ ikev2_sa_free(ikev2_sa_t *i2sa)
 	if (!(i2sa->flags & I2SA_AUTHENTICATED))
 		dec_half_open();
 
-        /*
-         * XXX: we have potential circular references here
-         * as ikev2_pkt_t->sa and i2sa->init,
-         * i2sa->last_{resp_sent,sent,recvd} reference each other.
-         *
-         * We will need to sit and thing about the lifecycles of
-         * these packets to make sure when we want this SA to go
-         * away for any reason, everything is properly cleaned up.
-         *
-         * For now, my thought is to punt until after the
-         * IKE_SA_INIT and IKE_AUTH exchanges are written, as that
-         * will likely help identify the best approach to resolving this.
-         */
-        pkt_free(i2sa->init);
-        pkt_free(i2sa->last_resp_sent);
-        pkt_free(i2sa->last_sent);
-        pkt_free(i2sa->last_recvd);
+	/*
+	 * XXX: we have potential circular references here
+	 * as ikev2_pkt_t->sa and i2sa->init,
+	 * i2sa->last_{resp_sent,sent,recvd} reference each other.
+	 *
+	 * We will need to sit and thing about the lifecycles of
+	 * these packets to make sure when we want this SA to go
+	 * away for any reason, everything is properly cleaned up.
+	 *
+	 * For now, my thought is to punt until after the
+	 * IKE_SA_INIT and IKE_AUTH exchanges are written, as that
+	 * will likely help identify the best approach to resolving this.
+	 */
+	pkt_free(i2sa->init);
+	pkt_free(i2sa->last_resp_sent);
+	pkt_free(i2sa->last_sent);
+	pkt_free(i2sa->last_recvd);
 
-#define DESTROY(x, y) pkcs11_destroy_obj(#y, &(x)->y, D_OP)
-        DESTROY(i2sa, dh_pubkey);
-        DESTROY(i2sa, dh_privkey);
-        DESTROY(i2sa, dh_key);
-        DESTROY(i2sa, sk_d);
-        DESTROY(i2sa, sk_ai);
-        DESTROY(i2sa, sk_ar);
-        DESTROY(i2sa, sk_ei);
-        DESTROY(i2sa, sk_er);
-        DESTROY(i2sa, sk_pi);
-        DESTROY(i2sa, sk_pr);
+#define	DESTROY(x, y) pkcs11_destroy_obj(#y, &(x)->y, D_OP)
+	DESTROY(i2sa, dh_pubkey);
+	DESTROY(i2sa, dh_privkey);
+	DESTROY(i2sa, dh_key);
+	DESTROY(i2sa, sk_d);
+	DESTROY(i2sa, sk_ai);
+	DESTROY(i2sa, sk_ar);
+	DESTROY(i2sa, sk_ei);
+	DESTROY(i2sa, sk_er);
+	DESTROY(i2sa, sk_pi);
+	DESTROY(i2sa, sk_pr);
 #undef  DESTROY
 
 	/* TODO: free child SAs */
@@ -352,8 +352,8 @@ ikev2_sa_free(ikev2_sa_t *i2sa)
 	bunyan_fini(i2sa->i2sa_log);
 
 	i2sa_dtor(i2sa, NULL);
-        i2sa_ctor(i2sa, NULL, 0);
-        umem_cache_free(i2sa_cache, i2sa);
+	i2sa_ctor(i2sa, NULL, 0);
+	umem_cache_free(i2sa_cache, i2sa);
 }
 
 void
@@ -479,7 +479,7 @@ nomem:
 			if (hash[hashtbl][i].chain != NULL)
 				uu_list_destroy(hash[hashtbl][i].chain);
 		}
-		free (hash[hashtbl]);
+		free(hash[hashtbl]);
 		hash[hashtbl] = old[hashtbl];
 	}
 
@@ -538,7 +538,7 @@ i2sa_get_bucket(int hashtbl, ikev2_sa_t *i2sa)
  * Returns:
  * 	B_TRUE	successfully added, hash holds ref to IKEv2 SA
  * 	B_FALSE	IKEv2 SA already exists in hash, no ref held.
- * 
+ *
  */
 static boolean_t
 i2sa_add_to_hash(int hashtbl, ikev2_sa_t *i2sa)
@@ -605,12 +605,12 @@ i2sa_verify(ikev2_sa_t *restrict i2sa, uint64_t rem_spi,
 		goto bad_match;
 	}
 
-        /*
-         * XXX KEBE ASKS - if remote port changes, do remap?
-         * Probably have caller do this after packet is really legit.
-         */
+	/*
+	 * XXX KEBE ASKS - if remote port changes, do remap?
+	 * Probably have caller do this after packet is really legit.
+	 */
 
-        /* XXX KEBE SAYS FILL IN OTHER REALITY CHECKS HERE. */
+	/* XXX KEBE SAYS FILL IN OTHER REALITY CHECKS HERE. */
 
 	/* XXX: log full match */
 	return (i2sa);
@@ -848,7 +848,7 @@ i2sa_compare(const void *larg, const void *rarg, void *arg)
 		return (-1);
 
 	/* a multihomed system might have different local addresses */
-        cmp = sockaddr_compare(&l->laddr,
+	cmp = sockaddr_compare(&l->laddr,
 	    (r != NULL) ? &r->laddr : carg->raddr.sau_ss);
 	if (cmp > 0)
 		return (1);
@@ -939,4 +939,3 @@ ikev2_sa_fini(void)
 	for (int i = 0; i < I2SA_NUM_HASH; i++)
 		uu_list_pool_destroy(list_pool[i]);
 }
-

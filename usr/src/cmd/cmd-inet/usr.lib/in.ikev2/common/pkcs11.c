@@ -197,7 +197,7 @@ log_slotinfo(CK_SLOT_ID slot)
 #define	F(_inf, _flg) BUNYAN_T_BOOLEAN, #_flg, !!((_inf).flags & (_flg))
 
 	(void) bunyan_debug(log, "PKCS#11 token info",
-	    BUNYAN_T_UINT32, "slot", (uint32_t) slot,
+	    BUNYAN_T_UINT32, "slot", (uint32_t)slot,
 	    BUNYAN_T_STRING, "label", label,
 	    BUNYAN_T_STRING, "manuf", manuf,
 	    BUNYAN_T_STRING, "model", model,

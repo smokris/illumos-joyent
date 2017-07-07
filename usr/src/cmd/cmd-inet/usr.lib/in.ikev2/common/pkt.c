@@ -130,7 +130,7 @@ payload_finish(pkt_t *restrict pkt, buf_t *restrict buf, uintptr_t arg,
 
 	buf_copy(&paybuf, buf, 1);
 	pay.pay_next = (uint8_t)arg;
-       	pay.pay_length = htons((uint16_t)(pkt->buf.b_ptr - buf->b_ptr));
+	pay.pay_length = htons((uint16_t)(pkt->buf.b_ptr - buf->b_ptr));
 	buf_copy(buf, &paybuf, 1);
 }
 
@@ -228,7 +228,7 @@ pkt_add_xform(pkt_t *pkt, uint8_t xftype, uint8_t xfid)
 	/* mostly for completeness */
 	xf.xf_more = IKE_XFORM_NONE;
 	xf.xf_type = xftype;
-	xf.xf_id = htons((uint16_t) xfid);
+	xf.xf_id = htons((uint16_t)xfid);
 	PKT_APPEND_STRUCT(pkt, xf);
 	return (B_TRUE);
 }
@@ -361,7 +361,7 @@ pkt_hdr_hton(ike_header_t *restrict dest,
  *
  * To keep the code involved in a given exchange from being buried in
  * loads of complicated tedium dealing with this, we have created a
- * hopefully not too clever way to handle setting those fields so 
+ * hopefully not too clever way to handle setting those fields so
  * the exhanging handling code rarely needs to worry about it.  It allows
  * for code similar to:
  *
@@ -371,7 +371,7 @@ pkt_hdr_hton(ike_header_t *restrict dest,
  * ikev2_add_xform_attr(pkt, IKEV2_XF_ATTR_KEYLEN, 256)
  * ikev2_add_nonce(pkt, ....)
  * ...
- * ikev2_send(pkt, ...); 
+ * ikev2_send(pkt, ...);
  *
  * For any of the IKE structures, generally one or more of the following
  * questions cannot be answered until subsequent structures are added:
