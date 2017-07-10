@@ -66,7 +66,7 @@ struct i2sa_bucket {
 typedef struct i2sa_cmp_arg {
 	sockaddr_u_t		laddr;
 	sockaddr_u_t		raddr;
-	const buf_t		*init_pkt;
+	const pkt_t		*init_pkt;
 	uint64_t		lspi;
 	uint64_t		rspi;
 	int			hash;
@@ -128,7 +128,7 @@ ikev2_sa_t *
 ikev2_sa_get(uint64_t l_spi, uint64_t r_spi,
     const struct sockaddr_storage *restrict l_addr,
     const struct sockaddr_storage *restrict r_addr,
-    const buf_t *restrict init_pkt)
+    const pkt_t *restrict init_pkt)
 {
 	i2sa_bucket_t *bucket;
 	ikev2_sa_t *sa;
@@ -798,8 +798,9 @@ i2sa_compare(const void *larg, const void *rarg, void *arg)
 	const ikev2_sa_t *l = (const ikev2_sa_t *)larg;
 	const ikev2_sa_t *r = (const ikev2_sa_t *)rarg;
 	i2sa_cmp_arg_t *carg = (i2sa_cmp_arg_t *)arg;
+	const uchar_t *lbuf, *rbuf;
 	uint64_t spi;
-	const buf_t *lbuf, *rbuf;
+	size_t lsz, rsz;
 	int cmp;
 
 	if (carg->hash == LSPI) {
@@ -827,29 +828,31 @@ i2sa_compare(const void *larg, const void *rarg, void *arg)
 	ASSERT(carg->hash == RHASH);
 	ASSERT(MUTEX_HELD(l->bucket_lock_rhash));
 
+	i2sa_cmp_arg_t cmpdata = { 0 };
 	if (r != NULL) {
-		ASSERT(l->bucket_lock_rhash == r->bucket_lock_rhash);
-		spi = I2SA_REMOTE_SPI(r);
-	} else {
-		spi = carg->rspi;
+		ASSERT3U(l->bucket_lock_rhash, ==, r->bucket_lock_rhash);
+		cmpdata.hash = RHASH;
+		cmpdata.rspi = I2SA_REMOTE_SPI(r);
+		cmpdata.raddr.sau_ss = (struct sockaddr_storage *)&r->raddr;
+		cmpdata.laddr.sau_ss = (struct sockaddr_storage *)&r->laddr;
+		cmpdata.init_pkt = r->init;
+		carg = &cmpdata;
 	}
 
-	if (I2SA_REMOTE_SPI(l) > spi)
+	if (I2SA_REMOTE_SPI(l) > carg->rspi)
 		return (1);
-	if (I2SA_REMOTE_SPI(l) < spi)
+	if (I2SA_REMOTE_SPI(l) < carg->rspi)
 		return (-1);
 
 	/* more likely to be different, so check these first */
-	cmp = sockaddr_compare(&l->raddr,
-	    (r != NULL) ? &r->raddr : carg->raddr.sau_ss);
+	cmp = sockaddr_compare(&l->raddr, carg->raddr.sau_ss);
 	if (cmp > 0)
 		return (1);
 	if (cmp < 0)
 		return (-1);
 
 	/* a multihomed system might have different local addresses */
-	cmp = sockaddr_compare(&l->laddr,
-	    (r != NULL) ? &r->laddr : carg->raddr.sau_ss);
+	cmp = sockaddr_compare(&l->laddr, carg->laddr.sau_ss);
 	if (cmp > 0)
 		return (1);
 	if (cmp < 0)
@@ -862,21 +865,16 @@ i2sa_compare(const void *larg, const void *rarg, void *arg)
 	 * an issue for half-opened remotely initiated SAs, as this is the
 	 * only time the local SPI is not yet known.
 	 */
-	if (r != NULL) {
-		if (r->init != NULL)
-			rbuf = &r->init->buf;
-		else
-			rbuf = NULL;
-	} else {
-		rbuf = carg->init_pkt;
-	}
+	cmp = memcmp(l->init->pkt_raw, carg->init_pkt->pkt_raw,
+	    MIN(pkt_len(l->init), pkt_len(carg->init_pkt)));
+	if (cmp != 0)
+		return ((cmp < 0) ? -1 : 1);
+	if (pkt_len(l->init) < pkt_len(carg->init_pkt))
+		return (-1);
+	if (pkt_len(l->init) > pkt_len(carg->init_pkt))
+		return (1);
 
-	if (l->init != NULL)
-		lbuf = &l->init->buf;
-	else
-		lbuf = NULL;
-
-	return (buf_cmp(lbuf, rbuf));
+	return (0);
 }
 
 static boolean_t

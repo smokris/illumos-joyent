@@ -23,7 +23,8 @@
  * Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
  *
- * Copyright 2014 Jason King.  All rights reserved.
+ * Copyright 2017 Jason King.
+ * Copyirght 2017 Joyent, Inc.
  */
 
 #ifndef _PKT_H
@@ -42,15 +43,11 @@ struct ikev2_sa;
 struct pkt;
 struct pkt_stack;
 
-#ifndef PKT_T
 typedef struct pkt		pkt_t;
 typedef struct pkt_stack	pkt_stack_t;
-#endif /* PKT_T */
 
-#ifndef PKT_FINISH_FN
-typedef void (*pkt_finish_fn)(struct pkt *restrict, buf_t *restrict, uintptr_t,
-    size_t);
-#endif
+typedef void (*pkt_finish_fn)(struct pkt *restrict, uchar_t *restrict,
+    uintptr_t, size_t);
 
 typedef enum pkt_stack_item {
 	PSI_NONE,
@@ -65,69 +62,112 @@ typedef enum pkt_stack_item {
 
 struct pkt_stack {
 	pkt_finish_fn		stk_finish;
-	buf_t			stk_buf;
+	uchar_t			*stk_ptr;
 	size_t			stk_count;
 	pkt_stack_item_t	stk_type;
 };
+#define	PKT_STACK_DEPTH	(6)
 
-#define	PKT_STACK_DEPTH	6
+typedef struct pkt_payload {
+	uchar_t		*pp_ptr;
+	uint16_t	pp_len;
+	uint8_t		pp_type;
+} pkt_payload_t;
+#define	PKT_PAYLOAD_NUM	(16)
+
+typedef struct pkt_notify {
+	uchar_t		*pn_ptr;
+	uint16_t	pn_len;
+	uint16_t	pn_type;
+} pkt_notify_t;
+#define	PKT_NOTIFY_NUM	(8)
 
 #define	MAX_PACKET_SIZE	(8192)	/* largest datagram we accept */
 struct pkt {
-	struct ikev2_sa	*sa;	/* NOT refheld */
+				/* NOT refheld */
+	struct ikev2_sa		*pkt_sa;
 
-			/*
-			 * Pointer to payload of a given type.  For
-			 * payloads that can appear multiple times,
-			 * this is the first payload of that type.
-			 */
-	uchar_t		*payloads[IKE_NUM_PAYLOADS];
+				/* Raw packet data */
+	uint64_t		pkt_raw[SADB_8TO64(MAX_PACKET_SIZE)];
+				/*
+				 * Points to one past last bit of valid data
+				 * in pkt_raw
+				 */
+	uchar_t			*pkt_ptr;
 
-			/* Copy of ISAKMP header in local byte order */
-	ike_header_t	header;
+				/* Copy of ISAKMP header in local byte order */
+	ike_header_t		pkt_header;
 
-			/* Raw packet data */
-	uint64_t	raw[SADB_8TO64(MAX_PACKET_SIZE)];
+	pkt_payload_t		pkt_payloads[PKT_PAYLOAD_NUM];
+	pkt_payload_t		*pkt_payload_extra;
+	uint16_t		pkt_payload_count;
 
-	size_t		reserved;	/* Amt reserved for encr & auth */
-	buf_t		buf;		/* Ptr to valid range of raw */
-	uint_t		n_xmit;		/* # of transmission attempts */
+	pkt_notify_t		pkt_notify[PKT_NOTIFY_NUM];
+	pkt_notify_t		*pkt_notify_extra;
+	uint16_t		pkt_notify_count;
 
 	struct pkt_stack	stack[PKT_STACK_DEPTH];
 	uint_t			stksize;
-
-	uint32_t	msgid;
-	size_t		length;
 };
 
-#define	PKT_PAY_START(pkt) ((uchar_t *)&(pkt)->raw + sizeof (ike_header_t))
-#define	PKT_REMAINING(pkt) (buf_left(&(pkt)->buf))
-#define	PKT_APPEND_STRUCT(_pkt, _struct) do {		\
-	buf_t _src = {					\
-		.b_buf = (uchar_t *)&(_struct),		\
-		.b_ptr = (uchar_t *)&(_struct), 	\
-		.b_len = sizeof (_struct)		\
-	};						\
-	(void) buf_cat(&(_pkt)->buf, &_src, 1);		\
-	/*CONSTCOND*/					\
-} while (0);
+inline size_t
+pkt_len(const pkt_t *pkt)
+{
+	const uchar_t *start = (const uchar_t *)&pkt->pkt_raw;
+	size_t len = (size_t)(pkt->pkt_ptr - start);
+
+	ASSERT3P(pkt->pkt_ptr, >=, start);
+	ASSERT3U(len, <=, MAX_PACKET_SIZE);
+	return ((size_t)(pkt->pkt_ptr - start));
+}
+
+inline size_t
+pkt_write_left(const pkt_t *pkt)
+{
+	return (MAX_PACKET_SIZE - pkt_len(pkt));
+}
+
+inline size_t
+pkt_read_left(const pkt_t *pkt, const uchar_t *ptr)
+{
+	const uchar_t *start = (const uchar_t *)&pkt->pkt_raw;
+	ASSERT3P(ptr, >=, start);
+	ASSERT3P(ptr, <=, pkt->pkt_ptr);
+	return ((size_t)(pkt->pkt_ptr - ptr));
+}
+
+inline pkt_payload_t *
+pkt_payload(pkt_t *pkt, uint16_t idx)
+{
+	ASSERT3U(idx, <, pkt->pkt_payload_count);
+	if (idx < PKT_PAYLOAD_NUM)
+		return (&pkt->pkt_payloads[idx]);
+	return (pkt->pkt_payload_extra + (idx - PKT_PAYLOAD_NUM));
+}
+
+inline pkt_notify_t *
+pkt_notify(pkt_t *pkt, uint16_t idx)
+{
+	ASSERT3U(idx, <, pkt->pkt_notify_count);
+	if (idx < PKT_NOTIFY_NUM)
+		return (&pkt->pkt_notify[idx]);
+	return (pkt->pkt_notify_extra + (idx - PKT_NOTIFY_NUM));
+}
+
+#define	PKT_APPEND_STRUCT(_pkt, _struct) do {				\
+	ASSERT3U(pkt_write_left(_pkt), <=, sizeof (_struct));		\
+	(void) memcpy((_pkt)->pkt_ptr, &(_struct), sizeof (_struct));	\
+	(_pkt)->pkt_ptr += sizeof (_struct);				\
+/*CONSTCOND*/								\
+} while (0)
 
 void pkt_hdr_ntoh(ike_header_t *restrict, const ike_header_t *restrict);
 void pkt_hdr_hton(ike_header_t *restrict, const ike_header_t *restrict);
+void put32(pkt_t *, uint32_t);
+void put64(pkt_t *, uint64_t);
 
 void pkt_init(void);
 void pkt_fini(void);
-
-typedef enum pkt_walk_ret {
-	PKT_WALK_ERROR	= -1,
-	PKT_WALK_OK	= 0,
-	PKT_WALK_STOP	= 1
-} pkt_walk_ret_t;
-
-/* payload type, payload, cookie */
-typedef pkt_walk_ret_t (*pkt_walk_fn_t)(uint8_t, buf_t *restrict,
-    void *restrict);
-pkt_walk_ret_t pkt_payload_walk(buf_t *restrict, pkt_walk_fn_t, void *restrict);
 void pkt_free(pkt_t *);
 
 #ifdef __cplusplus

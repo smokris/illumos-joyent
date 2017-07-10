@@ -84,6 +84,11 @@ inbound(int s, void *arg)
 		return;
 	}
 
+	/*
+	 * recvfromto() guarantees we've received at least ike_header_t
+	 * bytes (or it returns -1)
+	 */
+
 	/* sanity checks */
 	ike_header_t *hdr = (ike_header_t *)buf;
 	size_t hdrlen = ntohl(hdr->length);
@@ -95,7 +100,6 @@ inbound(int s, void *arg)
 		    BUNYAN_T_UINT32, "pktlen", (uint32_t)pktlen);
 		return;
 	}
-
 
 #if 0
 	data.b_ptr = buf;

@@ -30,6 +30,7 @@
 #include <sys/debug.h>
 #include <note.h>
 #include <err.h>
+#include "ikev1.h"
 #include "ikev2.h"
 #include "ikev2_sa.h"
 #include "pkt.h"
@@ -39,7 +40,7 @@
 static umem_cache_t	*pkt_cache;
 
 static size_t pkt_item_rank(pkt_stack_item_t);
-static void pkt_finish(pkt_t *restrict, buf_t *restrict, uintptr_t, size_t);
+static void pkt_finish(pkt_t *restrict, uchar_t *restrict, uintptr_t, size_t);
 static int pkt_reset(void *);
 
 pkt_t *
@@ -51,14 +52,11 @@ pkt_out_alloc(uint64_t i_spi, uint64_t r_spi, uint8_t version,
 	if (pkt == NULL)
 		return (NULL);
 
-	pkt->header.initiator_spi = i_spi;
-	pkt->header.responder_spi = r_spi;
-	pkt->header.version = version;
-	pkt->header.exch_type = exch_type;
-	pkt->msgid = msgid;
-	pkt->length = sizeof (ike_header_t);
-
-	ASSERT(pkt->buf.ptr == (uchar_t *)&pkt->raw);
+	pkt->pkt_header.initiator_spi = i_spi;
+	pkt->pkt_header.responder_spi = r_spi;
+	pkt->pkt_header.version = version;
+	pkt->pkt_header.exch_type = exch_type;
+	pkt->pkt_header.msgid = msgid;
 
 	/*
 	 * Skip over bytes in pkt->raw for the header -- we keep
@@ -67,24 +65,55 @@ pkt_out_alloc(uint64_t i_spi, uint64_t r_spi, uint8_t version,
 	 * space once we're done building the packet by stacking a
 	 * finish callback before anything else.
 	 */
-	buf_skip(&pkt->buf, sizeof (ike_header_t));
 	pkt_stack_push(pkt, PSI_PACKET, pkt_finish, 0);
+	pkt->pkt_ptr += sizeof (ike_header_t);
 	return (pkt);
 }
 
 static void
-pkt_finish(pkt_t *restrict pkt, buf_t *restrict buf, uintptr_t swaparg,
+pkt_finish(pkt_t *restrict pkt, uchar_t *restrict ptr, uintptr_t swaparg,
     size_t numpay)
 {
 	NOTE(ARGUNUSED(swaparg, numpay))
 
 	ike_header_t *rawhdr;
 
-	ASSERT(pkt->buf.len > buf.len);
+	rawhdr = (ike_header_t *)ptr;
+	pkt->pkt_header.length = pkt_len(pkt);
+	pkt_hdr_hton(rawhdr, &pkt->pkt_header);
+}
 
-	rawhdr = (ike_header_t *)&pkt->raw;
-	pkt->header.length = (uint32_t)(pkt->buf.b_ptr - buf->b_ptr);
-	pkt_hdr_hton(rawhdr, &pkt->header);
+struct pkt_count_s {
+	pkt_t *pkt;
+	size_t paycount;
+	size_t ncount;
+};
+
+static pkt_walk_ret_t
+pkt_count_cb(uint8_t paytype, uint8_t resv, uchar_t *restrict ptr, size_t len,
+    void *restrict cookie)
+{
+	struct pkt_count_s *data = cookie;
+
+	data->paycount++;
+	if (paytype == IKEV1_PAYLOAD_NOTIFY ||
+	    paytype == IKEV2_PAYLOAD_NOTIFY)
+		data->ncount++;
+	return (PKT_WALK_OK);
+}
+
+static pkt_walk_ret_t
+pkt_payload_cb(uint8_t paytype, uint8_t resv, uchar_t *restrict ptr, size_t len,
+    void *restrict cookie)
+{
+	struct pkt_count_s *data = cookie;
+	pkt_payload_t *payp = NULL;
+
+	payp = pkt_payload(data->pkt, data->paycount++);
+	payp->pp_ptr = ptr;
+	payp->pp_len = len;
+	payp->pp_type = paytype;
+	return (PKT_WALK_OK);
 }
 
 /*
@@ -92,46 +121,74 @@ pkt_finish(pkt_t *restrict pkt, buf_t *restrict buf, uintptr_t swaparg,
  * header, and cache the location of the payloads in the payload field.
  */
 pkt_t *
-pkt_in_alloc(const buf_t *buf)
+pkt_in_alloc(uchar_t *buf, size_t buflen)
 {
 	pkt_t *pkt;
+	struct pkt_count_s counts = { 0 };
 
-	if (buf->b_len > sizeof (pkt->raw)) {
+	if (buflen > MAX_PACKET_SIZE) {
 		/* XXX: msg */
 		errno = EOVERFLOW;
 		return (NULL);
 	}
+
+	if (pkt_payload_walk(buf, buflen, pkt_count_cb, &counts) != PKT_WALK_OK)
+		return (NULL);
 
 	if ((pkt = umem_cache_alloc(pkt_cache, UMEM_DEFAULT)) == NULL) {
 		/* XXX: msg */
 		return (NULL);
 	}
 
-	(void) memcpy(&pkt->raw, buf->b_ptr, buf->b_len);
+	if (counts.paycount > PKT_PAYLOAD_NUM) {
+		size_t len = counts.paycount - PKT_PAYLOAD_NUM;
+		len *= sizeof (pkt_payload_t);
+		pkt->pkt_payload_extra = umem_zalloc(len, UMEM_DEFAULT);
+		if (pkt->pkt_payload_extra == NULL) {
+			pkt_free(pkt);
+			return (NULL);
+		}
+	}
 
-	/* Make pkt->buf point to valid portion of raw */
-	ASSERT(pkt->buf.b_ptr == (uchar_t *)&pkt->raw);
-	pkt->buf.b_len = buf->b_len;
+	if (counts.ncount > PKT_NOTIFY_NUM) {
+		size_t len = counts.ncount - PKT_NOTIFY_NUM;
+		len *= sizeof (pkt_notify_t);
+		pkt->pkt_notify_extra = umem_zalloc(len, UMEM_DEFAULT);
+		if (pkt->pkt_notify_extra == NULL) {
+			pkt_free(pkt);
+			return (NULL);
+		}
+	}
 
-	pkt_hdr_ntoh(&pkt->header, (const ike_header_t *)&pkt->raw);
+	(void) memcpy(&pkt->pkt_raw, buf, buflen);
+	pkt->pkt_payload_count = counts.paycount;
+	pkt->pkt_notify_count = counts.ncount;
+	pkt_hdr_ntoh(&pkt->pkt_header, (const ike_header_t *)&pkt->pkt_raw);
+	pkt->pkt_ptr += buflen;
+
+	(void) memset(&counts, 0, sizeof (counts));
+	counts.pkt = pkt;
+	VERIFY3S(pkt_payload_walk(buf, buflen, pkt_payload_cb, &counts), ==,
+	    PKT_WALK_OK);
+
 	return (pkt);
 }
 
 static void
-payload_finish(pkt_t *restrict pkt, buf_t *restrict buf, uintptr_t arg,
+payload_finish(pkt_t *restrict pkt, uchar_t *restrict ptr, uintptr_t arg,
     size_t numsub)
 {
 	NOTE(ARGUNUSED(numsub))
 	ike_payload_t pay = { 0 };
-	buf_t paybuf = STRUCT_TO_BUF(pay);
+	size_t len = (size_t)(pkt->pkt_ptr - ptr);
 
-	ASSERT3U(pkt->buf.b_ptr, >, buf->b_ptr);
-	ASSERT3U(pkt->buf.b_ptr - buf->b_ptr, <, 0x10000);
+	ASSERT3P(pkt->pkt_ptr, >, ptr);
+	ASSERT3U(len, <, MAX_PACKET_SIZE);
 
-	buf_copy(&paybuf, buf, 1);
+	(void) memcpy(&pay, ptr, sizeof (pay));
 	pay.pay_next = (uint8_t)arg;
-	pay.pay_length = htons((uint16_t)(pkt->buf.b_ptr - buf->b_ptr));
-	buf_copy(buf, &paybuf, 1);
+	pay.pay_length = htons((uint16_t)len);
+	(void) memcpy(ptr, &pay, sizeof (pay));
 }
 
 boolean_t
@@ -139,12 +196,12 @@ pkt_add_payload(pkt_t *pkt, uint8_t ptype, uint8_t resv)
 {
 	ike_payload_t pay = { 0 };
 
-	if (pkt->buf.b_len < sizeof (pay))
+	if (pkt_write_left(pkt) < sizeof (pay))
 		return (B_FALSE);
 
 	/* Special case for first payload */
-	if (pkt->buf.b_ptr == PKT_PAY_START(pkt))
-		pkt->header.next_payload = (uint8_t)ptype;
+	if (pkt->pkt_ptr - (uchar_t *)&pkt->pkt_raw == sizeof (ike_header_t))
+		pkt->pkt_header.next_payload = (uint8_t)ptype;
 
 	/*
 	 * Otherwise we'll set it when we replace the current top of
@@ -159,7 +216,7 @@ pkt_add_payload(pkt_t *pkt, uint8_t ptype, uint8_t resv)
 	return (B_TRUE);
 }
 
-static void prop_finish(pkt_t *restrict, buf_t *restrict, uintptr_t, size_t);
+static void prop_finish(pkt_t *restrict, uchar_t *restrict, uintptr_t, size_t);
 
 boolean_t
 pkt_add_prop(pkt_t *pkt, uint8_t propnum, uint8_t proto, size_t spilen,
@@ -167,7 +224,7 @@ pkt_add_prop(pkt_t *pkt, uint8_t propnum, uint8_t proto, size_t spilen,
 {
 	ike_prop_t	prop = { 0 };
 
-	if (PKT_REMAINING(pkt) < sizeof (prop) + spilen)
+	if (pkt_write_left(pkt) < sizeof (prop) + spilen)
 		return (B_FALSE);
 
 	pkt_stack_push(pkt, PSI_PROP, prop_finish, (uintptr_t)IKE_PROP_MORE);
@@ -181,10 +238,10 @@ pkt_add_prop(pkt_t *pkt, uint8_t propnum, uint8_t proto, size_t spilen,
 	switch (spilen) {
 	case sizeof (uint32_t):
 		ASSERT3U(spi, <, UINT_MAX);
-		buf_put32(&pkt->buf, (uint32_t)spi);
+		put32(pkt, (uint32_t)spi);
 		break;
 	case sizeof (uint64_t):
-		buf_put64(&pkt->buf, spi);
+		put64(pkt, spi);
 		break;
 	case 0:
 		break;
@@ -196,35 +253,34 @@ pkt_add_prop(pkt_t *pkt, uint8_t propnum, uint8_t proto, size_t spilen,
 }
 
 static void
-prop_finish(pkt_t *restrict pkt, buf_t *restrict buf, uintptr_t more,
+prop_finish(pkt_t *restrict pkt, uchar_t *restrict ptr, uintptr_t more,
     size_t numxform)
 {
 	ike_prop_t	prop = { 0 };
-	buf_t		prop_buf = STRUCT_TO_BUF(prop);
 
-	ASSERT3U(pkt->buf.b_ptr, >, buf->b_ptr);
-	ASSERT3U(pkt->buf.b_ptr - buf->b_ptr, <, 0x10000);
-
-	buf_copy(&prop_buf, buf, 1);
+	(void) memcpy(&prop, ptr, sizeof (prop));
 	prop.prop_more = (uint8_t)more;
-	prop.prop_len = htons((uint16_t)(pkt->buf.b_ptr - buf->b_ptr));
+	prop.prop_len = htons((uint16_t)(pkt->pkt_ptr - ptr));
 	prop.prop_numxform = (uint8_t)numxform;
-	buf_copy(buf, &prop_buf, 1);
+	(void) memcpy(ptr, &prop, sizeof (prop));
 }
 
-static void pkt_xf_finish(pkt_t *restrict, buf_t *restrict, uintptr_t, size_t);
+static void pkt_xf_finish(pkt_t *restrict, uchar_t *restrict, uintptr_t,
+    size_t);
 
 boolean_t
 pkt_add_xform(pkt_t *pkt, uint8_t xftype, uint8_t xfid)
 {
 	ike_xform_t	xf = { 0 };
 
-	if (PKT_REMAINING(pkt) < sizeof (xf))
+	if (pkt_write_left(pkt) < sizeof (xf))
 		return (B_FALSE);
 
 	pkt_stack_push(pkt, PSI_XFORM, pkt_xf_finish,
 	    (uintptr_t)IKE_XFORM_MORE);
+
 	ASSERT3U(xfid, <, USHORT_MAX);
+
 	/* mostly for completeness */
 	xf.xf_more = IKE_XFORM_NONE;
 	xf.xf_type = xftype;
@@ -234,30 +290,26 @@ pkt_add_xform(pkt_t *pkt, uint8_t xftype, uint8_t xfid)
 }
 
 static void
-pkt_xf_finish(pkt_t *restrict pkt, buf_t *restrict buf,
-    uintptr_t more, size_t numattr)
+pkt_xf_finish(pkt_t *restrict pkt, uchar_t *restrict ptr, uintptr_t more,
+    size_t numattr)
 {
 	ike_xform_t	xf = { 0 };
-	buf_t		xfbuf = STRUCT_TO_BUF(xf);
 
-	ASSERT3U(pkt->buf.b_ptr, >, buf->b_ptr);
-	ASSERT3U(pkt->buf.b_ptr - buf->b_ptr, <, USHORT_MAX);
-
-	buf_copy(&xfbuf, buf, 1);
+	(void) memcpy(&xf, ptr, sizeof (xf));
 	xf.xf_more = more;
-	xf.xf_len = htons((uint16_t)(pkt->buf.b_ptr - buf->b_ptr));
-	buf_copy(buf, &xfbuf, 1);
+	xf.xf_len = htons((uint16_t)(pkt->pkt_ptr - ptr));
+	(void) memcpy(ptr, &xf, sizeof (xf));
 }
 
 boolean_t
 pkt_add_xf_attr_tv(pkt_t *pkt, uint_t type, uint_t val)
 {
-	ike_xf_attr_t	attr;
+	ike_xf_attr_t	attr = { 0 };
 
 	ASSERT3U(type, <, 0x8000);
 	ASSERT3U(val, <, 0x10000);
 
-	if (PKT_REMAINING(pkt) < sizeof (attr))
+	if (pkt_write_left(pkt) < sizeof (attr))
 		return (B_FALSE);
 
 	pkt_stack_push(pkt, PSI_XFORM_ATTR, NULL, 0);
@@ -268,32 +320,36 @@ pkt_add_xf_attr_tv(pkt_t *pkt, uint_t type, uint_t val)
 }
 
 boolean_t
-pkt_add_xf_attr_tlv(pkt_t *pkt, uint_t type, const buf_t *attrval)
+pkt_add_xf_attr_tlv(pkt_t *pkt, uint_t type, const uchar_t *attrp,
+    size_t attrlen)
 {
-	ike_xf_attr_t attr;
+	ike_xf_attr_t attr = { 0 };
 
 	ASSERT3U(type, <, 0x8000);
-	ASSERT3U(attrval->len, <, 0x10000);
+	ASSERT3U(attrlen, <, 0x10000);
 
-	if (PKT_REMAINING(pkt) < sizeof (attr) + attrval->b_len)
+	if (pkt_write_left(pkt) < sizeof (attr) + attrlen)
 		return (B_FALSE);
 
 	pkt_stack_push(pkt, PSI_XFORM_ATTR, NULL, 0);
 	attr.attr_type = htons(IKE_ATTR_TYPE(IKE_ATTR_TLV, type));
-	attr.attr_len = htons(attrval->b_len);
+	attr.attr_len = htons(attrlen);
 	PKT_APPEND_STRUCT(pkt, attr);
-	(void) buf_cat(&pkt->buf, attrval, 1);
+	(void) memcpy(pkt->pkt_ptr, attrp, attrlen);
+	pkt->pkt_ptr += attrlen;
 	return (B_TRUE);
 }
 
 boolean_t
-pkt_add_cert(pkt_t *restrict pkt, uint8_t encoding, const buf_t *data)
+pkt_add_cert(pkt_t *restrict pkt, uint8_t encoding, const uchar_t *data,
+    size_t datalen)
 {
-	if (PKT_REMAINING(pkt) < 1 + data->b_len)
+	if (pkt_write_left(pkt) < 1 + datalen)
 		return (B_FALSE);
 
-	buf_put8(&pkt->buf, encoding);
-	buf_cat(&pkt->buf, data, 1);
+	*(pkt->pkt_ptr++) = encoding;
+	(void) memcpy(pkt->pkt_ptr, data, datalen);
+	pkt->pkt_ptr += datalen;
 	return (B_TRUE);
 }
 
@@ -530,7 +586,7 @@ pkt_stack_push(pkt_t *pkt, pkt_stack_item_t type, pkt_finish_fn finish,
 	stk = &pkt->stack[pkt->stksize++];
 
 	stk->stk_finish = finish;
-	stk->stk_buf = pkt->buf;
+	stk->stk_ptr = pkt->pkt_ptr;
 	stk->stk_count = count + 1;
 	stk->stk_type = type;
 }
@@ -553,7 +609,7 @@ pkt_stack_unwind(pkt_t *pkt, pkt_stack_item_t type, uintptr_t swaparg)
 	    (stk_rank = pkt_stack_rank(pkt)) >= rank) {
 		stk = pkt_stack_pop(pkt);
 		if (stk->stk_finish != NULL)
-			stk->stk_finish(pkt, &stk->stk_buf,
+			stk->stk_finish(pkt, stk->stk_ptr,
 			    (stk_rank == rank) ? swaparg : 0, count);
 
 		/*
@@ -575,65 +631,63 @@ pkt_stack_unwind(pkt_t *pkt, pkt_stack_item_t type, uintptr_t swaparg)
 }
 
 pkt_walk_ret_t
-pkt_payload_walk(buf_t *restrict buf, pkt_walk_fn_t cb, void *restrict cookie)
+pkt_payload_walk(uchar_t *restrict data, size_t len, pkt_walk_fn_t cb,
+    void *restrict cookie)
 {
-	buf_t		ptr = *buf;
-	uint8_t		paytype;
-	pkt_walk_ret_t	ret = PKT_WALK_OK;
+	const ike_header_t	*hdr = (const ike_header_t *)data;
+	uchar_t			*ptr = data;
+	uint64_t		msglen;
+	uint8_t			paytype;
+	pkt_walk_ret_t		ret = PKT_WALK_OK;
 
-	if (ptr.b_len < sizeof (ike_header_t)) {
-		/* XXX: too small */
-		return (PKT_WALK_ERROR);
-	} else {
-		const ike_header_t *hdr = (const ike_header_t *)ptr.b_ptr;
-		uint64_t msglen;
+	ASSERT(IS_P2ALIGNED(hdr, uint64_t));
+	ASSERT3U(len, >=, sizeof (ike_header_t));
 
-		ASSERT(IS_P2ALIGNED(hdr, uint64_t));
-
-		msglen = ntohl(hdr->length);
-		paytype = hdr->next_payload;
-		if (msglen != buf->b_len) {
-			if (msglen < buf->b_len) {
+	msglen = ntohl(hdr->length);
+	paytype = hdr->next_payload;
+	if (msglen != len) {
+		if (msglen < len) {
 				/* XXX: extra data */
-			} else {
+		} else {
 				/* XXX: truncated */
-			}
-			return (PKT_WALK_ERROR);
 		}
-		buf_skip(&ptr, sizeof (*hdr));
+		return (PKT_WALK_ERROR);
 	}
 
-	while (ptr.b_len > 0) {
-		ike_payload_t	pay;
-		buf_t		payptr = STRUCT_TO_BUF(pay);
+	ptr += sizeof (ike_header_t);
+	len -= sizeof (ike_header_t);
 
-		if (buf_copy(&payptr, &ptr, 1) < sizeof (pay)) {
+	while (len > 0) {
+		ike_payload_t pay = { 0 };
+
+		if (len < sizeof (pay)) {
 			/* XXX: truncated */
 			return (PKT_WALK_ERROR);
 		}
 
+		(void) memcpy(&pay, ptr, sizeof (pay));
+		ptr += sizeof (pay);
+
 		pay.pay_length = ntohs(pay.pay_length);
 
-		if (pay.pay_length > ptr.b_len) {
+		if (pay.pay_length > len) {
 			/* XXX: truncated */
 			return (PKT_WALK_ERROR);
 		}
 
 		if (cb != NULL) {
-			buf_t dataptr;
-
-			dataptr.b_ptr = ptr.b_ptr;
-			dataptr.b_len = pay.pay_length;
-			ret = cb(paytype, &dataptr, cookie);
+			ret = cb(paytype, pay.pay_reserved, ptr, pay.pay_length,
+			    cookie);
 			if (ret != PKT_WALK_OK)
 				break;
 		}
 
 		paytype = pay.pay_next;
-		buf_skip(&ptr, pay.pay_length);
+		ptr += pay.pay_length;
+		len -= pay.pay_length;
 	}
 
-	if (ret == PKT_WALK_OK && ptr.b_len > 0) {
+	if (ret == PKT_WALK_OK && len > 0) {
 		/* XXX: extra data */
 		return (PKT_WALK_ERROR);
 	}
@@ -648,8 +702,7 @@ pkt_ctor(void *buf, void *ignore, int flags)
 
 	pkt_t *pkt = buf;
 	(void) memset(pkt, 0, sizeof (pkt_t));
-	pkt->buf.b_ptr = (uchar_t *)pkt->raw;
-	pkt->buf.b_len = sizeof (pkt->raw);
+	pkt->pkt_ptr = (uchar_t *)&pkt->pkt_raw;
 	return (0);
 }
 
@@ -658,6 +711,19 @@ pkt_free(pkt_t *pkt)
 {
 	if (pkt == NULL)
 		return;
+
+	size_t len = 0;
+	if (pkt->pkt_payload_extra != NULL) {
+		len = pkt->pkt_payload_count - PKT_PAYLOAD_NUM;
+		len *= sizeof (pkt_payload_t);
+		umem_free(pkt->pkt_payload_extra, len);
+	}
+
+	if (pkt->pkt_notify_extra != NULL) {
+		len = pkt->pkt_notify_count - PKT_NOTIFY_NUM;
+		len *= sizeof (pkt_notify_t);
+		umem_free(pkt->pkt_notify_extra, len);
+	}
 
 	pkt_ctor(pkt, NULL, 0);
 	umem_cache_free(pkt_cache, pkt);
@@ -677,3 +743,33 @@ pkt_fini(void)
 {
 	umem_cache_destroy(pkt_cache);
 }
+
+void
+put32(pkt_t *pkt, uint32_t val)
+{
+	ASSERT3U(pkt_write_left(pkt), >=, sizeof (uint32_t));
+	*(pkt->pkt_ptr++) = (uchar_t)((val >> 24) & (uint32_t)0xff);
+	*(pkt->pkt_ptr++) = (uchar_t)((val >> 16) & (uint32_t)0xff);
+	*(pkt->pkt_ptr++) = (uchar_t)((val >> 8) & (uint32_t)0xff);
+	*(pkt->pkt_ptr++) = (uchar_t)(val & (uint32_t)0xff);
+}
+
+void
+put64(pkt_t *pkt, uint64_t val)
+{
+	ASSERT3U(pkt_write_left(pkt), >=, sizeof (uint64_t));
+	*(pkt->pkt_ptr++) = (uchar_t)((val >> 56) & (uint64_t)0xff);
+	*(pkt->pkt_ptr++) = (uchar_t)((val >> 48) & (uint64_t)0xff);
+	*(pkt->pkt_ptr++) = (uchar_t)((val >> 40) & (uint64_t)0xff);
+	*(pkt->pkt_ptr++) = (uchar_t)((val >> 32) & (uint64_t)0xff);
+	*(pkt->pkt_ptr++) = (uchar_t)((val >> 24) & (uint64_t)0xff);
+	*(pkt->pkt_ptr++) = (uchar_t)((val >> 16) & (uint64_t)0xff);
+	*(pkt->pkt_ptr++) = (uchar_t)((val >> 8) & (uint64_t)0xff);
+	*(pkt->pkt_ptr++) = (uchar_t)(val & (uint64_t)0xff);
+}
+
+extern size_t pkt_len(const pkt_t *);
+extern size_t pkt_write_left(const pkt_t *);
+extern size_t pkt_read_left(const pkt_t *, const uchar_t *);
+extern pkt_payload_t *pkt_payload(pkt_t *, uint16_t);
+extern pkt_notify_t *pkt_notify(pkt_t *, uint16_t);

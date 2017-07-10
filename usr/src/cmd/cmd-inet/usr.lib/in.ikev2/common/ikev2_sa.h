@@ -167,7 +167,7 @@ struct ikev2_child_sa {
 extern ikev2_sa_t *ikev2_sa_get(uint64_t, uint64_t,
     const struct sockaddr_storage *restrict,
     const struct sockaddr_storage *restrict,
-    const struct buf *restrict);
+    const struct pkt *restrict);
 extern ikev2_sa_t *ikev2_sa_alloc(boolean_t, struct pkt *restrict,
     const struct sockaddr_storage *restrict,
     const struct sockaddr_storage *restrict);

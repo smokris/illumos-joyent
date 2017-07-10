@@ -38,8 +38,6 @@ extern "C" {
 #define	IKE_GET_MINORV(v)	((v) & 0x0f)
 #define	IKE_VERSION(_maj, _min) (((_maj) & 0xf0 << 4) | (_min) & 0x0f)
 
-#define	IKEV1_VERSION		(0x10)
-
 #ifndef __packed
 #define	__packed __attribute__((packed))
 #endif
