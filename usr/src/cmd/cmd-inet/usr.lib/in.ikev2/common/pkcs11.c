@@ -242,84 +242,84 @@ pkcs11_fini(void)
 
 static auth_param_t auth_params[] = {
 	{
-		.i2_auth = IKEV2_AUTH_NONE,
+		.i2_auth = IKEV2_XF_AUTH_NONE,
 		.p11_auth = 0,
 		.output_sz = 0,
 		.trunc_sz = 0,
 		.key_sz = 0,
 	},
 	{
-		.i2_auth = IKEV2_AUTH_HMAC_MD5_96,
+		.i2_auth = IKEV2_XF_AUTH_HMAC_MD5_96,
 		.p11_auth = CKM_MD5_HMAC,
 		.output_sz = 16,
 		.trunc_sz = 12,
 		.key_sz = 16
 	},
 	{
-		.i2_auth = IKEV2_AUTH_HMAC_SHA1_96,
+		.i2_auth = IKEV2_XF_AUTH_HMAC_SHA1_96,
 		.p11_auth = CKM_SHA_1_HMAC,
 		.output_sz = 20,
 		.trunc_sz = 12,
 		.key_sz = 20,
 	},
 	{
-		.i2_auth = IKEV2_AUTH_DES_MAC,
+		.i2_auth = IKEV2_XF_AUTH_DES_MAC,
 		.p11_auth = CKM_DES_MAC,
 		.output_sz = 8,
 		.trunc_sz = 8,
 		.key_sz = 8,
 	},
 	{
-		.i2_auth = IKEV2_AUTH_KPDK_MD5,
+		.i2_auth = IKEV2_XF_AUTH_KPDK_MD5,
 		.p11_auth = 0,
 		.output_sz = 0,
 		.trunc_sz = 0,
 		.key_sz = 0
 	},
 	{
-		.i2_auth = IKEV2_AUTH_AES_XCBC_96,
+		.i2_auth = IKEV2_XF_AUTH_AES_XCBC_96,
 		.p11_auth = 0,
 		.output_sz = 16,
 		.trunc_sz = 12,
 		.key_sz = 16
 	},
 	{
-		.i2_auth = IKEV2_AUTH_HMAC_MD5_128,
+		.i2_auth = IKEV2_XF_AUTH_HMAC_MD5_128,
 		.p11_auth = CKM_MD5_HMAC,
 		.output_sz = 16,
 		.trunc_sz = 16,
 		.key_sz = 16
 	},
 	{
-		.i2_auth = IKEV2_AUTH_HMAC_SHA1_160,
+		.i2_auth = IKEV2_XF_AUTH_HMAC_SHA1_160,
 		.p11_auth = CKM_SHA_1_HMAC,
 		.output_sz = 20,
 		.trunc_sz = 20,
 		.key_sz = 20,
 	},
 	{
-		.i2_auth = IKEV2_AUTH_AES_CMAC_96,
+		.i2_auth = IKEV2_XF_AUTH_AES_CMAC_96,
 		.p11_auth = 0,
 		.output_sz = 16,
 		.trunc_sz = 12,
 		.key_sz = 16,
 	},
 	{
-		.i2_auth = IKEV2_AUTH_HMAC_SHA2_256_128,
+		.i2_auth = IKEV2_XF_AUTH_HMAC_SHA2_256_128,
 		.p11_auth = CKM_SHA256_HMAC,
 		.output_sz = 32,
 		.trunc_sz = 16,
 		.key_sz = 32
 	},
 	{
-		.i2_auth = IKEV2_AUTH_HMAC_SHA2_384_192,
+		.i2_auth = IKEV2_XF_AUTH_HMAC_SHA2_384_192,
 		.p11_auth = CKM_SHA384_HMAC,
 		.output_sz = 48,
 		.trunc_sz = 24,
 		.key_sz = 48
 	},
 	{
-		.i2_auth = IKEV2_AUTH_HMAC_SHA2_512_256,
+		.i2_auth = IKEV2_XF_AUTH_HMAC_SHA2_512_256,
 		.p11_auth = CKM_SHA512_HMAC,
 		.output_sz = 64,
 		.trunc_sz = 32,

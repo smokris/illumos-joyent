@@ -63,24 +63,26 @@ struct ikev2_payload {
 #define	IKEV2_CRITICAL_PAYLOAD	0x01	/* First bit in the reserved field */
 
 /* IKEv2 payload types */
-#define	IKEV2_PAYLOAD_NONE	0	/* No payload */
-#define	IKEV2_PAYLOAD_SA	33	/* Security Association */
-#define	IKEV2_PAYLOAD_KE	34	/* Key Exchange */
-#define	IKEV2_PAYLOAD_IDi	35	/* Identification - Initiator */
-#define	IKEV2_PAYLOAD_IDr	36	/* Identification - Responder */
-#define	IKEV2_PAYLOAD_CERT	37	/* Certificate */
-#define	IKEV2_PAYLOAD_CERTREQ	38	/* Certificate Request */
-#define	IKEV2_PAYLOAD_AUTH	39	/* Authentication */
-#define	IKEV2_PAYLOAD_NONCE	40	/* Nonce */
-#define	IKEV2_PAYLOAD_NOTIFY	41	/* Notify */
-#define	IKEV2_PAYLOAD_DELETE	42	/* Delete */
-#define	IKEV2_PAYLOAD_VENDOR	43	/* Vendor ID */
-#define	IKEV2_PAYLOAD_TSi	44	/* Traffic Selector - Initiator */
-#define	IKEV2_PAYLOAD_TSr	45	/* Traffic Selector - Responder */
-#define	IKEV2_PAYLOAD_SK	46	/* Encrypted */
-#define	IKEV2_PAYLOAD_CP	47	/* Configuration Payload */
-#define	IKEV2_PAYLOAD_EAP	48	/* Extensible Authentication */
-#define	IKEV2_PAYLOAD_GSPM	49	/* RFC6467 Generic Secure Password */
+typedef enum ikev2_pay_type {
+	IKEV2_PAYLOAD_NONE =	0,	/* No payload */
+	IKEV2_PAYLOAD_SA =	33,	/* Security Association */
+	IKEV2_PAYLOAD_KE =	34,	/* Key Exchange */
+	IKEV2_PAYLOAD_IDi =	35,	/* Identification - Initiator */
+	IKEV2_PAYLOAD_IDr =	36,	/* Identification - Responder */
+	IKEV2_PAYLOAD_CERT =	37,	/* Certificate */
+	IKEV2_PAYLOAD_CERTREQ =	38,	/* Certificate Request */
+	IKEV2_PAYLOAD_AUTH =	39,	/* Authentication */
+	IKEV2_PAYLOAD_NONCE =	40,	/* Nonce */
+	IKEV2_PAYLOAD_NOTIFY =	41,	/* Notify */
+	IKEV2_PAYLOAD_DELETE =	42,	/* Delete */
+	IKEV2_PAYLOAD_VENDOR =	43,	/* Vendor ID */
+	IKEV2_PAYLOAD_TSi =	44,	/* Traffic Selector - Initiator */
+	IKEV2_PAYLOAD_TSr =	45,	/* Traffic Selector - Responder */
+	IKEV2_PAYLOAD_SK =	46,	/* Encrypted */
+	IKEV2_PAYLOAD_CP =	47,	/* Configuration Payload */
+	IKEV2_PAYLOAD_EAP =	48,	/* Extensible Authentication */
+	IKEV2_PAYLOAD_GSPM =	49	/* RFC6467 Generic Secure Password */
+} ikev2_pay_type_t;
 
 #define	IKEV2_PAYLOAD_MIN	IKEV2_PAYLOAD_SA
 #define	IKEV2_PAYLOAD_MAX	IKEV2_PAYLOAD_GSPM
@@ -183,21 +185,21 @@ typedef enum ikev2_encr_e {
 #define	IKEV2_XFORMPRF_AES128_CMAC	8	/* RFC4615 */
 
 typedef enum ikev2_xf_auth_e {
-	IKEV2_AUTH_NONE			= 0,	/* No Authentication */
-	IKEV2_AUTH_HMAC_MD5_96		= 1,	/* RFC2403 */
-	IKEV2_AUTH_HMAC_SHA1_96		= 2,	/* RFC2404 */
-	IKEV2_AUTH_DES_MAC		= 3,	/* DES-MAC */
-	IKEV2_AUTH_KPDK_MD5		= 4,	/* RFC1826 */
-	IKEV2_AUTH_AES_XCBC_96		= 5,	/* RFC3566 */
-	IKEV2_AUTH_HMAC_MD5_128		= 6,	/* RFC4595 */
-	IKEV2_AUTH_HMAC_SHA1_160	= 7,	/* RFC4595 */
-	IKEV2_AUTH_AES_CMAC_96		= 8,	/* RFC4494 */
-	IKEV2_AUTH_AES_128_GMAC		= 9,	/* RFC4543 */
-	IKEV2_AUTH_AES_192_GMAC		= 10,	/* RFC4543 */
-	IKEV2_AUTH_AES_256_GMAC		= 11,	/* RFC4543 */
-	IKEV2_AUTH_HMAC_SHA2_256_128 	= 12,	/* RFC4868 */
-	IKEV2_AUTH_HMAC_SHA2_384_192 	= 13,	/* RFC4868 */
-	IKEV2_AUTH_HMAC_SHA2_512_256 	= 14	/* RFC4868 */
+	IKEV2_XF_AUTH_NONE			= 0,	/* No Authentication */
+	IKEV2_XF_AUTH_HMAC_MD5_96		= 1,	/* RFC2403 */
+	IKEV2_XF_AUTH_HMAC_SHA1_96		= 2,	/* RFC2404 */
+	IKEV2_XF_AUTH_DES_MAC			= 3,	/* DES-MAC */
+	IKEV2_XF_AUTH_KPDK_MD5			= 4,	/* RFC1826 */
+	IKEV2_XF_AUTH_AES_XCBC_96		= 5,	/* RFC3566 */
+	IKEV2_XF_AUTH_HMAC_MD5_128		= 6,	/* RFC4595 */
+	IKEV2_XF_AUTH_HMAC_SHA1_160		= 7,	/* RFC4595 */
+	IKEV2_XF_AUTH_AES_CMAC_96		= 8,	/* RFC4494 */
+	IKEV2_XF_AUTH_AES_128_GMAC		= 9,	/* RFC4543 */
+	IKEV2_XF_AUTH_AES_192_GMAC		= 10,	/* RFC4543 */
+	IKEV2_XF_AUTH_AES_256_GMAC		= 11,	/* RFC4543 */
+	IKEV2_XF_AUTH_HMAC_SHA2_256_128 	= 12,	/* RFC4868 */
+	IKEV2_XF_AUTH_HMAC_SHA2_384_192 	= 13,	/* RFC4868 */
+	IKEV2_XF_AUTH_HMAC_SHA2_512_256 	= 14	/* RFC4868 */
 } ikev2_xf_auth_t;
 
 #define	IKEV2_DH_NONE		0	/* No DH */
@@ -244,7 +246,7 @@ typedef enum ikev2_xf_attr_type {
 /*
  * KE Payload
  */
-struct ikev2_keyexchange {
+struct ikev2_ke {
 	uint16_t	 kex_dhgroup;		/* DH Group # */
 	uint16_t	 kex_reserved;		/* Reserved */
 } __packed;
@@ -354,39 +356,35 @@ struct ikev2_id {
 } __packed;
 
 typedef enum ikev2_id_type {
-	IKEV2_ID_NONE		= 0,	/* No ID */
-	IKEV2_ID_IPV4		= 1,	/* RFC4306 (ID_IPV4_ADDR) */
-	IKEV2_ID_FQDN		= 2,	/* RFC4306 */
-	IKEV2_ID_UFQDN		= 3,	/* RFC4306 (ID_RFC822_ADDR) */
-	IKEV2_ID_IPV6		= 5,	/* RFC4306 (ID_IPV6_ADDR) */
-	IKEV2_ID_ASN1_DN	= 9,	/* RFC4306 */
-	IKEV2_ID_ASN1_GN	= 10,	/* RFC4306 */
-	IKEV2_ID_KEY_ID		= 11,	/* RFC4306 */
+	IKEV2_ID_IPV4_ADDR	= 1,	/* RFC7296 */
+	IKEV2_ID_FQDN		= 2,	/* RFC7296 */
+	IKEV2_ID_RFC822_ADDR	= 3,	/* RFC7296 */
+	IKEV2_ID_IPV6_ADDR	= 5,	/* RFC7296 */
+	IKEV2_ID_DER_ASN1_DN	= 9,	/* RFC7296 */
+	IKEV2_ID_DER_ASN1_GN	= 10,	/* RFC7296 */
+	IKEV2_ID_KEY_ID		= 11,	/* RFC7296 */
 	IKEV2_ID_FC_NAME	= 12	/* RFC4595 */
 } ikev2_id_type_t;
 
 /*
  * CERT/CERTREQ payloads
  */
-struct ikev2_cert {
-	uint8_t	cert_type;	/* Encoding */
-	/* Followed by the certificate data */
-} __packed;
-
-#define	IKEV2_CERT_NONE			0	/* None */
-#define	IKEV2_CERT_X509_PKCS7		1	/* RFC4306 */
-#define	IKEV2_CERT_PGP			2	/* RFC4306 */
-#define	IKEV2_CERT_DNS_SIGNED_KEY	3	/* RFC4306 */
-#define	IKEV2_CERT_X509_CERT		4	/* RFC4306 */
-#define	IKEV2_CERT_KERBEROS_TOKEN	6	/* RFC4306 */
-#define	IKEV2_CERT_CRL			7	/* RFC4306 */
-#define	IKEV2_CERT_ARL			8	/* RFC4306 */
-#define	IKEV2_CERT_SPKI			9	/* RFC4306 */
-#define	IKEV2_CERT_X509_ATTR		10	/* RFC4306 */
-#define	IKEV2_CERT_RSA_KEY		11	/* RFC4306 */
-#define	IKEV2_CERT_HASHURL_X509		12	/* RFC4306 */
-#define	IKEV2_CERT_HASHURL_X509_BUNDLE	13	/* RFC4306 */
-#define	IKEV2_CERT_OCSP			14	/* RFC4806 */
+typedef enum ikev2_cert {
+	IKEV2_CERT_NONE =			0,	/* None */
+	IKEV2_CERT_X509_PKCS7 =			1,	/* RFC4306 */
+	IKEV2_CERT_PGP =			2,	/* RFC4306 */
+	IKEV2_CERT_DNS_SIGNED_KEY =		3,	/* RFC4306 */
+	IKEV2_CERT_X509_CERT =			4,	/* RFC4306 */
+	IKEV2_CERT_KERBEROS_TOKEN =		6,	/* RFC4306 */
+	IKEV2_CERT_CRL =			7,	/* RFC4306 */
+	IKEV2_CERT_ARL =			8,	/* RFC4306 */
+	IKEV2_CERT_SPKI =			9,	/* RFC4306 */
+	IKEV2_CERT_X509_ATTR =			10,	/* RFC4306 */
+	IKEV2_CERT_RSA_KEY =			11,	/* RFC4306 */
+	IKEV2_CERT_HASHURL_X509 =		12,	/* RFC4306 */
+	IKEV2_CERT_HASHURL_X509_BUNDLE =	13,	/* RFC4306 */
+	IKEV2_CERT_OCSP =			14	/* RFC4806 */
+} ikev2_cert_t;
 
 /*
  * TSi/TSr payloads
@@ -405,9 +403,11 @@ struct ikev2_ts {
 	uint16_t	ts_endport;		/* End port */
 } __packed;
 
-#define	IKEV2_TS_IPV4_ADDR_RANGE	7	/* RFC4306 */
-#define	IKEV2_TS_IPV6_ADDR_RANGE	8	/* RFC4306 */
-#define	IKEV2_TS_FC_ADDR_RANGE		9	/* RFC4595 */
+typedef enum ikev2_ts_type {
+	IKEV2_TS_IPV4_ADDR_RANGE =	7,	/* RFC4306 */
+	IKEV2_TS_IPV6_ADDR_RANGE =	8,	/* RFC4306 */
+	IKEV2_TS_FC_ADDR_RANGE =	9	/* RFC4595 */
+} ikev2_ts_type_t;
 
 /*
  * AUTH payload
@@ -418,14 +418,16 @@ struct ikev2_auth {
 	/* Followed by the signature */
 } __packed;
 
-#define	IKEV2_AUTH_NONE			0	/* None */
-#define	IKEV2_AUTH_RSA_SIG		1	/* RFC4306 */
-#define	IKEV2_AUTH_SHARED_KEY_MIC	2	/* RFC4306 */
-#define	IKEV2_AUTH_DSS_SIG		3	/* RFC4306 */
-#define	IKEV2_AUTH_ECDSA_256		9	/* RFC4754 */
-#define	IKEV2_AUTH_ECDSA_384		10	/* RFC4754 */
-#define	IKEV2_AUTH_ECDSA_512		11	/* RFC4754 */
-#define	IKEV2_AUTH_GSPM			12	/* RFC6467 */
+typedef enum ikev2_auth_type {
+	IKEV2_AUTH_NONE =		0,	/* None */
+	IKEV2_AUTH_RSA_SIG =		1,	/* RFC4306 */
+	IKEV2_AUTH_SHARED_KEY_MIC =	2,	/* RFC4306 */
+	IKEV2_AUTH_DSS_SIG =		3,	/* RFC4306 */
+	IKEV2_AUTH_ECDSA_256 =		9,	/* RFC4754 */
+	IKEV2_AUTH_ECDSA_384 =		10,	/* RFC4754 */
+	IKEV2_AUTH_ECDSA_512 =		11,	/* RFC4754 */
+	IKEV2_AUTH_GSPM =		12	/* RFC6467 */
+} ikev2_auth_type_t;
 
 /*
  * CP payload
@@ -479,11 +481,10 @@ typedef struct ikev2_payload ikev2_payload_t;
 typedef struct ikev2_sa_proposal ikev2_sa_proposal_t;
 typedef struct ikev2_transform ikev2_transform_t;
 typedef struct ikev2_attribute ikev2_attribute_t;
-typedef struct ikev2_keyexchange ikev2_keyexchange_t;
+typedef struct ikev2_ke ikev2_ke_t;
 typedef struct ikev2_notify ikev2_notify_t;
 typedef struct ikev2_delete ikev2_delete_t;
 typedef struct ikev2_id ikev2_id_t;
-typedef struct ikev2_cert ikev2_cert_t;
 typedef struct ikev2_tsp ikev2_tsp_t;
 typedef struct ikev2_ts ikev2_ts_t;
 typedef struct ikev2_auth ikev2_auth_t;

@@ -58,6 +58,9 @@ typedef enum pkt_stack_item {
 	PSI_PROP,
 	PSI_XFORM,
 	PSI_XFORM_ATTR,
+	PSI_DEL,
+	PSI_TSP,
+	PSI_TS
 } pkt_stack_item_t;
 
 struct pkt_stack {
@@ -75,13 +78,7 @@ typedef struct pkt_payload {
 } pkt_payload_t;
 #define	PKT_PAYLOAD_NUM	(16)
 
-typedef struct pkt_notify {
-	uchar_t		*pn_ptr;
-	uint16_t	pn_len;
-	uint16_t	pn_type;
-} pkt_notify_t;
 #define	PKT_NOTIFY_NUM	(8)
-
 #define	MAX_PACKET_SIZE	(8192)	/* largest datagram we accept */
 struct pkt {
 				/* NOT refheld */
@@ -102,8 +99,8 @@ struct pkt {
 	pkt_payload_t		*pkt_payload_extra;
 	uint16_t		pkt_payload_count;
 
-	pkt_notify_t		pkt_notify[PKT_NOTIFY_NUM];
-	pkt_notify_t		*pkt_notify_extra;
+	uint16_t		pkt_notify[PKT_NOTIFY_NUM];
+	uint16_t		*pkt_notify_extra;
 	uint16_t		pkt_notify_count;
 
 	struct pkt_stack	stack[PKT_STACK_DEPTH];
@@ -145,7 +142,7 @@ pkt_payload(pkt_t *pkt, uint16_t idx)
 	return (pkt->pkt_payload_extra + (idx - PKT_PAYLOAD_NUM));
 }
 
-inline pkt_notify_t *
+inline uint16_t *
 pkt_notify(pkt_t *pkt, uint16_t idx)
 {
 	ASSERT3U(idx, <, pkt->pkt_notify_count);
@@ -159,6 +156,13 @@ pkt_notify(pkt_t *pkt, uint16_t idx)
 	(void) memcpy((_pkt)->pkt_ptr, &(_struct), sizeof (_struct));	\
 	(_pkt)->pkt_ptr += sizeof (_struct);				\
 /*CONSTCOND*/								\
+} while (0)
+
+#define	PKT_APPEND_DATA(_pkt, _ptr, _len) do {		\
+	ASSERT3U(pkt_write_left(_pkt), <=, len);	\
+	(void) memcpy((_pkt)->pkt_ptr, (_ptr), (_len));	\
+	(_pkt)->pkt_ptr += (_len);			\
+/*CONSTCOND*/						\
 } while (0)
 
 void pkt_hdr_ntoh(ike_header_t *restrict, const ike_header_t *restrict);

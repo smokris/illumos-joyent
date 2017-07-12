@@ -152,7 +152,7 @@ pkt_in_alloc(uchar_t *buf, size_t buflen)
 
 	if (counts.ncount > PKT_NOTIFY_NUM) {
 		size_t len = counts.ncount - PKT_NOTIFY_NUM;
-		len *= sizeof (pkt_notify_t);
+		len *= sizeof (uint16_t);
 		pkt->pkt_notify_extra = umem_zalloc(len, UMEM_DEFAULT);
 		if (pkt->pkt_notify_extra == NULL) {
 			pkt_free(pkt);
@@ -265,7 +265,7 @@ prop_finish(pkt_t *restrict pkt, uchar_t *restrict ptr, uintptr_t more,
 	(void) memcpy(ptr, &prop, sizeof (prop));
 }
 
-static void pkt_xf_finish(pkt_t *restrict, uchar_t *restrict, uintptr_t,
+static void pkt_xform_finish(pkt_t *restrict, uchar_t *restrict, uintptr_t,
     size_t);
 
 boolean_t
@@ -276,7 +276,7 @@ pkt_add_xform(pkt_t *pkt, uint8_t xftype, uint8_t xfid)
 	if (pkt_write_left(pkt) < sizeof (xf))
 		return (B_FALSE);
 
-	pkt_stack_push(pkt, PSI_XFORM, pkt_xf_finish,
+	pkt_stack_push(pkt, PSI_XFORM, pkt_xform_finish,
 	    (uintptr_t)IKE_XFORM_MORE);
 
 	ASSERT3U(xfid, <, USHORT_MAX);
@@ -290,7 +290,7 @@ pkt_add_xform(pkt_t *pkt, uint8_t xftype, uint8_t xfid)
 }
 
 static void
-pkt_xf_finish(pkt_t *restrict pkt, uchar_t *restrict ptr, uintptr_t more,
+pkt_xform_finish(pkt_t *restrict pkt, uchar_t *restrict ptr, uintptr_t more,
     size_t numattr)
 {
 	ike_xform_t	xf = { 0 };
@@ -302,7 +302,7 @@ pkt_xf_finish(pkt_t *restrict pkt, uchar_t *restrict ptr, uintptr_t more,
 }
 
 boolean_t
-pkt_add_xf_attr_tv(pkt_t *pkt, uint_t type, uint_t val)
+pkt_add_xform_attr_tv(pkt_t *pkt, uint16_t type, uint16_t val)
 {
 	ike_xf_attr_t	attr = { 0 };
 
@@ -320,7 +320,7 @@ pkt_add_xf_attr_tv(pkt_t *pkt, uint_t type, uint_t val)
 }
 
 boolean_t
-pkt_add_xf_attr_tlv(pkt_t *pkt, uint_t type, const uchar_t *attrp,
+pkt_add_xform_attr_tlv(pkt_t *pkt, uint16_t type, const uchar_t *attrp,
     size_t attrlen)
 {
 	ike_xf_attr_t attr = { 0 };
@@ -480,14 +480,15 @@ pkt_item_rank(pkt_stack_item_t type)
 	case PSI_SA:
 	case PSI_PAYLOAD:
 		return (3);
+	case PSI_DEL:
+	case PSI_TSP:
 	case PSI_PROP:
 		return (4);
+	case PSI_TS:
 	case PSI_XFORM:
 		return (5);
 	case PSI_XFORM_ATTR:
 		return (6);
-	default:
-		INVALID("type");
 	}
 	/*NOTREACHED*/
 	return (SIZE_MAX);
@@ -574,8 +575,18 @@ pkt_stack_push(pkt_t *pkt, pkt_stack_item_t type, pkt_finish_fn finish,
 	case PSI_XFORM_ATTR:
 		VERIFY(top_type == PSI_XFORM || top_type == PSI_XFORM_ATTR);
 		break;
-	default:
+	case PSI_DEL:
+		VERIFY(top_type == PSI_SA || top_type == PSI_DEL);
+		break;
+	case PSI_TSP:
+		VERIFY3U(top_type, ==, PSI_SA);
+		break;
+	case PSI_TS:
+		VERIFY(top_type == PSI_TSP || top_type == PSI_TS);
+		break;
+	case PSI_NONE:
 		INVALID("type");
+		break;
 	}
 
 	count = pkt_stack_unwind(pkt, type, swaparg);
@@ -721,7 +732,7 @@ pkt_free(pkt_t *pkt)
 
 	if (pkt->pkt_notify_extra != NULL) {
 		len = pkt->pkt_notify_count - PKT_NOTIFY_NUM;
-		len *= sizeof (pkt_notify_t);
+		len *= sizeof (uint16_t);
 		umem_free(pkt->pkt_notify_extra, len);
 	}
 
@@ -772,4 +783,4 @@ extern size_t pkt_len(const pkt_t *);
 extern size_t pkt_write_left(const pkt_t *);
 extern size_t pkt_read_left(const pkt_t *, const uchar_t *);
 extern pkt_payload_t *pkt_payload(pkt_t *, uint16_t);
-extern pkt_notify_t *pkt_notify(pkt_t *, uint16_t);
+extern uint16_t *pkt_notify(pkt_t *, uint16_t);

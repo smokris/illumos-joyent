@@ -46,7 +46,7 @@ boolean_t pkt_add_prop(pkt_t *, uint8_t, uint8_t, size_t, uint64_t);
 boolean_t pkt_add_xform(pkt_t *, uint8_t, uint8_t);
 boolean_t pkt_add_xform_attr_tv(pkt_t *, uint16_t, uint16_t);
 boolean_t pkt_add_xform_attr_tlv(pkt_t *restrict, uint16_t,
-    const buf_t *restrict);
+    const uchar_t *restrict, size_t);
 boolean_t pkt_add_cert(pkt_t *restrict, uint8_t, const uchar_t *restrict,
     size_t);
 
