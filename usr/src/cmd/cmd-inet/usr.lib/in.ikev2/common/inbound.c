@@ -48,6 +48,7 @@
 #include <bunyan.h>
 #include "inbound.h"
 #include "defs.h"
+#include "ikev2.h"
 #include "ikev2_pkt.h"
 #include "fromto.h"
 
@@ -57,9 +58,6 @@ static pthread_key_t inbound_key = PTHREAD_ONCE_KEY_NP;
 int ikesock4 = -1;
 int ikesock6 = -1;
 int nattsock = -1;
-
-extern void ikev2_dispatch(pkt_t *, const struct sockaddr_storage *restrict,
-    const struct sockaddr_storage *restrict);
 
 static void
 inbound(int s, void *arg)

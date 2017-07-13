@@ -60,91 +60,66 @@ ikev2_dispatch(pkt_t *pkt, const struct sockaddr_storage *restrict l_addr,
 		/*
 		 * If the local SPI is set, we should be able to find it
 		 * in our hash.
+		 *
+		 * XXX: Should we respond with a notificaiton?
+		 *
+		 * RFC5996 2.21.4 we may send an INVALID_IKE_SPI
+		 * notification if we wish.
+		 *
+		 * For now, discard.
 		 */
-		if (i2sa == NULL) {
-			/*
-			 * XXX: Should we respond with a notificaiton?
-			 *
-			 * RFC5996 2.21.4 we may send an INVALID_IKE_SPI
-			 * notification if we wish.
-			 *
-			 * For now, discard.
-			 */
-			SPILOG(debug, log, "cannot find existing IKE SA with "
-			    "matching local SPI value; discarding",
-			    r_addr, l_addr, local_spi, remote_spi);
+		SPILOG(debug, log, "cannot find existing IKE SA with "
+		    "matching local SPI value; discarding",
+		    r_addr, l_addr, local_spi, remote_spi);
 
-			ikev2_pkt_free(pkt);
-			return;
-		}
-	} else {
-		if (remote_spi == 0) {
-			/*
-			 * XXX: this might require special processing.
-			 * Discard for now.
-			 */
-			goto discard;
-		}
-
-		/*
-		 * If the local SPI == 0, this can only be an IKE SA INIT
-		 * exchange.  For all such exchanges, the msgid is always 0,
-		 * regardless of the the number of actual messages sent during
-		 * the exchange (RFC5996 2.2).
-		 */
-		if (pkt->pkt_header.exch_type != IKEV2_EXCH_IKE_SA_INIT ||
-		    pkt->pkt_header.msgid != 0) {
-			/* XXX: log */
-			goto discard;
-		}
-
-		if (i2sa == NULL) {
-			/*
-			 * If there isn't an existing IKEv2 SA, the only
-			 * valid inbound packet is a request to start an
-			 * IKE_EXCH_IKE_SA_INIT exchange.
-			 */
-			if (!(pkt->pkt_header.flags & IKEV2_FLAG_INITIATOR)) {
-				/* XXX: log */
-				goto discard;
-			}
-
-			/* otherwise create a larval SA */
-			i2sa = ikev2_sa_alloc(B_FALSE, pkt, l_addr, r_addr);
-			if (i2sa == NULL) {
-				/* no memory */
-				goto discard;
-			}
-		} else {
-                        boolean_t stop = B_FALSE;
-
-                        /*
-                         * If there is an existing IKEv2 SA && local_spi == 0,
-                         * it should be a larval SA, and the inbound packet
-                         * should be a response to an IKE_EXCH_SA_INIT exchange
-                         * we initiated.  We defer returning until all
-                         * checks are performed so that all failures
-                         * found are logged.
-                         */
-
-                        if (!(i2sa->flags & I2SA_AUTHENTICATED)) {
-                                stop = B_TRUE;
-                                /*
-                                 * XXX: figure out what this error msg should
-                                 * say
-                                 */
-                        }
-
-                        if (!(pkt->pkt_header.flags & IKEV2_FLAG_RESPONSE)) {
-                                stop = B_TRUE;
-                                /* XXX: ditto */
-                        }
-
-                        if (stop)
-				goto discard;
-                }
-                local_spi = I2SA_LOCAL_SPI(i2sa);
+		ikev2_pkt_free(pkt);
+		return;
 	}
+
+	if (remote_spi == 0) {
+		/*
+		 * XXX: this might require special processing.
+		 * Discard for now.
+		 */
+		goto discard;
+	}
+
+	/*
+	 * If the local SPI == 0, this can only be an IKE SA INIT
+	 * exchange.  For all such exchanges, the msgid is always 0,
+	 * regardless of the the number of actual messages sent during
+	 * the exchange (RFC5996 2.2).
+	 */
+	if (pkt->pkt_header.exch_type != IKEV2_EXCH_IKE_SA_INIT ||
+	    pkt->pkt_header.msgid != 0) {
+		SPILOG(debug, log, "received non IKE_SA_INIT message with "
+		    "0 local spi; discarding", r_addr, l_addr, local_spi,
+		    remote_spi,
+		    BUNYAN_T_UINT32, "exch_type",
+		    (uint32_t)pkt->pkt_header.exch_type,
+		    BUNYAN_T_UINT32, "msgid", pkt->pkt_header.msgid);
+		goto discard;
+	}
+
+	/*
+	 * If there isn't an existing IKEv2 SA, the only
+	 * valid inbound packet is a request to start an
+	 * IKE_EXCH_IKE_SA_INIT exchange.
+	 */
+	if (!(pkt->pkt_header.flags & IKEV2_FLAG_INITIATOR)) {
+		SPILOG(debug, log, "cannot find existing SA", r_addr, l_addr,
+		    local_spi, remote_spi);
+		goto discard;
+	}
+
+	/* otherwise create a larval SA */
+	i2sa = ikev2_sa_alloc(B_FALSE, pkt, l_addr, r_addr);
+	if (i2sa == NULL) {
+		SPILOG(warn, log, "could not create IKEv2 SA", r_addr,
+		    l_addr, local_spi, remote_spi);
+		goto discard;
+	}
+	local_spi = I2SA_LOCAL_SPI(i2sa);
 
 dispatch:
 	pkt->pkt_sa = i2sa;
