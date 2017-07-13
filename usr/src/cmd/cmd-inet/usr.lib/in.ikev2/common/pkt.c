@@ -152,7 +152,7 @@ pkt_in_alloc(uchar_t *buf, size_t buflen)
 
 	if (counts.ncount > PKT_NOTIFY_NUM) {
 		size_t len = counts.ncount - PKT_NOTIFY_NUM;
-		len *= sizeof (uint16_t);
+		len *= sizeof (pkt_notify_t);
 		pkt->pkt_notify_extra = umem_zalloc(len, UMEM_DEFAULT);
 		if (pkt->pkt_notify_extra == NULL) {
 			pkt_free(pkt);
@@ -732,7 +732,7 @@ pkt_free(pkt_t *pkt)
 
 	if (pkt->pkt_notify_extra != NULL) {
 		len = pkt->pkt_notify_count - PKT_NOTIFY_NUM;
-		len *= sizeof (uint16_t);
+		len *= sizeof (pkt_notify_t);
 		umem_free(pkt->pkt_notify_extra, len);
 	}
 
@@ -783,4 +783,4 @@ extern size_t pkt_len(const pkt_t *);
 extern size_t pkt_write_left(const pkt_t *);
 extern size_t pkt_read_left(const pkt_t *, const uchar_t *);
 extern pkt_payload_t *pkt_payload(pkt_t *, uint16_t);
-extern uint16_t *pkt_notify(pkt_t *, uint16_t);
+extern pkt_notify_t *pkt_notify(pkt_t *, uint16_t);

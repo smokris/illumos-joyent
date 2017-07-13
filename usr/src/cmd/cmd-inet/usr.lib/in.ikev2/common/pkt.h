@@ -78,6 +78,12 @@ typedef struct pkt_payload {
 } pkt_payload_t;
 #define	PKT_PAYLOAD_NUM	(16)
 
+typedef struct pkt_notify {
+	uchar_t		*pn_ptr;
+	uint16_t	pn_type;
+	uint16_t	pn_len;
+} pkt_notify_t;
+
 #define	PKT_NOTIFY_NUM	(8)
 #define	MAX_PACKET_SIZE	(8192)	/* largest datagram we accept */
 struct pkt {
@@ -99,12 +105,14 @@ struct pkt {
 	pkt_payload_t		*pkt_payload_extra;
 	uint16_t		pkt_payload_count;
 
-	uint16_t		pkt_notify[PKT_NOTIFY_NUM];
-	uint16_t		*pkt_notify_extra;
+	pkt_notify_t		pkt_notify[PKT_NOTIFY_NUM];
+	pkt_notify_t		*pkt_notify_extra;
 	uint16_t		pkt_notify_count;
 
 	struct pkt_stack	stack[PKT_STACK_DEPTH];
 	uint_t			stksize;
+
+	size_t			pkt_xmit;
 };
 
 inline size_t
@@ -142,7 +150,7 @@ pkt_payload(pkt_t *pkt, uint16_t idx)
 	return (pkt->pkt_payload_extra + (idx - PKT_PAYLOAD_NUM));
 }
 
-inline uint16_t *
+inline pkt_notify_t *
 pkt_notify(pkt_t *pkt, uint16_t idx)
 {
 	ASSERT3U(idx, <, pkt->pkt_notify_count);

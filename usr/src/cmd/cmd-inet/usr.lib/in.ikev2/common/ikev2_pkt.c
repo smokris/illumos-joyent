@@ -93,7 +93,9 @@ ikev2_pkt_new_inbound(uchar_t *buf, size_t buflen)
 {
 	const ike_header_t	*hdr = NULL;
 	pkt_t			*pkt = NULL;
+	size_t			*counts = NULL;
 	struct validate_data	arg = { 0 };
+	size_t			i = 0;
 
 	ASSERT(IS_P2ALIGNED(buf, sizeof (uint64_t)));
 
@@ -121,10 +123,94 @@ ikev2_pkt_new_inbound(uchar_t *buf, size_t buflen)
 	arg.initiator = !!(hdr->flags & IKEV2_FLAG_INITIATOR);
 
 	if (pkt_payload_walk(buf, buflen, check_payload, &arg) != PKT_WALK_OK)
-		return (NULL);
+		goto discard;
 
+	counts = arg.payload_count;
+
+#define	PAYCOUNT(totals, paytype) totals[(paytype) - IKEV2_PAYLOAD_MIN]
+
+	switch (arg.exch_type) {
+	case IKEV2_EXCH_IKE_AUTH:
+	case IKEV2_EXCH_CREATE_CHILD_SA:
+	case IKEV2_EXCH_INFORMATIONAL:
+		/* check_payload() already made sure we only have SK payloads */
+		if (PAYCOUNT(counts, IKEV2_PAYLOAD_SK) == 1)
+			return (pkt);
+
+		/* XXX: log */
+		goto discard;
+	case IKEV2_EXCH_IKE_SA_INIT:
+		break;
+	case IKEV2_EXCH_IKE_SESSION_RESUME:
+		INVALID("arg->exch_type");
+		break;
+	}
+
+#define	HAS_NOTIFY(totals) (!!(PAYCOUNT(totals, IKEV2_PAYLOAD_NOTIFY) > 0))
+
+	for (i = IKEV2_PAYLOAD_MIN; i <= IKEV2_PAYLOAD_MAX; i++) {
+		size_t count = PAYCOUNT(counts, i);
+
+		switch (i) {
+		/* Never allowed in an SA_INIT exchange */
+		case IKEV2_PAYLOAD_IDi:
+		case IKEV2_PAYLOAD_IDr:
+		case IKEV2_PAYLOAD_CERT:
+		case IKEV2_PAYLOAD_AUTH:
+		case IKEV2_PAYLOAD_DELETE:
+		case IKEV2_PAYLOAD_TSi:
+		case IKEV2_PAYLOAD_TSr:
+		case IKEV2_PAYLOAD_SK:
+		case IKEV2_PAYLOAD_CP:
+		case IKEV2_PAYLOAD_EAP:
+		case IKEV2_PAYLOAD_GSPM:
+			if (count > 0) {
+				/* XXX: log */
+				goto discard;
+			}
+			break;
+
+		/* can appear 0 or more times */
+		case IKEV2_PAYLOAD_NOTIFY:
+		case IKEV2_PAYLOAD_CERTREQ:
+			break;
+
+		case IKEV2_PAYLOAD_VENDOR:
+			if (PAYCOUNT(counts, IKEV2_PAYLOAD_SA) > 0 ||
+			    PAYCOUNT(counts, IKEV2_PAYLOAD_NOTIFY) > 0)
+				break;
+
+		case IKEV2_PAYLOAD_SA:
+			if (count != 1 && !HAS_NOTIFY(counts)) {
+				/* XXX: log */
+				goto discard;
+			}
+			break;
+
+		case IKEV2_PAYLOAD_KE:
+		case IKEV2_PAYLOAD_NONCE:
+			if (count != 1) {
+				if (!HAS_NOTIFY(counts)) {
+					/* XXX: log */
+					goto discard;
+				}
+				break;
+			}
+			if (PAYCOUNT(counts, IKEV2_PAYLOAD_SA) != 1) {
+				/* XXX: log */
+				goto discard;
+			}
+			break;
+		}
+	}
 
 	return (pkt);
+
+discard:
+	pkt_free(pkt);
+	return (NULL);
+#undef PAYCOUNT
+#undef HAS_NOTIFY
 }
 
 /*
@@ -197,7 +283,7 @@ check_payload(uint8_t paytype, uint8_t resv, uchar_t *restrict buf,
 	arg->payload_count[paytype - IKEV2_PAYLOAD_MIN]++;
 
 	if (paytype == IKEV2_PAYLOAD_NOTIFY) {
-		uint16_t *ntfyp = pkt_notify(arg->pkt, arg->notify_count++);
+		pkt_notify_t *ntfyp = pkt_notify(arg->pkt, arg->notify_count++);
 		ikev2_notify_t ntfy = { 0 };
 		size_t len = sizeof (ntfy);
 
@@ -212,7 +298,9 @@ check_payload(uint8_t paytype, uint8_t resv, uchar_t *restrict buf,
 			return (PKT_WALK_ERROR);
 		}
 
-		*ntfyp = ntfy.n_type;
+		ntfyp->pn_ptr = buf;
+		ntfyp->pn_type = ntohs(ntfy.n_type);
+		ntfyp->pn_len = buflen;
 		return (PKT_WALK_OK);
 	}
 

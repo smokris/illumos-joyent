@@ -153,7 +153,7 @@ struct ikev2_child_sa {
 	(((i2sa)->flags & I2SA_INITIATOR) ? (i2sa)->r_spi : \
 	    (i2sa)->i_spi)
 
-#define	I2SA_HAS_NAT(i2sa) \
+#define	I2SA_IS_NAT(i2sa) \
 	(!!((i2sa)->flags && (I2SA_NAT_LOCAL|I2SA_NAT_REMOTE)))
 
 #define	I2SA_REFHOLD(i2sa) \

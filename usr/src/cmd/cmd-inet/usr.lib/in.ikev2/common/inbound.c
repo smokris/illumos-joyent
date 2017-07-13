@@ -58,6 +58,9 @@ int ikesock4 = -1;
 int ikesock6 = -1;
 int nattsock = -1;
 
+extern void ikev2_dispatch(pkt_t *, const struct sockaddr_storage *restrict,
+    const struct sockaddr_storage *restrict);
+
 static void
 inbound(int s, void *arg)
 {
@@ -69,7 +72,6 @@ inbound(int s, void *arg)
 	struct sockaddr_storage from = { 0 };
 	socklen_t tolen = sizeof (to);
 	socklen_t fromlen = sizeof (from);
-	buf_t data = { 0 };
 	ssize_t pktlen;
 
 	buf = inbound_buf();
@@ -101,15 +103,11 @@ inbound(int s, void *arg)
 		return;
 	}
 
-#if 0
-	data.b_ptr = buf;
-	data.b_len = (size_t)pktlen;
 	pkt = ikev2_pkt_new_inbound(buf, pktlen);
 	if (pkt == NULL)
 		return;
 
 	ikev2_dispatch(pkt, &to, &from);
-#endif
 }
 
 static int

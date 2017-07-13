@@ -32,7 +32,7 @@ struct ikev2_sa;
 
 #define	INBOUND_LOCAL_SPI(hdr) \
 	(((hdr)->flags == IKEV2_FLAG_INITIATOR) ? \
-	    (hdr)->responder_spi : (hdr)->initiator_spi
+	    (hdr)->responder_spi : (hdr)->initiator_spi)
 
 #define	INBOUND_REMOTE_SPI(hdr) \
 	(((hdr)->flags == IKEV2_FLAG_INITIATOR) ? \
