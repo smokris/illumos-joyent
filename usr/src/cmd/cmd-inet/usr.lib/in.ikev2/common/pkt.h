@@ -178,6 +178,7 @@ void pkt_hdr_hton(ike_header_t *restrict, const ike_header_t *restrict);
 void put32(pkt_t *, uint32_t);
 void put64(pkt_t *, uint64_t);
 
+void pkt_done(pkt_t *);
 void pkt_init(void);
 void pkt_fini(void);
 void pkt_free(pkt_t *);

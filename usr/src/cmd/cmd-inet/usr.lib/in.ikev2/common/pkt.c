@@ -641,6 +641,13 @@ pkt_stack_unwind(pkt_t *pkt, pkt_stack_item_t type, uintptr_t swaparg)
 	return (0);
 }
 
+/* pops off all the callbacks in preparation for sending */
+void
+pkt_done(pkt_t *pkt)
+{
+	(void) pkt_stack_unwind(pkt, PSI_NONE, 0);
+}
+
 pkt_walk_ret_t
 pkt_payload_walk(uchar_t *restrict data, size_t len, pkt_walk_fn_t cb,
     void *restrict cookie)

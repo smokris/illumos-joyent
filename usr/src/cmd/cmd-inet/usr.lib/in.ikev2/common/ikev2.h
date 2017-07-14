@@ -12,6 +12,8 @@
  * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ *
+ * Copyright (c) 2017, Joyent, Inc.
  */
 
 #ifndef _IKEV2_H
@@ -497,6 +499,8 @@ struct sockaddr_storage;
 
 void ikev2_dispatch(struct pkt *, const struct sockaddr_storage *,
     const struct sockaddr_storage *);
+boolean_t ikev2_send(struct pkt *, boolean_t);
+void ikev2_inbound(struct pkt *);
 
 #ifdef __cplusplus
 }

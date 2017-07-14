@@ -59,6 +59,7 @@ static size_t	queuelen;
 static worker_t *worker_init_one(size_t);
 static void *worker(void *);
 static const char *worker_cmd_str(worker_cmd_t);
+static void worker_inbound(pkt_t *);
 
 void
 worker_init(size_t n_workers, size_t queue_sz)
@@ -243,6 +244,15 @@ worker(void *arg)
 			break;
 
 		while (!WQ_EMPTY(wq)) {
+			pkt_t *pkt = wq->wq_pkts[wq->wq_start];
+
+			wq->wq_pkts[wq->wq_start] = NULL;
+			wq->wq_start++;
+			wq->wq_start %= queuelen;
+			PTH(pthread_mutex_unlock(&wq->wq_lock));
+
+			worker_inbound(pkt);
+			PTH(pthread_mutex_lock(&wq->wq_lock));
 		}
 	}
 
@@ -250,6 +260,22 @@ worker(void *arg)
 	PTH(pthread_cond_signal(&wq->wq_cv));
 	PTH(pthread_mutex_unlock(&wq->wq_lock));
 	return (w);
+}
+
+static void
+worker_inbound(pkt_t *pkt)
+{
+	switch (IKE_GET_MAJORV(pkt->pkt_header.version)) {
+	case 1:
+		/* XXX: ikev1_inbound(pkt); */
+		break;
+	case 2:
+		ikev2_inbound(pkt);
+		break;
+	default:
+		/* XXX: log? */
+		pkt_free(pkt);
+	}
 }
 
 boolean_t

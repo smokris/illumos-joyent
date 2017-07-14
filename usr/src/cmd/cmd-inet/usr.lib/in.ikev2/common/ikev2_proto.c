@@ -35,6 +35,8 @@
 #include "ikev2_pkt.h"
 #include "worker.h"
 #include "inbound.h"
+#include "timer.h"
+#include "fromto.h"
 
 #define	SPILOG(_level, _log, _msg, _src, _dest, _lspi, _rspi, ...)	\
 	NETLOG(_level, _log, _msg, _src, _dest,				\
@@ -42,8 +44,15 @@
 	BUNYAN_T_UINT64, "remote_spi", (_rspi),				\
 	## __VA_ARGS__)
 
+#define	PKT_PTR(pkt)	((uchar_t *)(pkt)->pkt_raw)
+
+static void ikev2_retransmit(te_event_t, void *);
 static int select_socket(const ikev2_sa_t *, const struct sockaddr_storage *);
 
+/*
+ * Find the IKEv2 SA for a given inbound packet (or create a new one if
+ * an IKE_SA_INIT exchange) and send packet to worker.
+ */
 void
 ikev2_dispatch(pkt_t *pkt, const struct sockaddr_storage *restrict l_addr,
     const struct sockaddr_storage *restrict r_addr)
@@ -135,8 +144,74 @@ discard:
 	ikev2_pkt_free(pkt);
 }
 
-void
-ikev2_retransmit(void *data)
+/*
+ * Sends a packet out.  If pkt is an error reply, is_error should be
+ * set so that it is not saved for possible retransmission.
+ *
+ */
+boolean_t
+ikev2_send(pkt_t *pkt, boolean_t is_error)
+{
+	ikev2_sa_t *i2sa = pkt->pkt_sa;
+	ssize_t len = 0;
+	int s = -1;
+	boolean_t initiator = !!(pkt->pkt_header.flags & IKEV2_FLAG_INITIATOR);
+
+	if (initiator) {
+		/*
+		 * We should not send out a new exchange while still waiting
+		 * on a response from a previous request
+		 */
+		ASSERT3P(sa->last_sent, ==, NULL);
+		pkt->pkt_header.msgid = i2sa->outmsgid;
+	}
+
+	pkt_done(pkt);
+
+	s = select_socket(i2sa, NULL);
+	len = sendfromto(s, PKT_PTR(pkt), pkt_len(pkt), &i2sa->laddr,
+	    &i2sa->raddr);
+	if (len == -1) {
+		/*
+		 * If it failed, should we still save it and let
+		 * ikev2_retransmit attempt?  For now, no.
+		 *
+		 * Note: sendfromto() should have logged any relevant errors
+		 */
+		I2SA_REFRELE(i2sa);
+		ikev2_pkt_free(pkt);
+		return (B_FALSE);
+	}
+
+	PTH(pthread_mutex_lock(&i2sa->lock));
+	if (initiator) {
+		/* XXX: bump & save for error messages? */
+		PTH(pthread_mutex_lock(&i2sa->lock));
+		i2sa->outmsgid++;
+		i2sa->last_sent = pkt;
+
+		if (!is_error) {
+			VERIFY(schedule_timeout(TE_TRANSMIT, ikev2_retransmit,
+			    pkt, cfg_retry_init));
+		}
+	} else {
+		i2sa->last_resp_sent = pkt;
+	}
+	PTH(pthread_mutex_unlock(&i2sa->lock));
+
+	if (is_error) {
+		I2SA_REFRELE(i2sa);
+		ikev2_pkt_free(pkt);
+	}
+
+	return (B_TRUE);
+}
+
+/*
+ * Retransmit callback
+ */
+static void
+ikev2_retransmit(te_event_t event, void *data)
 {
 	pkt_t *pkt = data;
 	ikev2_sa_t *sa = pkt->pkt_sa;
@@ -160,16 +235,112 @@ ikev2_retransmit(void *data)
 		ikev2_pkt_free(pkt);
 		return;
 	}
+	PTH(pthread_mutex_unlock(&sa->lock));
 
+	len = sendfromto(select_socket(sa, NULL), PKT_PTR(pkt), pkt_len(pkt),
+	    &sa->laddr, &sa->raddr);
+	/* XXX: sendfromto() will log if it fails, do anything else? */
+
+	VERIFY(schedule_timeout(TE_TRANSMIT, ikev2_retransmit, pkt, retry));
+}
+
+/*
+ * Determine if the packet should be discarded, or retransmit our last
+ * packet if appropriate
+ * XXX better function name?
+ */
+static boolean_t
+ikev2_discard_pkt(pkt_t *pkt)
+{
+	ikev2_sa_t *sa = pkt->pkt_sa;
+	uint32_t msgid = pkt->pkt_header.msgid;
+	boolean_t discard = B_TRUE;
+
+	PTH(pthread_mutex_lock(&sa->lock));
+	if (sa->flags & I2SA_CONDEMNED)
+		goto done;
+
+	if (pkt->pkt_header.flags & IKEV2_FLAG_RESPONSE) {
+		pkt_t *last = sa->last_sent;
+
+		if (msgid != sa->outmsgid) {
+			/*
+			 * Not a response to our last message.
+			 * XXX: Send INVALID_MESSAGE_ID notification in
+			 * certain circumstances.  Drop for now.
+			 */
+			goto done;
+		}
+
+		/* A response to our last message */
+		VERIFY3S(cancel_timeout(TE_TRANSMIT, last, sa->i2sa_log),
+		    ==, 1);
+		sa->last_sent = NULL;
+		ikev2_pkt_free(last);
+		discard = B_FALSE;
+		goto done;
+	}
+
+	ASSERT(pkt->pkt_header.flags & IKEV2_FLAG_INITIATOR);
+
+	if (msgid == sa->inmsgid) {
+		pkt_t *resp = sa->last_resp_sent;
+		ssize_t len = 0;
+
+		if (resp == NULL) {
+			discard = B_FALSE;
+			goto done;
+		}
+
+		len = sendfromto(select_socket(sa, NULL), PKT_PTR(resp),
+		    pkt_len(pkt), &sa->laddr, &sa->raddr);
+		goto done;
+	}
+
+	if (msgid != sa->inmsgid + 1) {
+		/*
+		 * XXX: create new informational exchange, send
+		 * INVALID_MESSAGE_ID notification?
+		 */
+		goto done;
+	}
+
+	/* new exchange, free last response and get going */
+	ikev2_pkt_free(sa->last_resp_sent);
+	sa->last_resp_sent = NULL;
+	sa->inmsgid++;
+	discard = B_FALSE;
+
+done:
+	PTH(pthread_mutex_unlock(&sa->lock));
+	return (discard);
+}
+
+/*
+ * Worker inbound function
+ */
+void
+ikev2_inbound(pkt_t *pkt)
+{
+	if (ikev2_discard_pkt(pkt))
+		return;
+
+	/* XXX: dispatch based on exchange */
+
+	ikev2_pkt_free(pkt);
 }
 
 static int
 select_socket(const ikev2_sa_t *i2sa, const struct sockaddr_storage *local)
 {
+	ASSERT((i2sa != NULL && local == NULL) ||
+	    (i2sa == NULL && local != NULL));
+
+	if (i2sa != NULL)
+		local = &i2sa->laddr;
 	if (local->ss_family == AF_INET6)
 		return (ikesock6);
 	if (i2sa != NULL && I2SA_IS_NAT(i2sa))
 		return (nattsock);
 	return (ikesock4);
 }
-

@@ -22,16 +22,27 @@
 #
 # Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
 # Copyright 2017 Jason King.
-# Copyright 2017 Joyent, Inc.
+# Copyright (c) 2017, Joyent, Inc.
 #
 
 PROG = in.ikev2d
-OBJS = timer.o prf.o ikev2_sa.o dh.o buf.o random.o pkt.o fromto.o \
-	pkcs11.o worker.o main.o inbound.o ikev2_pkt.o config.o ikev2_proto.o
-#OBJS =	main.o pkcs11.o fromto.o ikev2_proto.o pfkey.o door.o ikev2_sa.o \
-#	ikev2_pkt.o preshared.o random.o timer.o buf.o config.o \
-#	ikev2_enum.o dh.o prf.o ikev2_cookie.o ikev2_sa_init.o \
-#	ikev2_common.o thread_group.o inbound.o
+
+OBJS =	buf.o		\
+	config.o	\
+	dh.o		\
+	fromto.o	\
+	ikev2_pkt.o	\
+	ikev2_proto.o	\
+	ikev2_sa.o	\
+	inbound.o	\
+	main.o		\
+	prf.o		\
+	pkcs11.o	\
+	pkt.o		\
+	random.o	\
+	timer.o		\
+	worker.o
+	
 SRCS = $(OBJS:%.o=../common/%.c)
 
 include ../../../../Makefile.cmd
