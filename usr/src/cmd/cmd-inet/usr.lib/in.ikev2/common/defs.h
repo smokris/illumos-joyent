@@ -25,7 +25,7 @@
  * Use is subject to license terms.
  *
  * Copyright 2017 Jason King.
- * Copyright 2017 Joyent, Inc.
+ * Copyright (c) 2017, Joyent, Inc.
  */
 
 #ifndef _DEFS_H
@@ -55,6 +55,44 @@ typedef union sockaddr_u_s {
 	struct sockaddr_in6	*sau_sin6;
 } sockaddr_u_t;
 #endif /* SOCKADDR_U_T */
+
+/* Parsed-out PF_KEY message. */
+typedef struct parsedmsg_s {
+	struct parsedmsg_s *pmsg_next;
+	sadb_msg_t *pmsg_samsg;
+	sadb_ext_t *pmsg_exts[SADB_EXT_MAX + 2]; /* 2 for alignment */
+	sockaddr_u_t pmsg_sau;
+	sockaddr_u_t pmsg_dau;
+	sockaddr_u_t pmsg_isau;
+	sockaddr_u_t pmsg_idau;
+	sockaddr_u_t pmsg_nlau;
+	sockaddr_u_t pmsg_nrau;
+} parsedmsg_t;
+
+#define	pmsg_sss pmsg_sau.sau_ss
+#define	pmsg_ssin pmsg_sau.sau_sin
+#define	pmsg_ssin6 pmsg_sau.sau_sin6
+#define	pmsg_dss pmsg_dau.sau_ss
+#define	pmsg_dsin pmsg_dau.sau_sin
+#define	pmsg_dsin6 pmsg_dau.sau_sin6
+#define	pmsg_isss pmsg_isau.sau_ss
+#define	pmsg_issin pmsg_isau.sau_sin
+#define	pmsg_issin6 pmsg_isau.sau_sin6
+#define	pmsg_idss pmsg_idau.sau_ss
+#define	pmsg_idsin pmsg_idau.sau_sin
+#define	pmsg_idsin6 pmsg_idau.sau_sin6
+#define	pmsg_nlss pmsg_nlau.sau_ss
+#define	pmsg_nlsin pmsg_nlau.sau_sin
+#define	pmsg_nlsin6 pmsg_nlau.sau_sin6
+#define	pmsg_nrss pmsg_nrau.sau_ss
+#define	pmsg_nrsin pmsg_rnau.sau_sin
+#define	pmsg_nrsin6 pmsg_nrau.sau_sin6
+
+typedef void (*pfreq_cb_t)(sadb_msg_t *, void *);
+typedef struct algindex {
+	const char *desc;
+	int doi_num;
+} algindex_t;
 
 /*
  * Compare two AF_INET{,6} sockaddrs (no port).  Assume sockaddr_storage

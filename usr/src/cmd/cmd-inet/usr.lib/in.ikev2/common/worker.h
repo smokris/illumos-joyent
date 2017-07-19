@@ -16,13 +16,17 @@
 #ifndef _WORKER_H
 #define	_WORKER_H
 
-#include <sys/types.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-struct pkt;
+typedef enum worker_evt {
+	EVT_NONE,
+	EVT_PACKET,
+	EVT_PFKEY
+} worker_evt_t;
 
 extern size_t nworkers;
 
@@ -32,7 +36,7 @@ void worker_resume(void);
 boolean_t worker_add(void);
 void worker_del(void);
 void worker_stop(void);
-boolean_t worker_dispatch(struct pkt *, size_t);
+boolean_t worker_dispatch(worker_evt_t, void *, size_t);
 
 #ifdef __cplusplus
 }

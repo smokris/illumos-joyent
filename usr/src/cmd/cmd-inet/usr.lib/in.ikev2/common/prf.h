@@ -10,7 +10,8 @@
  */
 
 /*
- * Copyright 2014 Jason King
+ * Copyright 2017 Jason King
+ * Copyright (c) 2017, Joyent, Inc.
  */
 
 #ifndef _PRF_H
@@ -18,7 +19,6 @@
 
 #include <sys/types.h>
 #include <security/cryptoki.h>
-
 #include "buf.h"
 
 #ifdef __cplusplus

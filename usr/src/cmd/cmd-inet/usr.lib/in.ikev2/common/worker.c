@@ -31,11 +31,16 @@ typedef enum worker_cmd {
 	WC_QUIT
 } worker_cmd_t;
 
+typedef struct worker_item {
+	worker_evt_t	wi_event;
+	void		*wi_data;
+} worker_item_t;
+
 typedef struct worker_queue {
 	pthread_mutex_t	wq_lock;
 	pthread_cond_t	wq_cv;
 	worker_cmd_t	wq_cmd;
-	pkt_t		**wq_pkts;
+	worker_item_t	*wq_items;
 	size_t		wq_start;
 	size_t		wq_end;
 } worker_queue_t;
@@ -59,7 +64,8 @@ static size_t	queuelen;
 static worker_t *worker_init_one(size_t);
 static void *worker(void *);
 static const char *worker_cmd_str(worker_cmd_t);
-static void worker_inbound(pkt_t *);
+static const char *worker_evt_str(worker_evt_t);
+static void worker_pkt_inbound(pkt_t *);
 
 void
 worker_init(size_t n_workers, size_t queue_sz)
@@ -77,9 +83,9 @@ worker_init(size_t n_workers, size_t queue_sz)
 
 	nworkers = workers_alloc = n_workers;
 
-	len = queue_sz * sizeof (pkt_t *);
+	len = queue_sz * sizeof (worker_item_t *);
 	VERIFY3U(len, >, queue_sz);
-	VERIFY3U(len, >, sizeof (pkt_t *));
+	VERIFY3U(len, >, sizeof (worker_item_t *));
 	queuelen = queue_sz;
 
 	for (size_t i = 0; i < nworkers; i++) {
@@ -108,7 +114,7 @@ worker_init_one(size_t len)
 	if ((w = umem_zalloc(sizeof (*w), UMEM_DEFAULT)) == NULL)
 		return (NULL);
 
-	if ((w->w_queue.wq_pkts = umem_zalloc(len, UMEM_DEFAULT)) == NULL) {
+	if ((w->w_queue.wq_items = umem_zalloc(len, UMEM_DEFAULT)) == NULL) {
 		umem_free(w, sizeof (*w));
 		return (NULL);
 	}
@@ -157,10 +163,11 @@ worker_resume(void)
 }
 
 boolean_t
-worker_dispatch(pkt_t *pkt, size_t n)
+worker_dispatch(worker_evt_t event, void *data, size_t n)
 {
 	worker_t *w = NULL;
 	worker_queue_t *wq = NULL;
+	worker_item_t *wi = NULL;
 
 	PTH(pthread_rwlock_rdlock(&worker_lock));
 	VERIFY3U(n, <, nworkers);
@@ -174,12 +181,15 @@ worker_dispatch(pkt_t *pkt, size_t n)
 
 		(void) bunyan_debug(log, "dispatch failed (queue full)",
 		    BUNYAN_T_UINT32, "worker", (uint32_t)n,
-		    BUNYAN_T_POINTER, "pkt", pkt,
+		    BUNYAN_T_STRING, "event", worker_evt_str(event),
+		    BUNYAN_T_POINTER, "data", data,
 		    BUNYAN_T_END);
 		return (B_FALSE);
 	}
 
-	wq->wq_pkts[wq->wq_end++] = pkt;
+	wi = &wq->wq_items[wq->wq_end++];
+	wi->wi_event = event;
+	wi->wi_data = data;
 	wq->wq_end %= queuelen;
 
 	PTH(pthread_cond_signal(&wq->wq_cv));
@@ -188,7 +198,8 @@ worker_dispatch(pkt_t *pkt, size_t n)
 
 	(void) bunyan_debug(w->w_log, "Dispatching packet to worker",
 	    BUNYAN_T_UINT32, "worker", (uint32_t)n,
-	    BUNYAN_T_POINTER, "pkt", pkt,
+	    BUNYAN_T_STRING, "event", worker_evt_str(event),
+	    BUNYAN_T_POINTER, "data", data,
 	    BUNYAN_T_END);
 	return (B_TRUE);
 }
@@ -244,14 +255,27 @@ worker(void *arg)
 			break;
 
 		while (!WQ_EMPTY(wq)) {
-			pkt_t *pkt = wq->wq_pkts[wq->wq_start];
+			worker_item_t wi = wq->wq_items[wq->wq_start];
 
-			wq->wq_pkts[wq->wq_start] = NULL;
+			wq->wq_items[wq->wq_start].wi_event = EVT_NONE;
+			wq->wq_items[wq->wq_start].wi_data = NULL;
+
 			wq->wq_start++;
 			wq->wq_start %= queuelen;
 			PTH(pthread_mutex_unlock(&wq->wq_lock));
 
-			worker_inbound(pkt);
+			switch (wi.wi_event) {
+			case EVT_NONE:
+				INVALID("wi.wi_event");
+				break;
+			case EVT_PACKET:
+				worker_pkt_inbound(wi.wi_data);
+				break;
+			case EVT_PFKEY:
+				/* TODO */
+				break;
+			}
+
 			PTH(pthread_mutex_lock(&wq->wq_lock));
 		}
 	}
@@ -263,7 +287,7 @@ worker(void *arg)
 }
 
 static void
-worker_inbound(pkt_t *pkt)
+worker_pkt_inbound(pkt_t *pkt)
 {
 	switch (IKE_GET_MAJORV(pkt->pkt_header.version)) {
 	case 1:
@@ -332,16 +356,25 @@ worker_del(void)
 {
 }
 
+#define	STR(x) case x: return (#x)
 static const char *
 worker_cmd_str(worker_cmd_t wc)
 {
-#define	STR(x) case x: return (#x)
 	switch (wc) {
 	STR(WC_NONE);
 	STR(WC_SUSPEND);
 	STR(WC_QUIT);
-	default:
-		return ("UNKNOWN");
 	}
-#undef STR
+	return ("UNKNOWN");
+}
+
+static const char *
+worker_evt_str(worker_evt_t evt)
+{
+	switch (evt) {
+	STR(EVT_NONE);
+	STR(EVT_PACKET);
+	STR(EVT_PFKEY);
+	}
+	return ("UNKNOWN");
 }

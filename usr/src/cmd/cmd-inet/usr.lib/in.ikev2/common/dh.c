@@ -10,14 +10,14 @@
  */
 
 /*
- * Copyright 2011 Jason King.  All rights reserved.
+ * Copyright 2017 Jason King.
+ * Copyright (c) 2017, Joyent, Inc.
  */
 
 #include <sys/types.h>
 #include <security/cryptoki.h>
 #include "dh.h"
 #include "pkcs11.h"
-#include "buf.h"
 
 typedef struct {
 	int	id;
@@ -361,16 +361,14 @@ dh_genpair(int group, CK_OBJECT_HANDLE_PTR restrict pub,
 }
 
 CK_RV
-dh_derivekey(CK_OBJECT_HANDLE privkey, buf_t *restrict pub,
+dh_derivekey(CK_OBJECT_HANDLE privkey, uchar_t *restrict pub, size_t len,
     CK_OBJECT_HANDLE_PTR restrict seckey)
 {
-	BUF_IS_READ(pub);
-
 	CK_OBJECT_CLASS key_class = CKO_SECRET_KEY;
 	CK_KEY_TYPE key_type = CKK_GENERIC_SECRET;
 	CK_ULONG key_len = 0;
 	CK_BBOOL trueval = CK_TRUE;
-	CK_MECHANISM mech = { CKM_DH_PKCS_DERIVE, pub->b_ptr, pub->b_len };
+	CK_MECHANISM mech = { CKM_DH_PKCS_DERIVE, pub, len };
 	CK_ATTRIBUTE template[] = {
 		{ CKA_CLASS, &key_class, sizeof (key_class) },
 		{ CKA_KEY_TYPE, &key_type, sizeof (key_type) },

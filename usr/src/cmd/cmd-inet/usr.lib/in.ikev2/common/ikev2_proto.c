@@ -132,7 +132,7 @@ ikev2_dispatch(pkt_t *pkt, const struct sockaddr_storage *restrict l_addr,
 
 dispatch:
 	pkt->pkt_sa = i2sa;
-	if (worker_dispatch(pkt, local_spi % nworkers))
+	if (worker_dispatch(EVT_PACKET, pkt, local_spi % nworkers))
 		return;
 
 	SPILOG(info, log, "worker queue full; discarding packet",

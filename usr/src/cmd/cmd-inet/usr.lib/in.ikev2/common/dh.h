@@ -23,12 +23,10 @@
 extern "C" {
 #endif
 
-struct buf;
-
 size_t dh_keysize(int);
 CK_RV dh_genpair(int, CK_OBJECT_HANDLE_PTR restrict,
     CK_OBJECT_HANDLE_PTR restrict);
-CK_RV dh_derivekey(CK_OBJECT_HANDLE, struct buf *restrict,
+CK_RV dh_derivekey(CK_OBJECT_HANDLE, uchar_t *restrict, size_t,
     CK_OBJECT_HANDLE_PTR restrict);
 
 #ifdef __cplusplus

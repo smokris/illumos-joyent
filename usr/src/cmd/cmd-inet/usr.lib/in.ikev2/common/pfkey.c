@@ -24,7 +24,7 @@
  * Use is subject to license terms.
  *
  * Copyright 2017 Jason King.
- * Copyright 2017 Joyent, Inc.
+ * Copyright (c) 2017, Joyent, Inc.
  */
 
 #include <sys/types.h>
@@ -45,16 +45,15 @@
 #include "defs.h"
 #include "ikev2.h"
 #include "ikev2_pkt.h"
-#include "ikev2_enum.h"
+#include "ikev2_sa.h"
 #include "pkcs11.h"
-#include "thread_group.h"
 
 struct pfreq;
 typedef struct pfreq {
-	uu_list_node_t	pf_node;
-	pfreq_cb_t	*pf_cb;
-	void		*pf_data;
-	uint32_t	pf_msgid;
+	uu_list_node_t	pr_node;
+	pfreq_cb_t	*pr_cb;
+	void		*pr_data;
+	uint32_t	pr_msgid;
 } pfreq_t;
 
 static bunyan_logger_t	*pflog;
@@ -80,9 +79,11 @@ static void handle_expire(sadb_msg_t *);
 static void handle_acquire(sadb_msg_t *, boolean_t);
 static void handle_register(sadb_msg_t *);
 
+#if 0
 static ikev2_pay_sa_t *convert_acquire(parsedmsg_t *);
 static ikev2_pay_sa_t *convert_ext_acquire(parsedmsg_t *, ikev2_spi_proto_t);
 static ikev2_xf_auth_t ikev2_pf_to_auth(int);
+#endif
 
 static const char *pfkey_opcodes[] = {
 	"RESERVED", "GETSPI", "UPDATE", "ADD", "DELETE", "GET",
@@ -242,62 +243,61 @@ pfkey_inbound(int s, void *arg)
 	int length;
 
 	if (ioctl(s, I_NREAD, &length) < 0) {
-		PRTDBG(D_OP, ("PF_KEY ioctl(I_NREAD): %s", strerror(errno)));
+		STDERR(error, log, "ioctl(I_NREAD) failed");
+
 		/* XXX KEBE ASKS - will we rapidly return at this point? */
-		schedule_socket(TG_PFKEY, s, inbound_pfkey);
+		schedule_socket(s, pfkey_inbound);
 		return;
 	}
 
 	if (length == 0) {
-		PRTDBG(D_OP, ("PF_KEY ioctl: zero length message"));
+		bunyan_info(log, "ioctl: zero length message",
+		    BUNYAN_T_STRING, "func", __func__,
+		    BUNYAN_T_STRING, "file", __FILE__,
+		    BUNYAN_T_INT32, "line", __LINE__,
+		    BUNYAN_T_END);
 		/* XXX KEBE ASKS - will we rapidly return at this point? */
-		schedule_socket(TG_PFKEY, s, inbound_pfkey);
+		schedule_socket(s, pfkey_inbound);
 		return;
 	}
 
 	samsg = malloc(length);
 	if (samsg == NULL) {
-		PRTDBG(D_OP, ("PF_KEY: malloc failure"));
-		/* XXX KEBE ASKS - will we rapidly return at this point? */
-		schedule_socket(TG_PFKEY, s, inbound_pfkey);
+		STDERR(error, log, "malloc failure");
+		schedule_socket(s, pfkey_inbound);
 		return;
 	}
 
 	rc = read(s, samsg, length);
 	if (rc <= 0) {
 		if (rc == -1) {
-			PRTDBG(D_OP, ("PF_KEY read: %s", strerror(errno)));
+			STDERR(error, log, "read failed");
 			/* Should I exit()? */
 		}
 		free(samsg);
 		/* XXX KEBE ASKS - will we rapidly return at this point? */
-		schedule_socket(TG_PFKEY, s, inbound_pfkey);
+		schedule_socket(s, pfkey_inbound);
 		return;
 	}
 
 	/* At this point, we can safely re-schedule the socket for reading. */
-	schedule_socket(TG_PFKEY, s, inbound_pfkey);
+	schedule_socket(s, pfkey_inbound);
 
-	PRTDBG(D_PFKEY, ("Thread %d handling data on PF_KEY socket:\n"
-	    "\t\t\t\t\t SADB msg: message type %d (%s), SA type %d (%s),\n"
-	    "\t\t\t\t\t pid %d, sequence number %u,\n"
-	    "\t\t\t\t\t error code %d (%s), diag code %d (%s), length %d",
-	    pthread_self(), samsg->sadb_msg_type,
-	    pfkey_type(samsg->sadb_msg_type),
-	    samsg->sadb_msg_satype, pfkey_satype(samsg->sadb_msg_satype),
-	    samsg->sadb_msg_pid,
-	    samsg->sadb_msg_seq,
-	    samsg->sadb_msg_errno, strerror(samsg->sadb_msg_errno),
-	    samsg->sadb_x_msg_diagnostic,
+	bunyan_debug(log, "SADB message received",
+	    BUNYAN_T_STRING, "msg_type", pfkey_type(samsg->sadb_msg_type),
+	    BUNYAN_T_UINT32, "msg_type_val", (uint32_t)samsg->sadb_msg_type,
+	    BUNYAN_T_STRING, "sa_type", pfkey_satype(samsg->sadb_msg_satype),
+	    BUNYAN_T_UINT32, "sa_type_val", (uint32_t)samsg->sadb_msg_satype,
+	    BUNYAN_T_UINT32, "msg_pid", samsg->sadb_msg_pid,
+	    BUNYAN_T_UINT32, "msg_seq", samsg->sadb_msg_seq,
+	    BUNYAN_T_UINT32, "msg_errno_val", (uint32_t)samsg->sadb_msg_errno,
+	    BUNYAN_T_STRING, "msg_errno", strerror(samsg->sadb_msg_errno),
+	    BUNYAN_T_UINT32, "msg_diagnostic_val",
+	    (uint32_t)samsg->sadb_x_msg_diagnostic,
+	    BUNYAN_T_UINT32, "msg_diagnostic",
 	    keysock_diag(samsg->sadb_x_msg_diagnostic),
-	    samsg->sadb_msg_len));
-
-	/*
-	 * Since we're hitting this relatively frequently, fflush the debug
-	 * file so log files don't get behind..
-	 */
-	if (debug & D_PFKEY)
-		(void) fflush(debugfile);
+	    BUNYAN_T_UINT32, "length", (uint32_t)samsg->sadb_msg_len,
+	    BUNYAN_T_END);
 
 	/*
 	 * XXX KEBE SAYS for now don't print the full inbound message.  An
@@ -307,7 +307,7 @@ pfkey_inbound(int s, void *arg)
 	/*
 	 * If it might be a reply to us, handle it.
 	 */
-	if (samsg->sadb_msg_pid == pid) {
+	if (samsg->sadb_msg_pid == getpid()) {
 		handle_reply(samsg);
 		return;
 	}
@@ -316,7 +316,7 @@ pfkey_inbound(int s, void *arg)
 	 * Silently pitch the message if it's an error reply to someone else.
 	 */
 	if (samsg->sadb_msg_errno != 0) {
-		PRTDBG(D_PFKEY, ("  Reply not for us, dropped"));
+		bunyan_debug(log, "reply not for us, dropped", BUNYAN_T_END);
 		free(samsg);
 		return;
 	}
@@ -354,8 +354,9 @@ pfkey_inbound(int s, void *arg)
 		return;
 	}
 
-	PRTDBG(D_PFKEY, ("  SADB message type %d unknown, ignored.",
-	    samsg->sadb_msg_type));
+	bunyan_debug(log, "SADB message type unknown, ignored.",
+	    BUNYAN_T_UINT32, "msg_type_val", (uint32_t)samsg->sadb_msg_type,
+	    BUNYAN_T_END);
 	free(samsg);
 }
 
@@ -368,38 +369,33 @@ pfkey_inbound(int s, void *arg)
 boolean_t
 pfkey_send_msg(sadb_msg_t *msg, pfreq_cb_t *cb, void *data)
 {
-	pfreq_t *req, *next;
+	pfreq_t *req;
+	uu_list_index_t idx;
 	ssize_t n;
 
 	req = pfreq_new(cb, data);
 	if (req == NULL)
 		return (B_FALSE);
 
-	msg->sadb_msg_seq = req->msgid;
-	msg->sadb_msg_pid = pid;
+	msg->sadb_msg_seq = req->pr_msgid;
+	msg->sadb_msg_pid = getpid();
 	n = write(pfkey, msg, msg->sadb_msg_len);
 	if (n != msg->sadb_msg_len) {
-		/* XXX: now what? */
+		if (n < 0) {
+			STDERR(error, log, "pf_key write failed");
+		} else {
+			bunyan_error(log, "pf_key truncated write",
+			    BUNYAN_T_UINT32, "n", (uint32_t)n,
+			    BUNYAN_T_END);
+		}
 		pfreq_free(req);
 		return (B_FALSE);
 	}
 
 	(void) pthread_mutex_lock(&pfreq_lock);
 
-	if (pfreqs == NULL) {
-		pfreqs = req;
-		req->ptpn = &pfreqs;
-		(void) pthread_mutex_unlock(&pfreq_lock);
-		return (B_TRUE);
-	}
-
-	/* For now, tail insert request into list */
-	next = pfreqs;
-	while (next->next != NULL)
-		next = next->next;
-	next->next = req;
-	req->ptpn = &next->next;
-
+	(void) uu_list_find(pfreq_list, req, NULL, &idx);
+	uu_list_insert(pfreq_list, req, idx);
 	(void) pthread_mutex_unlock(&pfreq_lock);
 
 	return (B_TRUE);
@@ -413,7 +409,7 @@ pfkey_send_msg(sadb_msg_t *msg, pfreq_cb_t *cb, void *data)
 void
 pfkey_send_error(const sadb_msg_t *src, uint8_t reason)
 {
-	sadb_msg_t msg;
+	sadb_msg_t msg = { 0 };
 	ssize_t n;
 
 	/* Errors consists of just the sadb header */
@@ -428,133 +424,37 @@ pfkey_send_error(const sadb_msg_t *src, uint8_t reason)
 
 	n = write(pfkey, &msg, sizeof (sadb_msg_t));
 	if (n != sizeof (sadb_msg_t))
-		PRTDBG(D_PFKEY, ("Unable to send PFKEY error notification: "
-		    "%s.", strerror(errno)));
-}
-
-void
-pf_key_init(void)
-{
-	uint64_t buffer[128];
-	sadb_msg_t *samsg = (sadb_msg_t *)buffer;
-	sadb_x_ereg_t *ereg = (sadb_x_ereg_t *)(samsg + 1);
-	boolean_t ah_ack = B_FALSE, esp_ack = B_FALSE;
-	int rc;
-
-	pid = getpid();
-
-	if (!ucache_init(&cache_init))
-		EXIT_FATAL3("umem_cache_create(%s) failed: %s", cache_init.name,
-		    strerror(errno));
-
-	pfkey = socket(PF_KEY, SOCK_RAW, PF_KEY_V2);
-	if (pfkey == -1)
-		err(EXIT_FAILURE, "socket(PF_KEY)");
-
-	if ((pfport = port_create()) == -1)
-		EXIT_FATAL2("pf_key_init(): port_create() failed: %s",
-		    strerror(errno));
-
-	/*
-	 * Extended REGISTER for AH/ESP combination(s).
-	 */
-
-	PRTDBG(D_PFKEY, ("Initializing PF_KEY socket..."));
-
-	samsg->sadb_msg_version = PF_KEY_V2;
-	samsg->sadb_msg_type = SADB_REGISTER;
-	samsg->sadb_msg_errno = 0;
-	samsg->sadb_msg_satype = SADB_SATYPE_UNSPEC;
-	samsg->sadb_msg_reserved = 0;
-	samsg->sadb_msg_seq = 1;
-	samsg->sadb_msg_pid = pid;
-	samsg->sadb_msg_len = SADB_8TO64(sizeof (*samsg) + sizeof (*ereg));
-
-	ereg->sadb_x_ereg_len = SADB_8TO64(sizeof (*ereg));
-	ereg->sadb_x_ereg_exttype = SADB_X_EXT_EREG;
-	ereg->sadb_x_ereg_satypes[0] = SADB_SATYPE_ESP;
-	ereg->sadb_x_ereg_satypes[1] = SADB_SATYPE_AH;
-	ereg->sadb_x_ereg_satypes[2] = SADB_SATYPE_UNSPEC;
-
-	rc = write(pfkey, buffer, sizeof (*samsg) + sizeof (*ereg));
-	if (rc == -1)
-		err(EXIT_FAILURE, "Extended register write error");
-
-	do {
-
-		do {
-			rc = read(pfkey, buffer, sizeof (buffer));
-			if (rc == -1)
-				err(-1, "Extended register read error");
-
-		} while (samsg->sadb_msg_seq != 1 ||
-		    samsg->sadb_msg_pid != pid ||
-		    samsg->sadb_msg_type != SADB_REGISTER);
-
-		if (samsg->sadb_msg_errno != 0) {
-			if (samsg->sadb_msg_errno == EPROTONOSUPPORT) {
-				PRTDBG(D_PFKEY,
-				    ("Protocol %d not supported.",
-				    samsg->sadb_msg_satype));
-			} else {
-				EXIT_FATAL2("Extended REGISTER returned",
-				    strerror(samsg->sadb_msg_errno));
-			}
-		}
-
-		switch (samsg->sadb_msg_satype) {
-		case SADB_SATYPE_ESP:
-			esp_ack = B_TRUE;
-			PRTDBG(D_PFKEY, ("ESP initial REGISTER with SADB..."));
-			break;
-		case SADB_SATYPE_AH:
-			ah_ack = B_TRUE;
-			PRTDBG(D_PFKEY, ("AH initial REGISTER with SADB..."));
-			break;
-		default:
-			EXIT_FATAL2("Bad satype in extended register ACK %d.",
-			    samsg->sadb_msg_satype);
-		}
-
-		handle_register(samsg);
-	} while (!esp_ack || !ah_ack);
-
-	schedule_socket(TG_PFKEY, pfkey, inbound_pfkey);
+		STDERR(error, log, "Unable to send PFKEY error notification");
 }
 
 static void
 handle_reply(sadb_msg_t *reply)
 {
 	pfreq_t *req;
+	uu_list_index_t idx;
 
-	/* XXX KEBE SAYS FILL ME IN! */
+	PTH(pthread_mutex_lock(&pfreq_lock));
+	req = uu_list_find(pfreq_list, NULL, reply, &idx);
+	if (req != NULL)
+		uu_list_remove(pfreq_list, req);
+	PTH(pthread_mutex_unlock(&pfreq_lock));
 
-	(void) pthread_mutex_lock(&pfreq_lock);
-	for (req = pfreqs; req != NULL; req = req->next)
-		if (req->msgid == reply->sadb_msg_seq) {
-			*(req->ptpn) = req->next;
-			if (req->next != NULL)
-				req->next->ptpn = req->ptpn;
-			break;
-		}
-	(void) pthread_mutex_unlock(&pfreq_lock);
-
-	if (req != NULL && req->msgid != reply->sadb_msg_seq) {
-		flockfile(debugfile);
-		PRTDBG(D_PFKEY, ("Received a reply to an unknown pfkey "
-		    "request (msgtype: %s (%d); pid: %" PRIu32 "d; "
-		    "seq: %" PRIu32 "u). Ignoring.",
+	if (req == NULL) {
+		/* XXX: log more fields? */
+		bunyan_info(pflog, "Received a reply to an unknown request; "
+		    "ignorning.",
+		    BUNYAN_T_STRING, "msg_type",
 		    pfkey_satype(reply->sadb_msg_type),
-		    reply->sadb_msg_type, reply->sadb_msg_pid,
-		    reply->sadb_msg_seq));
-		if (debug == D_ALL)
-			DUMP_PFKEY(reply);
-		funlockfile(debugfile);
+		    BUNYAN_T_UINT32, "msg_type_val",
+		    (uint32_t)reply->sadb_msg_type,
+		    BUNYAN_T_INT32, "pid", reply->sadb_msg_pid,
+		    BUNYAN_T_UINT32, "seq", reply->sadb_msg_seq,
+		    BUNYAN_T_END);
 		free(reply);
 		return;
 	}
 
-	req->cb(reply, req->data);
+	req->pr_cb(reply, req->pr_data);
 	pfreq_free(req);
 
 #if 0
@@ -594,7 +494,7 @@ handle_reply(sadb_msg_t *reply)
 static void
 handle_flush(sadb_msg_t *samsg)
 {
-	PRTDBG(D_PFKEY, ("Handling SADB flush message..."));
+	bunyan_trace(pflog, "Handling SADB flush message", BUNYAN_T_END);
 
 	/* Return if just AH or ESP SAs are being freed. */
 	if (samsg->sadb_msg_satype != SADB_SATYPE_UNSPEC)
@@ -621,7 +521,7 @@ handle_flush(sadb_msg_t *samsg)
 static void
 handle_idle_timeout(sadb_msg_t *samsg)
 {
-	PRTDBG(D_PFKEY, ("Handling SADB idle expire message..."));
+	bunyan_trace(pflog, "Handling SADB idle expire message", BUNYAN_T_END);
 
 	/* XXX KEBE SAYS FILL ME IN! */
 	free(samsg);
@@ -642,7 +542,8 @@ handle_expire(sadb_msg_t *samsg)
 	 */
 
 	if (extract_exts(samsg, &pmsg, 1, SADB_EXT_LIFETIME_HARD)) {
-		PRTDBG(D_PFKEY, ("Handling SADB hard expire message..."));
+		bunyan_debug(pflog, "Handling SADB hard expire message",
+		    BUNYAN_T_END);
 		handle_delete(samsg);
 		return;
 	}
@@ -661,11 +562,13 @@ handle_expire(sadb_msg_t *samsg)
 	 */
 
 	if (pmsg.pmsg_exts[SADB_EXT_LIFETIME_SOFT] == NULL) {
-		PRTDBG(D_PFKEY, ("SADB EXPIRE message is missing both"
-		    " hard and soft lifetimes."));
+		/* XXX: more fields */
+		bunyan_info(pflog, "SADB EXPIRE message is missing both "
+		    "hard and soft lifetimes", BUNYAN_T_END);
+		/* XXX: ignore? */
 	}
 
-	PRTDBG(D_PFKEY, ("Handling SADB soft expire message..."));
+	bunyan_debug(pflog, "Handling SADB soft expire message", BUNYAN_T_END);
 	/* XXX KEBE SAYS FILL ME IN! */
 
 	free(samsg);
@@ -688,7 +591,7 @@ handle_register(sadb_msg_t *samsg)
 static void
 handle_delete(sadb_msg_t *samsg)
 {
-	PRTDBG(D_PFKEY, ("Handling SADB delete..."));
+	bunyan_trace(pflog, "Handling SADB delete", BUNYAN_T_END);
 
 	/* XXX KEBE SAYS FILL ME IN! */
 	free(samsg);
@@ -708,10 +611,11 @@ handle_acquire(sadb_msg_t *samsg, boolean_t create_child_sa)
 	ikev2_pay_sa_t *sap;
 	parsedmsg_t pmsg;
 
-	PRTDBG(D_PFKEY, ("Handling SADB acquire..."));
+	bunyan_debug(pflog, "Handling SADB acquire", BUNYAN_T_END);
 
 	if (!extract_exts(samsg, &pmsg, 1, SADB_EXT_PROPOSAL)) {
-		PRTDBG(D_PFKEY, ("No proposal found in ACQUIRE message"));
+		bunyan_info(pflog, "No proposal found in ACQUIRE message",
+		    BUNYAN_T_END);
 		free(samsg);
 		return;
 	}
@@ -1007,6 +911,35 @@ ikev2_pf_to_auth(int alg)
 }
 
 static int
+pfreq_compare(const void *l_arg, const void *r_arg, void *msg_arg)
+{
+	const pfreq_t *l = l_arg;
+	const pfreq_t *r = r_arg;
+	sadb_msg_t *msg = msg_arg;
+	uint32_t msgid;
+	
+	ASSERT((r != NULL && msg == NULL) || (r == NULL && msg != NULL));
+
+	if (r != NULL)
+		msgid = r->pr_msgid;
+	else
+		msgid = msg->sadb_msg_seq;
+
+	if (l->pr_msgid < msgid)
+		return (-1);
+	if (l->pr_msgid > msgid)
+		return (1);
+	if (r == NULL)
+		return (0);
+
+	if (l->pr_data < r->pr_data)
+		return (-1);
+	if (l->pr_data > r->pr_data)
+		return (1);
+	return (0);
+}
+
+static int
 pfreq_ctor(void *buf, void *ignore, int flags)
 {
 	_NOTE(ARGUNUSED(ignore, flags))
@@ -1022,23 +955,23 @@ pfreq_new(pfreq_cb_t *cb, void *data)
 	if (req == NULL)
 		return (NULL);
 
-	req->msgid = atomic_inc_32_nv(&msgid);
-	req->cb = cb;
-	req->data = data;
+	req->pr_msgid = atomic_inc_32_nv(&msgid);
+	req->pr_cb = cb;
+	req->pr_data = data;
 	return (req);
 }
 
 static void
 pfreq_free(pfreq_t *req)
 {
-	(void) memset(req, 0, sizeof (pfreq_t));
+	(void) pfreq_ctor(req, NULL, 0);
 	umem_cache_free(pfreq_cache, req);
 }
 
 void
 pfkey_init(void)
 {
-	uint64_t buffer[128];
+	uint64_t buffer[128] = { 0 };
 	sadb_msg_t *samsg = (sadb_msg_t *)buffer;
 	sadb_x_ereg_t *ereg = (sadb_x_ereg_t *)(samsg + 1);
 	boolean_t ah_ack = B_FALSE;
@@ -1054,12 +987,12 @@ pfkey_init(void)
 #endif
 
 	pfreq_pool = uu_list_pool_create("pfreq list", sizeof (pfreq_t),
-	    offsetof(pfreq_t, pf_node), pf_compare, flag);
+	    offsetof(pfreq_t, pr_node), pfreq_compare, flag);
 	if (pfreq_pool == NULL)
 		err(EXIT_FAILURE, "Unable to create pfreq list pool");
 
 	pfreq_cache = umem_cache_create("pfreq cache", sizeof (pfreq_t),
-	    pfreq_ctor, NULL, NULL, NULL, NULL, 0);
+	    sizeof (uint64_t), pfreq_ctor, NULL, NULL, NULL, NULL, 0);
 	if (pfreq_cache == NULL)
 		err(EXIT_FAILURE, "Unable to create pfreq cache");
 
@@ -1083,7 +1016,7 @@ pfkey_init(void)
 	samsg->sadb_msg_satype = SADB_SATYPE_UNSPEC;
 	samsg->sadb_msg_reserved = 0;
 	samsg->sadb_msg_seq = 1;
-	samsg->sadb_msg_pid = pid;
+	samsg->sadb_msg_pid = getpid();
 	samsg->sadb_msg_len = SADB_8TO64(sizeof (*samsg) + sizeof (*ereg));
 
 	ereg->sadb_x_ereg_len = SADB_8TO64(sizeof (*ereg));
@@ -1098,6 +1031,48 @@ pfkey_init(void)
 	if (n < sizeof (*samsg) + sizeof (*ereg))
 		errx(EXIT_FAILURE, "Unable to write extended register message");
 
+	pid_t pid = getpid();
+	do {
+		do {
+			(void) memset(buffer, 0, sizeof (buffer));
+			n = read(pfkey, buffer, sizeof (buffer));
+			if (n < 0)
+				err(EXIT_FAILURE, "Extended register read "
+				    "error");
+		} while (samsg->sadb_msg_seq !=1 ||
+		    samsg->sadb_msg_pid != pid ||
+		    samsg->sadb_msg_type != SADB_REGISTER);
+
+		if (samsg->sadb_msg_errno != 0) {
+			if (samsg->sadb_msg_errno != EPROTONOSUPPORT)
+				errx(EXIT_FAILURE, "Extended REGISTER "
+				    "returned %s (%d).",
+				    strerror(samsg->sadb_msg_errno),
+				    samsg->sadb_msg_errno);
+			bunyan_info(pflog, "Protocol not supported",
+			    BUNYAN_T_UINT32, "msg_satype",
+			    (uint32_t)samsg->sadb_msg_satype,
+			    BUNYAN_T_END);
+		}
+
+		switch (samsg->sadb_msg_satype) {
+		case SADB_SATYPE_ESP:
+			esp_ack = B_TRUE;
+			bunyan_debug(pflog, "ESP initial REGISTER with SADB",
+			    BUNYAN_T_END);
+			break;
+		case SADB_SATYPE_AH:
+			ah_ack = B_TRUE;
+			bunyan_debug(pflog, "AH initial REGISTER with SADB",
+			    BUNYAN_T_END);
+			break;
+		default:
+			err(EXIT_FAILURE, "Bad satype %d in extended register "
+			    "ACK.", samsg->sadb_msg_satype);
+		}
+
+		handle_register(samsg);
+	} while (!esp_ack || !ah_ack);
 
 	schedule_socket(pfkey, pfkey_inbound);
 }
