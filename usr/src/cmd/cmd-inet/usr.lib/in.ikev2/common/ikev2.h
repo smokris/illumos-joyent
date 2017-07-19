@@ -177,14 +177,16 @@ typedef enum ikev2_encr_e {
 #define	IKEV2_IPCOMP_LZS		3	/* RFC2395 */
 #define	IKEV2_IPCOMP_LZJH		4	/* RFC3051 */
 
-#define	IKEV2_XFORMPRF_HMAC_MD5		1	/* RFC2104 */
-#define	IKEV2_XFORMPRF_HMAC_SHA1	2	/* RFC2104 */
-#define	IKEV2_XFORMPRF_HMAC_TIGER	3	/* RFC2104 */
-#define	IKEV2_XFORMPRF_AES128_XCBC	4	/* RFC3664 */
-#define	IKEV2_XFORMPRF_HMAC_SHA2_256	5	/* RFC4868 */
-#define	IKEV2_XFORMPRF_HMAC_SHA2_384	6	/* RFC4868 */
-#define	IKEV2_XFORMPRF_HMAC_SHA2_512	7	/* RFC4868 */
-#define	IKEV2_XFORMPRF_AES128_CMAC	8	/* RFC4615 */
+typedef enum ikev2_prf {
+	IKEV2_PRF_HMAC_MD5		= 1,	/* RFC2104 */
+	IKEV2_PRF_HMAC_SHA1		= 2,	/* RFC2104 */
+	IKEV2_PRF_HMAC_TIGER		= 3,	/* RFC2104 */
+	IKEV2_PRF_AES128_XCBC		= 4,	/* RFC3664 */
+	IKEV2_PRF_HMAC_SHA2_256		= 5,	/* RFC4868 */
+	IKEV2_PRF_HMAC_SHA2_384		= 6,	/* RFC4868 */
+	IKEV2_PRF_HMAC_SHA2_512		= 7,	/* RFC4868 */
+	IKEV2_PRF_AES128_CMAC		= 8	/* RFC4615 */
+} ikev2_prf_t;
 
 typedef enum ikev2_xf_auth_e {
 	IKEV2_XF_AUTH_NONE			= 0,	/* No Authentication */
@@ -204,29 +206,31 @@ typedef enum ikev2_xf_auth_e {
 	IKEV2_XF_AUTH_HMAC_SHA2_512_256 	= 14	/* RFC4868 */
 } ikev2_xf_auth_t;
 
-#define	IKEV2_DH_NONE		0	/* No DH */
-#define	IKEV2_DH_MODP_768		1	/* DH Group 1 */
-#define	IKEV2_DH_MODP_1024		2	/* DH Group 2 */
-#define	IKEV2_DH_EC2N_155		3	/* DH Group 3 */
-#define	IKEV2_DH_EC2N_185		4	/* DH Group 3 */
-#define	IKEV2_DH_MODP_1536		5	/* DH Group 5 */
-#define	IKEV2_DH_MODP_2048		14	/* DH Group 14 */
-#define	IKEV2_DH_MODP_3072		15	/* DH Group 15 */
-#define	IKEV2_DH_MODP_4096		16	/* DH Group 16 */
-#define	IKEV2_DH_MODP_6144		17	/* DH Group 17 */
-#define	IKEV2_DH_MODP_8192		18	/* DH Group 18 */
-#define	IKEV2_DH_ECP_256		19	/* DH Group 19 */
-#define	IKEV2_DH_ECP_384		20	/* DH Group 20 */
-#define	IKEV2_DH_ECP_521		21	/* DH Group 21 */
-#define	IKEV2_DH_MODP_1024_160		22	/* DH Group 22 */
-#define	IKEV2_DH_MODP_2048_224		23	/* DH Group 23 */
-#define	IKEV2_DH_MODP_2048_256		24	/* DH Group 24 */
-#define	IKEV2_DH_ECP_192		25	/* DH Group 25 */
-#define	IKEV2_DH_ECP_224		26	/* DH Group 26 */
-#define	IKEV2_DH_BRAINPOOL_P224R1	27	/* DH Group 27 */
-#define	IKEV2_DH_BRAINPOOL_P256R1	28	/* DH Group 28 */
-#define	IKEV2_DH_BRAINPOOL_P384R1	29	/* DH Group 29 */
-#define	IKEV2_DH_BRAINPOOL_P512R1	30	/* DH Group 30 */
+typedef enum ikev2_dh {
+	IKEV2_DH_NONE			= 0,	/* No DH */
+	IKEV2_DH_MODP_768		= 1,	/* DH Group 1 */
+	IKEV2_DH_MODP_1024		= 2,	/* DH Group 2 */
+	IKEV2_DH_EC2N_155		= 3,	/* DH Group 3 */
+	IKEV2_DH_EC2N_185		= 4,	/* DH Group 3 */
+	IKEV2_DH_MODP_1536		= 5,	/* DH Group 5 */
+	IKEV2_DH_MODP_2048		= 14,	/* DH Group 14 */
+	IKEV2_DH_MODP_3072		= 15,	/* DH Group 15 */
+	IKEV2_DH_MODP_4096		= 16,	/* DH Group 16 */
+	IKEV2_DH_MODP_6144		= 17,	/* DH Group 17 */
+	IKEV2_DH_MODP_8192		= 18,	/* DH Group 18 */
+	IKEV2_DH_ECP_256		= 19,	/* DH Group 19 */
+	IKEV2_DH_ECP_384		= 20,	/* DH Group 20 */
+	IKEV2_DH_ECP_521		= 21,	/* DH Group 21 */
+	IKEV2_DH_MODP_1024_160		= 22,	/* DH Group 22 */
+	IKEV2_DH_MODP_2048_224		= 23,	/* DH Group 23 */
+	IKEV2_DH_MODP_2048_256		= 24,	/* DH Group 24 */
+	IKEV2_DH_ECP_192		= 25,	/* DH Group 25 */
+	IKEV2_DH_ECP_224		= 26,	/* DH Group 26 */
+	IKEV2_DH_BRAINPOOL_P224R1	= 27,	/* DH Group 27 */
+	IKEV2_DH_BRAINPOOL_P256R1	= 28,	/* DH Group 28 */
+	IKEV2_DH_BRAINPOOL_P384R1	= 29,	/* DH Group 29 */
+	IKEV2_DH_BRAINPOOL_P512R1	= 30	/* DH Group 30 */
+} ikev2_dh_t;
 #define	IKEV2_DH_MAX			31
 
 #define	IKEV2_XFORMESN_NONE		0	/* No ESN */
