@@ -31,11 +31,13 @@ OBJS =	buf.o		\
 	config.o	\
 	dh.o		\
 	fromto.o	\
+	ikev2_common.o	\
 	ikev2_pkt.o	\
 	ikev2_proto.o	\
 	ikev2_sa.o	\
 	inbound.o	\
 	main.o		\
+	pfkey.o		\
 	prf.o		\
 	pkcs11.o	\
 	pkt.o		\

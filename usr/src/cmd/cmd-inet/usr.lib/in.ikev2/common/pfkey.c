@@ -454,21 +454,20 @@ handle_reply(sadb_msg_t *reply)
 		return;
 	}
 
+#if 0
 	req->pr_cb(reply, req->pr_data);
 	pfreq_free(req);
-
-#if 0
+#endif
 
 	switch (reply->sadb_msg_type) {
 	case SADB_ACQUIRE:
 	{
 		/* Should be a response to our inverse acquire */
-		ikev2_pay_sa_t *i2sa_pay;
-		parsedmsg_t pmsg;
+		parsedmsg_t pmsg = { 0 };
 
 		if (!extract_exts(reply, &pmsg, 1, SADB_X_EXT_EPROP)) {
-			PRTDBG(D_PFKEY, ("No extended proposal found in "
-			    "ACQUIRE reply."));
+			bunyan_info(pflog, "No extended proposal found in "
+			    "ACQUIRE reply.", BUNYAN_T_END);
 			free(reply);
 			return;
 		}
@@ -477,7 +476,6 @@ handle_reply(sadb_msg_t *reply)
 		 * XXX: lookup what we queried based on msgid, extract
 		 * SA type and pass to convert_ext_acquire
 		 */
-		i2sa_pay = convert_ext_acquire(&pmsg, 0);
 
 		/* XXX: continue CHILD SA processing */
 		break;
@@ -486,7 +484,6 @@ handle_reply(sadb_msg_t *reply)
 		/* XXX: More to come */
 		;
 	}
-#endif
 
 	free(reply);
 }
@@ -608,7 +605,6 @@ handle_acquire(sadb_msg_t *samsg, boolean_t create_child_sa)
 	/* XXX: for now */
 	_NOTE(ARGUNUSED(create_child_sa))
 
-	ikev2_pay_sa_t *sap;
 	parsedmsg_t pmsg;
 
 	bunyan_debug(pflog, "Handling SADB acquire", BUNYAN_T_END);
@@ -620,294 +616,8 @@ handle_acquire(sadb_msg_t *samsg, boolean_t create_child_sa)
 		return;
 	}
 
-	sap = convert_acquire(&pmsg);
-	if (sap == NULL) {
-		free(samsg);
-		return;
-	}
-
 	/* XXX KEBE SAYS FILL ME IN! */
 	free(samsg);
-}
-
-static boolean_t
-add_encr_xf(ikev2_prop_t *i2prop, uint8_t alg, uint16_t minbits,
-    uint16_t maxbits)
-{
-	ikev2_xf_t *xf;
-	ikev2_xf_attr_t *xf_attr;
-	encr_param_t *ep;
-	int keylen;
-
-	/* The SADB_EALG_* and IKEV2_XF_ENCR_* values match */
-	ep = ikev2_get_encr_param(alg);
-
-	/*
-	 * Some algs MUST NOT include a key length attribute, others
-	 * should can have a default value is defined for the alg
-	 * (e.g. blowfish) if not key length is specified.
-	 *
-	 * To maximize compatability, we cf course add transforms
-	 * sans-keylength for those algs where it shouldn't be included
-	 * as well as those with a default key size (but support multiple
-	 * sizes) assuming it is in the acceptable range.  For the latter,
-	 * we also include an explicit list of key sizes.
-	 */
-	if (ep->key_min == ep->key_max ||
-	    (minbits <= ep->key_default && maxbits >= ep->key_default)) {
-		xf = ikev2_xf_alloc(IKEV2_XF_TYPE_ENCR, alg);
-		if (xf == NULL) {
-			PRTDBG(D_PFKEY, ("No memory for transform."));
-			return (B_FALSE);
-		}
-		ikev2_add_xform(i2prop, xf);
-	}
-
-	/* For fixed sizes keys, we're done */
-	if (ep->key_min == ep->key_max)
-		return (B_TRUE);
-
-	for (keylen = maxbits; keylen >= minbits; keylen -= ep->key_incr) {
-		xf_attr = ikev2_xf_attr_alloc();
-		if (xf_attr == NULL) {
-			PRTDBG(D_PFKEY, ("No memory for transform attribute."));
-			return (B_FALSE);
-		}
-
-		xf_attr->type = IKEV2_XF_ATTR_KEY_LENGTH;
-		xf_attr->tv = B_TRUE;
-		xf_attr->val.val = keylen;
-
-		xf = ikev2_xf_alloc(IKEV2_XF_TYPE_ENCR, alg);
-		if (xf == NULL) {
-			ikev2_xf_attr_free(xf_attr);
-			PRTDBG(D_PFKEY, ("No memory for transform."));
-			return (B_FALSE);
-		}
-
-		/* This should always succeed */
-		assert(ikev2_add_xf_attr(xf, xf_attr));
-		ikev2_add_xform(i2prop, xf);
-	}
-
-	return (B_TRUE);
-}
-
-static boolean_t
-convert_prop(uint8_t satype, ikev2_pay_sa_t *sap, sadb_prop_t *pfprop)
-{
-	sadb_comb_t *combs;
-	ikev2_prop_t *i2prop;
-	ikev2_xf_t *xf;
-	int i, numcombs;
-	ikev2_spi_proto_t proto;
-
-	assert(pfprop->sadb_prop_exttype == SADB_EXT_PROPOSAL);
-
-	switch (satype) {
-	case SADB_SATYPE_AH:
-	case SADB_SATYPE_ESP:
-		/*
-		 * The SADB_SATYPE_* and IKEV2_SPI_* values for AH and ESP
-		 * are the same.  Other values (such as FC) are not and
-		 * will need to be dealt with if we ever support that.
-		 */
-		proto = satype;
-		break;
-	default:
-		PRTDBG(D_PFKEY, ("Unsuported ACQUIRE SATYPE %s.",
-		    pfkey_satype(satype)));
-		return (B_FALSE);
-	}
-
-	numcombs = pfprop->sadb_prop_len - SADB_8TO64(sizeof (*pfprop));
-	numcombs /= SADB_8TO64(sizeof (*combs));
-
-	combs = (sadb_comb_t *)(pfprop + 1);
-
-	for (i = 0; i < numcombs; i++) {
-		i2prop = ikev2_prop_alloc();
-		if (i2prop == NULL) {
-			PRTDBG(D_PFKEY, ("No memory for IKEv2 proposal."));
-			return (B_FALSE);
-		}
-
-		i2prop->id = proto;
-
-		xf = ikev2_xf_alloc(IKEV2_XF_TYPE_AUTH,
-		    ikev2_pf_to_auth(combs[i].sadb_comb_auth));
-
-		if (xf == NULL) {
-			PRTDBG(D_PFKEY, ("No memory for IKEv2 transform."));
-			ikev2_prop_free(i2prop);
-			return (B_FALSE);
-		}
-
-		ikev2_add_xform(i2prop, xf);
-
-		if (!add_encr_xf(i2prop, combs[i].sadb_comb_encrypt,
-		    combs[i].sadb_comb_encrypt_minbits,
-		    combs[i].sadb_comb_encrypt_maxbits)) {
-			ikev2_prop_free(i2prop);
-			return (B_FALSE);
-		}
-
-		ikev2_add_proposal(sap, i2prop);
-	}
-
-	return (B_TRUE);
-}
-
-/*
- * Convert an PF_KEY ACQUIRE message into an IKEv2 SA payload
- */
-static ikev2_pay_sa_t *
-convert_acquire(parsedmsg_t *acq)
-{
-	ikev2_pay_sa_t *sap;
-	sadb_prop_t *pfprop;
-
-	sap = (ikev2_pay_sa_t *)ikev2_pay_alloc(IKEV2_PAYLOAD_SA, B_FALSE);
-	if (sap == NULL) {
-		PRTDBG(D_PFKEY, ("No memory for SA payload."));
-		return (NULL);
-	}
-
-	pfprop = (sadb_prop_t *)acq->pmsg_exts[SADB_EXT_PROPOSAL];
-
-	if (!convert_prop(acq->pmsg_samsg->sadb_msg_satype, sap, pfprop)) {
-		ikev2_pay_free((ikev2_pay_t *)sap);
-		return (NULL);
-	}
-
-	return (sap);
-}
-
-static boolean_t
-convert_algdesc(ikev2_prop_t *i2prop, sadb_x_algdesc_t *algdesc)
-{
-	ikev2_xf_t *xf;
-	int id;
-
-	switch (algdesc->sadb_x_algdesc_algtype) {
-	case SADB_X_ALGTYPE_AUTH:
-		id = ikev2_pf_to_auth(algdesc->sadb_x_algdesc_alg);
-		xf = ikev2_xf_alloc(IKEV2_XF_TYPE_AUTH, id);
-		if (xf == NULL) {
-			PRTDBG(D_PFKEY, ("No memory for transform"));
-			return (B_FALSE);
-		}
-		ikev2_add_xform(i2prop, xf);
-		return (B_TRUE);
-
-	case SADB_X_ALGTYPE_CRYPT:
-		if (!add_encr_xf(i2prop, algdesc->sadb_x_algdesc_alg,
-		    algdesc->sadb_x_algdesc_minbits,
-		    algdesc->sadb_x_algdesc_maxbits))
-			return (B_FALSE);
-		return (B_TRUE);
-
-	default:
-		PRTDBG(D_PFKEY, ("Unsupported algtype %d in extended ACQUIRE.",
-		    algdesc->sadb_x_algdesc_algtype));
-		/*
-		 * XXX: should this stop conversion of the ACQUIRE altogether
-		 * or should we just ignore the alg?
-		 * for now, we'll ignore.
-		 */
-		return (B_TRUE);
-	}
-}
-
-/*
- * Convert an extended acquire into an IKEV2 SA payload
- */
-static ikev2_pay_sa_t *
-convert_ext_acquire(parsedmsg_t *eacq, ikev2_spi_proto_t proto)
-{
-	uint64_t *sofar;
-	ikev2_pay_sa_t *sap;
-	sadb_prop_t *eprop = (sadb_prop_t *)eacq->pmsg_exts[SADB_X_EXT_EPROP];
-	sadb_x_ecomb_t *ecomb;
-	sadb_x_algdesc_t *algdesc;
-	uint8_t algtype;
-	int i, j;
-
-	switch (proto) {
-	case IKEV2_SPI_AH:
-	case IKEV2_SPI_ESP:
-		algtype = proto;
-		break;
-	default:
-		PRTDBG(D_PFKEY, ("Unsupported SA Type %s in extended ACQUIRE.",
-		    ikev2_spi_str(proto)));
-		return (NULL);
-	}
-
-	sap = (ikev2_pay_sa_t *)ikev2_pay_alloc(IKEV2_PAYLOAD_SA, B_FALSE);
-	if (sap == NULL) {
-		PRTDBG(D_PFKEY, ("No memory for SA payload."));
-		return (NULL);
-	}
-
-	sofar = (uint64_t *)(eprop + 1);
-	ecomb = (sadb_x_ecomb_t *)sofar;
-
-	for (i = 0; i < eprop->sadb_x_prop_numecombs; i++) {
-		ikev2_prop_t *i2prop;
-
-		i2prop = ikev2_prop_alloc();
-		if (i2prop == NULL) {
-			PRTDBG(D_PFKEY, ("No memory for SA proposal."));
-			ikev2_pay_free((ikev2_pay_t *)sap);
-			return (NULL);
-		}
-
-		i2prop->id = proto;
-
-		sofar = (uint64_t *)(ecomb + 1);
-		algdesc = (sadb_x_algdesc_t *)sofar;
-
-		for (j = 0; i < ecomb->sadb_x_ecomb_numalgs; j++) {
-			if (algdesc->sadb_x_algdesc_algtype != algtype &&
-			    algdesc->sadb_x_algdesc_algtype !=
-			    SADB_SATYPE_UNSPEC) {
-				sofar = (uint64_t *)(algdesc++);
-				continue;
-			}
-
-			if (!convert_algdesc(i2prop, algdesc)) {
-				ikev2_prop_free(i2prop);
-				ikev2_pay_free((ikev2_pay_t *)sap);
-				return (NULL);
-			}
-
-			sofar = (uint64_t *)(++algdesc);
-		}
-
-		ikev2_add_proposal(sap, i2prop);
-		ecomb = (sadb_x_ecomb_t *)sofar;
-	}
-
-	return (sap);
-}
-
-static ikev2_xf_auth_t
-ikev2_pf_to_auth(int alg)
-{
-	/*
-	 * Most of the SADB_* values correspond to the IKEV2 values
-	 * however, these two do not.  New auth algs should use
-	 * the corresponding IKEV2 values.
-	 */
-	switch (alg) {
-	case SADB_AALG_MD5HMAC:
-		return (IKEV2_XF_AUTH_HMAC_MD5_96);
-	case SADB_AALG_SHA1HMAC:
-		return (IKEV2_XF_AUTH_HMAC_SHA1_96);
-	default:
-		return (alg);
-	}
 }
 
 static int

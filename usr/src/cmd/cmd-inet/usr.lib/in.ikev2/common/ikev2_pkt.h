@@ -47,6 +47,7 @@ boolean_t ikev2_add_sa(pkt_t *);
 boolean_t ikev2_add_prop(pkt_t *, uint8_t, ikev2_spi_proto_t, uint64_t);
 boolean_t ikev2_add_xform(pkt_t *, ikev2_xf_type_t, int);
 boolean_t ikev2_add_xf_attr(pkt_t *, ikev2_xf_attr_type_t, uintptr_t);
+boolean_t ikev2_add_xf_encr(pkt_t *, ikev2_xf_encr_t, uint16_t, uint16_t);
 boolean_t ikev2_add_ke(pkt_t *restrict, uint_t, const uchar_t *restrict,
     size_t);
 boolean_t ikev2_add_id_i(pkt_t *restrict, ikev2_id_type_t, ...);

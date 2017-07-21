@@ -34,6 +34,7 @@
 #include "ikev2.h"
 #include "ikev2_sa.h"
 #include "ikev2_pkt.h"
+#include "pkcs11.h"
 
 #define	PKT_IS_V2(p) \
 	(IKE_GET_MAJORV((p)->header.version) == IKE_GET_MAJORV(IKEV2_VERSION))
@@ -408,6 +409,89 @@ ikev2_add_xf_attr(pkt_t *pkt, ikev2_xf_attr_type_t xf_attr_type,
 	}
 
 	return (B_FALSE);
+}
+
+boolean_t
+ikev2_add_xf_encr(pkt_t *pkt, ikev2_xf_encr_t encr, uint16_t minbits,
+    uint16_t maxbits)
+{
+	uint16_t incr = 0;
+	boolean_t ok = B_TRUE;
+
+	switch (encr) {
+	case IKEV2_ENCR_NONE:
+	case IKEV2_ENCR_NULL:
+		INVALID("encr");
+		/*NOTREACHED*/
+		return (B_FALSE);
+
+	/* XXX: need to confirm this */
+	case IKEV2_ENCR_NULL_AES_GMAC:
+		return (B_TRUE);
+
+	/* ones that should never include a key size */
+	case IKEV2_ENCR_DES_IV64:
+	case IKEV2_ENCR_DES:
+	case IKEV2_ENCR_3DES:
+	case IKEV2_ENCR_IDEA:
+	case IKEV2_ENCR_3IDEA:
+	case IKEV2_ENCR_DES_IV32:
+		VERIFY3U(minbits, ==, 0);
+		VERIFY3U(maxbits, ==, 0);
+		return (ikev2_add_xform(pkt, IKEV2_XF_ENCR, encr));
+
+	/* optional key size */
+	case IKEV2_ENCR_RC4:
+	case IKEV2_ENCR_RC5:
+	case IKEV2_ENCR_BLOWFISH:
+	case IKEV2_ENCR_CAST:
+		if (minbits == 0 && maxbits == 0)
+			return (ikev2_add_xform(pkt, IKEV2_XF_ENCR, encr));
+		incr = 1;
+		break;
+
+	case IKEV2_ENCR_AES_CBC:
+	case IKEV2_ENCR_AES_CTR:
+	case IKEV2_ENCR_AES_CCM_8:
+	case IKEV2_ENCR_AES_CCM_12:
+	case IKEV2_ENCR_AES_CCM_16:
+	case IKEV2_ENCR_AES_GCM_8:
+	case IKEV2_ENCR_AES_GCM_12:
+	case IKEV2_ENCR_AES_GCM_16:
+	case IKEV2_ENCR_XTS_AES:
+		incr = 64;
+		break;
+
+	case IKEV2_ENCR_CAMELLIA_CBC:
+	case IKEV2_ENCR_CAMELLIA_CTR:
+	case IKEV2_ENCR_CAMELLIA_CCM_8:
+	case IKEV2_ENCR_CAMELLIA_CCM_12:
+	case IKEV2_ENCR_CAMELLIA_CCM_16:
+		VERIFY3U(minbits, >=, 128);
+		VERIFY3U(maxbits, <=, 256);
+		incr = 64;
+		break;
+	}
+
+	if (incr == 1) {
+		/*
+		 * instead of adding potentially hundreds of transforms for
+		 * a range of keysizes, for those with arbitrary key sizes
+		 * we just add the min and max
+		 */
+		ok &= ikev2_add_xform(pkt, IKEV2_XF_ENCR, encr);
+		ok &= ikev2_add_xf_attr(pkt, IKEV2_XF_ATTR_KEYLEN, minbits);
+		ok &= ikev2_add_xform(pkt, IKEV2_XF_ENCR, encr);
+		ok &= ikev2_add_xf_attr(pkt, IKEV2_XF_ATTR_KEYLEN, maxbits);
+		return (ok);
+	}
+
+	for (size_t bits = minbits; bits <= maxbits; bits += incr) {
+		ok &= ikev2_add_xform(pkt, IKEV2_XF_ENCR, encr);
+		ok &= ikev2_add_xf_attr(pkt, IKEV2_XF_ATTR_KEYLEN, bits);
+	}
+
+	return (ok);
 }
 
 boolean_t
