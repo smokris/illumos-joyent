@@ -32,7 +32,7 @@ typedef struct prf_alg_s {
 } prf_alg_t;
 
 #define	MECHPAD(_i2, _p11, _in, _out) { 	\
-	.i2alg = IKEV2_XFORMPRF_HMAC_ ## _i2,	\
+	.i2alg = IKEV2_PRF_HMAC_ ## _i2,	\
 	.hash = CKM_ ## _p11,			\
 	.hmac = CKM_ ## _p11 ## _HMAC,		\
 	.inlen = _in,				\
@@ -323,15 +323,15 @@ CK_MECHANISM_TYPE
 ikev2_prf_to_p11(int prf)
 {
 	switch (prf) {
-	case IKEV2_XFORMPRF_HMAC_MD5:
+	case IKEV2_PRF_HMAC_MD5:
 		return (CKM_MD5_HMAC);
-	case IKEV2_XFORMPRF_HMAC_SHA1:
+	case IKEV2_PRF_HMAC_SHA1:
 		return (CKM_SHA_1_HMAC);
-	case IKEV2_XFORMPRF_HMAC_SHA2_256:
+	case IKEV2_PRF_HMAC_SHA2_256:
 		return (CKM_SHA256_HMAC);
-	case IKEV2_XFORMPRF_HMAC_SHA2_384:
+	case IKEV2_PRF_HMAC_SHA2_384:
 		return (CKM_SHA384_HMAC);
-	case IKEV2_XFORMPRF_HMAC_SHA2_512:
+	case IKEV2_PRF_HMAC_SHA2_512:
 		return (CKM_SHA512_HMAC);
 	}
 
