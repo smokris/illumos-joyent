@@ -61,6 +61,10 @@ static worker_t	**workers;
 static size_t	workers_alloc;
 static size_t	queuelen;
 
+static volatile uint_t nsuspended;
+static pthread_mutex_t suspend_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t suspend_cv = PTHREAD_COND_INITIALIZER;
+
 static worker_t *worker_init_one(size_t);
 static void *worker(void *);
 static const char *worker_cmd_str(worker_cmd_t);
@@ -153,13 +157,51 @@ worker_send_cmd(size_t n, worker_cmd_t cmd)
 void
 worker_suspend(void)
 {
+	PTH(pthread_rwlock_wrlock(&worker_lock));
+	for (size_t i = 0; i < nworkers; i++) {
+		worker_t *w = workers[i];
+		worker_queue_t *wq = &w->w_queue;
+		PTH(pthread_mutex_lock(&wq->wq_lock));
+		w->w_queue.wq_cmd = WC_SUSPEND;
+		PTH(pthread_cond_signal(&wq->wq_cv));
+		PTH(pthread_mutex_unlock(&wq->wq_lock));
+	}
+	PTH(pthread_rwlock_unlock(&worker_lock));
 
+	PTH(pthread_mutex_lock(&suspend_lock));
+	while (nsuspended != nworkers)
+		PTH(pthread_cond_wait(&suspend_cv, &suspend_lock));
+	PTH(pthread_mutex_unlock(&suspend_lock));
+}
+
+static void
+worker_do_suspend(worker_queue_t *wq)
+{
+	PTH(pthread_mutex_lock(&suspend_lock));
+	if (++nsuspended == nworkers)
+		PTH(pthread_cond_signal(&suspend_cv));
+	PTH(pthread_mutex_unlock(&suspend_lock));
+
+	PTH(pthread_mutex_lock(&wq->wq_lock));
+	while (wq->wq_cmd == WC_SUSPEND)
+		PTH(pthread_cond_wait(&wq->wq_cv, &wq->wq_lock));
+
+	/* leave wq->wq_lock locked */
 }
 
 void
 worker_resume(void)
 {
-
+	PTH(pthread_rwlock_wrlock(&worker_lock));
+	for (size_t i = 0; i < nworkers; i++) {
+		worker_t *w = workers[i];
+		worker_queue_t *wq = &w->w_queue;
+		PTH(pthread_mutex_lock(&wq->wq_lock));
+		wq->wq_cmd = WC_NONE;
+		PTH(pthread_mutex_unlock(&wq->wq_lock));
+		PTH(pthread_cond_broadcast(&wq->wq_cv));
+	}
+	PTH(pthread_rwlock_unlock(&worker_lock));
 }
 
 boolean_t
@@ -220,7 +262,6 @@ worker(void *arg)
 
 	/*CONSTCOND*/
 	while (1) {
-		wq->wq_cmd = WC_NONE;
 		process_timer(&ts, w->w_log);
 
 		if (ts.tv_sec == 0 && ts.tv_nsec == 0) {
@@ -242,8 +283,9 @@ worker(void *arg)
 		case WC_NONE:
 			break;
 		case WC_SUSPEND:
-			/* XXX: todo */
-			break;
+			worker_do_suspend(wq);
+			ASSERT(MUTEX_HELD(&wq->wq_lock));
+			continue;			
 		case WC_QUIT:
 			done = B_TRUE;
 			break;
