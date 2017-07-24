@@ -24,7 +24,7 @@
  * Use is subject to license terms.
  *
  * Copyright 2017 Jason King.
- * Copyright 2017 Joyent, Inc.
+ * Copyright (c) 2017, Joyent, Inc.
  */
 
 #include <syslog.h>
@@ -574,6 +574,227 @@ static encr_param_t encr_params[] = {
 	},
 #endif
 };
+
+/*
+ * We explicitly avoid using the default: case in these switch statements
+ * so that the addition of new IKEv2 encryption algs will cause compilation
+ * errors if they are not added to these functions.
+ */
+CK_MECHANISM_TYPE
+ikev2_encr_to_p11(ikev2_xf_encr_t encr)
+{
+	switch (encr) {
+	case IKEV2_ENCR_NONE:
+	case IKEV2_ENCR_NULL_AES_GMAC:
+	case IKEV2_ENCR_NULL:
+	case IKEV2_ENCR_3IDEA:
+	case IKEV2_ENCR_XTS_AES:
+		INVALID("encr");
+		/*NOTREACHED*/
+		return (0);
+	case IKEV2_ENCR_DES_IV64:
+	case IKEV2_ENCR_DES:
+	case IKEV2_ENCR_DES_IV32:
+		return (CKM_DES_CBC);
+	case IKEV2_ENCR_3DES:
+		return (CKM_DES3_CBC);
+	case IKEV2_ENCR_RC5:
+		return (CKM_RC5_CBC);
+	case IKEV2_ENCR_IDEA:
+		return (CKM_IDEA_CBC);
+	case IKEV2_ENCR_CAST:
+		return (CKM_CAST5_CBC);
+	case IKEV2_ENCR_BLOWFISH:
+		return (CKM_BLOWFISH_CBC);
+	case IKEV2_ENCR_RC4:
+		return (CKM_RC4);
+	case IKEV2_ENCR_AES_CBC:
+		return (CKM_AES_CBC);
+	case IKEV2_ENCR_AES_CTR:
+		return (CKM_AES_CTR);
+	case IKEV2_ENCR_AES_CCM_8:
+	case IKEV2_ENCR_AES_CCM_12:
+	case IKEV2_ENCR_AES_CCM_16:
+		return (CKM_AES_CCM);
+	case IKEV2_ENCR_AES_GCM_8:
+	case IKEV2_ENCR_AES_GCM_12:
+	case IKEV2_ENCR_AES_GCM_16:
+		return (CKM_AES_GCM);
+	case IKEV2_ENCR_CAMELLIA_CBC:
+		return (CKM_CAMELLIA_CBC);
+	case IKEV2_ENCR_CAMELLIA_CTR:
+		return (CKM_CAMELLIA_CTR);
+	case IKEV2_ENCR_CAMELLIA_CCM_8:
+	case IKEV2_ENCR_CAMELLIA_CCM_12:
+	case IKEV2_ENCR_CAMELLIA_CCM_16:
+		return (CKM_CAMELLIA_CBC);
+	}
+	/*NOTREACHED*/
+	return (0);
+}
+
+size_t
+ikev2_encr_block_size(ikev2_xf_encr_t encr)
+{
+	switch (encr) {
+	case IKEV2_ENCR_NONE:
+	case IKEV2_ENCR_NULL:
+	case IKEV2_ENCR_NULL_AES_GMAC:
+		return (0);
+	case IKEV2_ENCR_DES_IV64:
+	case IKEV2_ENCR_DES:
+	case IKEV2_ENCR_DES_IV32:
+	case IKEV2_ENCR_3DES:
+	case IKEV2_ENCR_RC5:
+	case IKEV2_ENCR_RC4:
+	case IKEV2_ENCR_IDEA:
+	case IKEV2_ENCR_CAST:
+	case IKEV2_ENCR_BLOWFISH:
+	case IKEV2_ENCR_3IDEA:
+		return (8);
+	case IKEV2_ENCR_AES_CBC:
+	case IKEV2_ENCR_AES_CTR:
+	case IKEV2_ENCR_XTS_AES:
+	case IKEV2_ENCR_AES_CCM_8:
+	case IKEV2_ENCR_AES_CCM_12:
+	case IKEV2_ENCR_AES_CCM_16:
+	case IKEV2_ENCR_AES_GCM_8:
+	case IKEV2_ENCR_AES_GCM_12:
+	case IKEV2_ENCR_AES_GCM_16:
+	case IKEV2_ENCR_CAMELLIA_CBC:
+	case IKEV2_ENCR_CAMELLIA_CTR:
+	case IKEV2_ENCR_CAMELLIA_CCM_8:
+	case IKEV2_ENCR_CAMELLIA_CCM_12:
+	case IKEV2_ENCR_CAMELLIA_CCM_16:
+		return (16);
+	}
+	/*NOTREACHED*/
+	return (0);
+}
+
+size_t
+ikev2_encr_iv_size(ikev2_xf_encr_t encr)
+{
+	switch (encr) {
+	case IKEV2_ENCR_NONE:
+	case IKEV2_ENCR_NULL:
+		return (0);
+	case IKEV2_ENCR_DES_IV32:
+		return (4);
+	case IKEV2_ENCR_DES_IV64:
+		return (8);
+	default:
+		return (ikev2_encr_block_size(encr));
+	}
+}
+
+encr_modes_t
+ikev2_encr_mode(ikev2_xf_encr_t encr)
+{
+	switch (encr) {
+	case IKEV2_ENCR_NONE:
+	case IKEV2_ENCR_NULL:
+	case IKEV2_ENCR_NULL_AES_GMAC:
+	case IKEV2_ENCR_XTS_AES:
+		return (MODE_NONE);
+	case IKEV2_ENCR_DES_IV64:
+	case IKEV2_ENCR_DES:
+	case IKEV2_ENCR_DES_IV32:
+	case IKEV2_ENCR_3DES:
+	case IKEV2_ENCR_RC5:
+	case IKEV2_ENCR_RC4:
+	case IKEV2_ENCR_IDEA:
+	case IKEV2_ENCR_CAST:
+	case IKEV2_ENCR_BLOWFISH:
+	case IKEV2_ENCR_3IDEA:
+	case IKEV2_ENCR_AES_CBC:
+	case IKEV2_ENCR_CAMELLIA_CBC:
+		return (MODE_CBC);
+	case IKEV2_ENCR_AES_CTR:
+	case IKEV2_ENCR_CAMELLIA_CTR:
+		return (MODE_CTR);
+	case IKEV2_ENCR_AES_CCM_8:
+	case IKEV2_ENCR_AES_CCM_12:
+	case IKEV2_ENCR_AES_CCM_16:
+	case IKEV2_ENCR_CAMELLIA_CCM_8:
+	case IKEV2_ENCR_CAMELLIA_CCM_12:
+	case IKEV2_ENCR_CAMELLIA_CCM_16:
+		return (MODE_CCM);
+	case IKEV2_ENCR_AES_GCM_8:
+	case IKEV2_ENCR_AES_GCM_12:
+	case IKEV2_ENCR_AES_GCM_16:
+		return (MODE_GCM);
+	}
+	/*NOTREACHED*/
+	return (MODE_NONE);
+}
+
+size_t
+ikev2_auth_icv_size(ikev2_xf_encr_t encr, ikev2_xf_auth_t auth)
+{
+	switch (encr) {
+	case IKEV2_ENCR_NONE:
+	case IKEV2_ENCR_NULL:
+	case IKEV2_ENCR_NULL_AES_GMAC:
+	case IKEV2_ENCR_DES_IV64:
+	case IKEV2_ENCR_DES:
+	case IKEV2_ENCR_DES_IV32:
+	case IKEV2_ENCR_3DES:
+	case IKEV2_ENCR_RC5:
+	case IKEV2_ENCR_RC4:
+	case IKEV2_ENCR_IDEA:
+	case IKEV2_ENCR_CAST:
+	case IKEV2_ENCR_BLOWFISH:
+	case IKEV2_ENCR_3IDEA:
+	case IKEV2_ENCR_AES_CBC:
+	case IKEV2_ENCR_AES_CTR:
+	case IKEV2_ENCR_XTS_AES:
+	case IKEV2_ENCR_CAMELLIA_CBC:
+	case IKEV2_ENCR_CAMELLIA_CTR:
+		break;
+	case IKEV2_ENCR_AES_CCM_8:
+	case IKEV2_ENCR_AES_GCM_8:
+	case IKEV2_ENCR_CAMELLIA_CCM_8:
+		ASSERT3S(auth, ==, IKEV2_XF_AUTH_NONE);
+		return (8);
+	case IKEV2_ENCR_AES_CCM_12:
+	case IKEV2_ENCR_AES_GCM_12:
+	case IKEV2_ENCR_CAMELLIA_CCM_12:
+		ASSERT3S(auth, ==, IKEV2_XF_AUTH_NONE);
+		return (12);
+	case IKEV2_ENCR_AES_CCM_16:
+	case IKEV2_ENCR_AES_GCM_16:
+	case IKEV2_ENCR_CAMELLIA_CCM_16:
+		ASSERT3S(auth, ==, IKEV2_XF_AUTH_NONE);
+		return (16);
+	}
+
+	switch (auth) {
+	case IKEV2_XF_AUTH_NONE:
+		return (0);
+	case IKEV2_XF_AUTH_HMAC_MD5_96:
+	case IKEV2_XF_AUTH_HMAC_SHA1_96:
+	case IKEV2_XF_AUTH_AES_XCBC_96:
+	case IKEV2_XF_AUTH_AES_CMAC_96:
+		return (12);
+	case IKEV2_XF_AUTH_DES_MAC:	/* a guess */
+	case IKEV2_XF_AUTH_KPDK_MD5:
+	case IKEV2_XF_AUTH_HMAC_MD5_128:
+	case IKEV2_XF_AUTH_AES_128_GMAC:
+	case IKEV2_XF_AUTH_HMAC_SHA2_256_128:
+		return (16);
+	case IKEV2_XF_AUTH_HMAC_SHA1_160:
+		return (20);
+	case IKEV2_XF_AUTH_AES_192_GMAC:
+	case IKEV2_XF_AUTH_HMAC_SHA2_384_192:
+		return (24);
+	case IKEV2_XF_AUTH_AES_256_GMAC:
+	case IKEV2_XF_AUTH_HMAC_SHA2_512_256:
+		return (32);
+	}
+	/*NOTREACHED*/
+	return (0);
+}
 
 auth_param_t *
 ikev2_get_auth_param(ikev2_xf_auth_t alg)

@@ -11,7 +11,7 @@
 
 /*
  * Copyright 2017 Jason King.
- * Copyright 2017 Joyent, Inc.
+ * Copyright (c) 2017, Joyent, Inc.
  */
 
 #include <stddef.h>
@@ -29,6 +29,7 @@
 #include <sys/debug.h>
 #include <note.h>
 #include <stdarg.h>
+#include <alloca.h>
 #include "defs.h"
 #include "pkt_impl.h"
 #include "ikev2.h"
@@ -479,8 +480,11 @@ ikev2_add_xf_encr(pkt_t *pkt, ikev2_xf_encr_t encr, uint16_t minbits,
 		 * a range of keysizes, for those with arbitrary key sizes
 		 * we just add the min and max
 		 */
-		ok &= ikev2_add_xform(pkt, IKEV2_XF_ENCR, encr);
-		ok &= ikev2_add_xf_attr(pkt, IKEV2_XF_ATTR_KEYLEN, minbits);
+		if (minbits != maxbits) {
+			ok &= ikev2_add_xform(pkt, IKEV2_XF_ENCR, encr);
+			ok &= ikev2_add_xf_attr(pkt, IKEV2_XF_ATTR_KEYLEN,
+			    minbits);
+		}
 		ok &= ikev2_add_xform(pkt, IKEV2_XF_ENCR, encr);
 		ok &= ikev2_add_xf_attr(pkt, IKEV2_XF_ATTR_KEYLEN, maxbits);
 		return (ok);
@@ -828,21 +832,233 @@ ikev2_add_ts(pkt_t *restrict pkt, ikev2_ts_type_t type, uint8_t ip_proto,
 	return (B_TRUE);
 }
 
-static void encrypt_payloads(pkt_t *restrict, buf_t *restrict, uintptr_t,
+static void encrypt_payloads(pkt_t *restrict, uchar_t *restrict, uintptr_t,
     size_t);
+static boolean_t cbc_iv(pkt_t *restrict);
 
 boolean_t
 ikev2_add_sk(pkt_t *restrict pkt)
 {
-	return (B_FALSE);
-	/* TODO */
+	ikev2_sa_t *sa = pkt->pkt_sa;
+	size_t len = sizeof (ikev2_payload_t);
+	size_t ivlen = ikev2_encr_iv_size(sa->encr);
+	boolean_t ret;
+
+	len += ivlen;
+	len += ikev2_auth_icv_size(sa->encr, sa->auth);
+	len += ikev2_encr_block_size(sa->encr);
+
+	if (pkt_write_left(pkt) < len)
+		return (B_FALSE);
+
+	/*
+	 * This needs to happen first so that subsequent payloads are
+	 * encapsulated by the SK payload
+	 */
+	pkt_stack_push(pkt, PSI_SK, encrypt_payloads, 0);
+	ikev2_add_payload(pkt, IKEV2_PAYLOAD_SK, B_FALSE);
+
+	/*
+	 * Skip over space for IV, encrypt_payloads() will fill it in.
+	 * The memset() shouldn't be needed, as the memory should already be
+	 * 0-filled, but erring on the side of caution.
+	 */
+	(void) memset(pkt->pkt_ptr, 0, ivlen);
+	pkt->pkt_ptr += ivlen;
+	return (B_TRUE);
+}
+
+/*
+ * Based on recommendation from NIST 800-38A, Appendix C, use msgid
+ * which should be unique, encrypt using SK to generate IV
+ */
+static boolean_t
+cbc_iv(pkt_t *restrict pkt)
+{
+	ikev2_sa_t *sa = pkt->pkt_sa;
+	CK_SESSION_HANDLE handle = p11h;
+	CK_MECHANISM mech;
+	CK_OBJECT_HANDLE key;
+	CK_RV rv;
+	CK_ULONG blocklen = 0; /* in bytes */
+
+	if (pkt->pkt_sa->flags & I2SA_INITIATOR)
+		key = sa->sk_ei;
+	else
+		key = sa->sk_er;
+
+	switch (pkt->pkt_sa->encr) {
+	case IKEV2_ENCR_AES_CBC:
+		mech.mechanism = CKM_AES_ECB;
+		mech.pParameter = NULL_PTR;
+		mech.ulParameterLen = 0;
+		blocklen = 16;
+		break;
+	case IKEV2_ENCR_CAMELLIA_CBC:
+		mech.mechanism = CKM_CAMELLIA_ECB;
+		mech.pParameter = NULL_PTR;
+		mech.ulParameterLen = 0;
+		blocklen = 16;
+		break;
+	default:
+		INVALID("encr");
+		/*NOTREACHED*/
+		return (B_FALSE);
+	}
+
+	if (pkt_write_left(pkt) < blocklen)
+		return (B_FALSE);
+
+	VERIFY3U(blocklen, >=, sizeof (uint32_t));
+
+	CK_ULONG buflen = blocklen;
+	uchar_t buf[blocklen];
+
+	(void) memset(buf, 0, blocklen);
+	(void) memcpy(buf, &pkt->pkt_header.msgid,
+	    sizeof (pkt->pkt_header.msgid));
+
+	rv = C_EncryptInit(handle, &mech, key);
+	if (rv != CKR_OK) {
+		/* XXX: log */
+		return (B_FALSE);
+	}
+
+	rv = C_Encrypt(handle, buf, blocklen, pkt->pkt_ptr, &blocklen);
+	if (rv != CKR_OK) {
+		/* XXXX: log */
+		return (B_FALSE);
+	}
+
+	pkt->pkt_ptr += blocklen;
+	return (B_TRUE);
 }
 
 static void
-encrypt_payloads(pkt_t *restrict pkt, buf_t *restrict buf, uintptr_t swaparg,
+encrypt_payloads(pkt_t *restrict pkt, uchar_t *restrict buf, uintptr_t swaparg,
     size_t numencr)
 {
-	/* TODO */
+	ikev2_sa_t *sa = pkt->pkt_sa;
+	uchar_t *iv, *data, *icv;
+	uint8_t *nonce = NULL;
+	size_t ivlen, blocklen, noncelen = 0;
+	CK_ULONG datalen, icvlen;
+	CK_SESSION_HANDLE handle = p11h;
+	CK_OBJECT_HANDLE encr_key;
+	CK_OBJECT_HANDLE auth_key;
+	uint8_t padlen = 0;
+	CK_MECHANISM mech = { 0 };
+	union {
+		CK_AES_CTR_PARAMS	aes_ctr;
+		CK_CAMELLIA_CTR_PARAMS	cam_ctr;
+		CK_GCM_PARAMS		gcm;
+		CK_CCM_PARAMS		ccm;
+	} params;
+	encr_modes_t mode = ikev2_encr_mode(sa->encr);
+	CK_RV rc;
+	
+	if (sa->flags & I2SA_INITIATOR) {
+		encr_key = sa->sk_ei;
+		auth_key = sa->sk_ai;
+	} else {
+		encr_key = sa->sk_er;
+		auth_key = sa->sk_ar;
+	}
+
+	ivlen = ikev2_encr_iv_size(sa->encr);
+	icvlen = ikev2_auth_icv_size(sa->encr, sa->auth);
+	blocklen = ikev2_encr_block_size(sa->encr);
+
+	iv = buf;
+	data = iv + ivlen;
+	datalen = (size_t)(pkt->pkt_ptr - buf);
+
+	/*
+	 * XXX: what padding should be used here? For now we rely on
+	 * the buffer being initially zero-filled and use that.  It would
+	 * be good for an expert to know if that vs. using random vs. something
+	 * else would be good for padding.
+	 */
+	if ((datalen + 1) % blocklen != 0)
+		padlen = blocklen - ((datalen + 1) % blocklen);
+
+	/* XXX: log */
+	if (pkt_write_left(pkt) < padlen + 1 + icvlen)
+		return;
+
+	datalen += padlen;
+
+	icv = data + datalen;
+	*icv = padlen;
+	icv++;
+
+	/*
+	 * XXX: So far, every encryption mode wants a unique IV per packet.
+	 * For CBC modes, it also needs to be unpredictable.  Other modes do
+	 * not appear to have that requirement.  Since the msgid should be
+	 * unique for a given key (i.e. the msgid never resets for a given
+	 * IKE SA, instead a new IKE SA, with a new key is created).  We
+	 * start with that, and then for CBC modes, use follow the suggestion
+	 * in NIST 800-38A, Appendix C and encrypt the msgid to create the IV.
+	 */
+	VERIFY3S(ivlen, >=, sizeof (uint32_t));
+	(void) memcpy(iv, &pkt->pkt_header.msgid, sizeof (uint32_t));
+
+	switch (mode) {
+	case MODE_NONE:
+		break;
+	case MODE_CBC:
+		/* XXX: todo */
+		mech.pParameter = iv;
+		mech.ulParameterLen = ivlen;
+		break;
+	case MODE_CTR:
+		/* XXX: todo */
+		break;
+	case MODE_CCM:
+		noncelen = sa->saltlen + ivlen;
+		VERIFY3U(noncelen, ==, 11);
+		nonce = alloca(noncelen);
+		(void) memcpy(nonce, sa->salt, sa->saltlen);
+		(void) memcpy(nonce + sa->saltlen, iv, ivlen);
+		mech.pParameter = &params.ccm;
+		mech.ulParameterLen = sizeof (CK_CCM_PARAMS);
+		params.ccm.pAAD = (CK_BYTE_PTR)&pkt->pkt_raw;
+		params.ccm.ulAADLen = (CK_ULONG)(buf - params.ccm.pAAD);
+		params.ccm.ulMACLen = icvlen;
+		params.ccm.pNonce = nonce;
+		params.ccm.ulNonceLen = noncelen;
+		break;
+	case MODE_GCM:
+		noncelen = sa->saltlen + ivlen;
+		VERIFY3U(noncelen, ==, 12);
+		nonce = alloca(noncelen);
+		(void) memcpy(nonce, sa->salt, sa->saltlen);
+		(void) memcpy(nonce + sa->saltlen, iv, ivlen);
+		mech.pParameter = &params.gcm;
+		mech.ulParameterLen = sizeof (CK_GCM_PARAMS);
+		params.gcm.pIv = nonce;
+		params.gcm.ulIvLen = noncelen;
+		params.gcm.pAAD = (CK_BYTE_PTR)&pkt->pkt_raw;
+		params.gcm.ulAADLen = (CK_ULONG)(buf - params.gcm.pAAD);
+		params.gcm.ulTagBits = icvlen * 8;
+		break;
+	}
+
+	mech.mechanism = ikev2_encr_to_p11(sa->encr);
+	pkt->pkt_ptr = icv + icvlen;
+
+	rc = C_EncryptInit(handle, &mech, encr_key);
+	rc = C_Encrypt(handle, data, datalen, data, &datalen);
+	/* XXX: error check */
+
+	if (mode == MODE_CCM || mode == MODE_GCM)
+		return;
+
+	data = (uchar_t *)&pkt->pkt_raw;
+	datalen = (size_t)(pkt->pkt_ptr - data);
+	/* C_SignInit(handle, mech, auth_key); */
+	rc = C_Sign(handle, data, datalen, icv, &icvlen);
 }
 
 boolean_t

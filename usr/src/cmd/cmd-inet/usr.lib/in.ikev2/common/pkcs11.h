@@ -64,6 +64,14 @@ typedef struct {
 	size_t			key_sz;
 } auth_param_t;
 
+typedef enum encr_mode {
+	MODE_NONE,
+	MODE_CBC,
+	MODE_CTR,
+	MODE_CCM,
+	MODE_GCM
+} encr_modes_t;
+
 extern CK_INFO pkcs11_info;
 extern CK_SESSION_HANDLE p11h;
 
@@ -74,6 +82,12 @@ void pkcs11_fini(void);
 boolean_t pkcs11_digest(CK_MECHANISM_TYPE, const buf_t *restrict, size_t,
     buf_t *restrict, int);
 void pkcs11_destroy_obj(const char *, CK_OBJECT_HANDLE_PTR, int);
+
+CK_MECHANISM_TYPE ikev2_encr_to_p11(ikev2_xf_encr_t);
+encr_modes_t ikev2_encr_mode(ikev2_xf_encr_t);
+size_t ikev2_encr_block_size(ikev2_xf_encr_t);
+size_t ikev2_encr_iv_size(ikev2_xf_encr_t);
+size_t ikev2_auth_icv_size(ikev2_xf_encr_t, ikev2_xf_auth_t);
 
 encr_param_t *ikev2_get_encr_param(ikev2_xf_encr_t);
 auth_param_t *ikev2_get_auth_param(ikev2_xf_auth_t);

@@ -62,6 +62,8 @@ typedef struct i2sa_bucket i2sa_bucket_t;
 
 #define	I2SA_NUM_HASH	2	/* The number of IKEv2 SA hashes we have */
 
+#define	I2SA_SALT_LEN	(32)	/* Maximum size of salt */
+
 /*
  * The IKEv2 SA.
  *
@@ -129,6 +131,9 @@ struct ikev2_sa {
 	CK_OBJECT_HANDLE sk_er;
 	CK_OBJECT_HANDLE sk_pi;
 	CK_OBJECT_HANDLE sk_pr;
+
+	uint8_t		salt[I2SA_SALT_LEN];
+	size_t		saltlen;
 };
 
 struct ikev2_child_sa {
