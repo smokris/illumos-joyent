@@ -32,7 +32,12 @@ typedef enum pkt_walk_ret {
 typedef pkt_walk_ret_t (*pkt_walk_fn_t)(uint8_t, uint8_t, uchar_t *restrict,
     size_t, void *restrict);
 pkt_walk_ret_t pkt_payload_walk(uchar_t *restrict, size_t, pkt_walk_fn_t,
-    void *restrict);
+    uint8_t, void *restrict);
+
+boolean_t pkt_count_payloads(uchar_t *restrict, size_t, uint8_t, size_t *,
+    size_t *);
+boolean_t pkt_index_payloads(pkt_t *, uchar_t *, size_t, uint8_t, size_t);
+boolean_t pkt_size_index(pkt_t *, size_t, size_t);
 
 pkt_t *pkt_in_alloc(uchar_t *, size_t);
 pkt_t *pkt_out_alloc(uint64_t, uint64_t, uint8_t, uint8_t, uint32_t);

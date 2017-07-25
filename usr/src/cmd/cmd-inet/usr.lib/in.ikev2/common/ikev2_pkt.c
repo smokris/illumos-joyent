@@ -124,7 +124,9 @@ ikev2_pkt_new_inbound(uchar_t *buf, size_t buflen)
 	arg.exch_type = hdr->exch_type;
 	arg.initiator = !!(hdr->flags & IKEV2_FLAG_INITIATOR);
 
-	if (pkt_payload_walk(buf, buflen, check_payload, &arg) != PKT_WALK_OK)
+	if (pkt_payload_walk((uchar_t *)(hdr + 1),
+	    buflen - sizeof (ike_header_t), check_payload, hdr->next_payload,
+	    &arg) != PKT_WALK_OK)
 		goto discard;
 
 	counts = arg.payload_count;
@@ -1214,7 +1216,7 @@ ikev2_pkt_decrypt(pkt_t *pkt)
 
 	ivlen = ikev2_encr_iv_size(sa->encr);
 	icvlen = ikev2_auth_icv_size(sa->encr, sa->auth);
-	if (icvlen + icvlen < datalen) {
+	if (icvlen + icvlen + 1 >= datalen) {
 		bunyan_info(sa->i2sa_log, "SK payload is too small",
 		    BUNYAN_T_UINT32, "len", (uint32_t)datalen,
 		    BUNYAN_T_UINT32, "ivlen", (uint32_t)ivlen,
@@ -1238,6 +1240,33 @@ ikev2_pkt_decrypt(pkt_t *pkt)
 	if (!crypt_common(pkt, B_FALSE, iv, ivlen, data, datalen, icv, icvlen))
 		return (B_FALSE);
 
+	padlen = *(icv - 1);
+	datalen -= padlen;
+
+	ike_payload_t *payp, pay = { 0 };
+	size_t paycount = 0, ncount = 0;
+	size_t paystart, nstart;
+
+	payp = (ike_payload_t *)iv;
+	payp--;
+	(void) memcpy(&pay, payp, sizeof (ike_payload_t));
+
+	if (!pkt_count_payloads(data, datalen, pay.pay_next, &paycount,
+	    &ncount)) {
+		return (B_FALSE);
+	}
+
+	paystart = pkt->pkt_payload_count;
+	nstart = pkt->pkt_notify_count;
+	if (!pkt_size_index(pkt, pkt->pkt_payload_count + paycount,
+	    pkt->pkt_notify_count + ncount))
+		return (B_FALSE);
+
+	if (!pkt_index_payloads(pkt, data, datalen, pay.pay_next, paystart))
+		return (B_FALSE);
+
+	/* XXX: index notify payloads */
+ 
 	return (B_TRUE);
 }
 

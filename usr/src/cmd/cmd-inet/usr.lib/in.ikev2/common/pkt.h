@@ -116,6 +116,12 @@ struct pkt {
 	size_t			pkt_xmit;
 };
 
+inline uchar_t *
+pkt_start(pkt_t *pkt)
+{
+	return ((uchar_t *)&pkt->pkt_raw);
+}
+
 inline size_t
 pkt_len(const pkt_t *pkt)
 {

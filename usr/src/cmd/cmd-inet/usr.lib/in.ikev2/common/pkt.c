@@ -104,6 +104,22 @@ pkt_count_cb(uint8_t paytype, uint8_t resv, uchar_t *restrict ptr, size_t len,
 	return (PKT_WALK_OK);
 }
 
+boolean_t
+pkt_count_payloads(uchar_t *restrict buf, size_t buflen, uint8_t first,
+    size_t *paycount, size_t *ncount)
+{
+	struct pkt_count_s count = { 0 };
+	if (pkt_payload_walk(buf, buflen, pkt_count_cb, first,
+	    &count) != PKT_WALK_OK)
+		return (B_FALSE);
+
+	if (paycount != NULL)
+		*paycount = count.paycount;
+	if (ncount != NULL)
+		*ncount = count.ncount;
+	return (B_TRUE);
+}
+
 static pkt_walk_ret_t
 pkt_payload_cb(uint8_t paytype, uint8_t resv, uchar_t *restrict ptr, size_t len,
     void *restrict cookie)
@@ -118,6 +134,83 @@ pkt_payload_cb(uint8_t paytype, uint8_t resv, uchar_t *restrict ptr, size_t len,
 	return (PKT_WALK_OK);
 }
 
+boolean_t
+pkt_index_payloads(pkt_t *pkt, uchar_t *buf, size_t buflen, uint8_t first,
+    size_t start_idx)
+{
+	struct pkt_count_s data = {
+		.pkt = pkt,
+		.paycount = start_idx
+	};
+
+	ASSERT3P((uchar_t *)&pkt->raw, <, buf);
+	ASSERT3P(pkt->pkt_ptr, >=, buf + buflen);
+
+	if (pkt_payload_walk(buf, buflen, pkt_payload_cb, first,
+	    &data) != PKT_WALK_OK)
+		return (B_FALSE);
+	return (B_TRUE);
+}
+
+/* make sure pkt can hold paycount payloads indexes and ncount notify indexes */
+boolean_t
+pkt_size_index(pkt_t *pkt, size_t paycount, size_t ncount)
+{
+	size_t amt = 0;
+
+	if (paycount > PKT_PAYLOAD_NUM && paycount != pkt->pkt_payload_count) {
+		pkt_payload_t *payp = NULL;
+
+		amt = paycount - PKT_PAYLOAD_NUM;
+		amt *= sizeof (pkt_payload_t);
+		payp = umem_zalloc(amt, UMEM_DEFAULT);
+		if (payp == NULL)
+			return (B_FALSE);
+
+		if (pkt->pkt_payload_extra != NULL) {
+			/* XXX: ASSERT() / VERIFY() on shrink? */
+			if (paycount > pkt->pkt_payload_count) {
+				amt = pkt->pkt_payload_count - PKT_PAYLOAD_NUM; 
+				amt *= sizeof (pkt_payload_t);
+			}
+			(void) memcpy(payp, pkt->pkt_payload_extra, amt);
+
+			amt = pkt->pkt_payload_count - PKT_PAYLOAD_NUM;
+			amt *= sizeof (pkt_payload_t);
+			umem_free(pkt->pkt_payload_extra, amt);
+		}
+		pkt->pkt_payload_extra = payp;
+		pkt->pkt_payload_count = paycount;
+	}
+
+	if (ncount > PKT_NOTIFY_NUM && ncount != pkt->pkt_notify_count) {
+		pkt_notify_t *np;
+
+		amt = ncount - PKT_NOTIFY_NUM;
+		amt *= sizeof (pkt_notify_t);
+		np = umem_zalloc(amt, UMEM_DEFAULT);
+		if (np == NULL)
+			return (B_FALSE);
+
+		if (pkt->pkt_notify_extra != NULL) {
+			/* XXX: ASSERT() / VERIFY() on shrink? */
+			if (ncount > pkt->pkt_notify_count) {
+				amt = pkt->pkt_notify_count - PKT_NOTIFY_NUM;
+				amt *= sizeof (pkt_notify_t);
+			}
+			(void) memcpy(np, pkt->pkt_notify_extra, amt);
+
+			amt = pkt->pkt_notify_count - PKT_NOTIFY_NUM;
+			amt *= sizeof (pkt_notify_t);
+			umem_free(pkt->pkt_notify_extra, amt);
+		}
+		pkt->pkt_notify_extra = np;
+		pkt->pkt_notify_count = ncount;
+	}
+
+	return (B_TRUE);
+}
+
 /*
  * Allocate an pkt_t for an inbound packet, populate the local byte order
  * header, and cache the location of the payloads in the payload field.
@@ -125,16 +218,25 @@ pkt_payload_cb(uint8_t paytype, uint8_t resv, uchar_t *restrict ptr, size_t len,
 pkt_t *
 pkt_in_alloc(uchar_t *buf, size_t buflen)
 {
-	pkt_t *pkt;
-	struct pkt_count_s counts = { 0 };
+	ike_header_t *hdr = (ike_header_t *)buf;
+	pkt_t *pkt = NULL;
+	size_t paycount = 0, ncount = 0;
+	uint8_t first;
 
 	if (buflen > MAX_PACKET_SIZE) {
 		/* XXX: msg */
 		errno = EOVERFLOW;
 		return (NULL);
 	}
+	if (buflen != ntohl(hdr->length)) {
+		/* XXX: msg */
+		return (NULL);
+	}
 
-	if (pkt_payload_walk(buf, buflen, pkt_count_cb, &counts) != PKT_WALK_OK)
+	first = hdr->next_payload;
+	buf += sizeof (*hdr);
+	buflen -= sizeof (*hdr);
+	if (!pkt_count_payloads(buf, buflen, first, &paycount, &ncount))
 		return (NULL);
 
 	if ((pkt = umem_cache_alloc(pkt_cache, UMEM_DEFAULT)) == NULL) {
@@ -142,8 +244,8 @@ pkt_in_alloc(uchar_t *buf, size_t buflen)
 		return (NULL);
 	}
 
-	if (counts.paycount > PKT_PAYLOAD_NUM) {
-		size_t len = counts.paycount - PKT_PAYLOAD_NUM;
+	if (paycount > PKT_PAYLOAD_NUM) {
+		size_t len = paycount - PKT_PAYLOAD_NUM;
 		len *= sizeof (pkt_payload_t);
 		pkt->pkt_payload_extra = umem_zalloc(len, UMEM_DEFAULT);
 		if (pkt->pkt_payload_extra == NULL) {
@@ -152,8 +254,8 @@ pkt_in_alloc(uchar_t *buf, size_t buflen)
 		}
 	}
 
-	if (counts.ncount > PKT_NOTIFY_NUM) {
-		size_t len = counts.ncount - PKT_NOTIFY_NUM;
+	if (ncount > PKT_NOTIFY_NUM) {
+		size_t len = ncount - PKT_NOTIFY_NUM;
 		len *= sizeof (pkt_notify_t);
 		pkt->pkt_notify_extra = umem_zalloc(len, UMEM_DEFAULT);
 		if (pkt->pkt_notify_extra == NULL) {
@@ -163,16 +265,12 @@ pkt_in_alloc(uchar_t *buf, size_t buflen)
 	}
 
 	(void) memcpy(&pkt->pkt_raw, buf, buflen);
-	pkt->pkt_payload_count = counts.paycount;
-	pkt->pkt_notify_count = counts.ncount;
+	pkt->pkt_payload_count = paycount;
+	pkt->pkt_notify_count = ncount;
 	pkt_hdr_ntoh(&pkt->pkt_header, (const ike_header_t *)&pkt->pkt_raw);
 	pkt->pkt_ptr += buflen;
 
-	(void) memset(&counts, 0, sizeof (counts));
-	counts.pkt = pkt;
-	VERIFY3S(pkt_payload_walk(buf, buflen, pkt_payload_cb, &counts), ==,
-	    PKT_WALK_OK);
-
+	VERIFY(pkt_index_payloads(pkt, pkt_start(pkt), pkt_len(pkt), first, 0));
 	return (pkt);
 }
 
@@ -659,34 +757,24 @@ pkt_done(pkt_t *pkt)
 	return (pkt->pkt_stk_error);
 }
 
+/*
+ * Call cb on each encountered payload.
+ * data - the first payload to walk
+ * len - total size of the buffer to walk (should end on payload boundary)
+ * cb - callback function to invoke on each payload
+ * first - payload type of the first payload
+ * cookie - data passed to callback
+ */
 pkt_walk_ret_t
 pkt_payload_walk(uchar_t *restrict data, size_t len, pkt_walk_fn_t cb,
-    void *restrict cookie)
+    uint8_t first, void *restrict cookie)
 {
-	const ike_header_t	*hdr = (const ike_header_t *)data;
 	uchar_t			*ptr = data;
-	uint64_t		msglen;
-	uint8_t			paytype;
+	uint8_t			paytype = first;
 	pkt_walk_ret_t		ret = PKT_WALK_OK;
 
-	ASSERT(IS_P2ALIGNED(hdr, uint64_t));
-	ASSERT3U(len, >=, sizeof (ike_header_t));
-
-	msglen = ntohl(hdr->length);
-	paytype = hdr->next_payload;
-	if (msglen != len) {
-		if (msglen < len) {
-				/* XXX: extra data */
-		} else {
-				/* XXX: truncated */
-		}
-		return (PKT_WALK_ERROR);
-	}
-
-	ptr += sizeof (ike_header_t);
-	len -= sizeof (ike_header_t);
-
-	while (len > 0) {
+	/* 0 is used for both IKEv1 and IKEv2 to indicate last payload */
+	while (len > 0 && paytype != 0) {
 		ike_payload_t pay = { 0 };
 
 		if (len < sizeof (pay)) {
@@ -697,6 +785,7 @@ pkt_payload_walk(uchar_t *restrict data, size_t len, pkt_walk_fn_t cb,
 		(void) memcpy(&pay, ptr, sizeof (pay));
 		ptr += sizeof (pay);
 
+		/* this length includes the size of the header */
 		pay.pay_length = ntohs(pay.pay_length);
 
 		if (pay.pay_length > len) {
@@ -731,7 +820,7 @@ pkt_ctor(void *buf, void *ignore, int flags)
 
 	pkt_t *pkt = buf;
 	(void) memset(pkt, 0, sizeof (pkt_t));
-	pkt->pkt_ptr = (uchar_t *)&pkt->pkt_raw;
+	pkt->pkt_ptr = pkt_start(pkt);
 	return (0);
 }
 
@@ -797,6 +886,7 @@ put64(pkt_t *pkt, uint64_t val)
 	*(pkt->pkt_ptr++) = (uchar_t)(val & (uint64_t)0xff);
 }
 
+extern uchar_t *pkt_start(pkt_t *);
 extern size_t pkt_len(const pkt_t *);
 extern size_t pkt_write_left(const pkt_t *);
 extern size_t pkt_read_left(const pkt_t *, const uchar_t *);
