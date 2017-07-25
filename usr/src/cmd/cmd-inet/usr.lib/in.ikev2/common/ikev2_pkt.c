@@ -938,43 +938,194 @@ cbc_iv(pkt_t *restrict pkt, uchar_t *ivp)
 }
 
 static boolean_t
-encrypt_payloads(pkt_t *restrict pkt, uchar_t *restrict buf, uintptr_t swaparg,
-    size_t numencr)
+crypt_common(pkt_t *pkt, boolean_t encrypt, uchar_t *iv, CK_ULONG ivlen,
+    uchar_t *data, CK_ULONG datalen, uchar_t *icv, CK_ULONG icvlen)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
-	uchar_t *iv, *data, *icv;
-	uint8_t *nonce = NULL;
-	size_t ivlen, blocklen, noncelen = 0;
-	CK_ULONG datalen, icvlen;
+	const char *fn;
 	CK_SESSION_HANDLE handle = p11h;
-	CK_OBJECT_HANDLE encr_key;
-	CK_OBJECT_HANDLE auth_key;
-	uint8_t padlen = 0;
-	CK_MECHANISM mech = { 0 };
+	CK_OBJECT_HANDLE key;
+	CK_MECHANISM mech;
 	union {
 		CK_AES_CTR_PARAMS	aes_ctr;
 		CK_CAMELLIA_CTR_PARAMS	cam_ctr;
 		CK_GCM_PARAMS		gcm;
 		CK_CCM_PARAMS		ccm;
 	} params;
+	CK_RV rc = 0;
 	encr_modes_t mode = ikev2_encr_mode(sa->encr);
-	CK_RV rc;
-	
-	if (sa->flags & I2SA_INITIATOR) {
-		encr_key = sa->sk_ei;
-		auth_key = sa->sk_ai;
-	} else {
-		encr_key = sa->sk_er;
-		auth_key = sa->sk_ar;
+	uchar_t *nonce = NULL;
+	CK_ULONG noncelen = 0;
+
+	if (sa->flags & I2SA_INITIATOR)
+		key = pkt->pkt_sa->sk_ei;
+	else
+		key = pkt->pkt_sa->sk_er;
+
+	/*
+	 * For GCM and CCM, the nonce/IV used is a combination of both
+	 * the salt (derived from the PRF function along with the key)
+	 * and the transmitted 'IV' value.  This total value should be
+	 * 10-16 bytes at most, so the use of alloca() shouldn't present
+	 * any issues
+	 */
+	mech.mechanism = ikev2_encr_to_p11(sa->encr);
+	switch (mode) {
+	case MODE_NONE:
+		break;
+	case MODE_CBC:
+		mech.pParameter = iv;
+		mech.ulParameterLen = ivlen;
+		break;
+	case MODE_CTR:
+		/* TODO */
+		break;
+	case MODE_CCM:
+		noncelen = sa->saltlen + ivlen;
+		nonce = alloca(noncelen);
+		(void) memcpy(nonce, sa->salt, sa->saltlen);
+		(void) memcpy(nonce + sa->saltlen, iv, ivlen);
+		params.ccm.pAAD = (CK_BYTE_PTR)&pkt->pkt_raw;
+		params.ccm.ulAADLen = (CK_ULONG)(iv - params.ccm.pAAD);
+		params.ccm.ulMACLen = icvlen;
+		params.ccm.pNonce = nonce;
+		params.ccm.ulNonceLen = noncelen;
+		mech.pParameter = &params.ccm;
+		mech.ulParameterLen = sizeof (CK_CCM_PARAMS);
+		break;
+	case MODE_GCM:
+		noncelen = sa->saltlen + ivlen;
+		nonce = alloca(noncelen);
+		(void) memcpy(nonce, sa->salt, sa->saltlen);
+		(void) memcpy(nonce + sa->saltlen, iv, ivlen);
+		params.gcm.pIv = nonce;
+		params.gcm.ulIvLen = noncelen;
+		/*
+		 * There is a 'ulIvBits' field in CK_GCM_PARAMS.  This comes
+		 * straight from the published pkcs11t.h file.  However, it
+		 * does not appear to actually be used for anything, and looks
+		 * to be a leftover from the unpublished PKCS#11 v2.30 standard.
+		 * It is currently not set and ignored
+		 */
+		params.gcm.pAAD = (CK_BYTE_PTR)&pkt->pkt_raw;
+		params.gcm.ulAADLen = (CK_ULONG)(iv - params.gcm.pAAD);
+		params.gcm.ulTagBits = icvlen * 8;
+		mech.pParameter = &params.gcm;
+		mech.ulParameterLen = sizeof (CK_GCM_PARAMS);
+		break;
 	}
 
+	if (encrypt) {
+		rc = C_EncryptInit(handle, &mech, key);
+		fn = "C_EncryptInit";
+	} else {
+		rc = C_DecryptInit(handle, &mech, key);
+		fn = "C_DecryptInit";
+	}
+
+	if (rc != CKR_OK) {
+		PKCS11ERR(error, sa->i2sa_log, fn, rc);
+		goto done;
+	}
+
+	/*
+	 * XXX: the last parameter might need a separate var
+ 	 * because of extra room needed for ccm/gcm
+ 	 * ALSO: probably want a better error message for the combined mode
+ 	 * failures
+ 	 */
+	if (encrypt) {
+		rc = C_Encrypt(handle, data, datalen, data, &datalen);
+		fn = "C_Encrypt";
+	} else {
+		rc = C_Decrypt(handle, data, datalen, data, &datalen);
+		fn = "C_Decrypt";
+	}
+	if (rc != CKR_OK)
+		PKCS11ERR(error, sa->i2sa_log, fn, rc);
+
+done:
+	if (nonce != NULL)
+		(void) memset(nonce, 0, sizeof (nonce));
+	return ((rc == CKR_OK) ? B_TRUE : B_FALSE);
+}
+
+static boolean_t
+auth_common(pkt_t *pkt, boolean_t encrypt, uchar_t *icv, size_t icvlen)
+{
+	ikev2_sa_t *sa = pkt->pkt_sa;
+	const char *fn = NULL;
+	CK_SESSION_HANDLE handle = p11h;
+	CK_OBJECT_HANDLE key;
+	CK_MECHANISM mech = { 0 };
+	CK_RV rc;
+	CK_BYTE_PTR data;
+	CK_ULONG datalen, len = icvlen;
+
+	if (sa->flags & I2SA_INITIATOR)
+		key = sa->sk_ai;
+	else
+		key = sa->sk_ar;
+
+	ASSERT3S(sa->auth, !=, IKEV2_XF_AUTH_NONE);
+	mech.mechanism = ikev2_auth_to_p11(sa->auth);
+	mech.pParameter = NULL_PTR;
+	mech.ulParameterLen = 0;
+
+	data = (CK_BYTE_PTR)&pkt->pkt_raw;
+	datalen = (CK_ULONG)(icv - data);
+
+	if (encrypt) {
+		rc = C_SignInit(handle, &mech, key);
+		fn = "C_SignInit";
+	} else {
+		rc = C_VerifyInit(handle, &mech, key);
+		fn = "C_SignInit";
+	}
+
+	if (rc != CKR_OK) {
+		PKCS11ERR(error, sa->i2sa_log, fn, rc);
+		return (B_FALSE);
+	}
+
+	if (encrypt) {
+		rc = C_Sign(handle, data, datalen, icv, &len);
+		fn = "C_Sign";
+	} else {
+		rc = C_Verify(handle, data, datalen, icv, len);
+		fn = "C_Verify";
+
+		/* give this one a better message */
+		if (rc == CKR_SIGNATURE_INVALID) {
+			bunyan_error(sa->i2sa_log, "integrity check failed",
+			    BUNYAN_T_END);
+			return (B_FALSE);
+		}
+	}
+
+	if (rc != CKR_OK)
+		PKCS11ERR(error, sa->i2sa_log, fn, rc);
+
+	return ((rc == CKR_OK) ? B_TRUE : B_FALSE);
+}
+
+static boolean_t
+encrypt_payloads(pkt_t *restrict pkt, uchar_t *restrict buf, uintptr_t swaparg,
+    size_t numencr)
+{
+	ikev2_sa_t *sa = pkt->pkt_sa;
+	CK_BYTE_PTR iv, data, icv, nonce;
+	CK_ULONG ivlen, datalen, icvlen, noncelen, blocklen;
+	uint8_t padlen = 0;
+	encr_modes_t mode = ikev2_encr_mode(sa->encr);
+	
 	ivlen = ikev2_encr_iv_size(sa->encr);
 	icvlen = ikev2_auth_icv_size(sa->encr, sa->auth);
 	blocklen = ikev2_encr_block_size(sa->encr);
 
-	iv = buf + sizeof (ike_payload_t);
+	iv = (CK_BYTE_PTR)buf + sizeof (ike_payload_t);
 	data = iv + ivlen;
-	datalen = (size_t)(pkt->pkt_ptr - data);
+	datalen = (CK_ULONG)((CK_BYTE_PTR)pkt->pkt_ptr - data);
 
 	/*
 	 * XXX: what padding should be used here? For now we rely on
@@ -1011,56 +1162,13 @@ encrypt_payloads(pkt_t *restrict pkt, uchar_t *restrict buf, uintptr_t swaparg,
 	 * in NIST 800-38A, Appendix C and encrypt the msgid to create the IV.
 	 */
 	VERIFY3S(ivlen, >=, sizeof (uint32_t));
-	(void) memcpy(iv, &pkt->pkt_header.msgid, sizeof (uint32_t));
-
-	switch (mode) {
-	case MODE_NONE:
-		break;
-	case MODE_CBC:
+	if (mode == MODE_CBC) {
 		if (!cbc_iv(pkt, iv))
 			return (B_FALSE);
-		break;
-	case MODE_CTR:
-		/* XXX: todo */
-		break;
-	case MODE_CCM:
-		noncelen = sa->saltlen + ivlen;
-		VERIFY3U(noncelen, ==, 11);
-		nonce = alloca(noncelen);
-		(void) memcpy(nonce, sa->salt, sa->saltlen);
-		(void) memcpy(nonce + sa->saltlen, iv, ivlen);
-		mech.pParameter = &params.ccm;
-		mech.ulParameterLen = sizeof (CK_CCM_PARAMS);
-		params.ccm.pAAD = (CK_BYTE_PTR)&pkt->pkt_raw;
-		params.ccm.ulAADLen = (CK_ULONG)(buf - params.ccm.pAAD);
-		params.ccm.ulMACLen = icvlen;
-		params.ccm.pNonce = nonce;
-		params.ccm.ulNonceLen = noncelen;
-		break;
-	case MODE_GCM:
-		noncelen = sa->saltlen + ivlen;
-		VERIFY3U(noncelen, ==, 12);
-		nonce = alloca(noncelen);
-		(void) memcpy(nonce, sa->salt, sa->saltlen);
-		(void) memcpy(nonce + sa->saltlen, iv, ivlen);
-		mech.pParameter = &params.gcm;
-		mech.ulParameterLen = sizeof (CK_GCM_PARAMS);
-		params.gcm.pIv = nonce;
-		params.gcm.ulIvLen = noncelen;
-		/*
-		 * NOTE: CK_GCM_PARAMS includes a 'ulIvBits' field.  This
-		 * is in the published pkcs11.t file, however it does not
-		 * appear to be used anywhere and appears to be a vestigal
-		 * leftover from the unpublished 2.30 version.   It is
-		 * currently not set under the assumption it is ignored.
-		 */
-		params.gcm.pAAD = (CK_BYTE_PTR)&pkt->pkt_raw;
-		params.gcm.ulAADLen = (CK_ULONG)(buf - params.gcm.pAAD);
-		params.gcm.ulTagBits = icvlen * 8;
-		break;
+	} else {
+		(void) memcpy(iv, &pkt->pkt_header.msgid, sizeof (uint32_t));
 	}
 
-	mech.mechanism = ikev2_encr_to_p11(sa->encr);
 	pkt->pkt_ptr = icv + icvlen;
 
 	/* Update SK payload length field to reflect padding + ICV */
@@ -1069,65 +1177,68 @@ encrypt_payloads(pkt_t *restrict pkt, uchar_t *restrict buf, uintptr_t swaparg,
 	pay.pay_length = htons((uint16_t)(pkt->pkt_ptr - buf));
 	(void) memcpy(buf, &pay, sizeof (pay));
 
-	rc = C_EncryptInit(handle, &mech, encr_key);
-	if (rc != CKR_OK) {
-		PKCS11ERR(error, sa->i2sa_log, "C_EncryptInit", rc);
+	if (!crypt_common(pkt, B_TRUE, iv, ivlen, data, datalen, icv, icvlen))
 		return (B_FALSE);
-	}
 
-	rc = C_Encrypt(handle, data, datalen, data, &datalen);
-	if (rc != CKR_OK) {
-		PKCS11ERR(error, sa->i2sa_log, "C_Encrypt", rc);
-		return (B_FALSE);
-	}
 	if (mode == MODE_CCM || mode == MODE_GCM)
-		goto done;
+		return (B_TRUE);
 
-	/*
-	 * RFC7996 3.14 -- The checksum starts at the fixed packet header
-	 * through the pad byte
-	 */
-	data = (uchar_t *)&pkt->pkt_raw;
-	datalen = (size_t)(icv - data);
+	if (!auth_common(pkt, B_TRUE, icv, icvlen))
+		return (B_FALSE);
 
-	mech.mechanism = ikev2_auth_to_p11(sa->auth);
-	mech.pParameter = NULL_PTR;
-	mech.ulParameterLen = 0;
-	rc = C_SignInit(handle, &mech, auth_key);
-	if (rc != CKR_OK) {
-		PKCS11ERR(error, sa->i2sa_log, "C_SignInit", rc);
-		goto done;
-	}
-
-	rc = C_Sign(handle, data, datalen, icv, &icvlen);
-	if (rc != CKR_OK)
-		PKCS11ERR(error, sa->i2sa_log, "C_Sign", rc);
-
-done:
-	return ((rc == CKR_OK) ? B_TRUE : B_FALSE);
+	return (B_TRUE);
 }
 
 boolean_t
 ikev2_pkt_decrypt(pkt_t *pkt)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
-	CK_SESSION_HANDLE handle = p11h;
-	CK_OBJECT_HANDLE encr_key;
-	CK_OBJECT_HANDLE auth_key;
-	uchar_t *iv, *data, *icv;
+	CK_BYTE_PTR iv, data, icv;
 	CK_ULONG ivlen, datalen, icvlen;
 	uint8_t padlen = 0;
-	CK_MECHANISM mech = { 0 };
-	union {
-		CK_AES_CTR_PARAMS	aes_ctr;
-		CK_CAMELLIA_CTR_PARAMS	cam_ctr;
-		CK_GCM_PARAMS		gcm;
-		CK_CCM_PARAMS		ccm;
-	} params;
 	encr_modes_t mode = ikev2_encr_mode(sa->encr);
-	CK_RV rc;
 
-	return (B_FALSE);
+	data = NULL;
+	datalen = 0;
+	for (size_t i = 0; i < pkt->pkt_payload_count; i++) {
+		pkt_payload_t *pay = pkt_payload(pkt, i);
+
+		if (pay->pp_type != IKEV2_PAYLOAD_SK)
+			continue;
+
+		data = (CK_BYTE_PTR)pay->pp_ptr;
+		datalen = pay->pp_len;
+		break;
+	}
+	ASSERT3P(data, !=, NULL);
+
+	ivlen = ikev2_encr_iv_size(sa->encr);
+	icvlen = ikev2_auth_icv_size(sa->encr, sa->auth);
+	if (icvlen + icvlen < datalen) {
+		bunyan_info(sa->i2sa_log, "SK payload is too small",
+		    BUNYAN_T_UINT32, "len", (uint32_t)datalen,
+		    BUNYAN_T_UINT32, "ivlen", (uint32_t)ivlen,
+		    BUNYAN_T_UINT32, "icvlen", (uint32_t)icvlen,
+		    BUNYAN_T_END);
+		return (B_FALSE);
+	}
+
+	iv = data;
+	data += ivlen;
+	datalen -= ivlen;
+	datalen -= icvlen;
+	icv = data + datalen;
+
+	if (mode != MODE_CCM && mode != MODE_GCM &&
+	    sa->encr != IKEV2_XF_AUTH_NONE) {
+		if (!auth_common(pkt, B_FALSE, icv, icvlen))
+			return (B_FALSE);
+	}
+
+	if (!crypt_common(pkt, B_FALSE, iv, ivlen, data, datalen, icv, icvlen))
+		return (B_FALSE);
+
+	return (B_TRUE);
 }
 
 boolean_t
