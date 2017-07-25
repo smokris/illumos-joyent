@@ -79,6 +79,8 @@ boolean_t ikev2_add_config(pkt_t *restrict, ikev2_cfg_type_t);
 boolean_t ikev2_add_config_attr(pkt_t *restrict, ikev2_cfg_attr_type_t,
     const void *restrict);
 
+boolean_t ikev2_pkt_decrypt(pkt_t *);
+
 #ifdef __cplusplus
 }
 #endif

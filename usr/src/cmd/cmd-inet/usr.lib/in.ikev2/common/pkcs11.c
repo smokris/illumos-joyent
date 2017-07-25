@@ -729,6 +729,44 @@ ikev2_encr_mode(ikev2_xf_encr_t encr)
 	return (MODE_NONE);
 }
 
+CK_MECHANISM_TYPE
+ikev2_auth_to_p11(ikev2_xf_auth_t auth)
+{
+	switch (auth) {
+	case IKEV2_XF_AUTH_NONE:
+		return (0);
+	case IKEV2_XF_AUTH_HMAC_MD5_96:
+		return (CKM_MD5_HMAC);
+	case IKEV2_XF_AUTH_HMAC_SHA1_96:
+		return (CKM_SHA_1_HMAC);
+	case IKEV2_XF_AUTH_DES_MAC:
+		return (CKM_DES_MAC);
+	case IKEV2_XF_AUTH_KPDK_MD5:
+		return (CKM_MD5_HMAC);	/* XXX: verify */
+	case IKEV2_XF_AUTH_AES_XCBC_96:
+		return (CKM_AES_XCBC_MAC_96);
+	case IKEV2_XF_AUTH_HMAC_MD5_128:
+		return (CKM_MD5_HMAC);
+	case IKEV2_XF_AUTH_HMAC_SHA1_160:
+		return (CKM_SHA_1_HMAC);
+	case IKEV2_XF_AUTH_AES_CMAC_96:
+		return (CKM_AES_CMAC);
+	case IKEV2_XF_AUTH_AES_128_GMAC:
+	case IKEV2_XF_AUTH_AES_192_GMAC:
+	case IKEV2_XF_AUTH_AES_256_GMAC:
+		return (CKM_AES_GMAC);
+	case IKEV2_XF_AUTH_HMAC_SHA2_256_128:
+		return (CKM_SHA256_HMAC);
+	case IKEV2_XF_AUTH_HMAC_SHA2_384_192:
+		return (CKM_SHA384_HMAC);
+	case IKEV2_XF_AUTH_HMAC_SHA2_512_256:
+		return (CKM_SHA512_HMAC);
+	}
+
+	/*NOTREACHED*/
+	return (0);
+}
+
 size_t
 ikev2_auth_icv_size(ikev2_xf_encr_t encr, ikev2_xf_auth_t auth)
 {

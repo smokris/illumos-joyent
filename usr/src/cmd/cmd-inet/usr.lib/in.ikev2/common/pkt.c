@@ -40,7 +40,8 @@
 static umem_cache_t	*pkt_cache;
 
 static size_t pkt_item_rank(pkt_stack_item_t);
-static void pkt_finish(pkt_t *restrict, uchar_t *restrict, uintptr_t, size_t);
+static boolean_t pkt_finish(pkt_t *restrict, uchar_t *restrict, uintptr_t,
+    size_t);
 static int pkt_reset(void *);
 
 pkt_t *
@@ -70,7 +71,7 @@ pkt_out_alloc(uint64_t i_spi, uint64_t r_spi, uint8_t version,
 	return (pkt);
 }
 
-static void
+static boolean_t
 pkt_finish(pkt_t *restrict pkt, uchar_t *restrict ptr, uintptr_t swaparg,
     size_t numpay)
 {
@@ -81,6 +82,7 @@ pkt_finish(pkt_t *restrict pkt, uchar_t *restrict ptr, uintptr_t swaparg,
 	rawhdr = (ike_header_t *)ptr;
 	pkt->pkt_header.length = pkt_len(pkt);
 	pkt_hdr_hton(rawhdr, &pkt->pkt_header);
+	return (B_TRUE);
 }
 
 struct pkt_count_s {
@@ -174,7 +176,7 @@ pkt_in_alloc(uchar_t *buf, size_t buflen)
 	return (pkt);
 }
 
-static void
+static boolean_t
 payload_finish(pkt_t *restrict pkt, uchar_t *restrict ptr, uintptr_t arg,
     size_t numsub)
 {
@@ -189,6 +191,7 @@ payload_finish(pkt_t *restrict pkt, uchar_t *restrict ptr, uintptr_t arg,
 	pay.pay_next = (uint8_t)arg;
 	pay.pay_length = htons((uint16_t)len);
 	(void) memcpy(ptr, &pay, sizeof (pay));
+	return (B_TRUE);
 }
 
 boolean_t
@@ -216,7 +219,8 @@ pkt_add_payload(pkt_t *pkt, uint8_t ptype, uint8_t resv)
 	return (B_TRUE);
 }
 
-static void prop_finish(pkt_t *restrict, uchar_t *restrict, uintptr_t, size_t);
+static boolean_t prop_finish(pkt_t *restrict, uchar_t *restrict, uintptr_t,
+    size_t);
 
 boolean_t
 pkt_add_prop(pkt_t *pkt, uint8_t propnum, uint8_t proto, size_t spilen,
@@ -252,7 +256,7 @@ pkt_add_prop(pkt_t *pkt, uint8_t propnum, uint8_t proto, size_t spilen,
 	return (B_TRUE);
 }
 
-static void
+static boolean_t
 prop_finish(pkt_t *restrict pkt, uchar_t *restrict ptr, uintptr_t more,
     size_t numxform)
 {
@@ -263,9 +267,10 @@ prop_finish(pkt_t *restrict pkt, uchar_t *restrict ptr, uintptr_t more,
 	prop.prop_len = htons((uint16_t)(pkt->pkt_ptr - ptr));
 	prop.prop_numxform = (uint8_t)numxform;
 	(void) memcpy(ptr, &prop, sizeof (prop));
+	return (B_TRUE);
 }
 
-static void pkt_xform_finish(pkt_t *restrict, uchar_t *restrict, uintptr_t,
+static boolean_t pkt_xform_finish(pkt_t *restrict, uchar_t *restrict, uintptr_t,
     size_t);
 
 boolean_t
@@ -289,7 +294,7 @@ pkt_add_xform(pkt_t *pkt, uint8_t xftype, uint8_t xfid)
 	return (B_TRUE);
 }
 
-static void
+static boolean_t
 pkt_xform_finish(pkt_t *restrict pkt, uchar_t *restrict ptr, uintptr_t more,
     size_t numattr)
 {
@@ -299,6 +304,7 @@ pkt_xform_finish(pkt_t *restrict pkt, uchar_t *restrict ptr, uintptr_t more,
 	xf.xf_more = more;
 	xf.xf_len = htons((uint16_t)(pkt->pkt_ptr - ptr));
 	(void) memcpy(ptr, &xf, sizeof (xf));
+	return (B_TRUE);
 }
 
 boolean_t
@@ -619,9 +625,13 @@ pkt_stack_unwind(pkt_t *pkt, pkt_stack_item_t type, uintptr_t swaparg)
 	while (!pkt_stack_empty(pkt) &&
 	    (stk_rank = pkt_stack_rank(pkt)) >= rank) {
 		stk = pkt_stack_pop(pkt);
-		if (stk->stk_finish != NULL)
-			stk->stk_finish(pkt, stk->stk_ptr,
+		if (stk->stk_finish != NULL) {
+			boolean_t ret;
+
+			ret = stk->stk_finish(pkt, stk->stk_ptr,
 			    (stk_rank == rank) ? swaparg : 0, count);
+			pkt->pkt_stk_error |= !ret;
+		}
 
 		/*
 		 * This was initialized to 0, and is deliberately set after
@@ -642,10 +652,11 @@ pkt_stack_unwind(pkt_t *pkt, pkt_stack_item_t type, uintptr_t swaparg)
 }
 
 /* pops off all the callbacks in preparation for sending */
-void
+boolean_t
 pkt_done(pkt_t *pkt)
 {
 	(void) pkt_stack_unwind(pkt, PSI_NONE, 0);
+	return (pkt->pkt_stk_error);
 }
 
 pkt_walk_ret_t

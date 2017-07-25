@@ -46,7 +46,7 @@ struct pkt_stack;
 typedef struct pkt		pkt_t;
 typedef struct pkt_stack	pkt_stack_t;
 
-typedef void (*pkt_finish_fn)(struct pkt *restrict, uchar_t *restrict,
+typedef boolean_t (*pkt_finish_fn)(struct pkt *restrict, uchar_t *restrict,
     uintptr_t, size_t);
 
 typedef enum pkt_stack_item {
@@ -69,22 +69,22 @@ struct pkt_stack {
 	size_t			stk_count;
 	pkt_stack_item_t	stk_type;
 };
-#define	PKT_STACK_DEPTH	(6)
+#define	PKT_STACK_DEPTH	(6)	/* maximum depth needed */
 
 typedef struct pkt_payload {
 	uchar_t		*pp_ptr;
 	uint16_t	pp_len;
 	uint8_t		pp_type;
 } pkt_payload_t;
-#define	PKT_PAYLOAD_NUM	(16)
+#define	PKT_PAYLOAD_NUM	(16)	/* usually don't need more than this */
 
 typedef struct pkt_notify {
 	uchar_t		*pn_ptr;
 	uint16_t	pn_type;
 	uint16_t	pn_len;
 } pkt_notify_t;
-
 #define	PKT_NOTIFY_NUM	(8)
+
 #define	MAX_PACKET_SIZE	(8192)	/* largest datagram we accept */
 struct pkt {
 				/* NOT refheld */
@@ -111,6 +111,7 @@ struct pkt {
 
 	struct pkt_stack	stack[PKT_STACK_DEPTH];
 	uint_t			stksize;
+	boolean_t		pkt_stk_error;
 
 	size_t			pkt_xmit;
 };
@@ -178,7 +179,7 @@ void pkt_hdr_hton(ike_header_t *restrict, const ike_header_t *restrict);
 void put32(pkt_t *, uint32_t);
 void put64(pkt_t *, uint64_t);
 
-void pkt_done(pkt_t *);
+boolean_t pkt_done(pkt_t *);
 void pkt_init(void);
 void pkt_fini(void);
 void pkt_free(pkt_t *);

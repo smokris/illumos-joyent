@@ -677,7 +677,7 @@ ikev2_add_notify(pkt_t *restrict pkt, ikev2_spi_proto_t proto, size_t spisize,
 	return (B_TRUE);
 }
 
-static void delete_finish(pkt_t *restrict, uchar_t *restrict, uintptr_t,
+static boolean_t delete_finish(pkt_t *restrict, uchar_t *restrict, uintptr_t,
     size_t);
 
 boolean_t
@@ -711,7 +711,7 @@ ikev2_add_delete(pkt_t *pkt, ikev2_spi_proto_t proto)
 	return (B_TRUE);
 }
 
-static void
+static boolean_t
 delete_finish(pkt_t *restrict pkt, uchar_t *restrict buf, uintptr_t swaparg,
     size_t numspi)
 {
@@ -722,6 +722,7 @@ delete_finish(pkt_t *restrict pkt, uchar_t *restrict buf, uintptr_t swaparg,
 	(void) memcpy(&del, buf, sizeof (del));
 	del.del_nspi = htons((uint16_t)numspi);
 	(void) memcpy(buf, &del, sizeof (del));
+	return (B_TRUE);
 }
 
 boolean_t
@@ -749,7 +750,8 @@ ikev2_add_ts_r(pkt_t *restrict pkt)
 	return (add_ts_common(pkt, B_FALSE));
 }
 
-static void ts_finish(pkt_t *restrict, uchar_t *restrict, uintptr_t, size_t);
+static boolean_t ts_finish(pkt_t *restrict, uchar_t *restrict, uintptr_t,
+    size_t);
 
 static boolean_t
 add_ts_common(pkt_t *pkt, boolean_t ts_i)
@@ -767,7 +769,7 @@ add_ts_common(pkt_t *pkt, boolean_t ts_i)
 	return (B_TRUE);
 }
 
-static void
+static boolean_t
 ts_finish(pkt_t *restrict pkt, uchar_t *restrict buf, uintptr_t swaparg,
     size_t numts)
 {
@@ -778,6 +780,7 @@ ts_finish(pkt_t *restrict pkt, uchar_t *restrict buf, uintptr_t swaparg,
 	(void) memcpy(&ts, buf, sizeof (ts));
 	ts.tsp_count = (uint8_t)numts;
 	(void) memcpy(buf, &ts, sizeof (ts));
+	return (B_TRUE);
 }
 
 boolean_t
@@ -832,9 +835,9 @@ ikev2_add_ts(pkt_t *restrict pkt, ikev2_ts_type_t type, uint8_t ip_proto,
 	return (B_TRUE);
 }
 
-static void encrypt_payloads(pkt_t *restrict, uchar_t *restrict, uintptr_t,
+static boolean_t encrypt_payloads(pkt_t *restrict, uchar_t *restrict, uintptr_t,
     size_t);
-static boolean_t cbc_iv(pkt_t *restrict);
+static boolean_t cbc_iv(pkt_t *restrict, uchar_t *);
 
 boolean_t
 ikev2_add_sk(pkt_t *restrict pkt)
@@ -873,7 +876,7 @@ ikev2_add_sk(pkt_t *restrict pkt)
  * which should be unique, encrypt using SK to generate IV
  */
 static boolean_t
-cbc_iv(pkt_t *restrict pkt)
+cbc_iv(pkt_t *restrict pkt, uchar_t *ivp)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
 	CK_SESSION_HANDLE handle = p11h;
@@ -920,21 +923,21 @@ cbc_iv(pkt_t *restrict pkt)
 
 	rv = C_EncryptInit(handle, &mech, key);
 	if (rv != CKR_OK) {
-		/* XXX: log */
+		PKCS11ERR(error, sa->i2sa_log, "C_EncryptInit", rv);
 		return (B_FALSE);
 	}
 
-	rv = C_Encrypt(handle, buf, blocklen, pkt->pkt_ptr, &blocklen);
+	rv = C_Encrypt(handle, buf, blocklen, buf, &blocklen);
 	if (rv != CKR_OK) {
-		/* XXXX: log */
+		PKCS11ERR(error, sa->i2sa_log, "C_Encrypt", rv);
 		return (B_FALSE);
 	}
 
-	pkt->pkt_ptr += blocklen;
+	(void) memcpy(ivp, buf, ikev2_encr_iv_size(sa->encr));
 	return (B_TRUE);
 }
 
-static void
+static boolean_t
 encrypt_payloads(pkt_t *restrict pkt, uchar_t *restrict buf, uintptr_t swaparg,
     size_t numencr)
 {
@@ -969,23 +972,29 @@ encrypt_payloads(pkt_t *restrict pkt, uchar_t *restrict buf, uintptr_t swaparg,
 	icvlen = ikev2_auth_icv_size(sa->encr, sa->auth);
 	blocklen = ikev2_encr_block_size(sa->encr);
 
-	iv = buf;
+	iv = buf + sizeof (ike_payload_t);
 	data = iv + ivlen;
-	datalen = (size_t)(pkt->pkt_ptr - buf);
+	datalen = (size_t)(pkt->pkt_ptr - data);
 
 	/*
 	 * XXX: what padding should be used here? For now we rely on
 	 * the buffer being initially zero-filled and use that.  It would
 	 * be good for an expert to know if that vs. using random vs. something
 	 * else would be good for padding.
+	 *
+	 * NOTE: since we always include a single byte indicating the
+	 * (possibly zero) amount of padding added at the end of any padding,
+	 * these calculations all include the pad length byte in the
+	 * calculations.
 	 */
 	if ((datalen + 1) % blocklen != 0)
 		padlen = blocklen - ((datalen + 1) % blocklen);
 
-	/* XXX: log */
-	if (pkt_write_left(pkt) < padlen + 1 + icvlen)
-		return;
-
+	if (pkt_write_left(pkt) < padlen + 1 + icvlen) {
+		bunyan_info(sa->i2sa_log, "not enough space for packet",
+		    BUNYAN_T_END);
+		return (B_FALSE);
+	}
 	datalen += padlen;
 
 	icv = data + datalen;
@@ -1008,9 +1017,8 @@ encrypt_payloads(pkt_t *restrict pkt, uchar_t *restrict buf, uintptr_t swaparg,
 	case MODE_NONE:
 		break;
 	case MODE_CBC:
-		/* XXX: todo */
-		mech.pParameter = iv;
-		mech.ulParameterLen = ivlen;
+		if (!cbc_iv(pkt, iv))
+			return (B_FALSE);
 		break;
 	case MODE_CTR:
 		/* XXX: todo */
@@ -1039,6 +1047,13 @@ encrypt_payloads(pkt_t *restrict pkt, uchar_t *restrict buf, uintptr_t swaparg,
 		mech.ulParameterLen = sizeof (CK_GCM_PARAMS);
 		params.gcm.pIv = nonce;
 		params.gcm.ulIvLen = noncelen;
+		/*
+		 * NOTE: CK_GCM_PARAMS includes a 'ulIvBits' field.  This
+		 * is in the published pkcs11.t file, however it does not
+		 * appear to be used anywhere and appears to be a vestigal
+		 * leftover from the unpublished 2.30 version.   It is
+		 * currently not set under the assumption it is ignored.
+		 */
 		params.gcm.pAAD = (CK_BYTE_PTR)&pkt->pkt_raw;
 		params.gcm.ulAADLen = (CK_ULONG)(buf - params.gcm.pAAD);
 		params.gcm.ulTagBits = icvlen * 8;
@@ -1048,17 +1063,71 @@ encrypt_payloads(pkt_t *restrict pkt, uchar_t *restrict buf, uintptr_t swaparg,
 	mech.mechanism = ikev2_encr_to_p11(sa->encr);
 	pkt->pkt_ptr = icv + icvlen;
 
+	/* Update SK payload length field to reflect padding + ICV */
+	ike_payload_t pay = { 0 };
+	(void) memcpy(&pay, buf, sizeof (pay));
+	pay.pay_length = htons((uint16_t)(pkt->pkt_ptr - buf));
+	(void) memcpy(buf, &pay, sizeof (pay));
+
 	rc = C_EncryptInit(handle, &mech, encr_key);
+	if (rc != CKR_OK) {
+		PKCS11ERR(error, sa->i2sa_log, "C_EncryptInit", rc);
+		return (B_FALSE);
+	}
+
 	rc = C_Encrypt(handle, data, datalen, data, &datalen);
-	/* XXX: error check */
-
+	if (rc != CKR_OK) {
+		PKCS11ERR(error, sa->i2sa_log, "C_Encrypt", rc);
+		return (B_FALSE);
+	}
 	if (mode == MODE_CCM || mode == MODE_GCM)
-		return;
+		goto done;
 
+	/*
+	 * RFC7996 3.14 -- The checksum starts at the fixed packet header
+	 * through the pad byte
+	 */
 	data = (uchar_t *)&pkt->pkt_raw;
-	datalen = (size_t)(pkt->pkt_ptr - data);
-	/* C_SignInit(handle, mech, auth_key); */
+	datalen = (size_t)(icv - data);
+
+	mech.mechanism = ikev2_auth_to_p11(sa->auth);
+	mech.pParameter = NULL_PTR;
+	mech.ulParameterLen = 0;
+	rc = C_SignInit(handle, &mech, auth_key);
+	if (rc != CKR_OK) {
+		PKCS11ERR(error, sa->i2sa_log, "C_SignInit", rc);
+		goto done;
+	}
+
 	rc = C_Sign(handle, data, datalen, icv, &icvlen);
+	if (rc != CKR_OK)
+		PKCS11ERR(error, sa->i2sa_log, "C_Sign", rc);
+
+done:
+	return ((rc == CKR_OK) ? B_TRUE : B_FALSE);
+}
+
+boolean_t
+ikev2_pkt_decrypt(pkt_t *pkt)
+{
+	ikev2_sa_t *sa = pkt->pkt_sa;
+	CK_SESSION_HANDLE handle = p11h;
+	CK_OBJECT_HANDLE encr_key;
+	CK_OBJECT_HANDLE auth_key;
+	uchar_t *iv, *data, *icv;
+	CK_ULONG ivlen, datalen, icvlen;
+	uint8_t padlen = 0;
+	CK_MECHANISM mech = { 0 };
+	union {
+		CK_AES_CTR_PARAMS	aes_ctr;
+		CK_CAMELLIA_CTR_PARAMS	cam_ctr;
+		CK_GCM_PARAMS		gcm;
+		CK_CCM_PARAMS		ccm;
+	} params;
+	encr_modes_t mode = ikev2_encr_mode(sa->encr);
+	CK_RV rc;
+
+	return (B_FALSE);
 }
 
 boolean_t

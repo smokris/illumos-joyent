@@ -166,7 +166,11 @@ ikev2_send(pkt_t *pkt, boolean_t is_error)
 		pkt->pkt_header.msgid = i2sa->outmsgid;
 	}
 
-	pkt_done(pkt);
+	if (!pkt_done(pkt)) {
+		I2SA_REFRELE(i2sa);
+		ikev2_pkt_free(pkt);
+		return (B_FALSE);
+	}
 
 	s = select_socket(i2sa, NULL);
 	len = sendfromto(s, PKT_PTR(pkt), pkt_len(pkt), &i2sa->laddr,
