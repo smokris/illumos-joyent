@@ -1265,7 +1265,23 @@ ikev2_pkt_decrypt(pkt_t *pkt)
 	if (!pkt_index_payloads(pkt, data, datalen, pay.pay_next, paystart))
 		return (B_FALSE);
 
-	/* XXX: index notify payloads */
+	ncount = nstart;
+	for (size_t i = 0; i < pkt->pkt_payload_count; i++) {
+		pkt_payload_t *pp = pkt_payload(pkt, i);
+
+		if (pp->pp_type != IKEV2_PAYLOAD_NOTIFY)
+			continue;
+
+		pkt_notify_t *np = NULL;
+		ikev2_notify_t n = { 0 };
+
+		np = pkt_notify(pkt, ncount++);
+		ASSERT3U(pp->pp_len, >=, sizeof (n));
+		(void) memcpy(&n, pp->pp_ptr, sizeof (n));
+		np->pn_ptr = pp->pp_ptr;
+		np->pn_len = pp->pp_len;
+		np->pn_type = ntohs(n.n_type);
+	}
  
 	return (B_TRUE);
 }
