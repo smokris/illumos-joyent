@@ -678,19 +678,63 @@ pfreq_free(pfreq_t *req)
 	umem_cache_free(pfreq_cache, req);
 }
 
-void
-pfkey_init(void)
+static void
+pfkey_register(uint8_t satype)
 {
 	uint64_t buffer[128] = { 0 };
 	sadb_msg_t *samsg = (sadb_msg_t *)buffer;
-	sadb_x_ereg_t *ereg = (sadb_x_ereg_t *)(samsg + 1);
-	boolean_t ah_ack = B_FALSE;
-	boolean_t esp_ack = B_FALSE;
-	uint32_t flag = 0;
 	ssize_t n;
-	int rc;
+	uint32_t msgid = atomic_inc_32_nv(&msgid);
+	pid_t pid = getpid();
 
-	CTASSERT(sizeof (buffer) >= sizeof (*samsg) + sizeof (*ereg));
+	CTASSERT(sizeof (buffer) >= sizeof (*samsg));
+
+	samsg->sadb_msg_version = PF_KEY_V2;
+	samsg->sadb_msg_type = SADB_REGISTER;
+	samsg->sadb_msg_errno = 0;
+	samsg->sadb_msg_satype = satype;
+	samsg->sadb_msg_reserved = 0;
+	samsg->sadb_msg_seq = msgid;
+	samsg->sadb_msg_pid = pid;
+	samsg->sadb_msg_len = SADB_8TO64(sizeof (*samsg));
+
+	n = write(pfkey, buffer, sizeof (*samsg));
+	if (n < 0)
+		err(EXIT_FAILURE, "pf_key write error");
+	if (n < sizeof (*samsg))
+		errx(EXIT_FAILURE, "Unable to write pf_key register message");
+
+	do {
+		(void) memset(buffer, 0, sizeof (buffer));
+		n = read(pfkey, buffer, sizeof (buffer));
+		if (n < 0)
+			err(EXIT_FAILURE, "pf_key read failure");
+	} while (samsg->sadb_msg_seq != msgid ||
+	    samsg->sadb_msg_pid != pid ||
+	    samsg->sadb_msg_type != SADB_REGISTER);
+
+	if (samsg->sadb_msg_errno != 0) {
+		if (samsg->sadb_msg_errno != EPROTONOSUPPORT)
+			errx(EXIT_FAILURE, "pf_key register returned %s (%d).",
+			    strerror(samsg->sadb_msg_errno),
+			    samsg->sadb_msg_errno);
+		bunyan_error(pflog, "Protocol not supported",
+		    BUNYAN_T_UINT32, "msg_satype",
+		    (uint32_t)samsg->sadb_msg_satype, BUNYAN_T_END);
+	}
+
+	bunyan_debug(pflog, "Initial REGISTER with SADB",
+	    BUNYAN_T_STRING, "satype", pfkey_satype(samsg->sadb_msg_satype),
+	    BUNYAN_T_END);
+
+	handle_register(samsg);
+}
+
+void
+pfkey_init(void)
+{
+	uint32_t flag = 0;
+	int rc;
 
 #ifdef DEBUG
 	flg |= UU_LIST_POOL_DEBUG;
@@ -717,72 +761,8 @@ pfkey_init(void)
 		errx(EXIT_FAILURE, "Unable to create child logger: %s",
 		    strerror(rc));
 
-	/*
-	 * Extended REGISTER for AH/ESP combination(s).
-	 */
-	samsg->sadb_msg_version = PF_KEY_V2;
-	samsg->sadb_msg_type = SADB_REGISTER;
-	samsg->sadb_msg_errno = 0;
-	samsg->sadb_msg_satype = SADB_SATYPE_UNSPEC;
-	samsg->sadb_msg_reserved = 0;
-	samsg->sadb_msg_seq = 1;
-	samsg->sadb_msg_pid = getpid();
-	samsg->sadb_msg_len = SADB_8TO64(sizeof (*samsg) + sizeof (*ereg));
-
-	ereg->sadb_x_ereg_len = SADB_8TO64(sizeof (*ereg));
-	ereg->sadb_x_ereg_exttype = SADB_X_EXT_EREG;
-	ereg->sadb_x_ereg_satypes[0] = SADB_SATYPE_ESP;
-	ereg->sadb_x_ereg_satypes[1] = SADB_SATYPE_AH;
-	ereg->sadb_x_ereg_satypes[2] = SADB_SATYPE_UNSPEC;
-
-	n = write(pfkey, buffer, sizeof (*samsg) + sizeof (*ereg));
-	if (n < 0)
-		err(EXIT_FAILURE, "Extended register write error");
-	if (n < sizeof (*samsg) + sizeof (*ereg))
-		errx(EXIT_FAILURE, "Unable to write extended register message");
-
-	pid_t pid = getpid();
-	do {
-		do {
-			(void) memset(buffer, 0, sizeof (buffer));
-			n = read(pfkey, buffer, sizeof (buffer));
-			if (n < 0)
-				err(EXIT_FAILURE, "Extended register read "
-				    "error");
-		} while (samsg->sadb_msg_seq !=1 ||
-		    samsg->sadb_msg_pid != pid ||
-		    samsg->sadb_msg_type != SADB_REGISTER);
-
-		if (samsg->sadb_msg_errno != 0) {
-			if (samsg->sadb_msg_errno != EPROTONOSUPPORT)
-				errx(EXIT_FAILURE, "Extended REGISTER "
-				    "returned %s (%d).",
-				    strerror(samsg->sadb_msg_errno),
-				    samsg->sadb_msg_errno);
-			bunyan_info(pflog, "Protocol not supported",
-			    BUNYAN_T_UINT32, "msg_satype",
-			    (uint32_t)samsg->sadb_msg_satype,
-			    BUNYAN_T_END);
-		}
-
-		switch (samsg->sadb_msg_satype) {
-		case SADB_SATYPE_ESP:
-			esp_ack = B_TRUE;
-			bunyan_debug(pflog, "ESP initial REGISTER with SADB",
-			    BUNYAN_T_END);
-			break;
-		case SADB_SATYPE_AH:
-			ah_ack = B_TRUE;
-			bunyan_debug(pflog, "AH initial REGISTER with SADB",
-			    BUNYAN_T_END);
-			break;
-		default:
-			err(EXIT_FAILURE, "Bad satype %d in extended register "
-			    "ACK.", samsg->sadb_msg_satype);
-		}
-
-		handle_register(samsg);
-	} while (!esp_ack || !ah_ack);
+	pfkey_register(SADB_SATYPE_ESP);
+	pfkey_register(SADB_SATYPE_AH);
 
 	schedule_socket(pfkey, pfkey_inbound);
 }
