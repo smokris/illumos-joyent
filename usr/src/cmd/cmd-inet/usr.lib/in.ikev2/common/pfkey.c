@@ -737,13 +737,14 @@ pfkey_init(void)
 	int rc;
 
 #ifdef DEBUG
-	flg |= UU_LIST_POOL_DEBUG;
+	flag |= UU_LIST_POOL_DEBUG;
 #endif
 
-	pfreq_pool = uu_list_pool_create("pfreq list", sizeof (pfreq_t),
+	pfreq_pool = uu_list_pool_create("pfreq_list", sizeof (pfreq_t),
 	    offsetof(pfreq_t, pr_node), pfreq_compare, flag);
 	if (pfreq_pool == NULL)
-		err(EXIT_FAILURE, "Unable to create pfreq list pool");
+		errx(EXIT_FAILURE, "Unable to create pfreq list pool: %s",
+		    uu_strerror(uu_error()));
 
 	pfreq_cache = umem_cache_create("pfreq cache", sizeof (pfreq_t),
 	    sizeof (uint64_t), pfreq_ctor, NULL, NULL, NULL, NULL, 0);
