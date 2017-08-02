@@ -14,13 +14,25 @@
  * Copyright (c) 2017, Joyent, Inc.
  */
 #include <sys/time.h>
+#include <sys/debug.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
 #include <umem.h>
 #include <netinet/in.h>
+#include <errno.h>
+#include <bunyan.h>
+#include <ctype.h>
+#include <stdio.h>
 #include "config.h"
 #include "ikev2.h"
+
+#ifndef ARRAY_SIZE
+#define	ARRAY_SIZE(x)	(sizeof (x) / sizeof (x[0]))
+#endif
 
 /*
  * Various types of tokens.  Some of these keywords are for cfgfile
@@ -43,6 +55,8 @@ typedef enum token_type_e {
 	T_KEYWORD,
 	T_P1_ID_TYPE,
 	T_AUTH_METHOD,
+	T_ENCR_ALG,
+	T_AUTH_ALG
 } token_type_t;
 
 typedef enum keyword_e {
@@ -118,6 +132,69 @@ static const char *keyword_tab[KW_MAX] = {
 	"remote_id"
 };
 
+static struct {
+	ikev2_auth_type_t	a_id;
+	const char		a_str[];
+} auth_tab[] = {
+	{ IKEV2_AUTH_NONE, "" },
+	{ IKEV2_AUTH_RSA_SIG, "rsa_sig" },
+	{ IKEV2_AUTH_SHARED_KEY_MIC, "preshared" },
+	{ IKEV2_AUTH_DSS_SIG, "dss_sig" }
+};
+
+static struct {
+	config_auth_id_t	p1_id;
+	const char		p1_str[];
+} p1_id_tab[] = {
+	{ CFG_AUTH_ID_DN, "dn" },
+	{ CFG_AUTH_ID_DN, "DN" },
+	{ CFG_AUTH_ID_DNS, "dns" },
+	{ CFG_AUTH_ID_DNS, "DNS" },
+	{ CFG_AUTH_ID_DNS, "fqdn" },
+	{ CFG_AUTH_ID_DNS, "FQDN" },
+	{ CFG_AUTH_ID_GN, "gn" },
+	{ CFG_AUTH_ID_GN, "GN" },
+	{ CFG_AUTH_ID_IPV4, "ip" },
+	{ CFG_AUTH_ID_IPV4, "IP" },
+	{ CFG_AUTH_ID_IPV4, "ipv4" },
+	{ CFG_AUTH_ID_IPV4_PREFIX, "ipv4_prefix" },
+	{ CFG_AUTH_ID_IPV4_RANGE, "ipv4_range" },
+	{ CFG_AUTH_ID_IPV6, "ipv6" },
+	{ CFG_AUTH_ID_IPV6_PREFIX, "ipv6_prefix" },
+	{ CFG_AUTH_ID_IPV6_RANGE, "ipv6_range" },
+	{ CFG_AUTH_ID_EMAIL, "mbox" },
+	{ CFG_AUTH_ID_EMAIL, "MBOX" },
+	{ CFG_AUTH_ID_EMAIL, "user_fqdn" }
+};
+
+static struct {
+	ikev2_xf_auth_t xfa_id;
+	const char	xfa_str[];
+} xf_auth_tab[] = {
+	{ IKEV2_XF_AUTH_HMAC_MD5_128, "md5" },	/* XXX: verify this */
+	{ IKEV2_XF_AUTH_HMAC_SHA1_160, "sha" },
+	{ IKEV2_XF_AUTH_HMAC_SHA1_160, "sha1" },
+	{ IKEV2_XF_AUTH_HMAC_SHA2_256_128, "sha256" },
+	{ IKEV2_XF_AUTH_HMAC_SHA2_384_192, "sha384" },
+	{ IKEV2_XF_AUTH_HMAC_SHA2_512_256, "sha512" }
+};
+
+static struct {
+	ikev2_xf_encr_t xfe_id;
+	const char	xfe_str[];
+} xf_encr_tab[] = {
+	{ IKEV2_ENCR_DES, "des" },
+	{ IKEV2_ENCR_DES, "des-cbc" },
+	{ IKEV2_ENCR_3DES, "3des" },
+	{ IKEV2_ENCR_3DES, "3des-cbc" },
+	{ IKEV2_ENCR_BLOWFISH, "blowfish" },
+	{ IKEV2_ENCR_BLOWFISH, "blowfish-cbc" },
+	{ IKEV2_ENCR_AES_CBC, "aes" },
+	{ IKEV2_ENCR_AES_CBC, "aes-cbc" },
+	{ IKEV2_ENCR_AES_CCM_16, "aes-ccm" },
+	{ IKEV2_ENCR_AES_GCM_16, "aes-gcm" }
+};
+
 typedef struct token {
 	token_type_t	t_type;
 	size_t		t_line;
@@ -130,9 +207,17 @@ typedef struct token {
 			in_addr_t		t_in;
 			in6_addr_t		t_in6;
 			ikev2_id_type_t		t_id;
-			ikev2_auth_type_t	t_auth;
+			config_auth_id_t	t_auth;
+			ikev2_xf_encr_t		t_encralg;
+			ikev2_xf_auth_t		t_authalg;
 	} t_val;
 } token_t;
+
+typedef struct tokens {
+	token_t	**t_tokens;
+	size_t	t_ntokens;
+	size_t	t_alloc;
+} tokens_t;
 
 typedef struct input {
 	char	*i_name;
@@ -140,6 +225,7 @@ typedef struct input {
 	size_t	i_len;
 	char	**i_lines;
 	size_t	i_nlines;
+	size_t	i_alloc;
 } input_t;
 
 volatile hrtime_t cfg_retry_max = SEC2NSEC(60);
@@ -147,6 +233,497 @@ volatile hrtime_t cfg_retry_init = SEC2NSEC(1);
 
 static token_t *tok_new(token_type_t, size_t, size_t, ...);
 static void tok_free(token_t *);
+static void tok_fail(char *, size_t, size_t, bunyan_logger_t *);
+static token_t *tok_str(char **, size_t, size_t *, bunyan_logger_t *);
+static token_t *tok_num(char **, size_t, size_t *, bunyan_logger_t *);
+static token_t *tok_enum(char **, size_t, size_t *, bunyan_logger_t *);
+static token_t *tok_int(char **, size_t, size_t *, bunyan_logger_t *);
+static token_t *tok_fp(char **, size_t, size_t *, bunyan_logger_t *);
+
+#define	INPUT_CHUNK_SZ	(64)
+input_t *
+input_new(const char *name, FILE *f)
+{
+	input_t *in = NULL;
+	char *line = NULL;
+	size_t linesz = 0;
+	ssize_t n = 0;
+
+	in = malloc(sizeof (*in));
+	if (in == NULL)
+		return (NULL);
+	(void) memset(in, 0, sizeof (*in));
+
+	in->i_name = strdup(name);
+	if (in->i_name == NULL)
+		goto error;
+
+	while ((n = getline(&line, &linesz, f)) > 0) {
+		if (in->i_nlines + 1 >= in->i_alloc) {
+			size_t newlen = in->i_alloc + INPUT_CHUNK_SZ;
+			size_t amt = newlen * sizeof (char *);
+
+			if (amt < newlen || amt < sizeof (char *)) {
+				errno = EOVERFLOW;
+				goto error;
+			}
+
+			char **newbuf = realloc(in->i_lines, amt);
+			if (newbuf == NULL)
+				goto error;
+
+			in->i_lines = newbuf;
+			in->i_alloc = newlen;
+		}
+
+		char *str = strdup(line);
+		if (str == NULL)
+			goto error;
+
+		in->i_lines[in->i_nlines++] = str;
+	}
+
+	if (ferror(f))
+		goto error;
+
+	return (in);
+
+error:
+	input_free(in);
+	return (NULL);
+}
+
+void
+input_free(input_t *in)
+{
+	if (in == NULL)
+		return;
+
+	free(in->i_name);
+	free(in->i_lines);
+	free(in);
+}
+
+#define	TOKEN_CHUNK_SZ	(64)
+static boolean_t
+tokens_grow(tokens_t *tokens)
+{
+	size_t newsize = tokens->t_alloc + TOKEN_CHUNK_SZ;
+	if (newsize < tokens->t_alloc || newsize < TOKEN_CHUNK_SZ) {
+		errno = EOVERFLOW;
+		return (B_FALSE);
+	}
+
+	size_t amt = newsize * sizeof (token_t *);
+	if (amt < newsize || amt < sizeof (token_t *)) {
+		errno = EOVERFLOW;
+		return (B_FALSE);
+	}
+
+	token_t **newp = umem_zalloc(amt, UMEM_DEFAULT);
+	if (newp == NULL)
+		return (B_FALSE);
+
+	/* as newsize > tokens->t_alloc, if it doesn't overflow, these can't */
+	amt = tokens->t_ntokens * sizeof (token_t *);
+	(void) memcpy(newp, tokens->t_tokens, amt);
+
+	amt = tokens->t_alloc * sizeof (token_t *);
+	umem_free(tokens->t_tokens, amt);
+
+	tokens->t_tokens = newp;
+	tokens->t_alloc = newsize;
+	return (B_TRUE);	
+}
+
+/*
+ * NOTE: This only releases the space allocated by the members of tokens_t
+ * but not tokens itself (as it usually will just be on the stack)
+ */
+static void
+tokens_free(tokens_t *tokens)
+{
+	if (tokens == NULL)
+		return;
+
+	for (size_t i = 0; i < tokens->t_ntokens; i++)
+		tok_free(tokens->t_tokens[i]);
+	umem_free(tokens->t_tokens, tokens->t_alloc * sizeof (token_t *));
+	(void) memset(tokens, 0, sizeof (*tokens));
+}
+
+static boolean_t
+tokenize_input(input_t *in, tokens_t *tokens, bunyan_logger_t *blog)
+{
+	char *p = NULL;
+	size_t line = 0;
+	size_t col = 1;
+	size_t i;
+
+	(void) memset(tokens, 0, sizeof (*tokens));
+	for (line = 0; line < in->i_nlines; line++) {
+		for (p = in->i_lines[line], col = 0; p[0] != '\0'; p++, col++) {
+			token_t *t = NULL;
+
+			switch (*p) {
+			case '\n':
+			case ' ':
+			case '\t':
+				continue;
+			case '#':
+				while (p[1] != '\0' && p[1] != '\n') {
+					p++;
+					col++;
+				}
+				continue;
+			case '{':
+				t = tok_new(T_LBRACE, line, col);
+				break;
+			case '}':
+				t = tok_new(T_RBRACE, line, col);
+				break;
+			case '(':
+				t = tok_new(T_LPAREN, line, col);
+				break;
+			case ')':
+				t = tok_new(T_RPAREN, line, col);
+				break;
+			case '-':
+				t = tok_new(T_HYPHEN, line, col);
+				break;
+			case '/':
+				t = tok_new(T_SLASH, line, col);
+				break;
+			case '.':
+				if (p[1] != '.')
+					goto fail;
+				t = tok_new(T_DOTDOT, line, col);
+				col++;
+				p++;
+				break;
+			case '"':
+				t = tok_str(&p, line, &col, blog);
+				break;
+			default:
+				if (p[0] == '+' || isdigit(p[0]))
+					t = tok_num(&p, line, &col, blog);
+				else if (isalpha(p[0]))
+					t = tok_enum(&p, line, &col, blog);
+				else
+					goto fail;
+			}
+
+			if (t == NULL)
+				return (B_TRUE);
+
+			if (tokens->t_ntokens + 1 >= tokens->t_alloc) {
+				if (!tokens_grow(tokens)) {
+					tok_free(t);
+					return (B_FALSE);
+				}
+			}
+			tokens->t_tokens[tokens->t_ntokens++] = t;
+		}
+	}
+	return (B_TRUE);
+
+fail:
+	tok_fail(in->i_lines[line], line, col, blog);
+	return (B_FALSE);
+}
+
+static void
+tok_fail(char *lineptr, size_t line, size_t col, bunyan_logger_t *blog)
+{
+	char *start = lineptr;
+	char *end = start;
+	size_t len = 0;
+
+	for (size_t i = 0; i < col - 1; i++)
+		VERIFY3U(lineptr[i], !=, '\0');
+
+	start = lineptr + col - 1;
+	while (end[0] != '\0' && end[0] != ' ' && end[0] != '\n')
+		end++;
+	len = (size_t)(end - start) + 1;
+
+	char str[len];
+	(void) strlcpy(str, start, len);
+
+	bunyan_error(blog, "Unrecognized token",
+	    BUNYAN_T_UINT32, "line", (uint32_t)line + 1,
+	    BUNYAN_T_UINT32, "column", (uint32_t)col,
+	    BUNYAN_T_STRING, "val", lineptr,
+	    BUNYAN_T_STRING, "token", str,
+	    BUNYAN_T_END);
+}
+
+static token_t *
+tok_str(char **p, size_t line, size_t *col, bunyan_logger_t *blog)
+{
+	VERIFY3U(p[0][0], ==, '"');
+	char *end = *p;
+
+	end++;
+	while (end[0] != '\0' && end[0] != '\n' && end[0] != '"')
+		end++;
+
+	switch (end[0]) {
+	case '\0':
+		/* XXX: error */
+		return (NULL);
+	case '\n':
+		/* XXX: error */
+		return (NULL);
+	}
+
+	size_t len = (size_t)(end - *p) + 1;
+	char str[len];
+
+	(void) strlcpy(str, *p, len);
+	token_t *t = tok_new(T_STRING, line, *col, str);
+
+	if (t == NULL)
+		return (NULL);
+
+	*col += len;
+	return (t);
+}
+
+static token_t *
+tok_num(char **p, size_t line, size_t *col, bunyan_logger_t *blog)
+{
+	char *end = *p;
+	size_t digits = 0, letters = 0, dot = 0, colon = 0, plus = 0;
+
+	while (end[0] != '\0') {
+		boolean_t stop = B_FALSE;
+
+		switch (end[0]) {
+		case '0': case '1': case '2': case '3': case '4':
+		case '5': case '6': case '7': case '8': case '9':
+			digits++;
+			break;
+		case 'a': case 'b': case 'c': case 'd': case 'e': case 'f':
+		case 'A': case 'B': case 'C': case 'D': case 'E': case 'F':
+			letters++;
+			break;
+		case ':':
+			colon++;
+			break;
+		case '.':
+			dot++;
+			break;
+		case '+':
+			plus++;
+			break;
+		default:
+			stop = B_TRUE;
+		}
+
+		end++;
+	}
+
+	/* allow leading + */
+	if (end[0] == '+')
+		end++;
+
+	/* '0x....' is always an integer */
+	if (end[0] == '0' && end[1] == 'x')
+		return (tok_int(p, line, col, blog));
+
+	
+	while (isdigit(end[0]))
+		end++;
+
+	/* digits '.' digit should be floating point */
+	if (end[0] == '.' && isdigit(end[1]))
+		return (tok_fp(p, line, col, blog));
+
+	/* anything else and we treat the run of digits as an int */
+	return (tok_int(p, line, col, blog));
+}
+
+static token_t *
+tok_ip(char **p, size_t line, size_t *col, bunyan_logger_t *blog)
+{
+	token_t *t = NULL;
+	char *end = *p;
+	in_addr_t addr = { 0 };
+	size_t len = 0;
+
+	while (end[0] != '\0' && (isdigit(end[0]) || end[0] == '.'))
+		end++;
+
+	len = (size_t)(end - *p) + 1;
+	if (len > INET_ADDRSTRLEN)
+		return (NULL);
+
+	char str[len];
+	(void) strlcpy(str, *p, len);
+
+	if (inet_pton(AF_INET, str, &addr) != 1)
+		return (NULL);
+
+	t = tok_new(T_IPV4, line, *col, &addr);
+	if (t == NULL)
+		return (NULL);
+
+	*col += len;
+	return (t);
+}
+
+static token_t *
+tok_ip6(char **p, size_t line, size_t *col, bunyan_logger_t *blog)
+{
+	token_t *t = NULL;
+	char *end = *p;
+	in6_addr_t addr = { 0 };
+	size_t len = 0;
+
+	while (end[0] != '\0' && (isxdigit(end[0]) || end[0] == ':'))
+		end++;
+
+	len = (size_t)(end - *p) + 1;
+	if (len > INET6_ADDRSTRLEN)
+		return (NULL);
+
+	char str[len];
+	(void) strlcpy(str, *p, len);
+
+	if (inet_pton(AF_INET6, str, &addr) != 1)
+		return (NULL);
+
+	t = tok_new(T_IPV6, line, *col, &addr);
+	if (t == NULL)
+		return (NULL);
+
+	*col += len;
+	return (t);
+}
+
+static token_t *
+tok_int(char **p, size_t line, size_t *col, bunyan_logger_t *blog)
+{
+	token_t *t = NULL;
+	char *end = NULL;
+	uint64_t val = 0;
+	size_t len = 0;
+
+	errno = 0;
+	val = strtoull(*p, &end, 0);
+	if (val == 0 && errno != 0)
+		return (NULL);
+
+	len = (size_t)(end - *p);
+	t = tok_new(T_INTEGER, line, *col, val);
+	if (t == NULL)
+		return (NULL);
+
+	*col += len;
+	return (t);
+}
+
+static token_t *
+tok_fp(char **p, size_t line, size_t *col, bunyan_logger_t *blog)
+{
+	token_t *t = NULL;
+	char *end = NULL;
+	double val = 0.0;
+	size_t len = 0;
+
+	errno = 0;
+	val = strtod(*p, &end);
+	if (errno != 0)
+		return (NULL);
+
+	len = (size_t)(end - *p);
+	t = tok_new(T_FLOAT, line, *col, val);
+	if (t == NULL)
+		return (NULL);
+
+	*col += len;
+	return (t);
+}
+
+static token_t *
+tok_enum(char **p, size_t line, size_t *col, bunyan_logger_t *blog)
+{
+	token_t *t = NULL;
+	char *end = *p;
+
+	while (end[0] == '_' || (end[0] >= 'a' && end[0] <='z') ||
+	    (end[0] >= 'A' && end[0] <= 'Z') ||
+	    (end[0] >= '1' && end[0] <= '9'))
+		end++;
+
+	size_t len = (size_t)(end - *p) + 1;
+	char str[len];
+
+	(void) strlcpy(str, *p, len);
+
+	for (keyword_t kw = 0; kw < KW_MAX; kw++) {
+		if (strcmp(keyword_tab[kw], str) != 0)
+			continue;
+
+		t = tok_new(T_KEYWORD, line, *col, kw);
+		if (t == NULL)
+			return (NULL);
+
+		*col += len;
+		return (t);
+	}
+
+	for (size_t i = 0; i < ARRAY_SIZE(auth_tab); i++) {
+		if (strcmp(str, auth_tab[i].a_str) != 0)
+			continue;
+
+		t = tok_new(T_AUTH_METHOD, line, *col, auth_tab[i].a_id);
+		if (t == NULL)
+			return (NULL);
+
+		*col += len;
+		return (t);
+	}
+
+	for (size_t i = 0; i < ARRAY_SIZE(p1_id_tab); i++) {
+		if (strcmp(str, p1_id_tab[i].p1_str) != 0)
+			continue;
+
+		t = tok_new(T_P1_ID_TYPE, line, *col, p1_id_tab[i].p1_id);
+		if (t == NULL)
+			return (NULL);
+
+		*col += len;
+		return (t);
+	}
+
+	for (size_t i = 0; i < ARRAY_SIZE(xf_encr_tab); i++) {
+		if (strcmp(str, xf_encr_tab[i].xfe_str) != 0)
+			continue;
+
+		t = tok_new(T_ENCR_ALG, line, *col, xf_encr_tab[i].xfe_id);
+		if (t == NULL)
+			return (NULL);
+
+		*col += len;
+		return (t);
+	}
+
+	for (size_t i = 0; i < ARRAY_SIZE(xf_auth_tab); i++) {
+		if (strcmp(str, xf_auth_tab[i].xfa_str) != 0)
+			continue;
+
+		t = tok_new(T_AUTH_ALG, line, *col, xf_auth_tab[i].xfa_id);
+		if (t == NULL)
+			return (NULL);
+
+		*col += len;
+		return (t);
+	}
+
+	return (NULL);
+}
 
 static token_t *
 tok_new(token_type_t type, size_t line, size_t col, ...)
@@ -195,6 +772,12 @@ tok_new(token_type_t type, size_t line, size_t col, ...)
 	case T_AUTH_METHOD:
 		t->t_val.t_auth = va_arg(ap, ikev2_auth_type_t);
 		break;
+	case T_ENCR_ALG:
+		t->t_val.t_encralg = va_arg(ap, ikev2_xf_encr_t);
+		break;
+	case T_AUTH_ALG:
+		t->t_val.t_authalg = va_arg(ap, ikev2_xf_auth_t);
+		break;
 	case T_IPV4:
 		ip4p = va_arg(ap, in_addr_t *);
 		(void) memcpy(&t->t_val.t_in, ip4p, sizeof (*ip4p));
@@ -219,3 +802,128 @@ tok_free(token_t *t)
 	umem_free(t, sizeof (*t));
 }
 
+static const char *
+tok_id_str(token_type_t id)
+{
+#define	STR(x) case x: return (#x)
+	switch (id) {
+	STR(T_NONE);
+	STR(T_STRING);
+	STR(T_INTEGER);
+	STR(T_FLOAT);
+	STR(T_LBRACE);
+	STR(T_RBRACE);
+	STR(T_LPAREN);
+	STR(T_RPAREN);
+	STR(T_DOTDOT);
+	STR(T_IPV4);
+	STR(T_IPV6);
+	STR(T_HYPHEN);
+	STR(T_SLASH);
+	STR(T_KEYWORD);
+	STR(T_P1_ID_TYPE);
+	STR(T_AUTH_METHOD);
+	STR(T_ENCR_ALG);
+	STR(T_AUTH_ALG);
+	}
+	return ("UNKNOWN");
+}
+
+static const char *
+cfg_auth_id_str(config_auth_id_t id)
+{
+	switch (id) {
+	STR(CFG_AUTH_ID_DN);
+	STR(CFG_AUTH_ID_DNS);
+	STR(CFG_AUTH_ID_GN);
+	STR(CFG_AUTH_ID_IPV4);
+	STR(CFG_AUTH_ID_IPV4_PREFIX);
+	STR(CFG_AUTH_ID_IPV4_RANGE);
+	STR(CFG_AUTH_ID_IPV6);
+	STR(CFG_AUTH_ID_IPV6_PREFIX);
+	STR(CFG_AUTH_ID_IPV6_RANGE);
+	STR(CFG_AUTH_ID_EMAIL);
+	}
+	return ("UNKNOWN");
+}
+
+static void
+tok_log(token_t *t, bunyan_logger_t *blog)
+{
+	const char *idstr = tok_id_str(t->t_type);
+
+	switch (t->t_type) {
+	case T_NONE:
+	case T_LBRACE:
+	case T_RBRACE:
+	case T_LPAREN:
+	case T_RPAREN:
+	case T_DOTDOT:
+	case T_HYPHEN:
+	case T_SLASH:
+		bunyan_trace(blog, idstr,
+		    BUNYAN_T_UINT32, "line", (uint32_t)t->t_line + 1,
+		    BUNYAN_T_UINT32, "column", (uint32_t)t->t_col + 1,
+		    BUNYAN_T_END);
+		break;
+	case T_STRING:
+		bunyan_trace(blog, idstr,
+		    BUNYAN_T_UINT32, "line", (uint32_t)t->t_line + 1,
+		    BUNYAN_T_UINT32, "column", (uint32_t)t->t_col + 1,
+		    BUNYAN_T_STRING, "value", t->t_val.t_str,
+		    BUNYAN_T_END);
+		break;
+	case T_INTEGER:
+		bunyan_trace(blog, idstr,
+		    BUNYAN_T_UINT32, "line", (uint32_t)t->t_line + 1,
+		    BUNYAN_T_UINT32, "column", (uint32_t)t->t_col + 1,
+		    BUNYAN_T_UINT64, "value", t->t_val.t_int,
+		    BUNYAN_T_END);
+		break;
+	case T_FLOAT:
+		bunyan_trace(blog, idstr,
+		    BUNYAN_T_UINT32, "line", (uint32_t)t->t_line + 1,
+		    BUNYAN_T_UINT32, "column", (uint32_t)t->t_col + 1,
+		    BUNYAN_T_DOUBLE, "value", t->t_val.t_float,
+		    BUNYAN_T_END);
+		break;
+	case T_IPV4:
+		bunyan_trace(blog, idstr,
+		    BUNYAN_T_UINT32, "line", (uint32_t)t->t_line + 1,
+		    BUNYAN_T_UINT32, "column", (uint32_t)t->t_col + 1,
+		    BUNYAN_T_IP, "value", t->t_val.t_in,
+		    BUNYAN_T_END);
+		break;
+	case T_IPV6:
+		bunyan_trace(blog, idstr,
+		    BUNYAN_T_UINT32, "line", (uint32_t)t->t_line + 1,
+		    BUNYAN_T_UINT32, "column", (uint32_t)t->t_col + 1,
+		    BUNYAN_T_IP6, "value", t->t_val.t_in6,
+		    BUNYAN_T_END);
+		break;
+	case T_KEYWORD:
+		bunyan_trace(blog, idstr,
+		    BUNYAN_T_UINT32, "line", (uint32_t)t->t_line + 1,
+		    BUNYAN_T_UINT32, "column", (uint32_t)t->t_col + 1,
+		    BUNYAN_T_STRING, "value", keyword_tab[t->t_val.t_kw],
+		    BUNYAN_T_END);
+		break;
+	case T_P1_ID_TYPE:
+		bunyan_trace(blog, idstr,
+		    BUNYAN_T_UINT32, "line", (uint32_t)t->t_line + 1,
+		    BUNYAN_T_UINT32, "column", (uint32_t)t->t_col + 1,
+		    BUNYAN_T_STRING, "value", cfg_auth_id_str(t->t_val.t_auth),
+		    BUNYAN_T_END);
+		break;
+	case T_AUTH_METHOD:
+	case T_ENCR_ALG:
+	case T_AUTH_ALG:
+		/* XXX: stringify */
+		bunyan_trace(blog, idstr,
+		    BUNYAN_T_UINT32, "line", (uint32_t)t->t_line + 1,
+		    BUNYAN_T_UINT32, "column", (uint32_t)t->t_col + 1,
+		    BUNYAN_T_INT32, "value", (int32_t)t->t_val.t_id,
+		    BUNYAN_T_END);
+		break;
+	}
+}
