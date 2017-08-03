@@ -27,6 +27,7 @@
 #include <ctype.h>
 #include <stdio.h>
 #include <err.h>
+#include "defs.h"
 #include "config.h"
 #include "ikev2.h"
 
@@ -129,14 +130,14 @@ static const char *keyword_tab[KW_MAX] = {
 	"label",
 	"local_addr",
 	"remote_addr",
-	"local_id_type",
+	"p2_pfs",
 	"local_id",
 	"remote_id"
 };
 
 static struct {
 	ikev2_auth_type_t	a_id;
-	const char		a_str[];
+	const char		*a_str;
 } auth_tab[] = {
 	{ IKEV2_AUTH_NONE, "" },
 	{ IKEV2_AUTH_RSA_SIG, "rsa_sig" },
@@ -146,7 +147,7 @@ static struct {
 
 static struct {
 	config_auth_id_t	p1_id;
-	const char		p1_str[];
+	const char		*p1_str;
 } p1_id_tab[] = {
 	{ CFG_AUTH_ID_DN, "dn" },
 	{ CFG_AUTH_ID_DN, "DN" },
@@ -171,7 +172,7 @@ static struct {
 
 static struct {
 	ikev2_xf_auth_t xfa_id;
-	const char	xfa_str[];
+	const char	*xfa_str;
 } xf_auth_tab[] = {
 	{ IKEV2_XF_AUTH_HMAC_MD5_128, "md5" },	/* XXX: verify this */
 	{ IKEV2_XF_AUTH_HMAC_SHA1_160, "sha" },
@@ -183,7 +184,7 @@ static struct {
 
 static struct {
 	ikev2_xf_encr_t xfe_id;
-	const char	xfe_str[];
+	const char	*xfe_str;
 } xf_encr_tab[] = {
 	{ IKEV2_ENCR_DES, "des" },
 	{ IKEV2_ENCR_DES, "des-cbc" },
@@ -222,9 +223,6 @@ typedef struct tokens {
 } tokens_t;
 
 typedef struct input {
-	char	*i_name;
-	char	*i_buf;
-	size_t	i_len;
 	char	**i_lines;
 	size_t	i_nlines;
 	size_t	i_alloc;
@@ -232,6 +230,10 @@ typedef struct input {
 
 volatile hrtime_t cfg_retry_max = SEC2NSEC(60);
 volatile hrtime_t cfg_retry_init = SEC2NSEC(1);
+
+static boolean_t tokenize_input(input_t *, tokens_t *, bunyan_logger_t *);
+static void tokens_free(tokens_t *);
+static void tok_log(token_t *, bunyan_logger_t *, bunyan_level_t);
 
 static token_t *tok_new(token_type_t, size_t, size_t, ...);
 static void tok_free(token_t *);
@@ -246,9 +248,33 @@ static token_t *tok_ip6(const char *, size_t, size_t , bunyan_logger_t *);
 static token_t *tok_fp(const char *, size_t, size_t, bunyan_logger_t *);
 static token_t *tok_int(const char *, size_t, size_t, bunyan_logger_t *);
 
+static input_t *input_new(FILE *);
+static void input_free(input_t *);
+
+void
+process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
+{
+	input_t *in = input_new(f);
+	tokens_t tokens = { 0 };
+
+	if (in == NULL) {
+		STDERR(error, blog, "failure reading input");
+		return;
+	}
+
+	if (!tokenize_input(in, &tokens, blog))
+		goto done;
+
+	/* TODO */
+
+done:
+	tokens_free(&tokens);
+	input_free(in);
+}
+
 #define	INPUT_CHUNK_SZ	(64)
-input_t *
-input_new(const char *name, FILE *f)
+static input_t *
+input_new(FILE *f)
 {
 	input_t *in = NULL;
 	char *line = NULL;
@@ -259,10 +285,6 @@ input_new(const char *name, FILE *f)
 	if (in == NULL)
 		return (NULL);
 	(void) memset(in, 0, sizeof (*in));
-
-	in->i_name = strdup(name);
-	if (in->i_name == NULL)
-		goto error;
 
 	while ((n = getline(&line, &linesz, f)) > 0) {
 		if (in->i_nlines + 1 >= in->i_alloc) {
@@ -299,13 +321,15 @@ error:
 	return (NULL);
 }
 
-void
+static void
 input_free(input_t *in)
 {
 	if (in == NULL)
 		return;
 
-	free(in->i_name);
+	for (size_t i = 0; i < in->i_nlines; i++)
+		free(in->i_lines[i]);
+
 	free(in->i_lines);
 	free(in);
 }
@@ -425,9 +449,11 @@ tokenize_input(input_t *in, tokens_t *tokens, bunyan_logger_t *blog)
 				}
 			}
 			tokens->t_tokens[tokens->t_ntokens++] = t;
+			tok_log(t, blog, BUNYAN_L_TRACE);
 		}
 nextline:
-		;
+		/* needed to do 'continue' of outer loop */
+		(void)0;
 	}
 	return (B_TRUE);
 
@@ -482,16 +508,28 @@ tok_quote(char **p, size_t line, size_t *col, bunyan_logger_t *blog)
 
 	switch (end[0]) {
 	case '\0':
-		/* XXX: error */
+		bunyan_error(blog, "unterminated quoted string",
+		    BUNYAN_T_UINT32, "line", (uint32_t)line + 1,
+		    BUNYAN_T_UINT32, "col", (uint32_t)(*col) + 1,
+		    BUNYAN_T_END);
 		return (NULL);
 	case '\n':
-		/* XXX: error */
+		bunyan_error(blog, "end of line without closing quote",
+		    BUNYAN_T_UINT32, "line", (uint32_t)line + 1,
+		    BUNYAN_T_UINT32, "col", (uint32_t)(*col) + 1,
+		    BUNYAN_T_END);
 		return (NULL);
 	}
 
 	len++;	/* space for NUL */
-	if (len > MAX_STR)
+	if (len > MAX_STR) {
+		bunyan_error(blog, "string too long",
+		    BUNYAN_T_UINT32, "line", (uint32_t)line + 1,
+		    BUNYAN_T_UINT32, "col", (uint32_t)(*col) + 1,
+		    BUNYAN_T_UINT32, "length", len,
+		    BUNYAN_T_END);
 		return (NULL);
+	}
 
 	char str[len];
 	size_t i = 0;
@@ -500,6 +538,7 @@ tok_quote(char **p, size_t line, size_t *col, bunyan_logger_t *blog)
 
 	(void) memset(str, 0, len);
 	end = *p;
+	end++;
 	while (end[0] != '"') {
 		if (end[0] == '\\')
 			end++;
@@ -513,6 +552,7 @@ tok_quote(char **p, size_t line, size_t *col, bunyan_logger_t *blog)
 		return (NULL);
 
 	*col += len;
+	*p = end + 1;
 	return (t);
 }
 
@@ -558,13 +598,6 @@ tok_word(char **p, size_t line, size_t *col, bunyan_logger_t *blog)
 	}
 
 	
-	if (end[0] == '\0') {
-		/* XXX: error log */
-		return (NULL);
-	}
-
-	VERIFY3U(len, >, 0);
-
 	len = (size_t)(end - *p);
 	if (len > TOK_LEN_MAX)
 		return (NULL);
@@ -606,7 +639,8 @@ tok_ip(const char *str, size_t line, size_t col, bunyan_logger_t *blog)
 	in_addr_t addr = { 0 };
 
 	if (inet_pton(AF_INET, str, &addr) != 1) {
-		/* XXX: log */
+		STDERR(error, blog, "cannot parse IPV4 address",
+		    BUNYAN_T_STRING, "string", str);
 		return (NULL);
 	}
 
@@ -616,11 +650,11 @@ tok_ip(const char *str, size_t line, size_t col, bunyan_logger_t *blog)
 static token_t *
 tok_ip6(const char *str, size_t line, size_t col, bunyan_logger_t *blog)
 {
-	token_t *t = NULL;
 	in6_addr_t addr = { 0 };
 
 	if (inet_pton(AF_INET6, str, &addr) != 1) {
-		/* XXX: log */
+		STDERR(error, blog, "cannot parse IPV6 address",
+		    BUNYAN_T_STRING, "string", str);
 		return (NULL);
 	}
 
@@ -685,6 +719,12 @@ tok_enum(const char *str, size_t line, size_t col, bunyan_logger_t *blog)
 			continue;
 		return (tok_new(T_AUTH_ALG, line, col, xf_auth_tab[i].xfa_id));
 	}
+
+	bunyan_error(blog, "Unknown configuration directive",
+	    BUNYAN_T_UINT32, "line", (uint32_t)line + 1,
+	    BUNYAN_T_UINT32, "col", (uint32_t)col + 1,
+	    BUNYAN_T_STRING, "directive", str,
+	    BUNYAN_T_END);
 
 	return (NULL);
 }
@@ -900,7 +940,7 @@ static void
 tok_log(token_t *t, bunyan_logger_t *blog, bunyan_level_t level)
 {
 	const char *idstr = tok_id_str(t->t_type);
-	int (*logf)(bunyan_logger_t *, const char *, ...);
+	int (*logf)(bunyan_logger_t *, const char *, ...) = NULL;
 
 	switch (level) {
 	case BUNYAN_L_TRACE:
@@ -932,55 +972,63 @@ tok_log(token_t *t, bunyan_logger_t *blog, bunyan_level_t level)
 	case T_DOTDOT:
 	case T_HYPHEN:
 	case T_SLASH:
-		logf(blog, idstr,
+		logf(blog, "token",
+		    BUNYAN_T_STRING, "type", idstr,
 		    BUNYAN_T_UINT32, "line", (uint32_t)t->t_line + 1,
 		    BUNYAN_T_UINT32, "column", (uint32_t)t->t_col + 1,
 		    BUNYAN_T_END);
 		break;
 	case T_STRING:
-		logf(blog, idstr,
+		logf(blog, "token",
+		    BUNYAN_T_STRING, "type", idstr,
 		    BUNYAN_T_UINT32, "line", (uint32_t)t->t_line + 1,
 		    BUNYAN_T_UINT32, "column", (uint32_t)t->t_col + 1,
 		    BUNYAN_T_STRING, "value", t->t_val.t_str,
 		    BUNYAN_T_END);
 		break;
 	case T_INTEGER:
-		logf(blog, idstr,
+		logf(blog, "token",
+		    BUNYAN_T_STRING, "type", idstr,
 		    BUNYAN_T_UINT32, "line", (uint32_t)t->t_line + 1,
 		    BUNYAN_T_UINT32, "column", (uint32_t)t->t_col + 1,
 		    BUNYAN_T_UINT64, "value", t->t_val.t_int,
 		    BUNYAN_T_END);
 		break;
 	case T_FLOAT:
-		logf(blog, idstr,
+		logf(blog, "token",
+		    BUNYAN_T_STRING, "type", idstr,
 		    BUNYAN_T_UINT32, "line", (uint32_t)t->t_line + 1,
 		    BUNYAN_T_UINT32, "column", (uint32_t)t->t_col + 1,
 		    BUNYAN_T_DOUBLE, "value", t->t_val.t_float,
 		    BUNYAN_T_END);
 		break;
 	case T_IPV4:
-		logf(blog, idstr,
+		logf(blog, "token",
+		    BUNYAN_T_STRING, "type", idstr,
 		    BUNYAN_T_UINT32, "line", (uint32_t)t->t_line + 1,
 		    BUNYAN_T_UINT32, "column", (uint32_t)t->t_col + 1,
-		    BUNYAN_T_IP, "value", t->t_val.t_in,
+		    BUNYAN_T_IP, "value", &t->t_val.t_in,
 		    BUNYAN_T_END);
 		break;
 	case T_IPV6:
-		logf(blog, idstr,
+		logf(blog, "token",
+		    BUNYAN_T_STRING, "type", idstr,
 		    BUNYAN_T_UINT32, "line", (uint32_t)t->t_line + 1,
 		    BUNYAN_T_UINT32, "column", (uint32_t)t->t_col + 1,
-		    BUNYAN_T_IP6, "value", t->t_val.t_in6,
+		    BUNYAN_T_IP6, "value", &t->t_val.t_in6,
 		    BUNYAN_T_END);
 		break;
 	case T_KEYWORD:
-		logf(blog, idstr,
+		logf(blog, "token",
+		    BUNYAN_T_STRING, "type", idstr,
 		    BUNYAN_T_UINT32, "line", (uint32_t)t->t_line + 1,
 		    BUNYAN_T_UINT32, "column", (uint32_t)t->t_col + 1,
 		    BUNYAN_T_STRING, "value", keyword_tab[t->t_val.t_kw],
 		    BUNYAN_T_END);
 		break;
 	case T_P1_ID_TYPE:
-		logf(blog, idstr,
+		logf(blog, "token",
+		    BUNYAN_T_STRING, "type", idstr,
 		    BUNYAN_T_UINT32, "line", (uint32_t)t->t_line + 1,
 		    BUNYAN_T_UINT32, "column", (uint32_t)t->t_col + 1,
 		    BUNYAN_T_STRING, "value", cfg_auth_id_str(t->t_val.t_auth),
@@ -990,7 +1038,8 @@ tok_log(token_t *t, bunyan_logger_t *blog, bunyan_level_t level)
 	case T_ENCR_ALG:
 	case T_AUTH_ALG:
 		/* XXX: stringify */
-		logf(blog, idstr,
+		logf(blog, "token",
+		    BUNYAN_T_STRING, "type", idstr,
 		    BUNYAN_T_UINT32, "line", (uint32_t)t->t_line + 1,
 		    BUNYAN_T_UINT32, "column", (uint32_t)t->t_col + 1,
 		    BUNYAN_T_INT32, "value", (int32_t)t->t_val.t_id,

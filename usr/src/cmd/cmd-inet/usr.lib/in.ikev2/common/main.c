@@ -30,6 +30,7 @@
 #include "defs.h"
 #include "timer.h"
 #include "worker.h"
+#include "config.h"
 
 extern void pkt_init(void);
 extern void pkt_fini(void);
@@ -51,10 +52,22 @@ static pthread_t signal_tid;
 bunyan_logger_t *log = NULL;
 int port = -1;
 
+static void
+usage(const char *name)
+{
+	(void) fprintf(stderr, "Usage: %s [-d] [-f cfgfile]\n"
+	    "      %s -c [-f cfgfile]\n", name, name);
+	exit(1);
+}
+
 int
 main(int argc, char **argv)
 {
-	int rc;
+	FILE *f = NULL;
+	char *cfgfile = "/etc/inet/ike/config";
+	int c, rc;
+	boolean_t debug_mode = B_FALSE;
+	boolean_t check_cfg = B_FALSE;
 
 	(void) setlocale(LC_ALL, "");
 #if !defined(TEXT_DOMAIN)
@@ -62,8 +75,31 @@ main(int argc, char **argv)
 #endif
 	(void) textdomain(TEXT_DOMAIN);
 
-	if ((port = port_create()) < 0)
-		err(EXIT_FAILURE, "port_create() failed");
+	while ((c = getopt(argc, argv, "cdf:")) != -1) {
+		switch (c) {
+		case 'd':
+			debug_mode = B_TRUE;
+			break;
+		case 'c':
+			check_cfg = B_TRUE;
+			break;
+		case 'f':
+			cfgfile = optarg;
+			break;
+		case '?':
+			(void) fprintf(stderr,
+			    "Unrecognized option: -%c\n", optopt);
+			usage(argv[0]);
+			break;
+		}
+	}
+
+	if (check_cfg && debug_mode) {
+		(void) fprintf(stderr, "-d and -c options cannot both be "
+		    "set\n");
+		usage(argv[0]);
+		return (1);
+	}
 
 	if ((rc = bunyan_init(basename(argv[0]), &log)) < 0)
 		errx(EXIT_FAILURE, "bunyan_init() failed: %s", strerror(errno));
@@ -73,6 +109,17 @@ main(int argc, char **argv)
 	    bunyan_stream_fd, (void *)STDOUT_FILENO)) < 0)
 		errx(EXIT_FAILURE, "bunyan_stream_add() failed: %s",
 		    strerror(errno));
+
+	if ((f = fopen(cfgfile, "rF")) == NULL)
+		STDERR(fatal, log, "cannot open config file",
+		    BUNYAN_T_STRING, "filename", cfgfile);
+
+	process_config(f, check_cfg, log);
+
+	(void) fclose(f);
+
+	if ((port = port_create()) < 0)
+		STDERR(fatal, log, "port_create() failed");
 
 	signal_init();
 	random_init();

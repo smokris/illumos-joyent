@@ -20,6 +20,7 @@
 #include <sys/time.h>
 #include <netinet/in.h>
 #include <stdio.h>
+#include <bunyan.h>
 #include "ikev2.h"
 
 #ifdef __cplusplus
@@ -65,14 +66,12 @@ typedef struct config_s {
 	char	*cfg_label;
 } config_t;
 
-struct input;
-
 extern hrtime_t cfg_lifetime_secs;
 extern volatile hrtime_t cfg_retry_max;
 extern volatile hrtime_t cfg_retry_init;
 
-struct input *input_new(const char *, FILE *);
-void input_free(struct input *);
+void process_config(FILE *, boolean_t, bunyan_logger_t *);
+
 #ifdef __cplusplus
 }
 #endif
