@@ -497,15 +497,6 @@ typedef struct ikev2_auth ikev2_auth_t;
 typedef struct ikev2_cp ikev2_cp_t;
 typedef struct ikev2_cfg ikev2_cfg_t;
 
-
-struct pkt;
-struct sockaddr_storage;
-
-void ikev2_dispatch(struct pkt *, const struct sockaddr_storage *,
-    const struct sockaddr_storage *);
-boolean_t ikev2_send(struct pkt *, boolean_t);
-void ikev2_inbound(struct pkt *);
-
 #ifdef __cplusplus
 }
 #endif

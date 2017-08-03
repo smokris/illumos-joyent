@@ -37,6 +37,7 @@
 #include "inbound.h"
 #include "timer.h"
 #include "fromto.h"
+#include "ikev2_proto.h"
 
 #define	SPILOG(_level, _log, _msg, _src, _dest, _lspi, _rspi, ...)	\
 	NETLOG(_level, _log, _msg, _src, _dest,				\

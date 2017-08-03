@@ -603,26 +603,57 @@ tok_word(char **p, size_t line, size_t *col, bunyan_logger_t *blog)
 		return (NULL);
 
 	token_t *t = NULL;
-	char *strp = NULL;
 	char str[len + 1];
 
 	(void) strlcpy(str, *p, len + 1);
 
-	if (isalpha(str[0])) {
-		t = tok_enum(str, line, *col, blog);
-	} else if ((strp = strchr(str, '.')) != NULL) {
-		/*
-		 * If more than one . is found, it's an IPV4 address,
-		 * otherwise it's a floating point number.
-		 */
-		if  (strchr(strp + 1, '.') != NULL)
-			t = tok_ip(str, line, *col, blog);
-		else
-			t = tok_fp(str, line, *col, blog);
-	} else if (strchr(str, ':') != NULL) {
-		t = tok_ip6(str, line, *col, blog);
-	} else {
+	/* The only time we can have an int w/ non-digits */
+	if (len > 2 && str[0] == '0' && str[1] == 'x') {
 		t = tok_int(str, line, *col, blog);
+		if (t != NULL) {
+			*col += len;
+			*p += len;
+		}
+		return (t);
+	}
+
+	size_t digits = 0, dot = 0, colon = 0, nondigit = 0;
+
+	/* Classify the characters in the token to help identify what it is */
+	for (char *strp = str; strp[0] != '\0'; strp++) {
+		switch (strp[0]) {
+		case '0': case '1': case '2': case '3': case '4':
+		case '5': case '6': case '7': case '8': case '9':
+			digits++;
+			break;
+		case '.':
+			dot++;
+			break;
+		case ':':
+			colon++;
+			break;
+		default:
+			nondigit++;
+			break;
+		}
+	}
+
+	if (nondigit > 0) {
+		t = tok_enum(str, line, *col, blog);
+	} else if (dot == 3) {
+		t = tok_ip(str, line, *col, blog);
+	} else if (colon > 0) {
+		t = tok_ip6(str, line, *col, blog);
+	} else if (dot == 1) {
+		t = tok_fp(str, line, *col, blog);
+	} else if (dot == 0 && nondigit == 0) {
+		t = tok_int(str, line, *col, blog);
+	} else {
+		bunyan_error(blog, "Cannot classify token",
+		    BUNYAN_T_STRING, "token", str,
+		    BUNYAN_T_UINT32, "line", (uint32_t)line + 1,
+		    BUNYAN_T_UINT32, "col", (uint32_t)(*col) + 1,
+		    BUNYAN_T_END);
 	}
 
 	if (t == NULL)

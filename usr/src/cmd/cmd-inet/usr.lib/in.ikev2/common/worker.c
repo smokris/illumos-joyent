@@ -24,6 +24,7 @@
 #include "pkt.h"
 #include "timer.h"
 #include "pkcs11.h"
+#include "ikev2_proto.h"
 
 typedef enum worker_cmd {
 	WC_NONE,

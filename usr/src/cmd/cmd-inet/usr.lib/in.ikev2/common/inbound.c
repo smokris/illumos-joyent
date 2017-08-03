@@ -51,6 +51,7 @@
 #include "ikev2.h"
 #include "ikev2_pkt.h"
 #include "fromto.h"
+#include "ikev2_proto.h"
 
 static uchar_t *inbound_buf(void);
 static pthread_key_t inbound_key = PTHREAD_ONCE_KEY_NP;
