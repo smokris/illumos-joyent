@@ -10,7 +10,6 @@
  */
 
 /*
- * Copyright 2017 Jason King.
  * Copyright (c) 2017, Joyent, Inc.
  */
 #include <sys/time.h>
@@ -27,6 +26,7 @@
 #include <bunyan.h>
 #include <ctype.h>
 #include <stdio.h>
+#include <err.h>
 #include "config.h"
 #include "ikev2.h"
 
@@ -34,9 +34,11 @@
 #define	ARRAY_SIZE(x)	(sizeof (x) / sizeof (x[0]))
 #endif
 
+#define	TOK_LEN_MAX	(64)
+
 /*
  * Various types of tokens.  Some of these keywords are for cfgfile
- * compatability with in.iked and are ignored.
+ * compatability with in.iked and are otherwise ignored.
  */
 typedef enum token_type_e {
 	T_NONE,
@@ -234,11 +236,15 @@ volatile hrtime_t cfg_retry_init = SEC2NSEC(1);
 static token_t *tok_new(token_type_t, size_t, size_t, ...);
 static void tok_free(token_t *);
 static void tok_fail(char *, size_t, size_t, bunyan_logger_t *);
-static token_t *tok_str(char **, size_t, size_t *, bunyan_logger_t *);
-static token_t *tok_num(char **, size_t, size_t *, bunyan_logger_t *);
-static token_t *tok_enum(char **, size_t, size_t *, bunyan_logger_t *);
-static token_t *tok_int(char **, size_t, size_t *, bunyan_logger_t *);
-static token_t *tok_fp(char **, size_t, size_t *, bunyan_logger_t *);
+static token_t *tok_quote(char **, size_t, size_t *, bunyan_logger_t *);
+static token_t *tok_word(char **, size_t, size_t *, bunyan_logger_t *);
+static token_t *tok_minus(char **, size_t, size_t *, bunyan_logger_t *);
+
+static token_t *tok_enum(const char *, size_t, size_t, bunyan_logger_t *);
+static token_t *tok_ip(const char *, size_t, size_t , bunyan_logger_t *);
+static token_t *tok_ip6(const char *, size_t, size_t , bunyan_logger_t *);
+static token_t *tok_fp(const char *, size_t, size_t, bunyan_logger_t *);
+static token_t *tok_int(const char *, size_t, size_t, bunyan_logger_t *);
 
 #define	INPUT_CHUNK_SZ	(64)
 input_t *
@@ -352,6 +358,13 @@ tokens_free(tokens_t *tokens)
 	(void) memset(tokens, 0, sizeof (*tokens));
 }
 
+/*
+ * To simplify parsing and being able to do things like look-ahead without
+ * having to push back or such, for now at least we just convert the entire
+ * input into an array of tokens, and then process that.  The input sizes
+ * should be small enough that the extra memory consumed during the process
+ * shouldn't present any issues.
+ */
 static boolean_t
 tokenize_input(input_t *in, tokens_t *tokens, bunyan_logger_t *blog)
 {
@@ -366,16 +379,12 @@ tokenize_input(input_t *in, tokens_t *tokens, bunyan_logger_t *blog)
 			token_t *t = NULL;
 
 			switch (*p) {
-			case '\n':
 			case ' ':
 			case '\t':
 				continue;
+			case '\n':
 			case '#':
-				while (p[1] != '\0' && p[1] != '\n') {
-					p++;
-					col++;
-				}
-				continue;
+				goto nextline;
 			case '{':
 				t = tok_new(T_LBRACE, line, col);
 				break;
@@ -388,9 +397,6 @@ tokenize_input(input_t *in, tokens_t *tokens, bunyan_logger_t *blog)
 			case ')':
 				t = tok_new(T_RPAREN, line, col);
 				break;
-			case '-':
-				t = tok_new(T_HYPHEN, line, col);
-				break;
 			case '/':
 				t = tok_new(T_SLASH, line, col);
 				break;
@@ -402,15 +408,11 @@ tokenize_input(input_t *in, tokens_t *tokens, bunyan_logger_t *blog)
 				p++;
 				break;
 			case '"':
-				t = tok_str(&p, line, &col, blog);
+				t = tok_quote(&p, line, &col, blog);
 				break;
 			default:
-				if (p[0] == '+' || isdigit(p[0]))
-					t = tok_num(&p, line, &col, blog);
-				else if (isalpha(p[0]))
-					t = tok_enum(&p, line, &col, blog);
-				else
-					goto fail;
+				t = tok_word(&p, line, &col, blog);
+				break;
 			}
 
 			if (t == NULL)
@@ -424,6 +426,8 @@ tokenize_input(input_t *in, tokens_t *tokens, bunyan_logger_t *blog)
 			}
 			tokens->t_tokens[tokens->t_ntokens++] = t;
 		}
+nextline:
+		;
 	}
 	return (B_TRUE);
 
@@ -458,15 +462,23 @@ tok_fail(char *lineptr, size_t line, size_t col, bunyan_logger_t *blog)
 	    BUNYAN_T_END);
 }
 
+#define	MAX_STR	(512)
 static token_t *
-tok_str(char **p, size_t line, size_t *col, bunyan_logger_t *blog)
+tok_quote(char **p, size_t line, size_t *col, bunyan_logger_t *blog)
 {
 	VERIFY3U(p[0][0], ==, '"');
 	char *end = *p;
+	size_t len = 0;
 
 	end++;
-	while (end[0] != '\0' && end[0] != '\n' && end[0] != '"')
+	while (end[0] != '\0' && end[0] != '"') {
+		if (end[0] == '\\')
+			end++;
+		if (end[0] == '\n')
+			break;
 		end++;
+		len++;
+	}
 
 	switch (end[0]) {
 	case '\0':
@@ -477,12 +489,26 @@ tok_str(char **p, size_t line, size_t *col, bunyan_logger_t *blog)
 		return (NULL);
 	}
 
-	size_t len = (size_t)(end - *p) + 1;
+	len++;	/* space for NUL */
+	if (len > MAX_STR)
+		return (NULL);
+
 	char str[len];
+	size_t i = 0;
 
-	(void) strlcpy(str, *p, len);
+	VERIFY3U(end[0], ==, '"');
+
+	(void) memset(str, 0, len);
+	end = *p;
+	while (end[0] != '"') {
+		if (end[0] == '\\')
+			end++;
+		VERIFY3U(i, <, len);
+
+		str[i++] = *end++;
+	}
+
 	token_t *t = tok_new(T_STRING, line, *col, str);
-
 	if (t == NULL)
 		return (NULL);
 
@@ -491,238 +517,261 @@ tok_str(char **p, size_t line, size_t *col, bunyan_logger_t *blog)
 }
 
 static token_t *
-tok_num(char **p, size_t line, size_t *col, bunyan_logger_t *blog)
+tok_word(char **p, size_t line, size_t *col, bunyan_logger_t *blog)
 {
 	char *end = *p;
-	size_t digits = 0, letters = 0, dot = 0, colon = 0, plus = 0;
+	size_t len = 0;
 
-	while (end[0] != '\0') {
+	if (**p == '-')
+		return (tok_minus(p, line, col, blog));
+
+	/*
+	 * Determine where the end of the token is.  Due to some unfortunate
+	 * choices, this is harder than it seems.  However, when we are called,
+	 * **p shouldn't be one of the symbol tokens (e.g. {}()..) so that
+	 * does help.
+	 */
+	for (end = *p; end[0] != '\0'; end++) {
 		boolean_t stop = B_FALSE;
 
 		switch (end[0]) {
-		case '0': case '1': case '2': case '3': case '4':
-		case '5': case '6': case '7': case '8': case '9':
-			digits++;
-			break;
-		case 'a': case 'b': case 'c': case 'd': case 'e': case 'f':
-		case 'A': case 'B': case 'C': case 'D': case 'E': case 'F':
-			letters++;
-			break;
-		case ':':
-			colon++;
+		case '\0':
+		case '{':
+		case '}':
+		case ' ':
+		case '\t':
+		case '\n':
+		case '(':
+		case ')':
+		case '/':
+		case '-':
+			/* These always terminate the previous token */
+			stop = B_TRUE;
 			break;
 		case '.':
-			dot++;
+			if (end[1] == '.')
+				stop = B_TRUE;
 			break;
-		case '+':
-			plus++;
-			break;
-		default:
-			stop = B_TRUE;
 		}
-
-		end++;
+		if (stop)
+			break;
 	}
 
-	/* allow leading + */
-	if (end[0] == '+')
-		end++;
-
-	/* '0x....' is always an integer */
-	if (end[0] == '0' && end[1] == 'x')
-		return (tok_int(p, line, col, blog));
-
 	
-	while (isdigit(end[0]))
-		end++;
+	if (end[0] == '\0') {
+		/* XXX: error log */
+		return (NULL);
+	}
 
-	/* digits '.' digit should be floating point */
-	if (end[0] == '.' && isdigit(end[1]))
-		return (tok_fp(p, line, col, blog));
+	VERIFY3U(len, >, 0);
 
-	/* anything else and we treat the run of digits as an int */
-	return (tok_int(p, line, col, blog));
+	len = (size_t)(end - *p);
+	if (len > TOK_LEN_MAX)
+		return (NULL);
+
+	token_t *t = NULL;
+	char *strp = NULL;
+	char str[len + 1];
+
+	(void) strlcpy(str, *p, len + 1);
+
+	if (isalpha(str[0])) {
+		t = tok_enum(str, line, *col, blog);
+	} else if ((strp = strchr(str, '.')) != NULL) {
+		/*
+		 * If more than one . is found, it's an IPV4 address,
+		 * otherwise it's a floating point number.
+		 */
+		if  (strchr(strp + 1, '.') != NULL)
+			t = tok_ip(str, line, *col, blog);
+		else
+			t = tok_fp(str, line, *col, blog);
+	} else if (strchr(str, ':') != NULL) {
+		t = tok_ip6(str, line, *col, blog);
+	} else {
+		t = tok_int(str, line, *col, blog);
+	}
+
+	if (t == NULL)
+		return (t);
+
+	*col += len;
+	*p += len;
+	return (t);
 }
 
 static token_t *
-tok_ip(char **p, size_t line, size_t *col, bunyan_logger_t *blog)
+tok_ip(const char *str, size_t line, size_t col, bunyan_logger_t *blog)
 {
-	token_t *t = NULL;
-	char *end = *p;
 	in_addr_t addr = { 0 };
-	size_t len = 0;
 
-	while (end[0] != '\0' && (isdigit(end[0]) || end[0] == '.'))
-		end++;
-
-	len = (size_t)(end - *p) + 1;
-	if (len > INET_ADDRSTRLEN)
+	if (inet_pton(AF_INET, str, &addr) != 1) {
+		/* XXX: log */
 		return (NULL);
+	}
 
-	char str[len];
-	(void) strlcpy(str, *p, len);
-
-	if (inet_pton(AF_INET, str, &addr) != 1)
-		return (NULL);
-
-	t = tok_new(T_IPV4, line, *col, &addr);
-	if (t == NULL)
-		return (NULL);
-
-	*col += len;
-	return (t);
+	return (tok_new(T_IPV4, line, col, &addr));
 }
 
 static token_t *
-tok_ip6(char **p, size_t line, size_t *col, bunyan_logger_t *blog)
+tok_ip6(const char *str, size_t line, size_t col, bunyan_logger_t *blog)
 {
 	token_t *t = NULL;
-	char *end = *p;
 	in6_addr_t addr = { 0 };
-	size_t len = 0;
 
-	while (end[0] != '\0' && (isxdigit(end[0]) || end[0] == ':'))
-		end++;
-
-	len = (size_t)(end - *p) + 1;
-	if (len > INET6_ADDRSTRLEN)
+	if (inet_pton(AF_INET6, str, &addr) != 1) {
+		/* XXX: log */
 		return (NULL);
+	}
 
-	char str[len];
-	(void) strlcpy(str, *p, len);
-
-	if (inet_pton(AF_INET6, str, &addr) != 1)
-		return (NULL);
-
-	t = tok_new(T_IPV6, line, *col, &addr);
-	if (t == NULL)
-		return (NULL);
-
-	*col += len;
-	return (t);
+	return (tok_new(T_IPV6, line, col, &addr));
 }
 
 static token_t *
-tok_int(char **p, size_t line, size_t *col, bunyan_logger_t *blog)
+tok_int(const char *str, size_t line, size_t col, bunyan_logger_t *blog)
 {
-	token_t *t = NULL;
-	char *end = NULL;
 	uint64_t val = 0;
-	size_t len = 0;
 
 	errno = 0;
-	val = strtoull(*p, &end, 0);
+	val = strtoull(str, NULL, 0);
 	if (val == 0 && errno != 0)
 		return (NULL);
 
-	len = (size_t)(end - *p);
-	t = tok_new(T_INTEGER, line, *col, val);
-	if (t == NULL)
-		return (NULL);
-
-	*col += len;
-	return (t);
+	return (tok_new(T_INTEGER, line, col, val));
 }
 
 static token_t *
-tok_fp(char **p, size_t line, size_t *col, bunyan_logger_t *blog)
+tok_fp(const char *str, size_t line, size_t col, bunyan_logger_t *blog)
 {
-	token_t *t = NULL;
-	char *end = NULL;
 	double val = 0.0;
-	size_t len = 0;
 
 	errno = 0;
-	val = strtod(*p, &end);
-	if (errno != 0)
+	val = strtod(str, NULL);
+	if (val == 0.0 && errno != 0)
 		return (NULL);
 
-	len = (size_t)(end - *p);
-	t = tok_new(T_FLOAT, line, *col, val);
-	if (t == NULL)
-		return (NULL);
-
-	*col += len;
-	return (t);
+	return(tok_new(T_FLOAT, line, col, val));
 }
 
 static token_t *
-tok_enum(char **p, size_t line, size_t *col, bunyan_logger_t *blog)
+tok_enum(const char *str, size_t line, size_t col, bunyan_logger_t *blog)
 {
-	token_t *t = NULL;
-	char *end = *p;
-
-	while (end[0] == '_' || (end[0] >= 'a' && end[0] <='z') ||
-	    (end[0] >= 'A' && end[0] <= 'Z') ||
-	    (end[0] >= '1' && end[0] <= '9'))
-		end++;
-
-	size_t len = (size_t)(end - *p) + 1;
-	char str[len];
-
-	(void) strlcpy(str, *p, len);
-
 	for (keyword_t kw = 0; kw < KW_MAX; kw++) {
 		if (strcmp(keyword_tab[kw], str) != 0)
 			continue;
-
-		t = tok_new(T_KEYWORD, line, *col, kw);
-		if (t == NULL)
-			return (NULL);
-
-		*col += len;
-		return (t);
+		return (tok_new(T_KEYWORD, line, col, kw));
 	}
 
 	for (size_t i = 0; i < ARRAY_SIZE(auth_tab); i++) {
 		if (strcmp(str, auth_tab[i].a_str) != 0)
 			continue;
-
-		t = tok_new(T_AUTH_METHOD, line, *col, auth_tab[i].a_id);
-		if (t == NULL)
-			return (NULL);
-
-		*col += len;
-		return (t);
+		return (tok_new(T_AUTH_METHOD, line, col, auth_tab[i].a_id));
 	}
 
 	for (size_t i = 0; i < ARRAY_SIZE(p1_id_tab); i++) {
 		if (strcmp(str, p1_id_tab[i].p1_str) != 0)
 			continue;
-
-		t = tok_new(T_P1_ID_TYPE, line, *col, p1_id_tab[i].p1_id);
-		if (t == NULL)
-			return (NULL);
-
-		*col += len;
-		return (t);
+		return (tok_new(T_P1_ID_TYPE, line, col, p1_id_tab[i].p1_id));
 	}
 
 	for (size_t i = 0; i < ARRAY_SIZE(xf_encr_tab); i++) {
 		if (strcmp(str, xf_encr_tab[i].xfe_str) != 0)
 			continue;
-
-		t = tok_new(T_ENCR_ALG, line, *col, xf_encr_tab[i].xfe_id);
-		if (t == NULL)
-			return (NULL);
-
-		*col += len;
-		return (t);
+		return (tok_new(T_ENCR_ALG, line, col, xf_encr_tab[i].xfe_id));
 	}
 
 	for (size_t i = 0; i < ARRAY_SIZE(xf_auth_tab); i++) {
 		if (strcmp(str, xf_auth_tab[i].xfa_str) != 0)
 			continue;
-
-		t = tok_new(T_AUTH_ALG, line, *col, xf_auth_tab[i].xfa_id);
-		if (t == NULL)
-			return (NULL);
-
-		*col += len;
-		return (t);
+		return (tok_new(T_AUTH_ALG, line, col, xf_auth_tab[i].xfa_id));
 	}
 
 	return (NULL);
+}
+
+/*
+ * Through some unfortunate choices, '-' can either be a separator,
+ * start of an integer, or start of a floating point number.  Try to figure
+ * out which and return the correct token
+ */
+static token_t *
+tok_minus(char **p, size_t line, size_t *col, bunyan_logger_t *blog)
+{
+	token_t *t = NULL;
+	char *s = *p;
+	char *end = NULL;
+	size_t len = 0;
+	size_t dot = 0;
+
+	VERIFY3U(s[0], ==, '-');
+
+	/* Simple case: minus followed by non-digit is a separator */
+	if (!isdigit(s[1])) {
+		t = tok_new(T_HYPHEN, line, *col);
+		if (t == NULL)
+			return (NULL);
+		*p += 1;
+		*col += 1;
+		return (t);
+	}
+
+	/*
+	 * Harder case - immediately followed by digits.  This means it could
+	 * still be an int, fp, an IPV4 address, or an IPV6 address.  Look
+	 * ahead until we hit something else that terminates the next token,
+	 * or have seen enough to figure out what the token is.
+	 */
+	for (end = s + 1; end[0] != '\0'; end++) {
+		boolean_t stop = B_FALSE;
+
+		switch (end[0]) {
+		case ' ': case '\n': case '\t':
+		case '{': case '}':
+		case '(': case ')':
+			stop = B_TRUE;
+			break;
+		case '.':
+			/*
+			 * Multiple dots implies an IPV4 address, so this was
+			 * a separator
+			 */
+			if (dot++ > 1)
+				stop = B_TRUE;
+			break;
+		case ':':
+			stop = B_TRUE;
+			break;
+		}
+		if (stop)
+			break;
+	}
+
+	if (dot > 1) {
+		t = tok_new(T_HYPHEN, line, *col);
+		if (t == NULL)
+			return (NULL);
+		*p += 1;
+		*col += 1;
+		return (t);
+	}
+
+	len = (size_t)(end - s);
+	if (len > TOK_LEN_MAX)
+		return (NULL);
+
+	char str[len + 1];
+	(void) strlcpy(str, s, len + 1);
+
+	if (dot == 0)
+		t = tok_int(str, line, *col, blog);
+	else
+		t = tok_int(str, line, *col, blog);
+
+	if (t == NULL)
+		return (NULL);
+	*p += len;
+	*col += len;
+	return (t);
 }
 
 static token_t *
@@ -848,9 +897,31 @@ cfg_auth_id_str(config_auth_id_t id)
 }
 
 static void
-tok_log(token_t *t, bunyan_logger_t *blog)
+tok_log(token_t *t, bunyan_logger_t *blog, bunyan_level_t level)
 {
 	const char *idstr = tok_id_str(t->t_type);
+	int (*logf)(bunyan_logger_t *, const char *, ...);
+
+	switch (level) {
+	case BUNYAN_L_TRACE:
+		logf = bunyan_trace;
+		break;
+	case BUNYAN_L_DEBUG:
+		logf = bunyan_debug;
+		break;
+	case BUNYAN_L_INFO:
+		logf = bunyan_info;
+		break;
+	case BUNYAN_L_WARN:
+		logf = bunyan_warn;
+		break;
+	case BUNYAN_L_ERROR:
+		logf = bunyan_error;
+		break;
+	case BUNYAN_L_FATAL:
+		logf = bunyan_fatal;
+		break;
+	}
 
 	switch (t->t_type) {
 	case T_NONE:
@@ -861,55 +932,55 @@ tok_log(token_t *t, bunyan_logger_t *blog)
 	case T_DOTDOT:
 	case T_HYPHEN:
 	case T_SLASH:
-		bunyan_trace(blog, idstr,
+		logf(blog, idstr,
 		    BUNYAN_T_UINT32, "line", (uint32_t)t->t_line + 1,
 		    BUNYAN_T_UINT32, "column", (uint32_t)t->t_col + 1,
 		    BUNYAN_T_END);
 		break;
 	case T_STRING:
-		bunyan_trace(blog, idstr,
+		logf(blog, idstr,
 		    BUNYAN_T_UINT32, "line", (uint32_t)t->t_line + 1,
 		    BUNYAN_T_UINT32, "column", (uint32_t)t->t_col + 1,
 		    BUNYAN_T_STRING, "value", t->t_val.t_str,
 		    BUNYAN_T_END);
 		break;
 	case T_INTEGER:
-		bunyan_trace(blog, idstr,
+		logf(blog, idstr,
 		    BUNYAN_T_UINT32, "line", (uint32_t)t->t_line + 1,
 		    BUNYAN_T_UINT32, "column", (uint32_t)t->t_col + 1,
 		    BUNYAN_T_UINT64, "value", t->t_val.t_int,
 		    BUNYAN_T_END);
 		break;
 	case T_FLOAT:
-		bunyan_trace(blog, idstr,
+		logf(blog, idstr,
 		    BUNYAN_T_UINT32, "line", (uint32_t)t->t_line + 1,
 		    BUNYAN_T_UINT32, "column", (uint32_t)t->t_col + 1,
 		    BUNYAN_T_DOUBLE, "value", t->t_val.t_float,
 		    BUNYAN_T_END);
 		break;
 	case T_IPV4:
-		bunyan_trace(blog, idstr,
+		logf(blog, idstr,
 		    BUNYAN_T_UINT32, "line", (uint32_t)t->t_line + 1,
 		    BUNYAN_T_UINT32, "column", (uint32_t)t->t_col + 1,
 		    BUNYAN_T_IP, "value", t->t_val.t_in,
 		    BUNYAN_T_END);
 		break;
 	case T_IPV6:
-		bunyan_trace(blog, idstr,
+		logf(blog, idstr,
 		    BUNYAN_T_UINT32, "line", (uint32_t)t->t_line + 1,
 		    BUNYAN_T_UINT32, "column", (uint32_t)t->t_col + 1,
 		    BUNYAN_T_IP6, "value", t->t_val.t_in6,
 		    BUNYAN_T_END);
 		break;
 	case T_KEYWORD:
-		bunyan_trace(blog, idstr,
+		logf(blog, idstr,
 		    BUNYAN_T_UINT32, "line", (uint32_t)t->t_line + 1,
 		    BUNYAN_T_UINT32, "column", (uint32_t)t->t_col + 1,
 		    BUNYAN_T_STRING, "value", keyword_tab[t->t_val.t_kw],
 		    BUNYAN_T_END);
 		break;
 	case T_P1_ID_TYPE:
-		bunyan_trace(blog, idstr,
+		logf(blog, idstr,
 		    BUNYAN_T_UINT32, "line", (uint32_t)t->t_line + 1,
 		    BUNYAN_T_UINT32, "column", (uint32_t)t->t_col + 1,
 		    BUNYAN_T_STRING, "value", cfg_auth_id_str(t->t_val.t_auth),
@@ -919,7 +990,7 @@ tok_log(token_t *t, bunyan_logger_t *blog)
 	case T_ENCR_ALG:
 	case T_AUTH_ALG:
 		/* XXX: stringify */
-		bunyan_trace(blog, idstr,
+		logf(blog, idstr,
 		    BUNYAN_T_UINT32, "line", (uint32_t)t->t_line + 1,
 		    BUNYAN_T_UINT32, "column", (uint32_t)t->t_col + 1,
 		    BUNYAN_T_INT32, "value", (int32_t)t->t_val.t_id,
