@@ -32,6 +32,7 @@ OBJS =	buf.o		\
 	dh.o		\
 	fromto.o	\
 	ikev2_common.o	\
+	ikev2_enum.o	\
 	ikev2_pkt.o	\
 	ikev2_proto.o	\
 	ikev2_sa.o	\

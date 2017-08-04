@@ -30,6 +30,7 @@
 #include "defs.h"
 #include "config.h"
 #include "ikev2.h"
+#include "ikev2_enum.h"
 
 #ifndef ARRAY_SIZE
 #define	ARRAY_SIZE(x)	(sizeof (x) / sizeof (x[0]))
@@ -1066,14 +1067,31 @@ tok_log(token_t *t, bunyan_logger_t *blog, bunyan_level_t level)
 		    BUNYAN_T_END);
 		break;
 	case T_AUTH_METHOD:
+		logf(blog, "token",
+		    BUNYAN_T_STRING, "type", idstr,
+		    BUNYAN_T_UINT32, "line", (uint32_t)t->t_line + 1,
+		    BUNYAN_T_UINT32, "column", (uint32_t)t->t_col + 1,
+		    BUNYAN_T_STRING, "value",
+		    ikev2_auth_type_str(t->t_val.t_encralg),
+		    BUNYAN_T_END);
+		break;
 	case T_ENCR_ALG:
+		logf(blog, "token",
+		    BUNYAN_T_STRING, "type", idstr,
+		    BUNYAN_T_UINT32, "line", (uint32_t)t->t_line + 1,
+		    BUNYAN_T_UINT32, "column", (uint32_t)t->t_col + 1,
+		    BUNYAN_T_STRING, "value",
+		    ikev2_xf_encr_str(t->t_val.t_encralg),
+		    BUNYAN_T_END);
+		break;
 	case T_AUTH_ALG:
 		/* XXX: stringify */
 		logf(blog, "token",
 		    BUNYAN_T_STRING, "type", idstr,
 		    BUNYAN_T_UINT32, "line", (uint32_t)t->t_line + 1,
 		    BUNYAN_T_UINT32, "column", (uint32_t)t->t_col + 1,
-		    BUNYAN_T_INT32, "value", (int32_t)t->t_val.t_id,
+		    BUNYAN_T_STRING, "value",
+		    ikev2_xf_auth_str(t->t_val.t_authalg),
 		    BUNYAN_T_END);
 		break;
 	}
