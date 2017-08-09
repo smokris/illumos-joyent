@@ -29,6 +29,7 @@ PROG = in.ikev2d
 
 OBJS =	buf.o		\
 	config.o	\
+	config_parse.o	\
 	dh.o		\
 	fromto.o	\
 	ikev2_common.o	\

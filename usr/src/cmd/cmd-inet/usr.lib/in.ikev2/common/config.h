@@ -21,6 +21,7 @@
 #include <netinet/in.h>
 #include <stdio.h>
 #include <bunyan.h>
+#include <pthread.h>
 #include "ikev2.h"
 
 #ifdef __cplusplus
@@ -40,8 +41,30 @@ typedef enum config_auth_id_e {
 	CFG_AUTH_ID_EMAIL
 } config_auth_id_t;
 
+typedef enum config_addr_e {
+	CFG_ADDR_IPV4,
+	CFG_ADDR_IPV4_PREFIX,
+	CFG_ADDR_IPV4_RANGE,
+	CFG_ADDR_IPV6,
+	CFG_ADDR_IPV6_PREFIX,
+	CFG_ADDR_IPV6_RANGE
+} config_addr_type_t;
+
+typedef struct config_addr_s {
+	config_addr_type_t	cfa_type;
+	union {
+		in_addr_t	cfa_ip4;
+		in6_addr_t	cfa_ip6;
+	} cfa_startu;
+	union {
+		in_addr_t	cfa_ip4;
+		in6_addr_t	cfa_ip6;
+		uint8_t		cfa_num;
+	} cfa_endu;
+} config_addr_t;
+
 typedef struct config_id_s {
-	ikev2_id_type_t		id_type;
+	config_auth_id_t	id_type;
 	union {
 		char *id_str;
 		struct {
@@ -62,13 +85,28 @@ typedef struct config_xf_s {
 	ikev2_auth_type_t	xf_authtype;
 } config_xf_t;
 
-typedef struct config_s {
-	char	*cfg_label;
-} config_t;
+typedef struct config_rule_s {
+	char			*cfg_label;
+	config_auth_id_t	cfg_local_id_type;
+	config_addr_t		*cfg_local_addr;
+	size_t			cfg_nlocal_addr;
+	config_addr_t		*cfg_remote_addr;
+	size_t			cfg_nremote_addr;
+	config_id_t		*cfg_id;
+	config_xf_t		*cfg_xf;
+	size_t			cfg_nxf;
+	ikev2_dh_t		cfg_p2_dh;
+} config_rule_t;
 
+extern pthread_rwlock_t cfg_lock;
+extern char **cfg_cert_root;
+extern char **cfg_cert_trust;
+extern boolean_t cfg_ignore_crls;
+extern hrtime_t cfg_expire_timer;
 extern hrtime_t cfg_lifetime_secs;
-extern volatile hrtime_t cfg_retry_max;
-extern volatile hrtime_t cfg_retry_init;
+extern hrtime_t cfg_retry_max;
+extern hrtime_t cfg_retry_init;
+extern size_t cfg_retry_limit;
 
 void process_config(FILE *, boolean_t, bunyan_logger_t *);
 
