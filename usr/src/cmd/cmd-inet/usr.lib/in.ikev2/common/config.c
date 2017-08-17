@@ -15,26 +15,39 @@
 #include <sys/types.h>
 #include <sys/debug.h>
 #include <pthread.h>
+#include "defs.h"
 #include "config.h"
+#include "ikev2_enum.h"
 
 pthread_rwlock_t cfg_lock = PTHREAD_RWLOCK_INITIALIZER;
+config_t *config;
 
-char **cfg_cert_root;
-char **cfg_cert_trust;
-hrtime_t cfg_retry_max = SEC2NSEC(60);
-hrtime_t cfg_retry_init = SEC2NSEC(1);
-hrtime_t cfg_expire_timer;
-hrtime_t cfg_lifetime_secs;
-size_t cfg_retry_limit;
-boolean_t cfg_ignore_crls;
-boolean_t cfg_use_http;
+config_t *
+config_get(void)
+{
+	config_t *cfg = NULL;
 
-config_xf_t **cfg_def_xforms;
-size_t cfg_def_nxforms;
+	PTH(pthread_rwlock_rdlock(&cfg_lock));
+	cfg = config;
+	atomic_inc_32(&cfg->cfg_refcnt);
+	PTH(pthread_rwlock_unlock(&cfg_lock));
+	return (cfg);
+}
 
-config_rule_t **cfg_rules;
-size_t cfg_nrules;
-ikev2_dh_t cfg_def_p2_pfs;
+void
+config_xf_log(bunyan_logger_t *b, bunyan_level_t level, const char *msg,
+    const config_xf_t *xf)
+{
+	getlog(level)(b, msg,
+	    BUNYAN_T_STRING, "xf_encralg", ikev2_xf_encr_str(xf->xf_encr),
+	    BUNYAN_T_UINT32, "xf_minbits", (uint32_t)xf->xf_minbits,
+	    BUNYAN_T_UINT32, "xf_maxbits", (uint32_t)xf->xf_maxbits,
+	    BUNYAN_T_STRING, "xf_authalg", ikev2_xf_auth_str(xf->xf_auth),
+	    BUNYAN_T_STRING, "xf_authtype",
+	    ikev2_auth_type_str(xf->xf_authtype),
+	    BUNYAN_T_STRING, "xf_dh", ikev2_dh_str(xf->xf_dh),
+	    BUNYAN_T_END);
+}
 
 void
 cfg_rule_free(config_rule_t *rule)
@@ -42,15 +55,53 @@ cfg_rule_free(config_rule_t *rule)
 	if (rule == NULL)
 		return;
 
-	VERIFY3U(rule->cfg_refcnt, ==, 0);
-	VERIFY(rule->cfg_condemn);
+	if (rule->rule_xf != NULL) {
+		for (size_t i = 0; rule->rule_xf[i] != NULL; i++)
+			free(rule->rule_xf[i]);
+	}
 
-	for (size_t i = 0; i < rule->cfg_nxf; i++)
-		free(rule->cfg_xf[i]);
-	free(rule->cfg_xf);
-	free(rule->cfg_local_addr);
-	free(rule->cfg_remote_addr);
-	free(rule->cfg_label);
+	free(rule->rule_xf);
+	free(rule->rule_local_addr);
+	free(rule->rule_remote_addr);
+	free(rule->rule_label);
 	free(rule);
 }
 
+void
+cfg_free(config_t *cfg)
+{
+	if (cfg == NULL)
+		return;
+
+	size_t i;
+
+	VERIFY3U(cfg->cfg_refcnt, ==, 0);
+	
+	for (i = 0;
+	    cfg->cfg_cert_root != NULL && cfg->cfg_cert_root[i] != NULL;
+	    i++)
+		free(cfg->cfg_cert_root[i]);
+
+	if (cfg->cfg_cert_trust != NULL) {
+		for (i = 0; cfg->cfg_cert_trust[i] != NULL; i++)
+			free(cfg->cfg_cert_trust[i]);
+	}
+
+	if (cfg->cfg_xforms != NULL) {
+		for (i = 0; cfg->cfg_xforms[i] != NULL; i++)
+			free(cfg->cfg_xforms[i]);
+	}
+
+	if (cfg->cfg_rules != NULL) {
+		for (i = 0; cfg->cfg_rules[i] != NULL; i++)
+			cfg_rule_free(cfg->cfg_rules[i]);
+	}
+
+	free(cfg->cfg_rules);
+	free(cfg->cfg_xforms);
+	free(cfg->cfg_proxy);
+	free(cfg->cfg_socks);
+	free(cfg->cfg_cert_root);
+	free(cfg->cfg_cert_trust);
+	free(cfg);
+}

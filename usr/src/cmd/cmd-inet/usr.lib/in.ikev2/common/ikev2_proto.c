@@ -196,8 +196,10 @@ ikev2_send(pkt_t *pkt, boolean_t is_error)
 		i2sa->last_sent = pkt;
 
 		if (!is_error) {
+			config_t *cfg = config_get();
 			VERIFY(schedule_timeout(TE_TRANSMIT, ikev2_retransmit,
-			    pkt, cfg_retry_init));
+			    pkt, cfg->cfg_retry_init));
+			CONFIG_REFRELE(cfg);
 		}
 	} else {
 		i2sa->last_resp_sent = pkt;
@@ -233,14 +235,17 @@ ikev2_retransmit(te_event_t event, void *data)
 		return;
 	}
 
-	retry = cfg_retry_init * (1ULL << ++pkt->pkt_xmit);
-	if (retry > cfg_retry_max || pkt->pkt_xmit > cfg_retry_max) {
+	config_t *cfg = config_get();
+	retry = cfg->cfg_retry_init * (1ULL << ++pkt->pkt_xmit);
+	if (retry > cfg->cfg_retry_max || pkt->pkt_xmit > cfg->cfg_retry_max) {
 		PTH(pthread_mutex_unlock(&sa->lock));
 		ikev2_sa_condemn(sa);
 		ikev2_pkt_free(pkt);
+		CONFIG_REFRELE(cfg);
 		return;
 	}
 	PTH(pthread_mutex_unlock(&sa->lock));
+	CONFIG_REFRELE(cfg);
 
 	len = sendfromto(select_socket(sa, NULL), PKT_PTR(pkt), pkt_len(pkt),
 	    &sa->laddr, &sa->raddr);

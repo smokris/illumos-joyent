@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <bunyan.h>
 #include <pthread.h>
+#include <atomic.h>
 #include "ikev2.h"
 
 #ifdef __cplusplus
@@ -85,46 +86,64 @@ typedef struct config_xf_s {
 	ikev2_auth_type_t	xf_authtype;
 } config_xf_t;
 
+struct config;
 typedef struct config_rule_s {
-	volatile uint32_t	cfg_refcnt;
-	boolean_t		cfg_condemn;
-	char			*cfg_label;
-	config_auth_id_t	cfg_local_id_type;
-	config_addr_t		*cfg_local_addr;
-	size_t			cfg_nlocal_addr;
-	config_addr_t		*cfg_remote_addr;
-	size_t			cfg_nremote_addr;
-	config_id_t		*cfg_id;
-	config_xf_t		**cfg_xf;
-	size_t			cfg_nxf;
-	ikev2_dh_t		cfg_p2_dh;
-	char			*cfg_local_id;
-	char			*cfg_remote_id;
+	struct config		*rule_config;
+	char			*rule_label;
+	config_auth_id_t	rule_local_id_type;
+	config_addr_t		*rule_local_addr;
+	size_t			rule_nlocal_addr;
+	config_addr_t		*rule_remote_addr;
+	size_t			rule_nremote_addr;
+	config_id_t		*rule_id;
+	config_xf_t		**rule_xf;
+	size_t			rule_nxf;
+	ikev2_dh_t		rule_p2_dh;
+	char			*rule_local_id;
+	char			*rule_remote_id;
 } config_rule_t;
-#define	CFG_RULE_RELE(r) \
-	(void) (((atomic_dec_32_nv(&(r)->cfg_refcnt)) != 0) || \
-	(!(r)->cfg_condemn) || (cfg_rule_free(r), 0))
+
+struct config {
+	volatile uint32_t	cfg_refcnt;
+	config_rule_t		**cfg_rules;
+	size_t			cfg_rules_alloc;
+	config_xf_t		**cfg_xforms;
+	size_t			cfg_xforms_alloc;
+	char			*cfg_proxy;
+	char			*cfg_socks;
+	char			**cfg_cert_root;
+	size_t			cfg_cert_root_alloc;
+	char			**cfg_cert_trust;
+	size_t			cfg_cert_trust_alloc;
+	hrtime_t		cfg_expire_timer;	/* ns */
+	hrtime_t		cfg_lifetime_secs;	/* ns */
+	hrtime_t		cfg_retry_max;		/* ns */
+	hrtime_t		cfg_retry_init;		/* ns */
+	size_t			cfg_retry_limit;
+	boolean_t		cfg_ignore_crls;
+	boolean_t		cfg_use_http;
+	ikev2_dh_t		cfg_p2_pfs;
+	size_t			cfg_p1_lifetime_secs;
+	size_t			cfg_p1_nonce_len;
+	size_t			cfg_p2_lifetime_secs;
+	size_t			cfg_p2_softlife_secs;
+	size_t			cfg_p2_idletime_secs;
+	size_t			cfg_p2_lifetime_kb;
+	size_t			cfg_p2_softlife_kb;
+	size_t			cfg_p2_nonce_len;
+};
+typedef struct config config_t;
+#define	CONFIG_REFRELE(cp) \
+	(void) ((atomic_dec_32_nv(&(cp)->cfg_refcnt) != 0) || \
+	    (cfg_free(cp), 0))
 
 extern pthread_rwlock_t cfg_lock;
-
-extern config_rule_t **cfg_rules;
-extern size_t cfg_nrules;
-extern config_xf_t **cfg_def_xforms;
-extern size_t cfg_def_nxforms;
-extern ikev2_dh_t cfg_def_p2_pfs;
-
-extern char **cfg_cert_root;
-extern char **cfg_cert_trust;
-extern boolean_t cfg_ignore_crls;
-extern boolean_t cfg_use_http;
-extern hrtime_t cfg_expire_timer;
-extern hrtime_t cfg_lifetime_secs;
-extern hrtime_t cfg_retry_max;
-extern hrtime_t cfg_retry_init;
-extern size_t cfg_retry_limit;
+extern config_t *config;
 
 void process_config(FILE *, boolean_t, bunyan_logger_t *);
+config_t *config_get(void);
 void cfg_rule_free(config_rule_t *);
+void cfg_free(config_t *);
 
 #ifdef __cplusplus
 }

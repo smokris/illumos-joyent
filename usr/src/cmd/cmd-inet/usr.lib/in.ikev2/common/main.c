@@ -333,6 +333,27 @@ event_str(event_t evt)
 	}
 }
 
+bunyan_logfn_t
+getlog(bunyan_level_t level)
+{
+	switch (level) {
+	case BUNYAN_L_TRACE:
+		return (bunyan_trace);
+	case BUNYAN_L_DEBUG:
+		return (bunyan_debug);
+	case BUNYAN_L_INFO:
+		return (bunyan_info);
+	case BUNYAN_L_WARN:
+		return (bunyan_warn);
+	case BUNYAN_L_ERROR:
+		return (bunyan_error);
+	case BUNYAN_L_FATAL:
+		return (bunyan_fatal);
+        }
+
+	return (NULL);
+}
+
 extern uint32_t ss_port(const struct sockaddr_storage *);
 extern const void *ss_addr(const struct sockaddr_storage *);
 extern int ss_bunyan(const struct sockaddr_storage *);

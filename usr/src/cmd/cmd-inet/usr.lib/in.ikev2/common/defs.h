@@ -220,6 +220,9 @@ extern int port;
 
 void schedule_socket(int, void(*)(int, void *));
 
+typedef int (*bunyan_logfn_t)(bunyan_logger_t *, const char *, ...);
+bunyan_logfn_t getlog(bunyan_level_t);
+
 #ifdef  __cplusplus
 }
 #endif
