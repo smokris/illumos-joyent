@@ -206,6 +206,8 @@ typedef struct input_cursor {
 } input_cursor_t;
 
 static boolean_t cfg_add_str(char ***restrict, const char *restrict);
+static boolean_t cfg_add_xf(config_rule_t *restrict, config_xf_t *restrict);
+static boolean_t cfg_add_rule(config_rule_t *);
 
 static token_t *tok_new(const char *, const char *, size_t, size_t);
 static void tok_free(token_t *);
@@ -225,6 +227,7 @@ static boolean_t parse_auth(const char *restrict, ikev2_auth_type_t *restrict);
 static boolean_t parse_authalg(const char *restrict, ikev2_xf_auth_t *restrict);
 static boolean_t parse_encralg(const char *restrict, ikev2_xf_encr_t *restrict);
 static boolean_t parse_p1_id(const char *restrict, config_auth_id_t *restrict);
+static boolean_t parse_p2_pfs(const char *restrict, ikev2_dh_t *restrict);
 static boolean_t parse_ip(const char *restrict, in_addr_t *restrict);
 static boolean_t parse_ip6(const char *restrict, in6_addr_t *restrict);
 static boolean_t parse_int(const char *restrict, uint64_t *restrict);
@@ -236,7 +239,7 @@ static void input_free(input_t *);
 static void input_cursor_init(input_cursor_t *, input_t *, bunyan_logger_t *);
 static void input_cursor_fini(input_cursor_t *);
 static token_t *input_token(input_cursor_t *, boolean_t);
-static token_t *input_peek(input_cursor_t *, boolean_t);
+static const token_t *input_peek(input_cursor_t *, boolean_t);
 static token_t *input_next_token(input_cursor_t *, boolean_t);
 static void input_cursor_getpos(input_cursor_t *restrict, const char *restrict,
     uint32_t *restrict, uint32_t *restrict);
@@ -248,6 +251,7 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 {
 	input_t *in = input_new(f, blog);
 	token_t *t = NULL, *targ = NULL;
+	config_xf_t *xf = NULL;
 	input_cursor_t ic = { 0 };
 	union {
 		uint64_t	ui;
@@ -266,7 +270,13 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 		keyword_t kw;
 
 		if (strcmp(t->t_str, "{") == 0) {
-			free(parse_rule(&ic));
+			config_rule_t *rule = parse_rule(&ic);
+			if (!check_only) {
+				VERIFY(cfg_add_rule(rule));
+			} else {
+				rule->cfg_condemn = B_TRUE;
+				cfg_rule_free(rule);
+			}
 			continue;
 		}
 
@@ -352,7 +362,6 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 		case KW_RETRY_TIMER_MAX:
 		case KW_PROXY:
 		case KW_SOCKS:
-		case KW_USE_HTTP:
 		case KW_P1_LIFETIME_SECS:
 		case KW_P1_NONCE_LEN:
 		case KW_P2_LIFETIME_SECS:
@@ -361,13 +370,29 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 		case KW_P2_LIFETIME_KB:
 		case KW_P2_SOFTLIFE_KB:
 		case KW_P2_NONCE_LEN:
+		case KW_USE_HTTP:
+			if (!check_only)
+				cfg_use_http = B_TRUE;
+			break;
 		case KW_LOCAL_ID_TYPE:
-		case KW_P2_PFS:
 			tok_log(t, blog, BUNYAN_L_INFO, "Unimplemented "
 			    "configuration parameter", "keyword");
 			break;
+		case KW_P2_PFS:
+			if (!parse_p2_pfs(targ->t_str,
+			    check_only ? NULL : &cfg_def_p2_pfs)) {
+				tok_log(t, blog, BUNYAN_L_ERROR,
+				    "Cannot parse p2_pfs value", "value");
+				goto done;
+			}
+			break;
 		case KW_P1_XFORM:
-			free(parse_xform(&ic));
+			xf = parse_xform(&ic);
+			if (!check_only)
+				VERIFY(cfg_add_xf(NULL, xf));
+			else
+				free(xf);
+			xf = NULL;
 			break;
 		case KW_AUTH_METHOD:
 		case KW_OAKLEY_GROUP:
@@ -576,19 +601,19 @@ fail:
 static boolean_t
 parse_encrbits(input_cursor_t *restrict ic, config_xf_t *restrict xf)
 {
+	const token_t *tpeek = NULL;
 	token_t *t = NULL;
 	uint64_t val = 0;
 
-	if ((t = input_peek(ic, B_FALSE)) == NULL)
+	if ((tpeek = input_peek(ic, B_FALSE)) == NULL)
 		goto truncated;
 
 	/* No key length given, that's ok */
-	if (strcmp(t->t_str, "(") != 0)
+	if (strcmp(tpeek->t_str, "(") != 0)
 		return (B_TRUE);
 
 	/* consume '(' */
-	t = input_token(ic, B_FALSE);
-	tok_free(t);
+	tok_free(input_token(ic, B_FALSE));
 
 	if ((t = input_token(ic, B_FALSE)) == NULL)
 		goto truncated;
@@ -679,6 +704,7 @@ parse_rule(input_cursor_t *ic)
 {
 	token_t *t = NULL, *targ = NULL;
 	config_rule_t *rule = NULL;
+	config_xf_t *xf = NULL;
 	config_addr_t addr = { 0 };
 	boolean_t seen_label = B_FALSE;
 	boolean_t seen_local_addr = B_FALSE;
@@ -689,6 +715,7 @@ parse_rule(input_cursor_t *ic)
 	boolean_t seen_p2_lifetime_secs = B_FALSE;
 	boolean_t seen_p2_pfs = B_FALSE;
 	boolean_t seen_p1_xform = B_FALSE;
+	boolean_t has_non_preshared = B_FALSE;
 
 	rule = calloc(1, sizeof (*rule));
 	VERIFY3P(rule, !=, NULL);
@@ -722,29 +749,74 @@ parse_rule(input_cursor_t *ic)
 
 		switch (kw) {
 		case KW_LABEL:
+			if (seen_label)
+				goto duplicate;
+			rule->cfg_label = strdup(targ->t_str);
+			if (rule->cfg_label == NULL)
+				goto fail;
+			seen_label = B_TRUE;
 			break;
 		case KW_P2_PFS:
+			if (seen_p2_pfs)
+				goto duplicate;
+			if (!parse_p2_pfs(targ->t_str, &rule->cfg_p2_dh)) {
+				tok_log(targ, ic->ic_log, BUNYAN_L_ERROR,
+				    "Invalid p2_pfs value", "value");
+				goto fail;
+			}
 			break;
 		case KW_P1_XFORM:
-			free(parse_xform(ic));
+			xf = parse_xform(ic);
+			VERIFY(cfg_add_xf(rule, xf));
+			if (xf->xf_authtype != IKEV2_AUTH_SHARED_KEY_MIC)
+				has_non_preshared = B_TRUE;
+			seen_p1_xform = B_TRUE;
+			xf = NULL;
 			break;
 		case KW_LOCAL_ADDR:
 			(void) memset(&addr, 0, sizeof (addr));
-			if (!parse_address(ic, &addr)) {
+			if (!parse_address(ic, &addr))
 				goto fail;
-			}
+			seen_local_addr = B_TRUE;
 			break;
 		case KW_REMOTE_ADDR:
 			(void) memset(&addr, 0, sizeof (addr));
-			if (!parse_address(ic, &addr)) {
+			if (!parse_address(ic, &addr))
 				goto fail;
-			}
+			seen_remote_addr = B_TRUE;
 			break;
 		case KW_LOCAL_ID:
+			/*
+			 * According to the man page, only one ID is used
+			 * per rule, but instead of erroring, it just uses
+			 * the first one.
+			 */
+			if (seen_local_id)
+				break;
+			rule->cfg_local_id = strdup(targ->t_str);
+			if (rule->cfg_local_id == NULL)
+				goto fail;
+			seen_local_id = B_TRUE;
 			break;
 		case KW_REMOTE_ID:
+			/* See KW_LOCAL_ID above */
+			if (seen_remote_id)
+				break;
+			rule->cfg_remote_id = strdup(targ->t_str);
+			if (rule->cfg_remote_id == NULL)
+				goto fail;
+			seen_remote_id = B_TRUE;
 			break;
 		case KW_LOCAL_ID_TYPE:
+			if (seen_local_id_type)
+				goto duplicate;
+			if (!parse_p1_id(targ->t_str,
+			    &rule->cfg_local_id_type)) {
+				tok_log(t, ic->ic_log, BUNYAN_L_ERROR,
+				    "Unable to parse local_id_type", "value");
+				goto fail;
+			}
+			seen_local_id_type = B_TRUE;
 			break;
 		default:
 			tok_log(t, ic->ic_log, BUNYAN_L_ERROR, "Configuration "
@@ -765,10 +837,16 @@ parse_rule(input_cursor_t *ic)
 		goto fail;
 	}
 
-done:
+	/* TODO: more validation of the values */
+
 	tok_free(t);
 	tok_free(targ);
 	return (rule);
+
+duplicate:
+	tok_log(t, ic->ic_log, BUNYAN_L_ERROR,
+	    "Configuration parameter can only appear once in a transform "
+	    "definition", "parameter");
 
 fail:
 	tok_free(t);
@@ -780,6 +858,7 @@ fail:
 static boolean_t
 parse_address(input_cursor_t *restrict ic, config_addr_t *restrict addrp)
 {
+	const token_t *tpeek = NULL;
 	token_t *t = NULL;
 	boolean_t ip6 = B_FALSE;
 	boolean_t ok = B_FALSE;
@@ -796,13 +875,12 @@ parse_address(input_cursor_t *restrict ic, config_addr_t *restrict addrp)
 		}
 		ip6 = B_TRUE;
 	}
-
 	tok_free(t);
-	t = input_peek(ic, B_TRUE);
-	if (strcmp(t->t_str, "-") == 0) {
+
+	tpeek = input_peek(ic, B_TRUE);
+	if (strcmp(tpeek->t_str, "-") == 0) {
 		/* consume - */
-		t = input_token(ic, B_TRUE);
-		tok_free(t);
+		tok_free(input_token(ic, B_TRUE));
 
 		addrp->cfa_type =
 		    ip6 ? CFG_ADDR_IPV6_RANGE : CFG_ADDR_IPV4_RANGE;
@@ -819,15 +897,14 @@ parse_address(input_cursor_t *restrict ic, config_addr_t *restrict addrp)
 		}
 		tok_free(t);
 		return (ok);
-	} else if (strcmp(t->t_str, "/") == 0) {
+	} else if (strcmp(tpeek->t_str, "/") == 0) {
 		uint64_t val = 0;
 
 		addrp->cfa_type =
 		    ip6 ? CFG_ADDR_IPV6_PREFIX : CFG_ADDR_IPV4_PREFIX;
 
 		/* consume "/" */
-		t = input_token(ic, B_TRUE);
-		tok_free(t);
+		tok_free(input_token(ic, B_TRUE));
 
 		t = input_token(ic, B_FALSE);
 		if (t == NULL)
@@ -859,6 +936,21 @@ truncated:
 	bunyan_error(ic->ic_log, "Input truncated while parsing address",
 	     BUNYAN_T_END);
 	return (B_FALSE);
+}
+
+static boolean_t
+parse_p2_pfs(const char *restrict str, ikev2_dh_t *dhp)
+{
+	uint64_t val = 0;
+
+	if (!parse_int(str, &val))
+		return (B_FALSE);
+
+	/* XXX: validate value */
+
+	if (dhp != NULL)
+		*dhp = (int)val;
+	return (B_TRUE);
 }
 
 static boolean_t
@@ -1129,8 +1221,8 @@ input_token(input_cursor_t *ic, boolean_t minus_is_sep)
 	return (t);
 }
 
-/* NOTE: results of input_peek() should NOT be freed */
-static token_t *
+/* NOTE: Results of input_peek() should NOT be freed */
+static const token_t *
 input_peek(input_cursor_t *ic, boolean_t minus_is_sep)
 {
 	if (ic->ic_peek != NULL)
@@ -1289,6 +1381,57 @@ cfg_add_str(char ***restrict ppp, const char *restrict str)
 	return (B_TRUE);
 }
 
+static boolean_t
+cfg_add_xf(config_rule_t *restrict rule, config_xf_t *restrict xf)
+{
+	config_xf_t **xforms = NULL;
+	size_t nxf = 0;
+	size_t amt = 0;
+
+	nxf = (rule == NULL) ? cfg_def_nxforms : rule->cfg_nxf;
+	nxf++;
+
+	amt = nxf * sizeof (config_xf_t *);
+	VERIFY3U(amt, >, nxf);
+	VERIFY3U(amt, >=, sizeof (config_xf_t *));
+
+	xforms = realloc((rule == NULL) ? cfg_def_xforms : rule->cfg_xf, amt);
+	if (xforms == NULL)
+		return (B_FALSE);
+
+	xforms[nxf - 1] = xf;
+
+	if (rule == NULL) {
+		cfg_def_xforms = xforms;
+		cfg_def_nxforms = nxf;
+	} else {
+		rule->cfg_xf = xforms;
+		rule->cfg_nxf = nxf;
+	}
+
+	return (B_TRUE);
+}
+
+static boolean_t
+cfg_add_rule(config_rule_t *rule)
+{
+	config_rule_t **rules = NULL;
+	size_t nrules = 0, amt = 0;
+
+	nrules = cfg_nrules + 1;
+	amt = nrules * sizeof (config_rule_t *);
+	VERIFY3U(amt, >, nrules);
+	VERIFY3U(amt, >=, sizeof (config_rule_t *));
+
+	rules = realloc(cfg_rules, amt);
+	if (rules == NULL)
+		return (B_FALSE);
+
+	rules[cfg_nrules++] = rule;
+	return (B_TRUE);
+}
+
+/* Is the given character a token separator? */
 static boolean_t
 issep(char c, boolean_t minus_is_sep)
 {

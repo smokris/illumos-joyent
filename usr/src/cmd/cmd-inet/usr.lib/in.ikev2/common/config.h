@@ -86,6 +86,8 @@ typedef struct config_xf_s {
 } config_xf_t;
 
 typedef struct config_rule_s {
+	volatile uint32_t	cfg_refcnt;
+	boolean_t		cfg_condemn;
 	char			*cfg_label;
 	config_auth_id_t	cfg_local_id_type;
 	config_addr_t		*cfg_local_addr;
@@ -93,15 +95,28 @@ typedef struct config_rule_s {
 	config_addr_t		*cfg_remote_addr;
 	size_t			cfg_nremote_addr;
 	config_id_t		*cfg_id;
-	config_xf_t		*cfg_xf;
+	config_xf_t		**cfg_xf;
 	size_t			cfg_nxf;
 	ikev2_dh_t		cfg_p2_dh;
+	char			*cfg_local_id;
+	char			*cfg_remote_id;
 } config_rule_t;
+#define	CFG_RULE_RELE(r) \
+	(void) (((atomic_dec_32_nv(&(r)->cfg_refcnt)) != 0) || \
+	(!(r)->cfg_condemn) || (cfg_rule_free(r), 0))
 
 extern pthread_rwlock_t cfg_lock;
+
+extern config_rule_t **cfg_rules;
+extern size_t cfg_nrules;
+extern config_xf_t **cfg_def_xforms;
+extern size_t cfg_def_nxforms;
+extern ikev2_dh_t cfg_def_p2_pfs;
+
 extern char **cfg_cert_root;
 extern char **cfg_cert_trust;
 extern boolean_t cfg_ignore_crls;
+extern boolean_t cfg_use_http;
 extern hrtime_t cfg_expire_timer;
 extern hrtime_t cfg_lifetime_secs;
 extern hrtime_t cfg_retry_max;
@@ -109,6 +124,7 @@ extern hrtime_t cfg_retry_init;
 extern size_t cfg_retry_limit;
 
 void process_config(FILE *, boolean_t, bunyan_logger_t *);
+void cfg_rule_free(config_rule_t *);
 
 #ifdef __cplusplus
 }

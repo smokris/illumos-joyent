@@ -13,6 +13,7 @@
  * Copyright (c) 2017, Joyent, Inc.
  */
 #include <sys/types.h>
+#include <sys/debug.h>
 #include <pthread.h>
 #include "config.h"
 
@@ -26,3 +27,30 @@ hrtime_t cfg_expire_timer;
 hrtime_t cfg_lifetime_secs;
 size_t cfg_retry_limit;
 boolean_t cfg_ignore_crls;
+boolean_t cfg_use_http;
+
+config_xf_t **cfg_def_xforms;
+size_t cfg_def_nxforms;
+
+config_rule_t **cfg_rules;
+size_t cfg_nrules;
+ikev2_dh_t cfg_def_p2_pfs;
+
+void
+cfg_rule_free(config_rule_t *rule)
+{
+	if (rule == NULL)
+		return;
+
+	VERIFY3U(rule->cfg_refcnt, ==, 0);
+	VERIFY(rule->cfg_condemn);
+
+	for (size_t i = 0; i < rule->cfg_nxf; i++)
+		free(rule->cfg_xf[i]);
+	free(rule->cfg_xf);
+	free(rule->cfg_local_addr);
+	free(rule->cfg_remote_addr);
+	free(rule->cfg_label);
+	free(rule);
+}
+
