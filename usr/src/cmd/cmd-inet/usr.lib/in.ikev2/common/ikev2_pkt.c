@@ -1127,18 +1127,23 @@ encrypt_payloads(pkt_t *restrict pkt, uchar_t *restrict buf, uintptr_t swaparg,
 
 	iv = (CK_BYTE_PTR)buf + sizeof (ike_payload_t);
 	data = iv + ivlen;
+
+	/* Sanity check */
+	VERIFY3P(data, >=, (CK_BYTE_PTR)pkt->pkt_ptr);
 	datalen = (CK_ULONG)((CK_BYTE_PTR)pkt->pkt_ptr - data);
 
 	/*
-	 * XXX: what padding should be used here? For now we rely on
-	 * the buffer being initially zero-filled and use that.  It would
-	 * be good for an expert to know if that vs. using random vs. something
-	 * else would be good for padding.
-	 *
-	 * NOTE: since we always include a single byte indicating the
-	 * (possibly zero) amount of padding added at the end of any padding,
-	 * these calculations all include the pad length byte in the
-	 * calculations.
+	 * Per RFC7296 3.14, the sender can choose any value for the padding.
+	 * We elect to use PKCS#7 style padding (repeat the pad value as the
+	 * padding).  This is well studied and appears to work.  Unfortunately,
+	 * we cannot validate the padding in the general case.  However,
+	 * since we know when we're communicating to other instances of
+	 * ourselves via the vendor ID payload, it is permissible to have
+	 * custom behavior in such instances, as long as we are backwards
+	 * compatible.  As such we DO validate the padding when communicating
+	 * to other instances of ourselves. Based on attacks to
+	 * protocols (e.g. TLS) where validation of the padding wasn't done,
+	 * we think this is prudent to do.
 	 */
 	if ((datalen + 1) % blocklen != 0)
 		padlen = blocklen - ((datalen + 1) % blocklen);
@@ -1148,8 +1153,19 @@ encrypt_payloads(pkt_t *restrict pkt, uchar_t *restrict buf, uintptr_t swaparg,
 		    BUNYAN_T_END);
 		return (B_FALSE);
 	}
-	datalen += padlen;
 
+	/*
+	 * Once we've written the padding out, we need to write out how much
+	 * padding was added.  Since the amount of padding and the value of
+	 * the padding are the same, we can just use <= in the loop test to
+	 * cause one extra iteration of the loop to accomplish that.
+	 */
+	for (size_t i = 0; i <= padlen; i++) {
+		*pkt->pkt_ptr = padlen;
+		pkt->pkt_ptr++;
+	}
+		
+	datalen += padlen;
 	icv = data + datalen;
 	*icv = padlen;
 	icv++;
@@ -1241,7 +1257,28 @@ ikev2_pkt_decrypt(pkt_t *pkt)
 		return (B_FALSE);
 
 	padlen = *(icv - 1);
-	datalen -= padlen;
+	datalen -= padlen + 1;
+
+	/*
+	 * As described in enrypt_payloads(), when communicating with other
+	 * illumos instances, we opt to validate the contents of the padding.
+	 * Since RFC7296 allows the sender to choose any arbitrary value
+	 * for the padding, we cannot do this in the general case.
+	 */
+	if (pkt->pkt_sa->vendor == VENDOR_ILLUMOS_1) {
+		CK_BYTE_PTR padp = data + datalen;
+		for (size_t i = 0; i < padlen; i++) {
+			if (*padp == padlen)
+				continue;
+
+			bunyan_warn(sa->i2sa_log,
+			    "Padding validation failed",
+			    BUNYAN_T_UINT32, "padlen", (uint32_t)padlen,
+			    BUNYAN_T_UINT32, "offset", (uint32_t)i,
+			    BUNYAN_T_END);
+			return (B_FALSE);
+		}
+	}
 
 	ike_payload_t *payp, pay = { 0 };
 	size_t paycount = 0, ncount = 0;

@@ -483,6 +483,12 @@ typedef enum ikev2_cfg_attr_type {
 	IKEV2_CFG_INTERNAL_IP6_SERVER		= 23457  /* MS-IKEE */
 } ikev2_cfg_attr_type_t;
 
+/* The vendor types + versions we recognize */
+typedef enum vendor {
+	VENDOR_UNKNOWN			= 0,
+	VENDOR_ILLUMOS_1			= 1
+} vendor_t;
+
 typedef struct ikev2_payload ikev2_payload_t;
 typedef struct ikev2_sa_proposal ikev2_sa_proposal_t;
 typedef struct ikev2_transform ikev2_transform_t;

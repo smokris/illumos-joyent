@@ -98,6 +98,8 @@ struct ikev2_sa {
 	struct sockaddr_storage laddr;  /* Local address & port. */
 	struct sockaddr_storage raddr;  /* Remote address & port. */
 
+	vendor_t		vendor;
+
 	/* Current number of outstanding messages prior to outmsgid. */
 	int		msgwin;
 
