@@ -51,6 +51,7 @@
 #include "ikev2_sa.h"
 #include "random.h"
 #include "worker.h"
+#include "config.h"
 
 /* Our hashes */
 enum {
@@ -312,6 +313,9 @@ ikev2_sa_free(ikev2_sa_t *i2sa)
 
 	ASSERT(i2sa->refcnt == 0);
 
+	if (i2sa->i2sa_cfg != NULL)
+		CONFIG_REFRELE(i2sa->i2sa_cfg);
+
 	/* All unauthenticated IKEv2 SAs are considered larval */
 	if (!(i2sa->flags & I2SA_AUTHENTICATED))
 		dec_half_open();
@@ -321,7 +325,7 @@ ikev2_sa_free(ikev2_sa_t *i2sa)
 	 * as ikev2_pkt_t->sa and i2sa->init,
 	 * i2sa->last_{resp_sent,sent,recvd} reference each other.
 	 *
-	 * We will need to sit and thing about the lifecycles of
+	 * We will need to sit and think about the lifecycles of
 	 * these packets to make sure when we want this SA to go
 	 * away for any reason, everything is properly cleaned up.
 	 *

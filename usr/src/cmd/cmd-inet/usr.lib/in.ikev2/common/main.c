@@ -220,6 +220,11 @@ event(event_t evt, void *arg)
 }
 
 void
+reload(void)
+{
+}
+
+void
 schedule_socket(int fd, void (*cb)(int, void *))
 {
 	if (port_associate(port, PORT_SOURCE_FD, fd, POLLIN, cb) < 0)
@@ -236,7 +241,7 @@ do_signal(int signum)
 		done = B_TRUE;
 		break;
 	case SIGHUP:
-		/* XXX: reload */
+		reload();
 		break;
 	case SIGUSR1:
 		(void) worker_add();

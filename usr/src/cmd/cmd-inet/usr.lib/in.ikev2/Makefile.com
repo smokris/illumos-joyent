@@ -37,9 +37,11 @@ OBJS =	buf.o		\
 	ikev2_pkt.o	\
 	ikev2_proto.o	\
 	ikev2_sa.o	\
+	ikev2_sa_init.o	\
 	inbound.o	\
 	main.o		\
 	pfkey.o		\
+	preshared.o	\
 	prf.o		\
 	pkcs11.o	\
 	pkt.o		\

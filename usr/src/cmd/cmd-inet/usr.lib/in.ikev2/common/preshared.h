@@ -21,6 +21,8 @@
 /*
  * Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ *
+ * Copyright (c) 2017, Joyent, Inc.
  */
 
 #ifndef	_PRESHARED_H
@@ -34,6 +36,8 @@ extern "C" {
 #include <sys/atomic.h>
 #include <netinet/in.h>
 #include <net/pfkeyv2.h>
+
+#define	PRESHARED_KEY_FILE	"/etc/inet/secret/ike.preshared"
 
 typedef struct preshared_entry_s {
 	struct preshared_entry_s	*pe_next;

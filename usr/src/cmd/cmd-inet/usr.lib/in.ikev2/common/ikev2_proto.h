@@ -25,12 +25,16 @@ extern "C" {
 
 
 struct pkt;
+struct ikev2_sa;
 struct sockaddr_storage;
 
 void ikev2_dispatch(struct pkt *, const struct sockaddr_storage *,
     const struct sockaddr_storage *);
 boolean_t ikev2_send(struct pkt *, boolean_t);
 void ikev2_inbound(struct pkt *);
+
+void ikev2_sa_init_inbound(struct pkt *);
+void ikev2_sa_init_outbound(struct ikev2_sa *);
 
 #ifdef __cplusplus
 }

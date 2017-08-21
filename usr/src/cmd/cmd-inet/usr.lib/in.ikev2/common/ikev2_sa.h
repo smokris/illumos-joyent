@@ -60,6 +60,8 @@ typedef struct ikev2_child_sa ikev2_child_sa_t;
 typedef struct i2sa_bucket i2sa_bucket_t;
 #endif /* IKEV2_SA_T */
 
+struct config;
+
 #define	I2SA_NUM_HASH	2	/* The number of IKEv2 SA hashes we have */
 
 #define	I2SA_SALT_LEN	(32)	/* Maximum size of salt */
@@ -89,6 +91,8 @@ struct ikev2_sa {
 
 			/* Link to the bucket we are in for each hash */
 	i2sa_bucket_t	*bucket[I2SA_NUM_HASH];
+
+	struct config		*i2sa_cfg;
 
 	uint64_t		i_spi;	  /* Initiator SPI. */
 	uint64_t		r_spi;	  /* Responder SPI. */

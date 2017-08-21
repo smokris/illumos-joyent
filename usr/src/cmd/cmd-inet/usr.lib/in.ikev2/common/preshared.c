@@ -21,6 +21,8 @@
 /*
  * Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ *
+ * Copyright (c) 2017, Joyent, Inc.
  */
 
 #include <sys/types.h>
@@ -37,6 +39,8 @@
 #include <pthread.h>
 #include <synch.h>
 #include <assert.h>
+#include <bunyan.h>
+#include <err.h>
 
 #include "preshared.h"
 #include "defs.h"
@@ -1967,12 +1971,12 @@ free_preshared(preshared_entry_t *pe)
  * starts.
  */
 void
-preshared_init(void)
+preshared_init(boolean_t ignore_errors)
 {
 	const char *filename = PRESHARED_KEY_FILE;
 	char *errorstr;
 
-	PRTDBG(D_OP, ("Loading preshared keys..."));
+	bunyan_info(log, "Loading preshared keys", BUNYAN_T_END);
 	errorstr = preshared_load(filename, -1, B_TRUE);
 
 	if (errorstr != NULL) {
@@ -1983,9 +1987,11 @@ preshared_init(void)
 		 * Debug logging already taken care of by other functions.
 		 * Don't exit because we want to load other policy.
 		 */
-		PRTDBG(D_OP, ("Error reading %s: %s", filename, errorstr));
+		bunyan_error(log, "Error reading preshared file",
+		    BUNYAN_T_STRING, "filename", filename,
+		    BUNYAN_T_STRING, "errmsg", errorstr);
 		if (!ignore_errors)
-			EXIT_BADCONFIG2("Fatal errors in %s", filename);
+			err(EXIT_FAILURE, "Fatal errors in %s", filename);
 	}
 }
 
@@ -1996,7 +2002,7 @@ preshared_init(void)
 void
 preshared_reload(void)
 {
-	preshared_init();
+	preshared_init(B_FALSE);
 }
 
 /*
