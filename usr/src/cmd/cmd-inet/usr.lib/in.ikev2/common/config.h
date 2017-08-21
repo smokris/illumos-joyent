@@ -84,6 +84,8 @@ typedef struct config_xf_s {
 	ikev2_xf_auth_t		xf_auth;
 	ikev2_dh_t		xf_dh;
 	ikev2_auth_type_t	xf_authtype;
+	size_t			xf_lifetime_secs;
+	size_t			xf_nonce_len;
 } config_xf_t;
 
 struct config;
@@ -142,6 +144,7 @@ extern config_t *config;
 
 void process_config(FILE *, boolean_t, bunyan_logger_t *);
 config_t *config_get(void);
+config_rule_t *config_get_rule(sockaddr_u_t *restrict, sockaddr_u_t *restrict);
 void cfg_rule_free(config_rule_t *);
 void cfg_free(config_t *);
 

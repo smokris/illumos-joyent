@@ -220,7 +220,8 @@ static void tok_error(token_t *restrict, bunyan_logger_t *restrict,
 static void tok_invalid(token_t *restrict, bunyan_logger_t *restrict,
     keyword_t);
 
-static boolean_t parse_rule(input_cursor_t *restrict, config_rule_t **restrict);
+static boolean_t parse_rule(input_cursor_t *restrict, const token_t *restrict,
+    config_rule_t **restrict);
 static boolean_t parse_address(input_cursor_t *restrict,
     config_addr_t *restrict);
 
@@ -252,6 +253,34 @@ static void input_cursor_getpos(input_cursor_t *restrict, const char *restrict,
 
 static boolean_t issep(char c, boolean_t);
 
+/*
+ * When processing a configuration file, we first load the entire contents
+ * into memory before doing any parsing.  This is to hopefully allow more
+ * contextual error messages (such as being able to output the full line of
+ * text where an error occurs, as well as the location where the error occurs).
+ * Once successfully parsed, the contents are discarded.
+ *
+ * The general approach is to then generate a stream of string tokens.  We
+ * defer interpretation of the tokens (e.g. 'IP address') since there are
+ * some instances where it'd be complicated to do so due to potential
+ * ambiguities.  Instead it's simpler to wait until there's more context.
+ *
+ * For example, once the 'local_addr' keyword has been seen, we know the next
+ * token should be either an IPV4 or IPV6 address, an IPV[46] address prefix
+ * (address/masklen), or an IPV[46] range (start address-end address).  We can
+ * attempt to convert the string accordingly without ambiguity.
+ *
+ * To assist in that, there is a (currently) limited ability to peek (view
+ * without advancing the stream) at the next token.  This has (so far)
+ * proven sufficient.
+ *
+ * To check the configuration, we build a new copy of config_t, and if it
+ * succeeds to completion, we know the configuration does not have any
+ * errors, and then discard it (instead of replacing the current configuration).
+ *
+ * TODO: We should probably support the ability to add and remove individual
+ * rules.
+ */
 void
 process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 {
@@ -280,10 +309,11 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 		if (strcmp(t->t_str, "{") == 0) {
 			config_rule_t *rule = NULL;
 
-			if (!parse_rule(&ic, &rule))
+			if (!parse_rule(&ic, t, &rule))
 				goto fail;
 
 			add_rule(cfg, rule);
+			tok_free(t);
 			continue;
 		}
 
@@ -517,6 +547,8 @@ parse_xform(input_cursor_t *restrict ic, config_xf_t **restrict xfp)
 	boolean_t seen_encralg = B_FALSE;
 	boolean_t seen_dh = B_FALSE;
 	boolean_t seen_authmethod = B_FALSE;
+	boolean_t seen_lifetime_secs = B_FALSE;
+	boolean_t seen_nonce_len = B_FALSE;
 	uint64_t val = 0;
 
 	xf = calloc(1, sizeof (*xf));
@@ -548,65 +580,38 @@ parse_xform(input_cursor_t *restrict ic, config_xf_t **restrict xfp)
 
 		/* All of the keywords require an argument */
 		if ((targ = input_token(ic, B_FALSE)) == NULL) {
-			bunyan_error(ic->ic_log,
-			    "Missing argument to parameter",
-			    BUNYAN_T_STRING, "parameter", t->t_str,
-			    BUNYAN_T_UINT32, "line", t->t_line,
-			    BUNYAN_T_UINT32, "col", t->t_col,
-			    BUNYAN_T_END);
+			tok_error(t, ic->ic_log,
+			    "Missing argument to parameter", "parameter");
 			goto fail;
 		}
 
 		keyword_t kw = KW_NONE;
 
 		if (!parse_kw(t->t_str, &kw)) {
-			bunyan_error(ic->ic_log, "Unknown keyword",
-			    BUNYAN_T_STRING, "keyword", t->t_str,
-			    BUNYAN_T_UINT32, "line", t->t_line,
-			    BUNYAN_T_UINT32, "col", t->t_col,
-			    BUNYAN_T_END);
+			tok_error(t, ic->ic_log,
+			    "Unknown configuration parameter", "parameter");
 			goto fail;
 		}
 
 		switch (kw) {
 		case KW_AUTH_METHOD:
-			if (seen_authmethod) {
-				bunyan_error(ic->ic_log, "Duplicate transform "
-				    "parameter",
-				    BUNYAN_T_STRING, "parameter", targ->t_str,
-				    BUNYAN_T_UINT32, "line", targ->t_line,
-				    BUNYAN_T_UINT32, "col", targ->t_col,
-				    BUNYAN_T_END);
-				goto fail;
-			}
+			if (seen_authmethod)
+				goto duplicate;
 			if (!parse_auth(targ->t_str, &xf->xf_authtype)) {
-				bunyan_error(ic->ic_log,
-				    "Invalid authentication method",
-				    BUNYAN_T_STRING, "method", targ->t_str,
-				    BUNYAN_T_UINT32, "line", targ->t_line,
-				    BUNYAN_T_UINT32, "col", targ->t_col,
-				    BUNYAN_T_END);
+				tok_error(targ, ic->ic_log,
+				    "Unknown authentication method",
+				    "authmethod");
 				goto fail;
 			}
 			seen_authmethod = B_TRUE;
 			break;
 		case KW_OAKLEY_GROUP:
-			if (seen_dh) {
-				bunyan_error(ic->ic_log, "Duplicate transform "
-				    "parameter",
-				    BUNYAN_T_STRING, "parameter", targ->t_str,
-				    BUNYAN_T_UINT32, "line", targ->t_line,
-				    BUNYAN_T_UINT32, "col", targ->t_col,
-				    BUNYAN_T_END);
-				goto fail;
-			}
+			if (seen_dh)
+				goto duplicate;
 			if (!parse_int(targ->t_str, &val)) {
-				bunyan_error(ic->ic_log,
-				    "Invalid oakley (DH) group",
-				    BUNYAN_T_STRING, "group", targ->t_str,
-				    BUNYAN_T_UINT32, "line", targ->t_line,
-				    BUNYAN_T_UINT32, "col", targ->t_col,
-				    BUNYAN_T_END);
+				tok_error(targ, ic->ic_log,
+				    "Unknown oakley (DH) group",
+				    "group");
 				goto fail;
 			}
 			/* XXX: Should have a way to validate the value */
@@ -614,48 +619,51 @@ parse_xform(input_cursor_t *restrict ic, config_xf_t **restrict xfp)
 			xf->xf_dh = (ikev2_dh_t)val;
 			break;
 		case KW_AUTH_ALG:
-			if (seen_authalg) {
-				bunyan_error(ic->ic_log,
-				    "Duplicate authentication algorithm",
-				    BUNYAN_T_STRING, "parameter", targ->t_str,
-				    BUNYAN_T_UINT32, "line", targ->t_line,
-				    BUNYAN_T_UINT32, "col", targ->t_col,
-				    BUNYAN_T_END);
-				goto fail;
-			}
+			if (seen_authalg)
+				goto duplicate;
 			if (!parse_authalg(targ->t_str, &xf->xf_auth)) {
-				bunyan_error(ic->ic_log,
+				tok_error(targ, ic->ic_log,
 				    "Unknown authentication algorithm",
-				    BUNYAN_T_STRING, "algorithm", targ->t_str,
-				    BUNYAN_T_UINT32, "line", targ->t_line,
-				    BUNYAN_T_UINT32, "col", targ->t_col,
-				    BUNYAN_T_END);
+				    "algorithm");
 				goto fail;
 			}
 			seen_authalg = B_TRUE;
 			break;
 		case KW_ENCR_ALG:
-			if (seen_encralg) {
-				bunyan_error(ic->ic_log,
-				    "Duplicate authentication algorithm",
-				    BUNYAN_T_STRING, "parameter", targ->t_str,
-				    BUNYAN_T_UINT32, "line", targ->t_line,
-				    BUNYAN_T_UINT32, "col", targ->t_col,
-				    BUNYAN_T_END);
-				goto fail;
-			}
+			if (seen_encralg)
+				goto duplicate;
 			if (!parse_encralg(targ->t_str, &xf->xf_encr)) {
-				bunyan_error(ic->ic_log, "Unknown encryption "
-				    "algorithm",
-				    BUNYAN_T_STRING, "algorithm", targ->t_str,
-				    BUNYAN_T_UINT32, "line", targ->t_line,
-				    BUNYAN_T_UINT32, "col", targ->t_col,
-				    BUNYAN_T_END);
+				tok_error(targ, ic->ic_log,
+				    "Unknown encryption algorithm",
+				    "algorithm");
 				goto fail;
 			}
 			seen_encralg = B_TRUE;
 			if (!parse_encrbits(ic, xf))
 				goto fail;
+			break;
+		case KW_P1_LIFETIME_SECS:
+			if (seen_lifetime_secs)
+				goto duplicate;
+			if (!parse_int(targ->t_str, &val)) {
+				tok_error(targ, ic->ic_log, "Invalid value",
+				    "value");
+				goto fail;
+			}
+			xf->xf_lifetime_secs = (uint32_t)val;
+			seen_lifetime_secs = B_TRUE;
+			break;
+		case KW_P1_NONCE_LEN: /*xf_nonce_len*/
+			if (seen_nonce_len)
+				goto duplicate;
+			if (!parse_int(targ->t_str, &val)) {
+				tok_error(targ, ic->ic_log, "Invalid value",
+				    "value");
+				goto fail;
+			}
+			/* XXX: validate length */
+			xf->xf_nonce_len = (uint32_t)val;
+			seen_nonce_len = B_TRUE;
 			break;
 		default:
 			bunyan_error(ic->ic_log, "Parameter keyword not "
@@ -672,6 +680,10 @@ parse_xform(input_cursor_t *restrict ic, config_xf_t **restrict xfp)
 	}
 	*xfp = xf;
 	return (B_TRUE);
+
+duplicate:
+	tok_error(t, ic->ic_log, "Duplicate configuration parameter",
+	    "parameter");
 
 fail:
 	tok_free(t);
@@ -783,7 +795,8 @@ truncated:
 }
 
 static boolean_t
-parse_rule(input_cursor_t *restrict ic, config_rule_t **restrict rulep)
+parse_rule(input_cursor_t *restrict ic, const token_t *start,
+    config_rule_t **restrict rulep)
 {
 	token_t *t = NULL, *targ = NULL;
 	config_rule_t *rule = NULL;
@@ -885,6 +898,7 @@ parse_rule(input_cursor_t *restrict ic, config_rule_t **restrict rulep)
 			seen_local_id = B_TRUE;
 			break;
 		case KW_REMOTE_ID:
+			/* XXX: allow multiple remote ids */
 			/* See KW_LOCAL_ID above */
 			if (seen_remote_id)
 				break;
@@ -923,7 +937,19 @@ parse_rule(input_cursor_t *restrict ic, config_rule_t **restrict rulep)
 		goto fail;
 	}
 
-	/* TODO: more validation of the values */
+	/* Try to show as many errors as we can */
+	if (!seen_label)
+		tok_error(t, ic->ic_log, "Rule is missing a required label",
+		    NULL);
+	if (!seen_local_addr)
+		tok_error(t, ic->ic_log,
+		    "Rule is missing a required local address", NULL);
+	if (!seen_remote_addr)
+		tok_error(t, ic->ic_log,
+		    "Rule is missing a required remote address", NULL);
+
+	if (!seen_label || !seen_local_addr || !seen_remote_addr)
+		goto fail;
 
 	tok_free(t);
 	tok_free(targ);
@@ -1200,11 +1226,19 @@ tok_log(token_t *restrict t, bunyan_logger_t *restrict blog,
 	VERIFY3P(linecpy, !=, NULL);
 	(void) strlcpy(linecpy, t->t_linep, len);
 
-	getlog(level)(blog, msg, BUNYAN_T_STRING, strname, t->t_str,
-	    BUNYAN_T_STRING, "line", linecpy,
-	    BUNYAN_T_UINT32, "lineno", t->t_line,
-	    BUNYAN_T_UINT32, "col", t->t_col);
-
+	if (strname != NULL) {
+		getlog(level)(blog, msg, BUNYAN_T_STRING, strname, t->t_str,
+		    BUNYAN_T_STRING, "line", linecpy,
+		    BUNYAN_T_UINT32, "lineno", t->t_line,
+		    BUNYAN_T_UINT32, "col", t->t_col,
+		    BUNYAN_T_END);
+	} else {
+		getlog(level)(blog, msg,
+		    BUNYAN_T_STRING, "line", linecpy,
+		    BUNYAN_T_UINT32, "lineno", t->t_line,
+		    BUNYAN_T_UINT32, "col", t->t_col,
+		    BUNYAN_T_END);
+	}
 	free(linecpy);
 }
 
@@ -1535,6 +1569,7 @@ add_xf(void *restrict ptr, config_xf_t *restrict xf, boolean_t ptr_is_rule)
 static void
 add_rule(config_t *restrict cfg, config_rule_t *restrict rule)
 {
+	/* TODO: validate label value is unique */
 	size_t nrules = 0;
 
 	while (nrules < cfg->cfg_rules_alloc && cfg->cfg_rules[nrules] != NULL)
@@ -1555,6 +1590,7 @@ add_rule(config_t *restrict cfg, config_rule_t *restrict rule)
 		cfg->cfg_rules_alloc = newalloc;
 	}
 
+	rule->rule_config = cfg;
 	cfg->cfg_rules[nrules++] = rule;
 	cfg->cfg_rules[nrules] = NULL;
 }

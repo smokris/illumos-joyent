@@ -22,6 +22,9 @@
 pthread_rwlock_t cfg_lock = PTHREAD_RWLOCK_INITIALIZER;
 config_t *config;
 
+static boolean_t cfg_addr_match(const sockaddr_u_t *restrict,
+    const config_addr_t *restrict);
+
 config_t *
 config_get(void)
 {
@@ -47,6 +50,95 @@ config_xf_log(bunyan_logger_t *b, bunyan_level_t level, const char *msg,
 	    ikev2_auth_type_str(xf->xf_authtype),
 	    BUNYAN_T_STRING, "xf_dh", ikev2_dh_str(xf->xf_dh),
 	    BUNYAN_T_END);
+}
+
+/*
+ * Return the first rule that matches the given local and remote addresses.
+ * If no rule matches, NULL is returned.  The config_t instance that holds
+ * the given rule is refheld.
+ */
+config_rule_t *
+config_get_rule(sockaddr_u_t *restrict local, sockaddr_u_t *restrict remote)
+{
+	config_t *cfg = config_get();
+
+	for (size_t i = 0; cfg->cfg_rules[i] != NULL; i++) {
+		config_rule_t *rule = cfg->cfg_rules[i];
+		boolean_t local_match = B_FALSE;
+		boolean_t remote_match = B_FALSE;
+
+		for (size_t j = 0; j < rule->rule_nlocal_addr; j++) {
+			if (cfg_addr_match(local, &rule->rule_local_addr[j])) {
+				local_match = B_TRUE;
+				break;
+			}
+		}
+		for (size_t j = 0; j < rule->rule_nremote_addr; j++) {
+			if (cfg_addr_match(remote,
+			    &rule->rule_remote_addr[j])) {
+				remote_match = B_TRUE;
+				break;
+			}
+		}
+		if (local_match && remote_match)
+			return (rule);
+	}
+
+	CONFIG_REFRELE(cfg);
+	return (NULL);
+}
+
+static boolean_t
+cfg_addr_match(const sockaddr_u_t *restrict l, const config_addr_t *restrict r)
+{
+	uint32_t mask;
+
+	switch (r->cfa_type) {
+	case CFG_ADDR_IPV4:
+		if (l->sau_ss->ss_family != AF_INET)
+			return (B_FALSE);
+		if (l->sau_sin->sin_addr.s_addr != r->cfa_startu.cfa_ip4)
+			return (B_FALSE);
+		return (B_TRUE);
+	case CFG_ADDR_IPV4_PREFIX:
+		/* XXX: this needs testing */
+		if (l->sau_ss->ss_family != AF_INET)
+			return (B_FALSE);
+		mask = (0xffffffff << (32 - r->cfa_endu.cfa_num)) &
+		    0xffffffff;
+		if ((l->sau_sin->sin_addr.s_addr & mask) ==
+		    (r->cfa_startu.cfa_ip4 &mask))
+			return (B_TRUE);
+		return (B_FALSE);
+		break;
+	case CFG_ADDR_IPV4_RANGE:
+		if (l->sau_ss->ss_family != AF_INET)
+			return (B_FALSE);
+		if (l->sau_sin->sin_addr.s_addr >= r->cfa_startu.cfa_ip4 &&
+		    l->sau_sin->sin_addr.s_addr <= r->cfa_endu.cfa_ip4)
+			return (B_TRUE);
+		return (B_FALSE);
+	case CFG_ADDR_IPV6:
+		if (l->sau_ss->ss_family != AF_INET6)
+			return (B_FALSE);
+		if (IN6_ARE_ADDR_EQUAL(&l->sau_sin6->sin6_addr,
+		    &r->cfa_startu.cfa_ip6))
+			return (B_TRUE);
+		return (B_FALSE);
+	case CFG_ADDR_IPV6_PREFIX:
+		if (l->sau_ss->ss_family != AF_INET6)
+			return (B_FALSE);
+		if (IN6_ARE_PREFIXEDADDR_EQUAL(&l->sau_sin6->sin6_addr,
+		    &r->cfa_startu.cfa_ip6, r->cfa_endu.cfa_num))
+			return (B_TRUE);
+		return (B_FALSE);
+		break;
+	case CFG_ADDR_IPV6_RANGE:
+		if (l->sau_ss->ss_family != AF_INET6)
+			return (B_FALSE);
+		/* XXX: todo */
+	}
+	return (B_FALSE);
 }
 
 void
