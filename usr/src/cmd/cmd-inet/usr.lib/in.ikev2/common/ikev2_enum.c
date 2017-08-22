@@ -211,3 +211,9 @@ ikev2_dh_str(ikev2_dh_t id)
 	}
 	return ("UNKNOWN");
 }
+
+const char *
+ikev2_notify_str(ikev2_notify_type_t id)
+{
+	return ("UNKNOWN");
+}

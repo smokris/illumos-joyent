@@ -32,7 +32,7 @@ config_get(void)
 
 	PTH(pthread_rwlock_rdlock(&cfg_lock));
 	cfg = config;
-	atomic_inc_32(&cfg->cfg_refcnt);
+	CONFIG_REFHOLD(cfg);
 	PTH(pthread_rwlock_unlock(&cfg_lock));
 	return (cfg);
 }
@@ -110,7 +110,6 @@ cfg_addr_match(const sockaddr_u_t *restrict l, const config_addr_t *restrict r)
 		    (r->cfa_startu.cfa_ip4 &mask))
 			return (B_TRUE);
 		return (B_FALSE);
-		break;
 	case CFG_ADDR_IPV4_RANGE:
 		if (l->sau_ss->ss_family != AF_INET)
 			return (B_FALSE);
@@ -132,11 +131,17 @@ cfg_addr_match(const sockaddr_u_t *restrict l, const config_addr_t *restrict r)
 		    &r->cfa_startu.cfa_ip6, r->cfa_endu.cfa_num))
 			return (B_TRUE);
 		return (B_FALSE);
-		break;
 	case CFG_ADDR_IPV6_RANGE:
 		if (l->sau_ss->ss_family != AF_INET6)
 			return (B_FALSE);
-		/* XXX: todo */
+		for (size_t i = 0; i < 16; i++) {
+			if ((l->sau_sin6->sin6_addr.s6_addr[i] <
+			    r->cfa_startu.cfa_ip6.s6_addr[i]) ||
+			    (l->sau_sin6->sin6_addr.s6_addr[i] >
+			    r->cfa_endu.cfa_ip6.s6_addr[i]))
+				return (B_FALSE);
+		}
+		return (B_TRUE);
 	}
 	return (B_FALSE);
 }

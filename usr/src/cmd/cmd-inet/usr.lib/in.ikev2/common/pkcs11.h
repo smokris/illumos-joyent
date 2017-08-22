@@ -32,6 +32,7 @@
 
 #include <sys/types.h>
 #include <security/cryptoki.h>
+#include <bunyan.h>
 #include "defs.h"
 #include "ikev2.h"
 #include "buf.h"
@@ -39,30 +40,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-typedef struct {
-	ikev2_xf_encr_t		i2_encr;
-	CK_MECHANISM_TYPE	p11_encr;
-	size_t			block_sz;
-	size_t			iv_len;
-	size_t			key_min;
-	size_t			key_max;
-	size_t			key_default;
-	size_t			key_incr;
-} encr_param_t;
-#define	KEYLEN_REQ(ep)		((ep)->key_default == 0)
-#define	KEYLEN_EMPTY(ep)	((ep)->key_incr == 0)
-#define	KEYLEN_OK(ep, len)	((len) >= (ep)->key_min && \
-	(len) <= (ep)->key_max && \
-	((a)->key_incr == 0 || (len) % (a)->key_incr == 0))
-
-typedef struct {
-	ikev2_xf_auth_t		i2_auth;
-	CK_MECHANISM_TYPE	p11_auth;
-	size_t			output_sz;
-	size_t			trunc_sz;
-	size_t			key_sz;
-} auth_param_t;
 
 #define	PKCS11ERR(_lvl, _log, _p11f, _rv, ...)				\
 	(void) bunyan_##_lvl((_log), "PKCS#11 call failed",		\
@@ -88,8 +65,8 @@ void pkcs11_init(void);
 void pkcs11_fini(void);
 
 boolean_t pkcs11_digest(CK_MECHANISM_TYPE, const buf_t *restrict, size_t,
-    buf_t *restrict, int);
-void pkcs11_destroy_obj(const char *, CK_OBJECT_HANDLE_PTR, int);
+    buf_t *restrict, bunyan_logger_t *);
+void pkcs11_destroy_obj(const char *, CK_OBJECT_HANDLE_PTR, bunyan_logger_t *);
 
 CK_MECHANISM_TYPE ikev2_encr_to_p11(ikev2_xf_encr_t);
 encr_modes_t ikev2_encr_mode(ikev2_xf_encr_t);
@@ -98,9 +75,6 @@ size_t ikev2_encr_iv_size(ikev2_xf_encr_t);
 
 CK_MECHANISM_TYPE ikev2_auth_to_p11(ikev2_xf_auth_t);
 size_t ikev2_auth_icv_size(ikev2_xf_encr_t, ikev2_xf_auth_t);
-
-encr_param_t *ikev2_get_encr_param(ikev2_xf_encr_t);
-auth_param_t *ikev2_get_auth_param(ikev2_xf_auth_t);
 
 #ifdef __cplusplus
 }

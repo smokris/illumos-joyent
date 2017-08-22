@@ -338,7 +338,7 @@ ikev2_sa_free(ikev2_sa_t *i2sa)
 	pkt_free(i2sa->last_sent);
 	pkt_free(i2sa->last_recvd);
 
-#define	DESTROY(x, y) pkcs11_destroy_obj(#y, &(x)->y, D_OP)
+#define	DESTROY(x, y) pkcs11_destroy_obj(#y, &(x)->y, i2sa->i2sa_log)
 	DESTROY(i2sa, dh_pubkey);
 	DESTROY(i2sa, dh_privkey);
 	DESTROY(i2sa, dh_key);

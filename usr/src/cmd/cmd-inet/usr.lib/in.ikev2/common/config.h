@@ -88,9 +88,9 @@ typedef struct config_xf_s {
 	size_t			xf_nonce_len;
 } config_xf_t;
 
-struct config;
+struct config_s;
 typedef struct config_rule_s {
-	struct config		*rule_config;
+	struct config_s		*rule_config;
 	char			*rule_label;
 	config_auth_id_t	rule_local_id_type;
 	config_addr_t		*rule_local_addr;
@@ -105,7 +105,7 @@ typedef struct config_rule_s {
 	char			*rule_remote_id;
 } config_rule_t;
 
-struct config {
+struct config_s {
 	volatile uint32_t	cfg_refcnt;
 	config_rule_t		**cfg_rules;
 	size_t			cfg_rules_alloc;
@@ -134,7 +134,8 @@ struct config {
 	size_t			cfg_p2_softlife_kb;
 	size_t			cfg_p2_nonce_len;
 };
-typedef struct config config_t;
+typedef struct config_s config_t;
+#define	CONFIG_REFHOLD(cp) (void)atomic_inc_32(&(cp)->cfg_refcnt)
 #define	CONFIG_REFRELE(cp) \
 	(void) ((atomic_dec_32_nv(&(cp)->cfg_refcnt) != 0) || \
 	    (cfg_free(cp), 0))

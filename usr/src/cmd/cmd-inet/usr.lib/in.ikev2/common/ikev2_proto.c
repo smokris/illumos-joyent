@@ -336,9 +336,25 @@ ikev2_inbound(pkt_t *pkt)
 	if (ikev2_discard_pkt(pkt))
 		return;
 
-	/* XXX: dispatch based on exchange */
-
-	ikev2_pkt_free(pkt);
+	switch (pkt->pkt_header.exch_type) {
+	case IKEV2_EXCH_IKE_SA_INIT:
+		ikev2_sa_init_inbound(pkt);
+		break;
+	case IKEV2_EXCH_IKE_AUTH:
+	case IKEV2_EXCH_CREATE_CHILD_SA:
+	case IKEV2_EXCH_INFORMATIONAL:
+	case IKEV2_EXCH_IKE_SESSION_RESUME:
+		/* TODO */
+		bunyan_info(pkt->pkt_sa->i2sa_log,
+		    "Exchange not implemented yet", BUNYAN_T_END);
+		ikev2_pkt_free(pkt);
+		break;
+	default:
+		bunyan_error(pkt->pkt_sa->i2sa_log, "Unknown IKEV2 exchange",
+		    BUNYAN_T_UINT32, "exchange",
+		    (uint32_t)pkt->pkt_header.exch_type, BUNYAN_T_END);
+		ikev2_pkt_free(pkt);
+	}
 }
 
 static int
