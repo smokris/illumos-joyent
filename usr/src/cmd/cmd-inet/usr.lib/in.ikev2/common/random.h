@@ -21,11 +21,10 @@ extern "C" {
 #endif
 
 #include <inttypes.h>
-#include "buf.h"
 
 extern void random_init(void);
-extern void random_high(buf_t *);
-extern void random_low(buf_t *);
+extern void random_high(void *, size_t);
+extern void random_low(void *, size_t);
 extern uint64_t random_high_64(void);
 extern uint64_t random_low_64(void);
 

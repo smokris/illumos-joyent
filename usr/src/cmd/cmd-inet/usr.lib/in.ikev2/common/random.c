@@ -23,7 +23,8 @@
  * Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
  *
- * Copyright 2014 Jason King.
+ * Copyright 2017 Jason King.
+ * Copyright (c) 2017 Joyent, Inc.
  */
 
 #include <sys/types.h>
@@ -33,15 +34,12 @@
 #include <string.h>
 #include <locale.h>
 #include <ipsec_util.h>
-#include "buf.h"
+#include "random.h"
 #include "defs.h"
 
 /* Start off with invalid values until init */
 static int low_random = -1;
 static int high_random = -1;
-
-static void random_high_impl(void *, size_t);
-static void random_low_impl(void *, size_t);
 
 void
 random_init(void)
@@ -58,7 +56,7 @@ random_high_64(void)
 {
 	uint64_t rc;
 
-	random_high_impl(&rc, sizeof (rc));
+	random_high(&rc, sizeof (rc));
 	return (rc);
 }
 
@@ -67,12 +65,12 @@ random_low_64(void)
 {
 	uint64_t rc;
 
-	random_low_impl(&rc, sizeof (rc));
+	random_low(&rc, sizeof (rc));
 	return (rc);
 }
 
 void
-random_high_impl(void *buf, size_t nbytes)
+random_high(void *buf, size_t nbytes)
 {
 	ssize_t rc;
 
@@ -86,14 +84,7 @@ random_high_impl(void *buf, size_t nbytes)
 }
 
 void
-random_high(buf_t *buf)
-{
-	buf_reset(buf);
-	random_high_impl(buf->b_buf, buf->b_len);
-}
-
-static void
-random_low_impl(void *buf, size_t nbytes)
+random_low(void *buf, size_t nbytes)
 {
 	ssize_t rc;
 
@@ -104,13 +95,6 @@ random_low_impl(void *buf, size_t nbytes)
 		errx(EXIT_FAILURE, "/dev/urandom read insufficient bytes, "
 		    "%zd instead of %zu.", rc, nbytes);
 	}
-}
-
-void
-random_low(buf_t *buf)
-{
-	buf_reset(buf);
-	random_low_impl(buf->b_ptr, buf->b_len);
 }
 
 extern uint32_t random_high_32(void);

@@ -35,7 +35,9 @@
 #include "ikev2.h"
 #include "ikev2_sa.h"
 #include "ikev2_pkt.h"
+#include "ikev2_enum.h"
 #include "pkcs11.h"
+#include "random.h"
 
 #define	PKT_IS_V2(p) \
 	(IKE_GET_MAJORV((p)->header.version) == IKE_GET_MAJORV(IKEV2_VERSION))
@@ -633,19 +635,20 @@ ikev2_add_auth(pkt_t *restrict pkt, ikev2_auth_type_t auth_method,
 }
 
 boolean_t
-ikev2_add_nonce(pkt_t *restrict pkt, const uchar_t *restrict nonce, size_t len)
+ikev2_add_nonce(pkt_t *restrict pkt, size_t len)
 {
 	if (pkt_write_left(pkt) < sizeof (ikev2_payload_t) + len)
 		return (B_FALSE);
 
 	ikev2_add_payload(pkt, IKEV2_PAYLOAD_NONCE, B_FALSE);
-	PKT_APPEND_DATA(pkt, nonce, len);
+	random_high(pkt->pkt_ptr, len);
+	pkt->pkt_ptr += len;
 	return (B_TRUE);
 }
 
 boolean_t
 ikev2_add_notify(pkt_t *restrict pkt, ikev2_spi_proto_t proto, size_t spisize,
-    ikev2_notify_type_t ntfy_type, uint64_t spi, const uchar_t *restrict data,
+    ikev2_notify_type_t ntfy_type, uint64_t spi, const void *restrict data,
     size_t len)
 {
 	ikev2_notify_t ntfy = { 0 };
@@ -728,7 +731,7 @@ delete_finish(pkt_t *restrict pkt, uchar_t *restrict buf, uintptr_t swaparg,
 }
 
 boolean_t
-ikev2_add_vendor(pkt_t *restrict pkt, const uchar_t *restrict vid, size_t len)
+ikev2_add_vendor(pkt_t *restrict pkt, const void *restrict vid, size_t len)
 {
 	if (pkt_write_left(pkt) < sizeof (ikev2_payload_t) + len)
 		return (B_FALSE);
@@ -1336,4 +1339,50 @@ ikev2_add_config_attr(pkt_t *restrict pkt,
 {
 	return (B_FALSE);
 	/* TODO */
+}
+
+char *
+ikev2_pkt_desc(pkt_t *pkt)
+{
+	char *s = NULL;
+	size_t len = 0;
+	uint16_t i;
+	uint16_t j;
+
+	for (i = j = 0; i < pkt->pkt_payload_count; i++) {
+		pkt_payload_t *pay = pkt_payload(pkt, i);
+		const char *paystr =
+		    ikev2_pay_short_str((ikev2_pay_type_t)pay->pp_type);
+
+		len += strlen(paystr) + 1;
+		if (pay->pp_type == IKEV2_PAYLOAD_NOTIFY) {
+			pkt_notify_t *n = pkt_notify(pkt, j++);
+			const char *nstr =
+			    ikev2_notify_str((ikev2_notify_type_t)n->pn_type);
+
+			len += strlen(nstr) + 2;
+		}
+	}
+
+	s = calloc(1, len);
+	VERIFY3P(s, !=, len);
+
+	for (i = j = 0; i <pkt->pkt_payload_count; i++) {
+		pkt_payload_t *pay = pkt_payload(pkt, i);
+		const char *paystr =
+		    ikev2_pay_short_str((ikev2_pay_type_t)pay->pp_type);
+
+		(void) strlcat(s, paystr, len);
+		if (pay->pp_type == IKEV2_PAYLOAD_NOTIFY) {
+			pkt_notify_t *n = pkt_notify(pkt, j++);
+			const char *nstr =
+			    ikev2_notify_str((ikev2_notify_type_t)n->pn_type);
+
+			(void) strlcat(s, "(", len);
+			(void) strlcat(s, nstr, len);
+			(void) strlcat(s, ")", len);
+		}
+	}
+
+	return (s);
 }

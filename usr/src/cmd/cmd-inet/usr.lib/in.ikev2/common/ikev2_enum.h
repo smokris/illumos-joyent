@@ -24,6 +24,7 @@ extern "C" {
 
 const char *ikev2_exch_str(ikev2_exch_t);
 const char *ikev2_pay_str(ikev2_pay_type_t);
+const char *ikev2_pay_short_str(ikev2_pay_type_t);
 const char *ikev2_spi_str(ikev2_spi_proto_t);
 const char *ikev2_xf_type_str(ikev2_xf_type_t);
 const char *ikev2_xf_encr_str(ikev2_xf_encr_t);
