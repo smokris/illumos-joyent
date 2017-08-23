@@ -30,6 +30,7 @@
 #include <sys/debug.h>
 #include <note.h>
 #include <err.h>
+#include <limits.h>
 #include "ikev1.h"
 #include "ikev2.h"
 #include "ikev2_sa.h"
@@ -382,7 +383,7 @@ pkt_add_xform(pkt_t *pkt, uint8_t xftype, uint8_t xfid)
 	pkt_stack_push(pkt, PSI_XFORM, pkt_xform_finish,
 	    (uintptr_t)IKE_XFORM_MORE);
 
-	ASSERT3U(xfid, <, USHORT_MAX);
+	ASSERT3U(xfid, <, USHRT_MAX);
 
 	/* mostly for completeness */
 	xf.xf_more = IKE_XFORM_NONE;
@@ -491,6 +492,47 @@ pkt_hdr_hton(ike_header_t *restrict dest,
 	dest->exch_type = src->exch_type;
 	dest->flags = src->flags;
 	dest->version = src->version;
+}
+
+/*
+ * Move all the payloads over amt to insert a payload at the front of the
+ * packet.  Currently used for IKEV2 cookies.
+ */
+boolean_t
+pkt_pay_shift(pkt_t *pkt, uint8_t type, size_t num, ssize_t amt)
+{
+	uchar_t *start = pkt_start(pkt) + sizeof (ike_header_t);
+	pkt_payload_t *pay = NULL;
+
+	if (pkt_write_left(pkt) < amt)
+		return (B_FALSE);
+	if (!pkt_size_index(pkt, pkt->pkt_payload_count + num,
+	    pkt->pkt_notify_count))
+		return (B_FALSE);
+
+	(void) memmove(start + amt, start, (size_t)(pkt->pkt_ptr - start));
+	pkt->pkt_ptr += amt;
+
+	for (uint16_t i = 0; i < pkt->pkt_payload_count; i++) {
+		pay = pkt_payload(pkt, pkt->pkt_payload_count - i);
+		pay[0] = pay[-1];
+		pay[0].pp_ptr += amt;
+	}
+	pay[-1].pp_type = type;
+	pay[-1].pp_len = amt;
+
+	ike_header_t *hdr = (ike_header_t *)&pkt->pkt_raw;
+	ike_payload_t pld = {
+	    .pay_next = pkt->pkt_header.next_payload,
+	    .pay_length = htons((uint16_t)amt)
+	};
+
+	/* Keep the two in sync for sanity's sake */
+	pkt->pkt_header.next_payload = hdr->next_payload = type;
+
+	(void) memcpy(start, &pld, sizeof (pld));
+	pkt->pkt_ptr += amt;
+	return (B_TRUE);
 }
 
 /*
@@ -811,6 +853,90 @@ pkt_payload_walk(uchar_t *restrict data, size_t len, pkt_walk_fn_t cb,
 	}
 
 	return ((ret != PKT_WALK_OK) ? PKT_WALK_ERROR : PKT_WALK_OK);
+}
+
+static size_t
+pay_to_idx(pkt_t *pkt, pkt_payload_t *pay)
+{
+	if (pay == NULL)
+		return (0);
+
+	size_t idx = 0;
+	if (pay >= pkt->pkt_payloads &&
+	    pay < &pkt->pkt_payloads[PKT_PAYLOAD_NUM]) {
+		idx = (size_t)(pay - pkt->pkt_payloads);
+		VERIFY3U(idx, <, pkt->pkt_payload_count);
+		return (idx);
+	}
+
+	VERIFY3P(pay, >=, pkt->pkt_payload_extra);
+	VERIFY3P(pay, <, pkt->pkt_payload_extra + pkt->pkt_payload_count -
+	    PKT_PAYLOAD_NUM);
+	idx = (size_t)(pay - pkt->pkt_payload_extra);
+	return (idx);
+}
+
+pkt_payload_t *
+pkt_get_payload(pkt_t *pkt, int type, pkt_payload_t *start)
+{
+	size_t idx = pay_to_idx(pkt, start);
+
+	VERIFY3S(type, >=, 0);
+	VERIFY3S(type, <, 0xff);
+
+	if (start != NULL)
+		idx++;
+
+	for (size_t i = idx; i < pkt->pkt_payload_count; i++) {
+		pkt_payload_t *pay = pkt_payload(pkt, i);
+
+		if (pay->pp_type == (uint8_t)type)
+			return (pay);
+	}
+	return (NULL);
+}
+
+static size_t
+notify_to_idx(pkt_t *pkt, pkt_notify_t *n)
+{
+	if (n == NULL)
+		return (0);
+
+	size_t idx = 0;
+
+	if (n >= pkt->pkt_notify &&
+	    n < &pkt->pkt_notify[PKT_NOTIFY_NUM]) {
+		idx = (size_t)(n - pkt->pkt_notify);
+		VERIFY3U(idx, <, pkt->pkt_notify_count);
+		return (idx);
+	}
+
+	VERIFY3P(n, >=, pkt->pkt_notify_extra);
+	VERIFY3P(n, <, pkt->pkt_notify_extra + pkt->pkt_notify_count -
+	    PKT_NOTIFY_NUM);
+
+	idx = (size_t)(n - pkt->pkt_notify_extra);
+	return (idx);
+}
+
+pkt_notify_t *
+pkt_get_notify(pkt_t *pkt, int type, pkt_notify_t *start)
+{
+	size_t idx = notify_to_idx(pkt, start);
+
+	VERIFY3S(type, >=, 0);
+	VERIFY3S(type, <=, USHRT_MAX);
+
+	if (start != NULL)
+		idx++;
+
+	for (size_t i = idx; i < pkt->pkt_notify_count; i++) {
+		pkt_notify_t *n = pkt_notify(pkt, i);
+
+		if (n->pn_type == (uint16_t)type)
+			return (n);
+	}
+	return (NULL);
 }
 
 static int

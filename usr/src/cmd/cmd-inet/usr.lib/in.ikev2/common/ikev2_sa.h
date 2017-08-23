@@ -60,7 +60,6 @@ typedef struct ikev2_child_sa ikev2_child_sa_t;
 typedef struct i2sa_bucket i2sa_bucket_t;
 #endif /* IKEV2_SA_T */
 
-struct config_s;
 struct config_rule_s;
 
 #define	I2SA_NUM_HASH	2	/* The number of IKEv2 SA hashes we have */
@@ -93,7 +92,6 @@ struct ikev2_sa {
 			/* Link to the bucket we are in for each hash */
 	i2sa_bucket_t	*bucket[I2SA_NUM_HASH];
 
-	struct config_s		*i2sa_cfg;
 	struct config_rule_s	*i2sa_rule;
 
 	uint64_t		i_spi;	  /* Initiator SPI. */

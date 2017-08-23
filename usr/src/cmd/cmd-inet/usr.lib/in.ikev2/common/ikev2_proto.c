@@ -177,7 +177,7 @@ ikev2_send(pkt_t *pkt, boolean_t is_error)
 	s = select_socket(i2sa, NULL);
 	len = sendfromto(s, PKT_PTR(pkt), pkt_len(pkt), &i2sa->laddr,
 	    &i2sa->raddr);
-	if (len == -1) {
+	if (len == -1 && pkt != i2sa->init) {
 		/*
 		 * If it failed, should we still save it and let
 		 * ikev2_retransmit attempt?  For now, no.
@@ -192,8 +192,16 @@ ikev2_send(pkt_t *pkt, boolean_t is_error)
 	PTH(pthread_mutex_lock(&i2sa->lock));
 	if (initiator) {
 		/* XXX: bump & save for error messages? */
-		PTH(pthread_mutex_lock(&i2sa->lock));
-		i2sa->outmsgid++;
+
+		/*
+		 * In a few instances (e.g. cookies) we explicitly re-send the
+		 * last packet instead of waiting for the retransmit timeout
+		 * to kick in.  In those instances, we don't want to bump
+		 * the message since it's not a new exchange.
+		 */
+		if (pkt != i2sa->last_sent)
+			i2sa->outmsgid++;
+
 		i2sa->last_sent = pkt;
 
 		if (!is_error) {
@@ -284,10 +292,22 @@ ikev2_discard_pkt(pkt_t *pkt)
 		}
 
 		/* A response to our last message */
-		VERIFY3S(cancel_timeout(TE_TRANSMIT, last, sa->i2sa_log),
-		    ==, 1);
-		sa->last_sent = NULL;
-		ikev2_pkt_free(last);
+		VERIFY3S(cancel_timeout(TE_TRANSMIT, last,
+		    sa->i2sa_log), ==, 1);
+
+		/*
+		 * Corner case: this isn't the actual response in the
+		 * IKE_SA_INIT exchange, but a request to either use
+		 * cookies or a different DH group.  In that case we don't
+		 * want to treat it like a response (ending the exchange).
+		 */
+		if (pkt->pkt_header.exch_type != IKEV2_EXCH_IKE_SA_INIT ||
+		    pkt->pkt_header.responder_spi != 0)
+			sa->last_sent = NULL;
+
+		/* Keep the initial packet for duration of IKE SA */
+		if (last != sa->init)
+			ikev2_pkt_free(last);
 		discard = B_FALSE;
 		goto done;
 	}
@@ -338,7 +358,10 @@ ikev2_inbound(pkt_t *pkt)
 
 	switch (pkt->pkt_header.exch_type) {
 	case IKEV2_EXCH_IKE_SA_INIT:
-		ikev2_sa_init_inbound(pkt);
+		if (pkt->pkt_header.flags & IKEV2_FLAG_INITIATOR)
+			ikev2_sa_init_inbound_init(pkt);
+		else
+			ikev2_sa_init_inbound_resp(pkt);
 		break;
 	case IKEV2_EXCH_IKE_AUTH:
 	case IKEV2_EXCH_CREATE_CHILD_SA:
@@ -370,4 +393,25 @@ select_socket(const ikev2_sa_t *i2sa, const struct sockaddr_storage *local)
 	if (i2sa != NULL && I2SA_IS_NAT(i2sa))
 		return (nattsock);
 	return (ikesock4);
+}
+
+void
+ikev2_no_proposal_chosen(ikev2_sa_t *restrict i2sa, const pkt_t *restrict src,
+    ikev2_spi_proto_t proto, uint64_t spi)
+{
+	pkt_t *resp = ikev2_pkt_new_response(src);
+
+	if (resp == NULL)
+		return;
+
+	if (!ikev2_add_notify(resp, proto, spi, IKEV2_N_NO_PROPOSAL_CHOSEN,
+	    NULL, 0)) {
+		ikev2_pkt_free(resp);
+		return;
+	}
+
+	/* Nothing can be done if send fails for this, so ignore return val */
+	(void) ikev2_send(resp, B_TRUE);
+
+	/* ikev2_send consumes packet, no need to free afterwards */
 }

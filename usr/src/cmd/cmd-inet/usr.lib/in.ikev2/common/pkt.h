@@ -190,6 +190,10 @@ void pkt_init(void);
 void pkt_fini(void);
 void pkt_free(pkt_t *);
 
+boolean_t pkt_pay_shift(pkt_t *, uint8_t, size_t, ssize_t);
+pkt_payload_t *pkt_get_payload(pkt_t *, int, pkt_payload_t *);
+pkt_notify_t *pkt_get_notify(pkt_t *, int, pkt_notify_t *);
+
 #ifdef __cplusplus
 }
 #endif

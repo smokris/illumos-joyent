@@ -107,6 +107,7 @@ typedef struct config_rule_s {
 
 struct config_s {
 	volatile uint32_t	cfg_refcnt;
+	config_rule_t		cfg_default;
 	config_rule_t		**cfg_rules;
 	size_t			cfg_rules_alloc;
 	config_xf_t		**cfg_xforms;
@@ -139,6 +140,7 @@ typedef struct config_s config_t;
 #define	CONFIG_REFRELE(cp) \
 	(void) ((atomic_dec_32_nv(&(cp)->cfg_refcnt) != 0) || \
 	    (cfg_free(cp), 0))
+#define	RULE_IS_DEFAULT(r) (!!(&(r)->rule_config->cfg_default == (r)))
 
 extern pthread_rwlock_t cfg_lock;
 extern config_t *config;

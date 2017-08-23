@@ -647,14 +647,30 @@ ikev2_add_nonce(pkt_t *restrict pkt, size_t len)
 }
 
 boolean_t
-ikev2_add_notify(pkt_t *restrict pkt, ikev2_spi_proto_t proto, size_t spisize,
-    ikev2_notify_type_t ntfy_type, uint64_t spi, const void *restrict data,
-    size_t len)
+ikev2_add_notify(pkt_t *restrict pkt, ikev2_spi_proto_t proto, uint64_t spi,
+    ikev2_notify_type_t ntfy_type, const void *restrict data, size_t len)
 {
 	ikev2_notify_t ntfy = { 0 };
+	size_t spisize = 0;
 
-	ASSERT(spisize == sizeof (uint32_t) || spisize == 0);
-	ASSERT3U(spi, <, 0x100000000ULL);
+	switch (proto) {
+	case IKEV2_PROTO_NONE:
+	case IKEV2_PROTO_FC_ESP_HEADER:
+	case IKEV2_PROTO_FC_CT_AUTH:
+		INVALID("proto");
+		/*NOTREACHED*/
+		return (B_FALSE);
+	case IKEV2_PROTO_IKE:
+		if (spi != 0)
+			spisize == sizeof (uint64_t);
+		break;
+	case IKEV2_PROTO_AH:
+	case IKEV2_PROTO_ESP:
+		spisize = sizeof (uint32_t);
+		VERIFY3U(spi, <=, UINT32_MAX);
+		VERIFY3U(spi, !=, 0);
+		break;
+	}
 
 	if (pkt_write_left(pkt) < sizeof (ikev2_payload_t) + sizeof (ntfy) +
 	    spisize + len)
@@ -670,7 +686,10 @@ ikev2_add_notify(pkt_t *restrict pkt, ikev2_spi_proto_t proto, size_t spisize,
 	case 0:
 		break;
 	case sizeof (uint32_t):
-		put32(pkt, (uint32_t)spi);
+		put32(pkt, htonl((uint32_t)spi));
+		break;
+	case sizeof (uint64_t):
+		put64(pkt, htonll(spi));
 		break;
 	default:
 		INVALID(spisize);

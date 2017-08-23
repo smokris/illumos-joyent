@@ -313,8 +313,8 @@ ikev2_sa_free(ikev2_sa_t *i2sa)
 
 	ASSERT(i2sa->refcnt == 0);
 
-	if (i2sa->i2sa_cfg != NULL)
-		CONFIG_REFRELE(i2sa->i2sa_cfg);
+	if (i2sa->i2sa_rule != NULL)
+		CONFIG_REFRELE(i2sa->i2sa_rule->rule_config);
 
 	/* All unauthenticated IKEv2 SAs are considered larval */
 	if (!(i2sa->flags & I2SA_AUTHENTICATED))
