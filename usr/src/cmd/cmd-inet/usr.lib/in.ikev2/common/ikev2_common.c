@@ -79,6 +79,13 @@ ikev2_sa_from_acquire(pkt_t *pkt, parsedmsg_t *pmsg, uint32_t spi,
 
 		if (dh != IKEV2_DH_NONE)
 			ok &= ikev2_add_xform(pkt, IKEV2_XF_DH, dh);
+
+		/*
+		 * XXX: RFC7296 isn't entirely clear if an ESN transform
+		 * is required for AH or ESP.  For now we'll always include
+		 * it (with a value of NO since we don't support ESNs yet).
+		 */
+		ok &= ikev2_add_xform(pkt, IKEV2_XF_ESN, IKEV2_ESN_NONE);
 	}
 
 	return (ok);
@@ -163,6 +170,9 @@ boolean_t
 ikev2_sa_match_rule(config_rule_t *restrict rule, pkt_t *restrict pkt,
     ikev2_sa_result_t *restrict result)
 {
+	pkt_payload_t *pay = pkt_get_payload(pkt, IKEV2_PAYLOAD_SA, NULL);
+
+	VERIFY3P(pay, !=, NULL);
 	/* TODO */
 	return (B_FALSE);
 }
@@ -179,7 +189,7 @@ ikev2_sa_match_acquire(parsedmsg_t *restrict pmsg, pkt_t *restrict pkt,
 sa_compare_xf_cb(ikev2_transform_t *xf, uint8_t *buf, size_t buflen,
     void *cookie)
 {
-	struct validate_data *data = cookie;
+	ikev2_sa_result_t *data = cookie;
 	boolean_t match = B_FALSE;
 
 	/* xf_id */

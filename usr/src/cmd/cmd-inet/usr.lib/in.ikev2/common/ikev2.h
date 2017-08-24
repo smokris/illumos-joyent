@@ -237,8 +237,10 @@ typedef enum ikev2_dh {
 } ikev2_dh_t;
 #define	IKEV2_DH_MAX			31
 
-#define	IKEV2_XFORMESN_NONE		0	/* No ESN */
-#define	IKEV2_XFORMESN_ESN		1	/* ESN */
+typedef enum ikev2_esn_e {
+	IKEV2_ESN_NONE = 0,
+	IKEV2_ESN_YES = 1
+} ikev2_esn_t;
 
 struct ikev2_attribute {
 	uint16_t	attr_type;	/* Attribute type */

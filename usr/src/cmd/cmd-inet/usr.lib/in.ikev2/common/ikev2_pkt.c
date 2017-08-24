@@ -262,6 +262,13 @@ discard:
 #undef HAS_NOTIFY
 }
 
+/*
+ * Slightly subtle point about the *_walk_* functions - they return B_FALSE
+ * on an error during the walk (mostly if payload lengths don't agree). The
+ * callback functions however return B_FALSE to terminate the walk early or
+ * B_TRUE to continue the walk.  Any error state that needs to propagate up
+ * from the walker callbacks needs to be sent through the cookie parameter
+ */
 boolean_t
 ikev2_walk_proposals(uint8_t *restrict start, size_t len,
     ikev2_prop_cb_t cb, void *restrict cookie,
@@ -1703,6 +1710,12 @@ ikev2_add_config_attr(pkt_t *restrict pkt,
 	/* TODO */
 }
 
+/*
+ * Create a abbreviated string listing the payload types (in order).
+ * Mostly for diagnostic purposes.
+ *
+ * Example: 'N(COOKIE), SA, KE, No'
+ */
 char *
 ikev2_pkt_desc(pkt_t *pkt)
 {
@@ -1716,7 +1729,7 @@ ikev2_pkt_desc(pkt_t *pkt)
 		const char *paystr =
 		    ikev2_pay_short_str((ikev2_pay_type_t)pay->pp_type);
 
-		len += strlen(paystr) + 1;
+		len += strlen(paystr) + 2; 
 		if (pay->pp_type == IKEV2_PAYLOAD_NOTIFY) {
 			pkt_notify_t *n = pkt_notify(pkt, j++);
 			const char *nstr =
@@ -1744,6 +1757,7 @@ ikev2_pkt_desc(pkt_t *pkt)
 			(void) strlcat(s, nstr, len);
 			(void) strlcat(s, ")", len);
 		}
+		(void) strlcat(s, ", ", len);
 	}
 
 	return (s);
