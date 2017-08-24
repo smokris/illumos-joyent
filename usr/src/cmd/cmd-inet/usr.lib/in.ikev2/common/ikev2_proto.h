@@ -24,20 +24,20 @@ extern "C" {
 #endif
 
 
-struct pkt;
-struct ikev2_sa;
+struct pkt_s;
+struct ikev2_sa_s;
 struct sockaddr_storage;
 
-void ikev2_dispatch(struct pkt *, const struct sockaddr_storage *,
+void ikev2_dispatch(struct pkt_s *, const struct sockaddr_storage *,
     const struct sockaddr_storage *);
-boolean_t ikev2_send(struct pkt *, boolean_t);
-void ikev2_inbound(struct pkt *);
+boolean_t ikev2_send(struct pkt_s *, boolean_t);
+void ikev2_inbound(struct pkt_s *);
 
-void ikev2_sa_init_inbound_init(struct pkt *);
-void ikev2_sa_init_inbound_resp(struct pkt *);
-void ikev2_sa_init_outbound(struct ikev2_sa *);
+void ikev2_sa_init_inbound_init(struct pkt_s *);
+void ikev2_sa_init_inbound_resp(struct pkt_s *);
+void ikev2_sa_init_outbound(struct ikev2_sa_s *);
 
-void ikev2_no_proposal_chosen(struct ikev2_sa *, const struct pkt *,
+void ikev2_no_proposal_chosen(struct ikev2_sa_s *, const struct pkt_s *,
     ikev2_spi_proto_t, uint64_t);
 
 #ifdef __cplusplus

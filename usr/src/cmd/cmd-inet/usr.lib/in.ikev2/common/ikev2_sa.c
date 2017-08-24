@@ -52,6 +52,7 @@
 #include "random.h"
 #include "worker.h"
 #include "config.h"
+#include "pkt.h"
 
 /* Our hashes */
 enum {

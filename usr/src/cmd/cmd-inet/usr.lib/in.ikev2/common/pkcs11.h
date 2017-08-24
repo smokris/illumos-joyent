@@ -56,6 +56,7 @@ typedef enum encr_mode {
 	MODE_CCM,
 	MODE_GCM
 } encr_modes_t;
+#define	MODE_IS_COMBINED(m) ((m) == MODE_CCM || (m) == MODE_GCM)
 
 extern CK_INFO pkcs11_info;
 extern CK_SESSION_HANDLE p11h;

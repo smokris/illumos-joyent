@@ -87,13 +87,13 @@ struct validate_data {
 	uint8_t		exch_type;
 };
 
-static pkt_walk_ret_t check_payload(uint8_t, uint8_t, uchar_t *restrict,
+static pkt_walk_ret_t check_payload(uint8_t, uint8_t, uint8_t *restrict,
     size_t, void *restrict);
 static boolean_t check_sa_init_payloads(boolean_t, const size_t *);
 
 /* Allocate a ikev2_pkt_t for an inbound datagram in raw */
 pkt_t *
-ikev2_pkt_new_inbound(uchar_t *buf, size_t buflen)
+ikev2_pkt_new_inbound(uint8_t *buf, size_t buflen)
 {
 	const ike_header_t	*hdr = NULL;
 	pkt_t			*pkt = NULL;
@@ -126,7 +126,7 @@ ikev2_pkt_new_inbound(uchar_t *buf, size_t buflen)
 	arg.exch_type = hdr->exch_type;
 	arg.initiator = !!(hdr->flags & IKEV2_FLAG_INITIATOR);
 
-	if (pkt_payload_walk((uchar_t *)(hdr + 1),
+	if (pkt_payload_walk((uint8_t *)(hdr + 1),
 	    buflen - sizeof (ike_header_t), check_payload, hdr->next_payload,
 	    &arg) != PKT_WALK_OK)
 		goto discard;
@@ -219,13 +219,174 @@ discard:
 #undef HAS_NOTIFY
 }
 
+boolean_t
+ikev2_walk_proposals(uint8_t *restrict start, size_t len,
+    ikev2_prop_cb_t cb, void *restrict cookie,
+    bunyan_logger_t *restrict l)
+{
+	uint8_t *ptr = start, *end = start + len;
+
+	while (ptr < end) {
+		ikev2_sa_proposal_t prop = { 0 };
+
+		if (ptr + sizeof (prop) > end) {
+			bunyan_error(l, "Proposal length mismatch",
+			    BUNYAN_T_END);
+			return (B_FALSE);
+		}
+
+		(void) memcpy(&prop, ptr, sizeof (prop));
+		prop.proto_length = ntohs(prop.proto_length);
+
+		if (ptr + prop.proto_length > end) {
+			bunyan_error(l, "Proposal overruns SA payload",
+			    BUNYAN_T_UINT32, "propnum",
+			    (uint32_t)prop.proto_proposalnr,
+			    BUNYAN_T_UINT32, "proplen",
+			    (uint32_t)prop.proto_length, BUNYAN_T_END);
+			return (B_FALSE);
+		}
+
+		if (ptr + prop.proto_length == end) {
+			if (prop.proto_more != IKEV2_PROP_LAST) {
+				bunyan_error(l, "Last proposal does not have "
+				    "IKEV2_PROP_LAST set", BUNYAN_T_END);
+				return (B_FALSE);
+			}
+		} else {
+			if (prop.proto_more != IKEV2_PROP_MORE) {
+				bunyan_error(l, "Non-last proposal does not "
+				    "have IKEV2_PROP_MORE set", BUNYAN_T_END);
+				return (B_FALSE);
+			}
+		}
+		ptr += sizeof (prop);
+
+		uint64_t spi = 0;
+		for (size_t i = 0; i < prop.proto_spisize; i++) {
+			uint64_t val = *ptr;
+			spi = (spi << 8) | (val & 0xffULL);
+			ptr++;
+		}
+
+		if (cb != NULL && !cb(&prop, spi, ptr,
+		    len - (size_t)(ptr - start), cookie))
+			return (B_TRUE);
+
+		ptr += prop.proto_length;
+	}
+	return (B_TRUE);
+}
+
+boolean_t
+ikev2_walk_xfs(uint8_t *restrict start, size_t len, ikev2_xf_cb_t cb,
+    void *restrict cookie, bunyan_logger_t *restrict l)
+{
+	uint8_t *ptr = start, *end = start + len;
+
+	while (ptr < end) {
+		ikev2_transform_t xf = { 0 };
+		uint8_t *attrp = NULL;
+		size_t attrlen = 0;
+
+		if (ptr + sizeof (xf) > end) {
+			bunyan_error(l, "Transform length mismatch",
+			    BUNYAN_T_END);
+			return (B_FALSE);
+		}
+
+		(void) memcpy(&xf, ptr, sizeof (xf));
+		xf.xf_length = ntohs(xf.xf_length);
+		xf.xf_id = ntohs(xf.xf_id);
+
+		if (ptr + xf.xf_length > end) {
+			bunyan_error(l, "Transform overruns SA payload",
+			    BUNYAN_T_END);
+			return (B_FALSE);
+		}
+
+		if (ptr + xf.xf_length == end) {
+			if (xf.xf_more != IKEV2_XF_LAST) {
+				bunyan_error(l, "Last transform does not have "
+				    "IKEV2_XF_LAST set", BUNYAN_T_END);
+				return (B_FALSE);
+			}
+		} else {
+			if (xf.xf_more != IKEV2_XF_MORE) {
+				bunyan_error(l, "Non-last transform does not "
+				    "have IKEV2_XF_MORE set", BUNYAN_T_END);
+				return (B_FALSE);
+			}
+		}
+
+		if (xf.xf_length > sizeof (xf)) {
+			attrp = ptr + sizeof (xf);
+			attrlen = xf.xf_length - sizeof (xf);
+		}
+
+		if (cb != NULL && !cb(&xf, attrp, attrlen, cookie))
+			return (B_TRUE);
+
+		ptr += xf.xf_length;
+	}
+	return (B_TRUE);
+}
+
+boolean_t
+ikev2_walk_xfattrs(uint8_t *restrict start, size_t len, ikev2_xfattr_cb_t cb,
+    void *restrict cookie, bunyan_logger_t *restrict l)
+{
+	uint8_t *ptr = start, *end = start + len;
+
+	while (ptr < end) {
+		size_t amt = 0;
+		ikev2_attribute_t attr = { 0 };
+
+		if (ptr + sizeof (attr) > end) {
+			bunyan_error(l, "Attribute length overruns end of "
+			    "transform", BUNYAN_T_END);
+			return (B_FALSE);
+		}
+
+		(void) memcpy(&attr, ptr, sizeof (attr));
+		attr.attr_type = ntohs(attr.attr_type);
+		attr.attr_length = ntohs(attr.attr_length);
+
+		if (attr.attr_type & IKEV2_ATTRAF_TV) {
+			amt = sizeof (attr);
+		} else {
+			/*
+			 * XXX: it's unclear if this length includes the
+			 * attribute length includes the header.  Need to check
+			 */
+			amt = attr.attr_length;
+		}
+
+		if (ptr + amt > end) {
+			bunyan_error(l, "Attribute value overruns end of "
+			    "transform", BUNYAN_T_END);
+			return (B_FALSE);
+		}
+
+		if (cb != NULL && !cb(&attr, cookie))
+			return (B_TRUE);
+
+		ptr += amt;
+	}
+
+	return (B_TRUE);
+}
+
+static boolean_t check_sa_payload(uint8_t *restrict, size_t, boolean_t,
+    bunyan_logger_t *restrict l);
+
 /*
  * Cache the payload offsets and do some minimal checking.
  * By virtue of walking the payloads, we also validate the payload
  * lengths do not overflow or underflow
  */
 static pkt_walk_ret_t
-check_payload(uint8_t paytype, uint8_t resv, uchar_t *restrict buf,
+check_payload(uint8_t paytype, uint8_t resv, uint8_t *restrict buf,
     size_t buflen, void *restrict cookie)
 {
 	struct validate_data *arg = (struct validate_data *)cookie;
@@ -308,39 +469,149 @@ check_payload(uint8_t paytype, uint8_t resv, uchar_t *restrict buf,
 		ntfyp->pn_type = ntohs(ntfy.n_type);
 		ntfyp->pn_len = buflen;
 		return (PKT_WALK_OK);
+	} else if (paytype == IKEV2_PAYLOAD_SA) {
+		if (!check_sa_payload(buf, buflen, !arg->initiator, log))
+			return (PKT_WALK_ERROR);
 	}
 
 	return (PKT_WALK_OK);
 }
 
-#define	PAYBIT(pay) ((uint32_t)1 << ((pay) - IKEV2_PAYLOAD_MIN))
-static const uint32_t multi_payloads =
-	PAYBIT(IKEV2_PAYLOAD_NOTIFY) |
-	PAYBIT(IKEV2_PAYLOAD_VENDOR) |
-	PAYBIT(IKEV2_PAYLOAD_CERTREQ);
-#define	IS_MULTI(pay) (!!(multi_payloads & PAYBIT(pay)))
-
-static struct payinfo {
-	uint32_t	required;
-	uint32_t	optional;
-} sa_init_info[] = {
-	{
-		/* required */
-		PAYBIT(IKEV2_PAYLOAD_SA) |
-		PAYBIT(IKEV2_PAYLOAD_KE) |
-		PAYBIT(IKEV2_PAYLOAD_NONCE),
-		/* optional */
-		PAYBIT(IKEV2_PAYLOAD_NOTIFY) |
-		PAYBIT(IKEV2_PAYLOAD_VENDOR) |
-		PAYBIT(IKEV2_PAYLOAD_CERTREQ)
-	},
-	{
-		/* required */
-		PAYBIT(IKEV2_PAYLOAD_NOTIFY),
-		/* optional */
-		PAYBIT(IKEV2_PAYLOAD_VENDOR)
-	}
+struct sa_payload_data {
+	bunyan_logger_t *log;
+	uint32_t lastnum;
+	boolean_t is_response;
+	boolean_t first;
+	boolean_t error;
 };
+
+static boolean_t
+check_xf_cb(ikev2_transform_t *xf, uint8_t *attr, size_t attrlen, void *cookie)
+{
+	struct sa_payload_data *info = cookie;
+	bunyan_logger_t *l = info->log;
+
+	if (xf->xf_reserved != 0) {
+		bunyan_error(l, "Transform reserved field non-zero",
+		    BUNYAN_T_UINT32, "value", (uint32_t)xf->xf_reserved,
+		    BUNYAN_T_END);
+		info->error = B_TRUE;
+		return (B_FALSE);
+	}
+	if (xf->xf_reserved1 != 0) {
+		bunyan_error(l, "Transform reserved1 field non-zero",
+		    BUNYAN_T_UINT32, "value", (uint32_t)xf->xf_reserved1,
+		    BUNYAN_T_END);
+		info->error = B_TRUE;
+		return (B_FALSE);
+	}
+
+	if (attr != NULL && !ikev2_walk_xfattrs(attr, attrlen, NULL, cookie, l))
+		return (B_FALSE);
+
+	return (B_TRUE);
+}
+
+static boolean_t
+check_sa_cb(ikev2_sa_proposal_t *prop, uint64_t spi, uint8_t *data, size_t len,
+    void *cookie)
+{
+	struct sa_payload_data *info = cookie;
+	bunyan_logger_t *l = info->log;
+
+	/*
+	 * When initiating an SA exchange (IKE or CHILD), there are 1+
+	 * proposals numbered sequentially starting with 1.  For an SA payload
+	 * in a response, there should be a single proposal whose number
+	 * matches the chosen proposal number from the SA payload in the
+	 * initiator
+	 */
+	if (info->is_response) {
+		VERIFY(info->first);
+
+		if (prop->proto_more != IKEV2_PROP_LAST) {
+			bunyan_error(l,
+			    "Proposal response has multiple proposals",
+			    BUNYAN_T_END);
+			info->error = B_TRUE;
+			return (B_FALSE);
+		}
+	} else {
+		if (prop->proto_proposalnr != info->lastnum + 1) {
+			bunyan_error(l,
+			    "Proposal number is not one greater than "
+			    "the previous proposal",
+			    BUNYAN_T_UINT32, "propnum",
+			    (uint32_t)prop->proto_proposalnr,
+			    BUNYAN_T_UINT32, "prevprop", info->lastnum,
+			    BUNYAN_T_END);
+			info->error = B_TRUE;
+			return (B_FALSE);
+		}
+	}
+
+	switch (prop->proto_protoid) {
+		case IKEV2_PROTO_NONE:
+		case IKEV2_PROTO_FC_ESP_HEADER:
+		case IKEV2_PROTO_FC_CT_AUTH:
+			/* Ignore these */
+			break;
+		case IKEV2_PROTO_IKE:
+			/* XXX: validate when 0 vs 8? */
+			if (prop->proto_spisize == 0 ||
+			    prop->proto_spisize == sizeof (uint64_t))
+				break;
+
+			bunyan_error(l,
+			    "Invalid proposal SPI length for protocol",
+			    BUNYAN_T_UINT32, "propnum",
+			    (uint32_t)prop->proto_proposalnr,
+			    BUNYAN_T_STRING, "protocol",
+			    ikev2_spi_str(prop->proto_protoid),
+			    BUNYAN_T_UINT32, "spilen",
+			    (uint32_t)prop->proto_spisize, BUNYAN_T_END);
+			return (B_FALSE);
+		case IKEV2_PROTO_AH:
+		case IKEV2_PROTO_ESP:
+			if (prop->proto_spisize == sizeof (uint32_t))
+				break;
+			bunyan_error(l,
+			    "Invalid proposal SPI length for protocol",
+			    BUNYAN_T_UINT32, "propnum",
+			    (uint32_t)prop->proto_proposalnr,
+			    BUNYAN_T_STRING, "protocol",
+			    ikev2_spi_str(prop->proto_protoid),
+			    BUNYAN_T_UINT32, "spilen",
+			    (uint32_t)prop->proto_spisize, BUNYAN_T_END);
+			return (B_FALSE);
+		}
+
+		if (!ikev2_walk_xfs(data, len, check_xf_cb, cookie, l)) {
+			info->error = B_TRUE;
+			return (B_FALSE);
+		}
+
+		info->lastnum = prop->proto_proposalnr;
+		info->first = B_FALSE;
+		return (B_TRUE);
+}
+
+static boolean_t
+check_sa_payload(uint8_t *restrict pay, size_t len, boolean_t is_response,
+    bunyan_logger_t *restrict l)
+{
+	struct sa_payload_data data = {
+		.log = l,
+		.lastnum = 0,
+		.is_response = is_response,
+		.first = B_FALSE,
+		.error = B_FALSE
+	};
+
+	if (!ikev2_walk_proposals(pay, len, check_sa_cb, &data, l))
+		return (B_FALSE);
+	return (data.error);
+}
 
 void
 ikev2_pkt_free(pkt_t *pkt)
@@ -351,7 +622,7 @@ ikev2_pkt_free(pkt_t *pkt)
 static void
 ikev2_add_payload(pkt_t *pkt, ikev2_pay_type_t ptype, boolean_t critical)
 {
-	uchar_t *payptr;
+	uint8_t *payptr;
 	uint8_t resv = 0;
 
 	ASSERT(IKEV2_VALID_PAYLOAD(ptype));
@@ -504,7 +775,7 @@ ikev2_add_xf_encr(pkt_t *pkt, ikev2_xf_encr_t encr, uint16_t minbits,
 
 boolean_t
 ikev2_add_ke(pkt_t *restrict pkt, uint_t group,
-    const uchar_t *restrict data, size_t len)
+    const uint8_t *restrict data, size_t len)
 {
 	ikev2_ke_t	ke = { 0 };
 
@@ -526,10 +797,10 @@ ikev2_add_id_common(pkt_t *restrict pkt, boolean_t id_i, ikev2_id_type_t idtype,
 	ikev2_id_t		id = { 0 };
 	ikev2_pay_type_t 	paytype =
 	    (id_i) ? IKEV2_PAYLOAD_IDi : IKEV2_PAYLOAD_IDr;
-	const uchar_t		*data;
+	const uint8_t		*data;
 	size_t			len = 0;
 
-	data = va_arg(ap, const uchar_t *);
+	data = va_arg(ap, const uint8_t *);
 
 	switch (idtype) {
 	case IKEV2_ID_IPV4_ADDR:
@@ -587,10 +858,10 @@ ikev2_add_id_r(pkt_t *restrict pkt, ikev2_id_type_t idtype, ...)
 }
 
 static boolean_t ikev2_add_cert_common(pkt_t *restrict, boolean_t,
-    ikev2_cert_t, const uchar_t *, size_t);
+    ikev2_cert_t, const uint8_t *, size_t);
 
 boolean_t
-ikev2_add_cert(pkt_t *restrict pkt, ikev2_cert_t cert_type, const uchar_t *cert,
+ikev2_add_cert(pkt_t *restrict pkt, ikev2_cert_t cert_type, const uint8_t *cert,
     size_t len)
 {
 	return (ikev2_add_cert_common(pkt, B_TRUE, cert_type, cert, len));
@@ -598,14 +869,14 @@ ikev2_add_cert(pkt_t *restrict pkt, ikev2_cert_t cert_type, const uchar_t *cert,
 
 boolean_t
 ikev2_add_certreq(pkt_t *restrict pkt, ikev2_cert_t cert_type,
-    const uchar_t *cert, size_t len)
+    const uint8_t *cert, size_t len)
 {
 	return (ikev2_add_cert_common(pkt, B_FALSE, cert_type, cert, len));
 }
 
 static boolean_t
 ikev2_add_cert_common(pkt_t *restrict pkt, boolean_t cert, ikev2_cert_t type,
-    const uchar_t *restrict data, size_t len)
+    const uint8_t *restrict data, size_t len)
 {
 	ikev2_pay_type_t ptype =
 	    (cert) ? IKEV2_PAYLOAD_CERT : IKEV2_PAYLOAD_CERTREQ;
@@ -619,7 +890,7 @@ ikev2_add_cert_common(pkt_t *restrict pkt, boolean_t cert, ikev2_cert_t type,
 
 boolean_t
 ikev2_add_auth(pkt_t *restrict pkt, ikev2_auth_type_t auth_method,
-    const uchar_t *restrict data, size_t len)
+    const uint8_t *restrict data, size_t len)
 {
 	ikev2_auth_t auth = { 0 };
 
@@ -701,7 +972,7 @@ ikev2_add_notify(pkt_t *restrict pkt, ikev2_spi_proto_t proto, uint64_t spi,
 	return (B_TRUE);
 }
 
-static boolean_t delete_finish(pkt_t *restrict, uchar_t *restrict, uintptr_t,
+static boolean_t delete_finish(pkt_t *restrict, uint8_t *restrict, uintptr_t,
     size_t);
 
 boolean_t
@@ -736,7 +1007,7 @@ ikev2_add_delete(pkt_t *pkt, ikev2_spi_proto_t proto)
 }
 
 static boolean_t
-delete_finish(pkt_t *restrict pkt, uchar_t *restrict buf, uintptr_t swaparg,
+delete_finish(pkt_t *restrict pkt, uint8_t *restrict buf, uintptr_t swaparg,
     size_t numspi)
 {
 	ikev2_delete_t	del = { 0 };
@@ -774,7 +1045,7 @@ ikev2_add_ts_r(pkt_t *restrict pkt)
 	return (add_ts_common(pkt, B_FALSE));
 }
 
-static boolean_t ts_finish(pkt_t *restrict, uchar_t *restrict, uintptr_t,
+static boolean_t ts_finish(pkt_t *restrict, uint8_t *restrict, uintptr_t,
     size_t);
 
 static boolean_t
@@ -794,7 +1065,7 @@ add_ts_common(pkt_t *pkt, boolean_t ts_i)
 }
 
 static boolean_t
-ts_finish(pkt_t *restrict pkt, uchar_t *restrict buf, uintptr_t swaparg,
+ts_finish(pkt_t *restrict pkt, uint8_t *restrict buf, uintptr_t swaparg,
     size_t numts)
 {
 	ikev2_tsp_t	ts = { 0 };
@@ -859,9 +1130,9 @@ ikev2_add_ts(pkt_t *restrict pkt, ikev2_ts_type_t type, uint8_t ip_proto,
 	return (B_TRUE);
 }
 
-static boolean_t encrypt_payloads(pkt_t *restrict, uchar_t *restrict, uintptr_t,
+static boolean_t encrypt_payloads(pkt_t *restrict, uint8_t *restrict, uintptr_t,
     size_t);
-static boolean_t cbc_iv(pkt_t *restrict, uchar_t *);
+static boolean_t cbc_iv(pkt_t *restrict, uint8_t *);
 
 boolean_t
 ikev2_add_sk(pkt_t *restrict pkt)
@@ -900,7 +1171,7 @@ ikev2_add_sk(pkt_t *restrict pkt)
  * which should be unique, encrypt using SK to generate IV
  */
 static boolean_t
-cbc_iv(pkt_t *restrict pkt, uchar_t *ivp)
+cbc_iv(pkt_t *restrict pkt, uint8_t *ivp)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
 	CK_SESSION_HANDLE handle = p11h;
@@ -939,7 +1210,7 @@ cbc_iv(pkt_t *restrict pkt, uchar_t *ivp)
 	VERIFY3U(blocklen, >=, sizeof (uint32_t));
 
 	CK_ULONG buflen = blocklen;
-	uchar_t buf[blocklen];
+	uint8_t buf[blocklen];
 
 	(void) memset(buf, 0, blocklen);
 	(void) memcpy(buf, &pkt->pkt_header.msgid,
@@ -962,8 +1233,8 @@ cbc_iv(pkt_t *restrict pkt, uchar_t *ivp)
 }
 
 static boolean_t
-crypt_common(pkt_t *pkt, boolean_t encrypt, uchar_t *iv, CK_ULONG ivlen,
-    uchar_t *data, CK_ULONG datalen, uchar_t *icv, CK_ULONG icvlen)
+crypt_common(pkt_t *pkt, boolean_t encrypt, uint8_t *iv, CK_ULONG ivlen,
+    uint8_t *data, CK_ULONG datalen, uint8_t *icv, CK_ULONG icvlen)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
 	const char *fn;
@@ -978,7 +1249,7 @@ crypt_common(pkt_t *pkt, boolean_t encrypt, uchar_t *iv, CK_ULONG ivlen,
 	} params;
 	CK_RV rc = 0;
 	encr_modes_t mode = ikev2_encr_mode(sa->encr);
-	uchar_t *nonce = NULL;
+	uint8_t *nonce = NULL;
 	CK_ULONG noncelen = 0;
 
 	if (sa->flags & I2SA_INITIATOR)
@@ -1054,10 +1325,10 @@ crypt_common(pkt_t *pkt, boolean_t encrypt, uchar_t *iv, CK_ULONG ivlen,
 
 	/*
 	 * XXX: the last parameter might need a separate var
- 	 * because of extra room needed for ccm/gcm
- 	 * ALSO: probably want a better error message for the combined mode
- 	 * failures
- 	 */
+	 * because of extra room needed for ccm/gcm
+	 * ALSO: probably want a better error message for the combined mode
+	 * failures
+	 */
 	if (encrypt) {
 		rc = C_Encrypt(handle, data, datalen, data, &datalen);
 		fn = "C_Encrypt";
@@ -1075,7 +1346,7 @@ done:
 }
 
 static boolean_t
-auth_common(pkt_t *pkt, boolean_t encrypt, uchar_t *icv, size_t icvlen)
+auth_common(pkt_t *pkt, boolean_t encrypt, uint8_t *icv, size_t icvlen)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
 	const char *fn = NULL;
@@ -1134,7 +1405,7 @@ auth_common(pkt_t *pkt, boolean_t encrypt, uchar_t *icv, size_t icvlen)
 }
 
 static boolean_t
-encrypt_payloads(pkt_t *restrict pkt, uchar_t *restrict buf, uintptr_t swaparg,
+encrypt_payloads(pkt_t *restrict pkt, uint8_t *restrict buf, uintptr_t swaparg,
     size_t numencr)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
@@ -1142,7 +1413,7 @@ encrypt_payloads(pkt_t *restrict pkt, uchar_t *restrict buf, uintptr_t swaparg,
 	CK_ULONG ivlen, datalen, icvlen, noncelen, blocklen;
 	uint8_t padlen = 0;
 	encr_modes_t mode = ikev2_encr_mode(sa->encr);
-	
+
 	ivlen = ikev2_encr_iv_size(sa->encr);
 	icvlen = ikev2_auth_icv_size(sa->encr, sa->auth);
 	blocklen = ikev2_encr_block_size(sa->encr);
@@ -1186,20 +1457,30 @@ encrypt_payloads(pkt_t *restrict pkt, uchar_t *restrict buf, uintptr_t swaparg,
 		*pkt->pkt_ptr = padlen;
 		pkt->pkt_ptr++;
 	}
-		
+
 	datalen += padlen;
 	icv = data + datalen;
 	*icv = padlen;
 	icv++;
 
 	/*
-	 * XXX: So far, every encryption mode wants a unique IV per packet.
-	 * For CBC modes, it also needs to be unpredictable.  Other modes do
-	 * not appear to have that requirement.  Since the msgid should be
-	 * unique for a given key (i.e. the msgid never resets for a given
-	 * IKE SA, instead a new IKE SA, with a new key is created).  We
-	 * start with that, and then for CBC modes, use follow the suggestion
-	 * in NIST 800-38A, Appendix C and encrypt the msgid to create the IV.
+	 * XXX: So far, every encryption mode supported requires a unique IV
+	 * per packet.  For CBC modes, the IV also needs to be unpredictable.
+	 * Other modes do not appear to have an unpredictability requirement.
+	 *
+	 * With the possible exception of msgid 0 during an IKE_SA_INIT
+	 * exchange (where nothing is encrypted, so is not relevant to IV
+	 * creation), the IKEV2 packet message id value is only ever used to
+	 * encrypt a single packet.  New packets get a new unique message id
+	 * that is never reused within an IKE SA (and thus a given encryption
+	 * key for that IKE SA) -- usually by incrementing the previous used
+	 * value.  As such, using the message id should satisify the unique
+	 * requirement.
+	 *
+	 * When using CBC modes, to satisify the additional unpredictability
+	 * requirement, we use the suggestion in NIST 800-38A, Appendix C.
+	 * That is, we take the unique message id, and then encrypt it using
+	 * the same key to generate the IV.
 	 */
 	VERIFY3S(ivlen, >=, sizeof (uint32_t));
 	if (mode == MODE_CBC) {
@@ -1341,7 +1622,7 @@ ikev2_pkt_decrypt(pkt_t *pkt)
 		np->pn_len = pp->pp_len;
 		np->pn_type = ntohs(n.n_type);
 	}
- 
+
 	return (B_TRUE);
 }
 
@@ -1386,7 +1667,7 @@ ikev2_pkt_desc(pkt_t *pkt)
 	s = calloc(1, len);
 	VERIFY3P(s, !=, len);
 
-	for (i = j = 0; i <pkt->pkt_payload_count; i++) {
+	for (i = j = 0; i < pkt->pkt_payload_count; i++) {
 		pkt_payload_t *pay = pkt_payload(pkt, i);
 		const char *paystr =
 		    ikev2_pay_short_str((ikev2_pay_type_t)pay->pp_type);

@@ -30,6 +30,8 @@
 #include "config.h"
 #include "ikev2_pkt.h"
 #include "ikev2_enum.h"
+#include "ikev2_common.h"
+#include "prf.h"
 
 static boolean_t find_config(pkt_t *, sockaddr_u_t, sockaddr_u_t);
 static boolean_t add_nat(pkt_t *);
@@ -50,6 +52,7 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 	pkt_t *resp = NULL;
 	sockaddr_u_t laddr = { .sau_ss = &sa->laddr };
 	sockaddr_u_t raddr = { .sau_ss = &sa->raddr };
+	ikev2_sa_result_t sa_result = { 0 };
 	size_t noncelen = 0;
 
 	VERIFY(!(sa->flags & I2SA_INITIATOR));
@@ -62,11 +65,27 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 
 	sa->init = pkt;
 
+	if (!ikev2_sa_match_rule(sa->i2sa_rule, pkt, &sa_result)) {
+		/* XXX: no proposal chosen */
+		goto fail;
+	}
+
+	/* RFC7296 2.10 nonce length should be at least half key size of PRF */
+	noncelen = ikev2_prf_keylen(sa_result.sar_prf) / 2;
+
+	/* But must still be within defined limits */
+	if (noncelen < IKEV2_NONCE_MIN)
+		noncelen = IKEV2_NONCE_MIN;
+	if (noncelen > IKEV2_NONCE_MAX)
+		noncelen = IKEV2_NONCE_MAX;
+
 	resp = ikev2_pkt_new_response(pkt);
 	if (resp == NULL)
 		goto fail;
 
-	/* XXX: SA */
+	if (!ikev2_sa_add_result(resp, &sa_result))
+		goto fail;
+
 	/* XXX: KE */
 
 	if (!ikev2_add_nonce(resp, noncelen))
@@ -74,6 +93,7 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 	if (!add_nat(resp))
 		goto fail;
 
+	/* XXX: CERTREQ? */
 	/* XXX: other notifications */
 
 	if (!add_vendor(resp))
@@ -86,7 +106,7 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 fail:
 	ikev2_pkt_free(pkt);
 	ikev2_pkt_free(resp);
-	/* XXX: anything else */
+	/* XXX: Delete larval IKE SA? anything else? */
 }
 
 void
@@ -100,11 +120,21 @@ ikev2_sa_init_inbound_resp(pkt_t *pkt)
 
 		if (!add_cookie(out, cookie->pn_ptr, cookie->pn_len) ||
 		    !ikev2_send(out, B_FALSE)) {
-			/* XXX: destroy IKE SA */
+			/* XXX: destroy larval IKE SA? */
 		}
 		return;
 	}
 
+	if (!check_nats(pkt))
+		goto fail;
+	check_vendor(pkt);
+
+	/* XXX: Verify SA payload */
+
+	return;
+fail:
+	/* XXX: destroy IKE SA? */
+	;
 }
 
 void
@@ -121,8 +151,6 @@ ikev2_sa_init_outbound(ikev2_sa_t *i2sa)
 
 	if (!find_config(pkt, laddr, raddr))
 		goto fail;
-
-	/* XXX: COOKIE */
 
 	if (!add_rule_proposals(pkt, i2sa->i2sa_rule, 0))
 		goto fail;
@@ -433,7 +461,7 @@ add_nat(pkt_t *pkt)
 			return (B_FALSE);
 
 		if (!ikev2_add_notify(pkt, IKEV2_PROTO_IKE, 0, ntype[i],
-		     data, sizeof (data)))
+		    data, sizeof (data)))
 			return (B_FALSE);
 	}
 

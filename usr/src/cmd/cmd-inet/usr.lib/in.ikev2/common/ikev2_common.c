@@ -16,11 +16,10 @@
 #include <net/pfkeyv2.h>
 #include <sys/debug.h>
 #include "defs.h"
-#include "ikev2.h"
 #include "ikev2_pkt.h"
-
-ikev2_xf_auth_t ikev2_pfkey_to_auth(int);
-ikev2_xf_encr_t ikev2_pfkey_to_encr(int);
+#include "ikev2_common.h"
+#include "config.h"
+#include "pkcs11.h"
 
 boolean_t
 ikev2_sa_from_acquire(pkt_t *pkt, parsedmsg_t *pmsg, uint32_t spi,
@@ -132,3 +131,95 @@ ikev2_pfkey_to_encr(int alg)
 	}
 }
 
+boolean_t
+ikev2_sa_add_result(pkt_t *restrict pkt,
+    const ikev2_sa_result_t *restrict result)
+{
+	boolean_t ok;
+
+	ok = ikev2_add_sa(pkt);
+	ok &= ikev2_add_prop(pkt, result->sar_propnum, result->sar_proto,
+	    result->sar_spi);
+
+	if (SA_RESULT_HAS(result, IKEV2_XF_ENCR)) {
+		ok &= ikev2_add_xform(pkt, IKEV2_XF_ENCR, result->sar_encr);
+		if (result->sar_encr_keylen != 0)
+			ok &= ikev2_add_xf_attr(pkt, IKEV2_XF_ATTR_KEYLEN,
+			    result->sar_encr_keylen);
+	}
+	if (SA_RESULT_HAS(result, IKEV2_XF_AUTH))
+		ok &= ikev2_add_xform(pkt, IKEV2_XF_AUTH, result->sar_auth);
+	if (SA_RESULT_HAS(result, IKEV2_XF_DH))
+		ok &= ikev2_add_xform(pkt, IKEV2_XF_DH, result->sar_dh);
+	if (SA_RESULT_HAS(result, IKEV2_XF_PRF))
+		ok &= ikev2_add_xform(pkt, IKEV2_XF_PRF, result->sar_prf);
+	if (SA_RESULT_HAS(result, IKEV2_XF_ESN))
+		ok &= ikev2_add_xform(pkt, IKEV2_XF_ESN, result->sar_esn);
+
+	return (ok);
+}
+
+boolean_t
+ikev2_sa_match_rule(config_rule_t *restrict rule, pkt_t *restrict pkt,
+    ikev2_sa_result_t *restrict result)
+{
+	/* TODO */
+	return (B_FALSE);
+}
+
+boolean_t
+ikev2_sa_match_acquire(parsedmsg_t *restrict pmsg, pkt_t *restrict pkt,
+    ikev2_sa_result_t *restrict result)
+{
+	/* TODO */
+	return (B_FALSE);
+}
+
+#if 0
+sa_compare_xf_cb(ikev2_transform_t *xf, uchar_t *buf, size_t buflen,
+    void *cookie)
+{
+	struct validate_data *data = cookie;
+	boolean_t match = B_FALSE;
+
+	/* xf_id */
+	switch (xf->xf_type) {
+	case IKEV2_XF_ENCR:
+		if (data->xf->xf_encr == xf->xf_id)
+			match = B_TRUE;
+		break;
+	case IKEV2_XF_PRF:
+		switch (xf->xf_id) {
+		case IKEV2_PRF_HMAC_SHA2_512:
+		case IKEV2_PRF_HMAC_SHA2_384:
+		case IKEV2_PRF_HMAC_SHA2_256:
+		case IKEV2_PRF_HMAC_SHA1:
+		case IKEV2_PRF_HMAC_MD5:
+			match = B_TRUE;
+			break;
+		}
+		break;
+	case IKEV2_XF_AUTH:
+		if (data->xf->xf_auth == xf->xf_id)
+			match = B_TRUE;
+		break;
+	case IKEV2_XF_DH:
+		if (data->xf->xf_dh == xf->xf_id)
+			match = B_TRUE;
+		break;
+	case IKEV2_XF_ESN:
+		/* XXX: msg */
+		return (B_FALSE);
+	default:
+		bunyan_debug(data->log, "Unknown transform type",
+		    BUNYAN_T_UINT32, "xftype", (uint32_t)xf->xf_type,
+		    BUNYAN_T_END);
+		return (B_FALSE);
+	}
+
+	if (match)
+		data->match |= (uint32_t)1 << xf->xf_type;
+
+	return (B_TRUE);
+}
+#endif

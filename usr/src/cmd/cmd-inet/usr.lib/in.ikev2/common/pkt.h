@@ -40,13 +40,13 @@ extern "C" {
 #endif
 
 struct ikev2_sa;
-struct pkt;
+struct pkt_s;
 struct pkt_stack;
 
-typedef struct pkt		pkt_t;
+typedef struct pkt_s		pkt_t;
 typedef struct pkt_stack	pkt_stack_t;
 
-typedef boolean_t (*pkt_finish_fn)(struct pkt *restrict, uchar_t *restrict,
+typedef boolean_t (*pkt_finish_fn)(pkt_t *restrict, uchar_t *restrict,
     uintptr_t, size_t);
 
 typedef enum pkt_stack_item {
@@ -86,9 +86,9 @@ typedef struct pkt_notify {
 #define	PKT_NOTIFY_NUM	(8)
 
 #define	MAX_PACKET_SIZE	(8192)	/* largest datagram we accept */
-struct pkt {
+struct pkt_s {
 				/* NOT refheld */
-	struct ikev2_sa		*pkt_sa;
+	struct ikev2_sa_s	*pkt_sa;
 
 				/* Raw packet data */
 	uint64_t		pkt_raw[SADB_8TO64(MAX_PACKET_SIZE)];

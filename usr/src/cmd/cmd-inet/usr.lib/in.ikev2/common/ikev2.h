@@ -30,6 +30,10 @@ extern "C" {
 #define	IKEV2_VERSION		0x20	/* IKE version 2.0 */
 #define	IKEV2_KEYPAD		"Key Pad for IKEv2"	/* don't change! */
 
+/* RFC7296 3.9 - Nonce size must be between 16 and 256 octets (inclusive) */
+#define	IKEV2_NONCE_MIN		(16)
+#define	IKEV2_NONCE_MAX		(256)
+
 /*
  * "IKEv2 Parameters" based on the official RFC-based assignments by IANA
  * (http://www.iana.org/assignments/ikev2-parameters/ikev2-parameters.txt)

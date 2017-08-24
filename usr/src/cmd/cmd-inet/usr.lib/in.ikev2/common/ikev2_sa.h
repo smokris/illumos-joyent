@@ -47,15 +47,14 @@
 extern "C" {
 #endif
 
-struct ikev2_sa;
+struct ikev2_sa_s;
 struct ikev2_child_sa;
 struct i2sa_bucket;
-struct pkt;
-struct buf;
+struct pkt_s;
 
 #ifndef IKEV2_SA_T
 #define	IKEV2_SA_T
-typedef struct ikev2_sa ikev2_sa_t;
+typedef struct ikev2_sa_s ikev2_sa_t;
 typedef struct ikev2_child_sa ikev2_child_sa_t;
 typedef struct i2sa_bucket i2sa_bucket_t;
 #endif /* IKEV2_SA_T */
@@ -77,7 +76,7 @@ struct config_rule_s;
  *
  * Because of the distinct sets of lookup keys, it requires two linkages.
  */
-struct ikev2_sa {
+struct ikev2_sa_s {
 	/*
 	 * Fields that should not be zeroed out between trips before
 	 * returning to the umem_cache should go at the top of this struct.
@@ -113,13 +112,13 @@ struct ikev2_sa {
 	int		prf;		/* PRF algorithm */
 	int		dhgrp;		/* Diffie-Hellman group. */
 
-	uint32_t outmsgid;		/* Next msgid for outbound packets. */
-	uint32_t inmsgid;		/* Next expected inbound msgid. */
+	uint32_t	outmsgid;	/* Next msgid for outbound packets. */
+	uint32_t	inmsgid;	/* Next expected inbound msgid. */
 
-	struct pkt	*init;  	/* IKE_SA_INIT packet. */
-	struct pkt	*last_resp_sent;
-	struct pkt	*last_sent;
-	struct pkt	*last_recvd;
+	struct pkt_s	*init;  	/* IKE_SA_INIT packet. */
+	struct pkt_s	*last_resp_sent;
+	struct pkt_s	*last_sent;
+	struct pkt_s	*last_recvd;
 
 	time_t		birth;		/* When was AUTH completed */
 	hrtime_t	softexpire;
@@ -178,8 +177,8 @@ struct ikev2_child_sa {
 extern ikev2_sa_t *ikev2_sa_get(uint64_t, uint64_t,
     const struct sockaddr_storage *restrict,
     const struct sockaddr_storage *restrict,
-    const struct pkt *restrict);
-extern ikev2_sa_t *ikev2_sa_alloc(boolean_t, struct pkt *restrict,
+    const struct pkt_s *restrict);
+extern ikev2_sa_t *ikev2_sa_alloc(boolean_t, struct pkt_s *restrict,
     const struct sockaddr_storage *restrict,
     const struct sockaddr_storage *restrict);
 
