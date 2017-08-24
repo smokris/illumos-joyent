@@ -99,11 +99,11 @@ inbound(int s, void *arg)
 	size_t hdrlen = ntohl(hdr->length);
 
 	VERIFY(bunyan_key_add(l,
-	   ss_bunyan(&from), "src", ss_addr(&from),
-	   BUNYAN_T_UINT32, "srcport", ss_port(&from),
-	   ss_bunyan(&to), "dest", ss_addr(&to),
-	   BUNYAN_T_UINT32, "destport", ss_port(&to),
-	   BUNYAN_T_END) == 0);
+	    ss_bunyan(&from), "src", ss_addr(&from),
+	    BUNYAN_T_UINT32, "srcport", ss_port(&from),
+	    ss_bunyan(&to), "dest", ss_addr(&to),
+	    BUNYAN_T_UINT32, "destport", ss_port(&to),
+	    BUNYAN_T_END) == 0);
 
 	if (hdrlen != pktlen) {
 		NETLOG(info, l, "ISAKMP header length doesn't match "

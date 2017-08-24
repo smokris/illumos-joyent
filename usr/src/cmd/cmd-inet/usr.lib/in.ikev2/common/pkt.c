@@ -172,7 +172,7 @@ pkt_size_index(pkt_t *pkt, size_t paycount, size_t ncount)
 		if (pkt->pkt_payload_extra != NULL) {
 			/* XXX: ASSERT() / VERIFY() on shrink? */
 			if (paycount > pkt->pkt_payload_count) {
-				amt = pkt->pkt_payload_count - PKT_PAYLOAD_NUM; 
+				amt = pkt->pkt_payload_count - PKT_PAYLOAD_NUM;
 				amt *= sizeof (pkt_payload_t);
 			}
 			(void) memcpy(payp, pkt->pkt_payload_extra, amt);

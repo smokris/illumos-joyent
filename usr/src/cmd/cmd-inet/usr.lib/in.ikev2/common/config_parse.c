@@ -214,7 +214,7 @@ static token_t *tok_new(const char *, const char *, const char *, size_t,
     size_t);
 static void tok_free(token_t *);
 static void tok_log(token_t *restrict, bunyan_logger_t *restrict,
-     bunyan_level_t, const char *restrict, const char *restrict);
+    bunyan_level_t, const char *restrict, const char *restrict);
 static void tok_error(token_t *restrict, bunyan_logger_t *restrict,
     const char *restrict, const char *restrict);
 static void tok_invalid(token_t *restrict, bunyan_logger_t *restrict,
@@ -286,7 +286,7 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 {
 	input_t *in = input_new(f, blog);
 	token_t *t = NULL, *targ = NULL;
-	config_t *cfg = NULL; 
+	config_t *cfg = NULL;
 	config_xf_t *xf = NULL;
 	input_cursor_t ic = { 0 };
 	union {
@@ -654,7 +654,7 @@ parse_xform(input_cursor_t *restrict ic, config_xf_t **restrict xfp)
 			xf->xf_lifetime_secs = (uint32_t)val;
 			seen_lifetime_secs = B_TRUE;
 			break;
-		case KW_P1_NONCE_LEN: /*xf_nonce_len*/
+		case KW_P1_NONCE_LEN:
 			if (seen_nonce_len)
 				goto duplicate;
 			if (!parse_int(targ->t_str, &val)) {
@@ -691,7 +691,7 @@ fail:
 	tok_free(targ);
 	free(xf);
 	*xfp = NULL;
-	return (B_FALSE);	
+	return (B_FALSE);
 }
 
 static boolean_t
@@ -1048,7 +1048,7 @@ parse_address(input_cursor_t *restrict ic, config_addr_t *restrict addrp)
 
 truncated:
 	bunyan_error(ic->ic_log, "Input truncated while parsing address",
-	     BUNYAN_T_END);
+	    BUNYAN_T_END);
 	return (B_FALSE);
 }
 
@@ -1099,7 +1099,7 @@ parse_fp(const char *restrict str, double *restrict dp)
 	return ((errno == 0) ? B_TRUE : B_FALSE);
 }
 
-static boolean_t 
+static boolean_t
 parse_kw(const char *restrict str, keyword_t *restrict kwp)
 {
 	for (keyword_t kw = KW_NONE; kw < KW_MAX; kw++) {
@@ -1343,7 +1343,7 @@ static token_t *
 input_token(input_cursor_t *ic, boolean_t minus_is_sep)
 {
 	token_t *t = NULL;
-	if (ic->ic_peek != NULL ) {
+	if (ic->ic_peek != NULL) {
 		t = ic->ic_peek;
 		ic->ic_peek = NULL;
 	} else {
