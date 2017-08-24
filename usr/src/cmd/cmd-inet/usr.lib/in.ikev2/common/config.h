@@ -110,7 +110,6 @@ struct config_s {
 	config_rule_t		cfg_default;
 	config_rule_t		**cfg_rules;
 	size_t			cfg_rules_alloc;
-	config_xf_t		**cfg_xforms;
 	size_t			cfg_xforms_alloc;
 	char			*cfg_proxy;
 	char			*cfg_socks;
@@ -125,7 +124,6 @@ struct config_s {
 	size_t			cfg_retry_limit;
 	boolean_t		cfg_ignore_crls;
 	boolean_t		cfg_use_http;
-	ikev2_dh_t		cfg_p2_pfs;
 	size_t			cfg_p1_lifetime_secs;
 	size_t			cfg_p1_nonce_len;
 	size_t			cfg_p2_lifetime_secs;

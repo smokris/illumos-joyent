@@ -184,9 +184,9 @@ cfg_free(config_t *cfg)
 			free(cfg->cfg_cert_trust[i]);
 	}
 
-	if (cfg->cfg_xforms != NULL) {
-		for (i = 0; cfg->cfg_xforms[i] != NULL; i++)
-			free(cfg->cfg_xforms[i]);
+	if (cfg->cfg_default.rule_xf != NULL) {
+		for (i = 0; cfg->cfg_default.rule_xf[i] != NULL; i++)
+			free(cfg->cfg_default.rule_xf[i]);
 	}
 
 	if (cfg->cfg_rules != NULL) {
@@ -195,7 +195,7 @@ cfg_free(config_t *cfg)
 	}
 
 	free(cfg->cfg_rules);
-	free(cfg->cfg_xforms);
+	free(cfg->cfg_default.rule_xf);
 	free(cfg->cfg_proxy);
 	free(cfg->cfg_socks);
 	free(cfg->cfg_cert_root);

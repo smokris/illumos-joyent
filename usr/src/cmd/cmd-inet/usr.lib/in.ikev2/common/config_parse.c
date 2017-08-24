@@ -207,7 +207,7 @@ typedef struct input_cursor {
 } input_cursor_t;
 
 static void add_str(char ***restrict, size_t *restrict, const char *restrict);
-static void add_xf(void *restrict, config_xf_t *restrict, boolean_t);
+static void add_xf(config_rule_t *restrict, config_xf_t *restrict);
 static void add_rule(config_t *restrict, config_rule_t *restrict);
 
 static token_t *tok_new(const char *, const char *, const char *, size_t,
@@ -474,7 +474,8 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 			cfg->cfg_use_http = B_TRUE;
 			break;
 		case KW_P2_PFS:
-			if (!parse_p2_pfs(targ->t_str, &cfg->cfg_p2_pfs)) {
+			if (!parse_p2_pfs(targ->t_str,
+			    &cfg->cfg_default.rule_p2_dh)) {
 				tok_error(targ, blog, "Invalid p2_pfs value",
 				    "value");
 				goto fail;
@@ -483,7 +484,7 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 		case KW_P1_XFORM:
 			if (!parse_xform(&ic, &xf))
 				goto fail;
-			add_xf(cfg, xf, B_FALSE);
+			add_xf(&cfg->cfg_default, xf);
 			xf = NULL;
 			break;
 		case KW_AUTH_METHOD:
@@ -866,7 +867,7 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 			if (!parse_xform(ic, &xf))
 				goto fail;
 
-			add_xf(rule, xf, B_TRUE);
+			add_xf(rule, xf);
 			if (xf->xf_authtype != IKEV2_AUTH_SHARED_KEY_MIC)
 				has_non_preshared = B_TRUE;
 			seen_p1_xform = B_TRUE;
@@ -1517,53 +1518,30 @@ add_str(char ***restrict ppp, size_t *restrict allocp, const char *restrict str)
 }
 
 static void
-add_xf(void *restrict ptr, config_xf_t *restrict xf, boolean_t ptr_is_rule)
+add_xf(config_rule_t *restrict rule, config_xf_t *restrict xf)
 {
-	config_xf_t **xfp = NULL;
-	size_t cur = 0;
 	size_t nxf = 0;
 
-	if (ptr_is_rule) {
-		config_rule_t *crp = ptr;
-
-		cur = crp->rule_nxf;
-		xfp = crp->rule_xf;
-	} else {
-		config_t *cp = ptr;
-
-		cur = cp->cfg_xforms_alloc;
-		xfp = cp->cfg_xforms;
-	}
-
-	while (nxf < cur && xfp[nxf] != NULL)
+	while (nxf < rule->rule_nxf && rule->rule_xf[nxf] != NULL)
 		nxf++;
 
-	if (nxf + 2 > cur) {
+	if (nxf + 2 > rule->rule_nxf) {
 		config_xf_t **newxf = NULL;
-		size_t newalloc = cur + CHUNK_SZ;
+		size_t newalloc = rule->rule_nxf + CHUNK_SZ;
 		size_t amt = newalloc * sizeof (config_xf_t *);
 
 		VERIFY3U(amt, >, newalloc);
 		VERIFY3U(amt, >=, sizeof (config_xf_t *));
 
-		newxf = realloc(xfp, amt);
+		newxf = realloc(rule->rule_xf, amt);
 		VERIFY3P(newxf, !=, NULL);
 
-		if (ptr_is_rule) {
-			config_rule_t *crp = ptr;
-
-			crp->rule_nxf = newalloc;
-			crp->rule_xf = xfp = newxf;
-		} else {
-			config_t *cp = ptr;
-
-			cp->cfg_xforms = xfp = newxf;
-			cp->cfg_xforms_alloc = newalloc;
-		}
+		rule->rule_nxf = newalloc;
+		rule->rule_xf = newxf;
 	}
 
-	xfp[nxf++] = xf;
-	xfp[nxf] = NULL;
+	rule->rule_xf[nxf++] = xf;
+	rule->rule_xf[nxf] = NULL;
 }
 
 static void
