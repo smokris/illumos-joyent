@@ -73,7 +73,7 @@
  * setsockopt()s (e.g. IP_SEC_OPT(NEVER)) have already performed on socket.
  */
 ssize_t
-recvfromto(int s, uchar_t *buf, size_t buflen, int flags,
+recvfromto(int s, uint8_t *buf, size_t buflen, int flags,
     struct sockaddr_storage *from, socklen_t *fromlen,
     struct sockaddr_storage *to, socklen_t *tolen)
 {
@@ -184,7 +184,7 @@ recvfromto(int s, uchar_t *buf, size_t buflen, int flags,
 
 /* send packet, with fixing src/dst address pair. */
 ssize_t
-sendfromto(int s, const uchar_t *buf, size_t buflen,
+sendfromto(int s, const uint8_t *buf, size_t buflen,
     struct sockaddr_storage *src, struct sockaddr_storage *dst)
 {
 	uint32_t cmsgbuf[64] = { 0 };

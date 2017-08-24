@@ -39,17 +39,17 @@
 extern "C" {
 #endif
 
-struct ikev2_sa;
+struct ikev2_sa_s;
 struct pkt_s;
-struct pkt_stack;
+struct pkt_stack_s;
 
 typedef struct pkt_s		pkt_t;
-typedef struct pkt_stack	pkt_stack_t;
+typedef struct pkt_stack_s	pkt_stack_t;
 
-typedef boolean_t (*pkt_finish_fn)(pkt_t *restrict, uchar_t *restrict,
+typedef boolean_t (*pkt_finish_fn)(pkt_t *restrict, uint8_t *restrict,
     uintptr_t, size_t);
 
-typedef enum pkt_stack_item {
+typedef enum pkt_stack_item_e {
 	PSI_NONE,
 	PSI_PACKET,
 	PSI_SK,
@@ -63,23 +63,23 @@ typedef enum pkt_stack_item {
 	PSI_TS
 } pkt_stack_item_t;
 
-struct pkt_stack {
+struct pkt_stack_s {
 	pkt_finish_fn		stk_finish;
-	uchar_t			*stk_ptr;
+	uint8_t			*stk_ptr;
 	size_t			stk_count;
 	pkt_stack_item_t	stk_type;
 };
 #define	PKT_STACK_DEPTH	(6)	/* maximum depth needed */
 
 typedef struct pkt_payload {
-	uchar_t		*pp_ptr;
+	uint8_t		*pp_ptr;
 	uint16_t	pp_len;
 	uint8_t		pp_type;
 } pkt_payload_t;
 #define	PKT_PAYLOAD_NUM	(16)	/* usually don't need more than this */
 
 typedef struct pkt_notify {
-	uchar_t		*pn_ptr;
+	uint8_t		*pn_ptr;
 	uint16_t	pn_type;
 	uint16_t	pn_len;
 } pkt_notify_t;
@@ -96,7 +96,7 @@ struct pkt_s {
 				 * Points to one past last bit of valid data
 				 * in pkt_raw
 				 */
-	uchar_t			*pkt_ptr;
+	uint8_t			*pkt_ptr;
 
 				/* Copy of ISAKMP header in local byte order */
 	ike_header_t		pkt_header;
@@ -109,23 +109,23 @@ struct pkt_s {
 	pkt_notify_t		*pkt_notify_extra;
 	uint16_t		pkt_notify_count;
 
-	struct pkt_stack	stack[PKT_STACK_DEPTH];
+	struct pkt_stack_s	stack[PKT_STACK_DEPTH];
 	uint_t			stksize;
 	boolean_t		pkt_stk_error;
 
 	size_t			pkt_xmit;
 };
 
-inline uchar_t *
+inline uint8_t *
 pkt_start(pkt_t *pkt)
 {
-	return ((uchar_t *)&pkt->pkt_raw);
+	return ((uint8_t *)&pkt->pkt_raw);
 }
 
 inline size_t
 pkt_len(const pkt_t *pkt)
 {
-	const uchar_t *start = (const uchar_t *)&pkt->pkt_raw;
+	const uint8_t *start = (const uint8_t *)&pkt->pkt_raw;
 	size_t len = (size_t)(pkt->pkt_ptr - start);
 
 	ASSERT3P(pkt->pkt_ptr, >=, start);
@@ -140,9 +140,9 @@ pkt_write_left(const pkt_t *pkt)
 }
 
 inline size_t
-pkt_read_left(const pkt_t *pkt, const uchar_t *ptr)
+pkt_read_left(const pkt_t *pkt, const uint8_t *ptr)
 {
-	const uchar_t *start = (const uchar_t *)&pkt->pkt_raw;
+	const uint8_t *start = (const uint8_t *)&pkt->pkt_raw;
 	ASSERT3P(ptr, >=, start);
 	ASSERT3P(ptr, <=, pkt->pkt_ptr);
 	return ((size_t)(pkt->pkt_ptr - ptr));

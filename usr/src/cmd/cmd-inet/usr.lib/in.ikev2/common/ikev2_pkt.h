@@ -27,6 +27,7 @@ extern "C" {
 #endif
 
 struct ikev2_sa_s;
+struct bunyan_logger;
 
 #define	INBOUND_LOCAL_SPI(hdr) \
 	(((hdr)->flags == IKEV2_FLAG_INITIATOR) ? \
@@ -36,7 +37,8 @@ struct ikev2_sa_s;
 	(((hdr)->flags == IKEV2_FLAG_INITIATOR) ? \
 	    (hdr)->initiator_spi : (hdr)->responder_spi)
 
-pkt_t *ikev2_pkt_new_inbound(uint8_t *, size_t);
+pkt_t *ikev2_pkt_new_inbound(uint8_t *restrict, size_t,
+    struct bunyan_logger *restrict);
 pkt_t *ikev2_pkt_new_initiator(struct ikev2_sa_s *, ikev2_exch_t);
 pkt_t *ikev2_pkt_new_response(const pkt_t *);
 void ikev2_pkt_free(pkt_t *);
@@ -92,6 +94,9 @@ boolean_t ikev2_walk_xfs(uint8_t *restrict, size_t, ikev2_xf_cb_t,
     void *restrict, bunyan_logger_t *restrict);
 boolean_t ikev2_walk_xfattrs(uint8_t *restrict, size_t, ikev2_xfattr_cb_t,
     void *restrict, bunyan_logger_t *restrict);
+
+void ikev2_pkt_log(pkt_t *restrict, bunyan_logger_t *restrict, const char *,
+    bunyan_level_t);
 
 #ifdef __cplusplus
 }

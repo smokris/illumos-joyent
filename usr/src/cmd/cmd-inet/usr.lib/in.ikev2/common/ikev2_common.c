@@ -176,7 +176,7 @@ ikev2_sa_match_acquire(parsedmsg_t *restrict pmsg, pkt_t *restrict pkt,
 }
 
 #if 0
-sa_compare_xf_cb(ikev2_transform_t *xf, uchar_t *buf, size_t buflen,
+sa_compare_xf_cb(ikev2_transform_t *xf, uint8_t *buf, size_t buflen,
     void *cookie)
 {
 	struct validate_data *data = cookie;
@@ -208,7 +208,6 @@ sa_compare_xf_cb(ikev2_transform_t *xf, uchar_t *buf, size_t buflen,
 			match = B_TRUE;
 		break;
 	case IKEV2_XF_ESN:
-		/* XXX: msg */
 		return (B_FALSE);
 	default:
 		bunyan_debug(data->log, "Unknown transform type",

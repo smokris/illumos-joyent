@@ -80,11 +80,12 @@ ikev2_pkt_new_response(const pkt_t *init)
 }
 
 struct validate_data {
+	bunyan_logger_t	*log;
 	pkt_t		*pkt;
 	size_t		notify_count;
 	size_t		payload_count[IKEV2_NUM_PAYLOADS];
 	boolean_t	initiator;
-	uint8_t		exch_type;
+	ikev2_exch_t	exch_type;
 };
 
 static pkt_walk_ret_t check_payload(uint8_t, uint8_t, uint8_t *restrict,
@@ -93,13 +94,15 @@ static boolean_t check_sa_init_payloads(boolean_t, const size_t *);
 
 /* Allocate a ikev2_pkt_t for an inbound datagram in raw */
 pkt_t *
-ikev2_pkt_new_inbound(uint8_t *buf, size_t buflen)
+ikev2_pkt_new_inbound(uint8_t *restrict buf, size_t buflen,
+    bunyan_logger_t *restrict l)
 {
 	const ike_header_t	*hdr = NULL;
 	pkt_t			*pkt = NULL;
 	size_t			*counts = NULL;
 	struct validate_data	arg = { 0 };
 	size_t			i = 0;
+	boolean_t		keep = B_TRUE;
 
 	ASSERT(IS_P2ALIGNED(buf, sizeof (uint64_t)));
 
@@ -113,25 +116,32 @@ ikev2_pkt_new_inbound(uint8_t *buf, size_t buflen)
 	 */
 	uint8_t flags = hdr->flags & (IKEV2_FLAG_INITIATOR|IKEV2_FLAG_RESPONSE);
 	if ((flags ^ (IKEV2_FLAG_INITIATOR|IKEV2_FLAG_RESPONSE)) == 0) {
-		/* XXX: log msg? */
+		char flagstr[5] = { 0 };	/* 0xXX + NUL */
+
+		(void) snprintf(flagstr, sizeof (flagstr), "0x%hhx", flags);
+		bunyan_info(l, "Invalid flags value in IKE header",
+		    BUNYAN_T_STRING, "flags", flagstr,
+		    BUNYAN_T_END);
 		return (NULL);
 	}
 
-	if ((pkt = pkt_in_alloc(buf, buflen)) == NULL) {
-		/* XXX: log msg */
+	/* pkt_in_alloc() will log any errors messages */
+	if ((pkt = pkt_in_alloc(buf, buflen, l)) == NULL)
 		return (NULL);
-	}
 
+	arg.log = l;
 	arg.pkt = pkt;
 	arg.exch_type = hdr->exch_type;
 	arg.initiator = !!(hdr->flags & IKEV2_FLAG_INITIATOR);
 
 	if (pkt_payload_walk((uint8_t *)(hdr + 1),
 	    buflen - sizeof (ike_header_t), check_payload, hdr->next_payload,
-	    &arg) != PKT_WALK_OK)
+	    &arg, l) != PKT_WALK_OK)
 		goto discard;
 
 	counts = arg.payload_count;
+
+	ikev2_pkt_log(pkt, l, "Received IKEv2 packet", BUNYAN_L_DEBUG);
 
 #define	PAYCOUNT(totals, paytype) totals[(paytype) - IKEV2_PAYLOAD_MIN]
 
@@ -142,22 +152,37 @@ ikev2_pkt_new_inbound(uint8_t *buf, size_t buflen)
 		/* check_payload() already made sure we only have SK payloads */
 		if (PAYCOUNT(counts, IKEV2_PAYLOAD_SK) == 1)
 			return (pkt);
-
-		/* XXX: log */
+		bunyan_warn(l, "Encrypted payloads missing from non "
+		    "IKE_SA_INIT exchange", BUNYAN_T_END);
 		goto discard;
 	case IKEV2_EXCH_IKE_SA_INIT:
 		break;
 	case IKEV2_EXCH_IKE_SESSION_RESUME:
-		INVALID("arg->exch_type");
+		/* XXX: unsupported, notify? */
+		keep = B_FALSE;
+		break;
+	default:
+		bunyan_info(l, "Unknown exchange",
+		    BUNYAN_T_UINT32, "exch_type", (uint32_t)arg.exch_type,
+		    BUNYAN_T_END);
+		keep = B_FALSE;
 		break;
 	}
+
+	if (!keep)
+		goto discard;
 
 #define	HAS_NOTIFY(totals) (!!(PAYCOUNT(totals, IKEV2_PAYLOAD_NOTIFY) > 0))
 
 	for (i = IKEV2_PAYLOAD_MIN; i <= IKEV2_PAYLOAD_MAX; i++) {
 		size_t count = PAYCOUNT(counts, i);
 
-		switch (i) {
+		switch ((ikev2_pay_type_t)i) {
+		case IKEV2_PAYLOAD_NONE:
+			/* By virtue of loop, this would be an error */
+			INVALID("i");
+			break;
+
 		/* Never allowed in an SA_INIT exchange */
 		case IKEV2_PAYLOAD_IDi:
 		case IKEV2_PAYLOAD_IDr:
@@ -171,8 +196,11 @@ ikev2_pkt_new_inbound(uint8_t *buf, size_t buflen)
 		case IKEV2_PAYLOAD_EAP:
 		case IKEV2_PAYLOAD_GSPM:
 			if (count > 0) {
-				/* XXX: log */
-				goto discard;
+				bunyan_info(l, "Disallowed payload present "
+				    "in IKE_SA_INIT exchange",
+				    BUNYAN_T_STRING, "payload",
+				    ikev2_pay_short_str(i), BUNYAN_T_END);
+				keep = B_FALSE;
 			}
 			break;
 
@@ -185,11 +213,18 @@ ikev2_pkt_new_inbound(uint8_t *buf, size_t buflen)
 			if (PAYCOUNT(counts, IKEV2_PAYLOAD_SA) > 0 ||
 			    PAYCOUNT(counts, IKEV2_PAYLOAD_NOTIFY) > 0)
 				break;
-
+			bunyan_info(l, "Vendor ID payload appears without "
+			    "SA or Notification payload", BUNYAN_T_END);
+			keep = B_FALSE;
+			break;
 		case IKEV2_PAYLOAD_SA:
 			if (count != 1 && !HAS_NOTIFY(counts)) {
-				/* XXX: log */
-				goto discard;
+				bunyan_info(l, "Payload missing in "
+				    "non-notification IKE_SA_INIT exchange",
+				    BUNYAN_T_STRING, "missing",
+				    ikev2_pay_short_str(i),
+				    BUNYAN_T_END);
+				keep = B_FALSE;
 			}
 			break;
 
@@ -197,18 +232,26 @@ ikev2_pkt_new_inbound(uint8_t *buf, size_t buflen)
 		case IKEV2_PAYLOAD_NONCE:
 			if (count != 1) {
 				if (!HAS_NOTIFY(counts)) {
-					/* XXX: log */
-					goto discard;
+					bunyan_info(l, "Payload missing in "
+					    "non-notification IKE_SA_INIT "
+					    "exchange",
+					    BUNYAN_T_STRING, "missing",
+					    ikev2_pay_short_str(i),
+					    BUNYAN_T_END);
+					keep = B_FALSE;
 				}
 				break;
 			}
 			if (PAYCOUNT(counts, IKEV2_PAYLOAD_SA) != 1) {
-				/* XXX: log */
-				goto discard;
+				bunyan_info(l, "Missing SA payload",
+				    BUNYAN_T_END);
+				keep = B_FALSE;
 			}
 			break;
 		}
 	}
+	if (!keep)
+		goto discard;
 
 	return (pkt);
 
@@ -379,6 +422,8 @@ ikev2_walk_xfattrs(uint8_t *restrict start, size_t len, ikev2_xfattr_cb_t cb,
 
 static boolean_t check_sa_payload(uint8_t *restrict, size_t, boolean_t,
     bunyan_logger_t *restrict l);
+static boolean_t check_notify_payload(struct validate_data *restrict,
+    uint8_t *restrict, size_t, bunyan_logger_t *restrict l);
 
 /*
  * Cache the payload offsets and do some minimal checking.
@@ -441,7 +486,9 @@ check_payload(uint8_t paytype, uint8_t resv, uint8_t *restrict buf,
 
 	default:
 		/* Unknown exchange, bail */
-		/* XXX: log message? */
+		bunyan_info(arg->log, "Discarding packet with unknown exchange",
+		    BUNYAN_T_UINT32, "exch_type", (uint32_t)arg->exch_type,
+		    BUNYAN_T_END);
 		return (PKT_WALK_ERROR);
 	}
 
@@ -449,32 +496,46 @@ check_payload(uint8_t paytype, uint8_t resv, uint8_t *restrict buf,
 
 	arg->payload_count[paytype - IKEV2_PAYLOAD_MIN]++;
 
-	if (paytype == IKEV2_PAYLOAD_NOTIFY) {
-		pkt_notify_t *ntfyp = pkt_notify(arg->pkt, arg->notify_count++);
-		ikev2_notify_t ntfy = { 0 };
-		size_t len = sizeof (ntfy);
-
-		if (buflen < len) {
-			/* XXX: log */
+	switch (paytype) {
+	case IKEV2_PAYLOAD_NOTIFY:
+		if (!check_notify_payload(arg, buf, buflen, log))
 			return (PKT_WALK_ERROR);
-		}
-		(void) memcpy(&ntfy, buf, sizeof (ntfy));
-		len += ntfy.n_spisize;
-		if (buflen < len) {
-			/* XXX: log */
-			return (PKT_WALK_ERROR);
-		}
-
-		ntfyp->pn_ptr = buf;
-		ntfyp->pn_type = ntohs(ntfy.n_type);
-		ntfyp->pn_len = buflen;
-		return (PKT_WALK_OK);
-	} else if (paytype == IKEV2_PAYLOAD_SA) {
+		break;
+	case IKEV2_PAYLOAD_SA:
 		if (!check_sa_payload(buf, buflen, !arg->initiator, log))
 			return (PKT_WALK_ERROR);
+		break;
 	}
 
 	return (PKT_WALK_OK);
+}
+
+static boolean_t
+check_notify_payload(struct validate_data *restrict arg, uint8_t *restrict buf,
+    size_t buflen, bunyan_logger_t *restrict l)
+{
+	pkt_notify_t *ntfyp = pkt_notify(arg->pkt, arg->notify_count++);
+	ikev2_notify_t ntfy = { 0 };
+	size_t len = sizeof (ntfy);
+
+	if (buflen < len) {
+		bunyan_info(l, "Notify data is truncated", BUNYAN_T_END);
+		return (B_FALSE);
+	}
+
+	(void) memcpy(&ntfy, buf, sizeof (ntfy));
+	len += ntfy.n_spisize;
+	if (buflen < len) {
+		bunyan_info(l, "SPI size overflows notify payload",
+		    BUNYAN_T_UINT32, "spisize", (uint32_t)ntfy.n_spisize,
+		    BUNYAN_T_END);
+		return (B_FALSE);
+	}
+
+	ntfyp->pn_ptr = buf;
+	ntfyp->pn_type = ntohs(ntfy.n_type);
+	ntfyp->pn_len = buflen;
+	return (B_TRUE);
 }
 
 struct sa_payload_data {
@@ -1280,7 +1341,7 @@ crypt_common(pkt_t *pkt, boolean_t encrypt, uint8_t *iv, CK_ULONG ivlen,
 		nonce = alloca(noncelen);
 		(void) memcpy(nonce, sa->salt, sa->saltlen);
 		(void) memcpy(nonce + sa->saltlen, iv, ivlen);
-		params.ccm.pAAD = (CK_BYTE_PTR)&pkt->pkt_raw;
+		params.ccm.pAAD = pkt_start(pkt);
 		params.ccm.ulAADLen = (CK_ULONG)(iv - params.ccm.pAAD);
 		params.ccm.ulMACLen = icvlen;
 		params.ccm.pNonce = nonce;
@@ -1302,7 +1363,7 @@ crypt_common(pkt_t *pkt, boolean_t encrypt, uint8_t *iv, CK_ULONG ivlen,
 		 * to be a leftover from the unpublished PKCS#11 v2.30 standard.
 		 * It is currently not set and ignored
 		 */
-		params.gcm.pAAD = (CK_BYTE_PTR)&pkt->pkt_raw;
+		params.gcm.pAAD = pkt_start(pkt);
 		params.gcm.ulAADLen = (CK_ULONG)(iv - params.gcm.pAAD);
 		params.gcm.ulTagBits = icvlen * 8;
 		mech.pParameter = &params.gcm;
@@ -1367,7 +1428,7 @@ auth_common(pkt_t *pkt, boolean_t encrypt, uint8_t *icv, size_t icvlen)
 	mech.pParameter = NULL_PTR;
 	mech.ulParameterLen = 0;
 
-	data = (CK_BYTE_PTR)&pkt->pkt_raw;
+	data = pkt_start(pkt);
 	datalen = (CK_ULONG)(icv - data);
 
 	if (encrypt) {
@@ -1527,7 +1588,7 @@ ikev2_pkt_decrypt(pkt_t *pkt)
 		if (pay->pp_type != IKEV2_PAYLOAD_SK)
 			continue;
 
-		data = (CK_BYTE_PTR)pay->pp_ptr;
+		data = pay->pp_ptr;
 		datalen = pay->pp_len;
 		break;
 	}
@@ -1592,7 +1653,7 @@ ikev2_pkt_decrypt(pkt_t *pkt)
 	(void) memcpy(&pay, payp, sizeof (ike_payload_t));
 
 	if (!pkt_count_payloads(data, datalen, pay.pay_next, &paycount,
-	    &ncount)) {
+	    &ncount, sa->i2sa_log)) {
 		return (B_FALSE);
 	}
 
@@ -1602,7 +1663,8 @@ ikev2_pkt_decrypt(pkt_t *pkt)
 	    pkt->pkt_notify_count + ncount))
 		return (B_FALSE);
 
-	if (!pkt_index_payloads(pkt, data, datalen, pay.pay_next, paystart))
+	if (!pkt_index_payloads(pkt, data, datalen, pay.pay_next, paystart,
+	    sa->i2sa_log))
 		return (B_FALSE);
 
 	ncount = nstart;
@@ -1685,4 +1747,21 @@ ikev2_pkt_desc(pkt_t *pkt)
 	}
 
 	return (s);
+}
+
+void
+ikev2_pkt_log(pkt_t *restrict pkt, bunyan_logger_t *restrict log,
+    const char *msg, bunyan_level_t level)
+{
+	char *descstr = ikev2_pkt_desc(pkt);
+	VERIFY3P(descstr, !=, NULL);
+	getlog(level)(log, msg,
+	    BUNYAN_T_UINT64, "initiator_spi", pkt->pkt_header.initiator_spi,
+	    BUNYAN_T_UINT64, "responder_spi", pkt->pkt_header.responder_spi,
+	    BUNYAN_T_STRING, "exch_type",
+	    ikev2_exch_str(pkt->pkt_header.exch_type),
+	    BUNYAN_T_UINT32, "msgid", pkt->pkt_header.msgid,
+	    BUNYAN_T_STRING, "payloads", descstr,
+	    BUNYAN_T_END);
+	free(descstr);
 }

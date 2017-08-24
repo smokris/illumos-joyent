@@ -23,23 +23,26 @@
 extern "C" {
 #endif
 
+struct bunyan_logger;
+
 typedef enum pkt_walk_ret {
 	PKT_WALK_ERROR	= -1,
 	PKT_WALK_OK = 0,
 	PKT_WALK_STOP = 1
 } pkt_walk_ret_t;
 
-typedef pkt_walk_ret_t (*pkt_walk_fn_t)(uint8_t, uint8_t, uchar_t *restrict,
+typedef pkt_walk_ret_t (*pkt_walk_fn_t)(uint8_t, uint8_t, uint8_t *restrict,
     size_t, void *restrict);
-pkt_walk_ret_t pkt_payload_walk(uchar_t *restrict, size_t, pkt_walk_fn_t,
-    uint8_t, void *restrict);
+pkt_walk_ret_t pkt_payload_walk(uint8_t *restrict, size_t, pkt_walk_fn_t,
+    uint8_t, void *restrict, struct bunyan_logger *restrict);
 
-boolean_t pkt_count_payloads(uchar_t *restrict, size_t, uint8_t, size_t *,
-    size_t *);
-boolean_t pkt_index_payloads(pkt_t *, uchar_t *, size_t, uint8_t, size_t);
+boolean_t pkt_count_payloads(uint8_t *restrict, size_t, uint8_t, size_t *,
+    size_t *, struct bunyan_logger *restrict);
+boolean_t pkt_index_payloads(pkt_t *, uint8_t *, size_t, uint8_t, size_t,
+    struct bunyan_logger *restrict);
 boolean_t pkt_size_index(pkt_t *, size_t, size_t);
 
-pkt_t *pkt_in_alloc(uchar_t *, size_t);
+pkt_t *pkt_in_alloc(uint8_t *restrict, size_t, struct bunyan_logger *restrict);
 pkt_t *pkt_out_alloc(uint64_t, uint64_t, uint8_t, uint8_t, uint32_t);
 void pkt_free(pkt_t *);
 
@@ -48,11 +51,11 @@ void pkt_stack_push(pkt_t *restrict, pkt_stack_item_t, pkt_finish_fn,
 
 boolean_t pkt_add_payload(pkt_t *, uint8_t, uint8_t);
 boolean_t pkt_add_prop(pkt_t *, uint8_t, uint8_t, size_t, uint64_t);
-boolean_t pkt_add_xform(pkt_t *, uint8_t, uint8_t);
+boolean_t pkt_add_xform(pkt_t *, uint8_t, uint16_t);
 boolean_t pkt_add_xform_attr_tv(pkt_t *, uint16_t, uint16_t);
 boolean_t pkt_add_xform_attr_tlv(pkt_t *restrict, uint16_t,
-    const uchar_t *restrict, size_t);
-boolean_t pkt_add_cert(pkt_t *restrict, uint8_t, const uchar_t *restrict,
+    const uint8_t *restrict, size_t);
+boolean_t pkt_add_cert(pkt_t *restrict, uint8_t, const uint8_t *restrict,
     size_t);
 
 #ifdef __cplusplus

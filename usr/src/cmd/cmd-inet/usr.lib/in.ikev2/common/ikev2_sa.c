@@ -24,7 +24,7 @@
  * Use is subject to license terms.
  *
  * Copyright 2017 Jason King.
- * Copyright 2017 Joyent, Inc.
+ * Copyright (c) 2017, Joyent, Inc.
  */
 
 /*
@@ -196,7 +196,7 @@ ikev2_sa_alloc(boolean_t initiator,
 	if ((i2sa = umem_cache_alloc(i2sa_cache, UMEM_DEFAULT)) == NULL)
 		return (NULL);
 
-	if ((bunyan_child(log, &i2sa->i2sa_log) != 0)) {
+	if ((bunyan_child(log, &i2sa->i2sa_log, BUNYAN_T_END) != 0)) {
 		umem_cache_free(i2sa_cache, i2sa);
 		return (NULL);
 	}
@@ -255,9 +255,13 @@ ikev2_sa_alloc(boolean_t initiator,
 	 * XXX: Should this be reset after we've successfully authenticated?
 	 */
 
+	config_t *cfg = config_get();
+	hrtime_t expire = cfg->cfg_expire_timer;
+	CONFIG_REFRELE(cfg);
+	cfg = NULL;
+
 	I2SA_REFHOLD(i2sa);	/* for the timer */
-	if (!schedule_timeout(TE_SA_EXPIRE, i2sa_expire_cb, i2sa,
-	    /* XXX: fixme */ 999 * NANOSEC)) {
+	if (!schedule_timeout(TE_SA_EXPIRE, i2sa_expire_cb, i2sa, expire)) {
 		bunyan_warn(i2sa->i2sa_log, "aborting larval IKEv2 SA creation",
 		    BUNYAN_T_END);
 
@@ -291,7 +295,7 @@ i2sa_expire_cb(te_event_t evt, void *data)
 
 	ikev2_sa_t *i2sa = (ikev2_sa_t *)data;
 
-	/* XXX: todo */
+	/* TODO */
 	I2SA_REFRELE(i2sa);
 }
 
@@ -379,7 +383,7 @@ ikev2_sa_set_hashsize(uint_t numbuckets)
 	if (!startup)
 		worker_suspend();
 
-	/* round up to a power of two if not already */
+	/* Round up to a power of two if not already */
 	if (!ISP2(numbuckets)) {
 		ASSERT(sizeof (numbuckets) == 4);
 		--numbuckets;
@@ -596,17 +600,26 @@ i2sa_verify(ikev2_sa_t *restrict i2sa, uint64_t rem_spi,
 		return (NULL);
 
 	if (rem_spi != 0 && I2SA_REMOTE_SPI(i2sa) != rem_spi) {
-		/* XXX: log message */
+		bunyan_error(i2sa->i2sa_log,
+		    "Found an IKEv2 SA, but remote SPI does not match",
+		    BUNYAN_T_UINT64, "spi", rem_spi,
+		    BUNYAN_T_END);
 		goto bad_match;
 	}
 
 	if (laddr != NULL && !SA_ADDR_EQ(laddr, &i2sa->laddr)) {
-		/* XXX: log message */
+		bunyan_error(i2sa->i2sa_log,
+		    "Found an IKEv2 SA, but local address does not match",
+		    ss_bunyan(laddr), "addr", ss_addr(laddr),
+		    BUNYAN_T_END);
 		goto bad_match;
 	}
 
 	if (raddr != NULL && !SA_ADDR_EQ(raddr, &i2sa->raddr)) {
-		/* XXX: log message */
+		bunyan_error(i2sa->i2sa_log,
+		    "Found an IKEv2 SA, but remote address does not match",
+		    ss_bunyan(raddr), "addr", ss_addr(raddr),
+		    BUNYAN_T_END);
 		goto bad_match;
 	}
 
@@ -617,7 +630,9 @@ i2sa_verify(ikev2_sa_t *restrict i2sa, uint64_t rem_spi,
 
 	/* XXX KEBE SAYS FILL IN OTHER REALITY CHECKS HERE. */
 
-	/* XXX: log full match */
+	bunyan_trace(i2sa->i2sa_log, "IKEv2 SA found",
+	    BUNYAN_T_STRING, "func", __func__,
+	    BUNYAN_T_END);
 	return (i2sa);
 
 bad_match:
@@ -720,7 +735,7 @@ i2sa_ctor(void *buf, void *dummy, int flags)
 	PTH(pthread_mutex_init(&i2sa->lock, NULL));
 	for (size_t i = 0; i < ARRAY_SIZE(pool_names); i++) {
 		uu_list_node_init(buf,
-		    (uu_list_node_t *)((uchar_t *)buf + pool_names[i].offset),
+		    (uu_list_node_t *)((uint8_t *)buf + pool_names[i].offset),
 		    list_pool[i]);
 	}
 
@@ -738,7 +753,7 @@ i2sa_dtor(void *buf, void *dummy)
 	PTH(pthread_mutex_destroy(&i2sa->lock));
 	for (size_t i = 0; i < I2SA_NUM_HASH; i++) {
 		uu_list_node_fini(buf,
-		    (uu_list_node_t *)((uchar_t *)buf + pool_names[i].offset),
+		    (uu_list_node_t *)((uint8_t *)buf + pool_names[i].offset),
 		    list_pool[i]);
 	}
 }
@@ -803,7 +818,7 @@ i2sa_compare(const void *larg, const void *rarg, void *arg)
 	const ikev2_sa_t *l = (const ikev2_sa_t *)larg;
 	const ikev2_sa_t *r = (const ikev2_sa_t *)rarg;
 	i2sa_cmp_arg_t *carg = (i2sa_cmp_arg_t *)arg;
-	const uchar_t *lbuf, *rbuf;
+	const uint8_t *lbuf, *rbuf;
 	uint64_t spi;
 	size_t lsz, rsz;
 	int cmp;
@@ -849,14 +864,14 @@ i2sa_compare(const void *larg, const void *rarg, void *arg)
 	if (I2SA_REMOTE_SPI(l) < carg->rspi)
 		return (-1);
 
-	/* more likely to be different, so check these first */
+	/* More likely to be different, so check these first */
 	cmp = sockaddr_compare(&l->raddr, carg->raddr.sau_ss);
 	if (cmp > 0)
 		return (1);
 	if (cmp < 0)
 		return (-1);
 
-	/* a multihomed system might have different local addresses */
+	/* A multihomed system might have different local addresses */
 	cmp = sockaddr_compare(&l->laddr, carg->laddr.sau_ss);
 	if (cmp > 0)
 		return (1);

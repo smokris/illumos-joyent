@@ -295,7 +295,7 @@ check_one_nat(pkt_t *pkt, pkt_notify_t *n)
 		return (-1);
 	}
 
-	buf[0].b_ptr = (CK_BYTE_PTR)&pkt->pkt_raw;
+	buf[0].b_ptr = pkt_start(pkt);
 	buf[0].b_len = 2 * sizeof (uint64_t);
 
 	switch (addr.sau_ss->ss_family) {
@@ -434,7 +434,7 @@ add_nat(pkt_t *pkt)
 	buf[0].b_len = sizeof (spi);
 
 	for (int i = 0; i < 2; i++) {
-		uchar_t data[NAT_LEN] = { 0 };
+		uint8_t data[NAT_LEN] = { 0 };
 		buf_t out = { .b_ptr = data, .b_len = sizeof (data) };
 
 		switch (addr[i].sau_ss->ss_family) {
@@ -493,7 +493,7 @@ check_vendor(pkt_t *pkt)
 static boolean_t
 add_vendor(pkt_t *pkt)
 {
-	return (ikev2_add_vendor(pkt, (uchar_t *)VENDOR_STR_ILLUMOS_1,
+	return (ikev2_add_vendor(pkt, (uint8_t *)VENDOR_STR_ILLUMOS_1,
 	    sizeof (VENDOR_STR_ILLUMOS_1)));
 }
 

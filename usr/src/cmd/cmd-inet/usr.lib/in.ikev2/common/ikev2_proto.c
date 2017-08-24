@@ -23,8 +23,8 @@
  * Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
  *
- * Copyright 2012 Jason King.
- * Copyright 2017 Joyent, Inc
+ * Copyright 2017 Jason King.
+ * Copyright (c) 2017, Joyent, Inc
  */
 
 #include <sys/types.h>
@@ -39,14 +39,13 @@
 #include "fromto.h"
 #include "ikev2_proto.h"
 #include "config.h"
+#include "pkt.h"
 
 #define	SPILOG(_level, _log, _msg, _src, _dest, _lspi, _rspi, ...)	\
 	NETLOG(_level, _log, _msg, _src, _dest,				\
 	BUNYAN_T_UINT64, "local_spi", (_lspi),				\
 	BUNYAN_T_UINT64, "remote_spi", (_rspi),				\
 	## __VA_ARGS__)
-
-#define	PKT_PTR(pkt)	((uchar_t *)(pkt)->pkt_raw)
 
 static void ikev2_retransmit(te_event_t, void *);
 static int select_socket(const ikev2_sa_t *, const struct sockaddr_storage *);
@@ -175,7 +174,7 @@ ikev2_send(pkt_t *pkt, boolean_t is_error)
 	}
 
 	s = select_socket(i2sa, NULL);
-	len = sendfromto(s, PKT_PTR(pkt), pkt_len(pkt), &i2sa->laddr,
+	len = sendfromto(s, pkt_start(pkt), pkt_len(pkt), &i2sa->laddr,
 	    &i2sa->raddr);
 	if (len == -1 && pkt != i2sa->init) {
 		/*
@@ -256,7 +255,7 @@ ikev2_retransmit(te_event_t event, void *data)
 	PTH(pthread_mutex_unlock(&sa->lock));
 	CONFIG_REFRELE(cfg);
 
-	len = sendfromto(select_socket(sa, NULL), PKT_PTR(pkt), pkt_len(pkt),
+	len = sendfromto(select_socket(sa, NULL), pkt_start(pkt), pkt_len(pkt),
 	    &sa->laddr, &sa->raddr);
 	/* XXX: sendfromto() will log if it fails, do anything else? */
 
@@ -323,7 +322,7 @@ ikev2_discard_pkt(pkt_t *pkt)
 			goto done;
 		}
 
-		len = sendfromto(select_socket(sa, NULL), PKT_PTR(resp),
+		len = sendfromto(select_socket(sa, NULL), pkt_start(resp),
 		    pkt_len(pkt), &sa->laddr, &sa->raddr);
 		goto done;
 	}

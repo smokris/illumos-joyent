@@ -53,7 +53,14 @@
 #include "fromto.h"
 #include "ikev2_proto.h"
 
-static uchar_t *inbound_buf(void);
+struct inbound_thrdata_s {
+	uint8_t		*it_buf;
+	size_t		it_buflen;
+	bunyan_logger_t	*it_log;
+};
+
+static uint8_t *inbound_buf(void);
+static bunyan_logger_t *inbound_log(void);
 static pthread_key_t inbound_key = PTHREAD_ONCE_KEY_NP;
 
 int ikesock4 = -1;
@@ -64,8 +71,8 @@ static void
 inbound(int s, void *arg)
 {
 	_NOTE(ARGUNUSED(arg))
-
-	uchar_t *buf = NULL;
+	bunyan_logger_t *l = inbound_log();
+	uint8_t *buf = NULL;
 	pkt_t *pkt = NULL;
 	struct sockaddr_storage to = { 0 };
 	struct sockaddr_storage from = { 0 };
@@ -80,29 +87,33 @@ inbound(int s, void *arg)
 	    &tolen);
 	schedule_socket(s, inbound);
 
-	if (pktlen == -1) {
-		/* recvfromto() should have dumped enough debug info */
+	/* recvfromto() should have dumped enough debug info */
+	if (pktlen == -1)
 		return;
-	}
 
-	/*
-	 * recvfromto() guarantees we've received at least ike_header_t
-	 * bytes (or it returns -1)
-	 */
+	/* recvfromto() should discard truncated packets, if not, it's a bug */
+	VERIFY3U(pktlen, >=, sizeof (ike_header_t));
 
 	/* sanity checks */
 	ike_header_t *hdr = (ike_header_t *)buf;
 	size_t hdrlen = ntohl(hdr->length);
 
+	VERIFY(bunyan_key_add(l,
+	   ss_bunyan(&from), "src", ss_addr(&from),
+	   BUNYAN_T_UINT32, "srcport", ss_port(&from),
+	   ss_bunyan(&to), "dest", ss_addr(&to),
+	   BUNYAN_T_UINT32, "destport", ss_port(&to),
+	   BUNYAN_T_END) == 0);
+
 	if (hdrlen != pktlen) {
-		NETLOG(info, log, "ISAKMP header length doesn't match "
+		NETLOG(info, l, "ISAKMP header length doesn't match "
 		    "received length; discarding", &from, &to,
 		    BUNYAN_T_UINT32, "hdrlen", (uint32_t)hdrlen,
 		    BUNYAN_T_UINT32, "pktlen", (uint32_t)pktlen);
 		return;
 	}
 
-	pkt = ikev2_pkt_new_inbound(buf, pktlen);
+	pkt = ikev2_pkt_new_inbound(buf, pktlen, l);
 	if (pkt == NULL)
 		return;
 
@@ -185,31 +196,54 @@ udp_listener_socket(sa_family_t af, uint16_t port)
 	return (sock);
 }
 
-static uchar_t *
-inbound_buf(void)
+static struct inbound_thrdata_s *
+get_itdata(void)
 {
-	uchar_t *ptr = pthread_getspecific(inbound_key);
+	struct inbound_thrdata_s *it = pthread_getspecific(inbound_key);
 
-	if (ptr != NULL)
-		return (ptr);
+	if (it != NULL)
+		return (it);
 
-	if ((ptr = umem_alloc(MAX_PACKET_SIZE, UMEM_DEFAULT)) == NULL)
+	it = umem_alloc(sizeof (*it), UMEM_DEFAULT);
+	if (it == NULL)
 		err(EXIT_FAILURE, "%s", __func__);
 
-	PTH(pthread_setspecific(inbound_key, ptr));
-	return (ptr);
+	it->it_buf = umem_alloc(MAX_PACKET_SIZE, UMEM_DEFAULT);
+	if (it->it_buf == NULL)
+		err(EXIT_FAILURE, "%s", __func__);
+	it->it_buflen = MAX_PACKET_SIZE;
+
+	if (bunyan_child(log, &it->it_log, BUNYAN_T_END) != 0)
+		err(EXIT_FAILURE, "bunyan_child failed");
+
+	PTH(pthread_setspecific(inbound_key, it));
+	return (it);
+}
+
+static uint8_t *
+inbound_buf(void)
+{
+	return (get_itdata()->it_buf);
+}
+
+static bunyan_logger_t *
+inbound_log(void)
+{
+	return (get_itdata()->it_log);
 }
 
 static void
-inbound_free_buf(void *buf)
+inbound_free(void *arg)
 {
-	umem_free(buf, MAX_PACKET_SIZE);
+	struct inbound_thrdata_s *data = arg;
+	umem_free(data->it_buf, data->it_buflen);
+	bunyan_fini(data->it_log);
 }
 
 void
 inbound_init(void)
 {
-	PTH(pthread_key_create_once_np(&inbound_key, inbound_free_buf));
+	PTH(pthread_key_create_once_np(&inbound_key, inbound_free));
 
 	ikesock4 = udp_listener_socket(AF_INET, IPPORT_IKE);
 	nattsock = udp_listener_socket(AF_INET, IPPORT_IKE_NATT);
