@@ -412,10 +412,17 @@ static boolean_t
 add_nat(pkt_t *pkt)
 {
 	bunyan_logger_t *l = pkt->pkt_sa->i2sa_log;
+	const char *pkfunc = NULL;
 	sockaddr_u_t addr[2];
 	uint64_t spi[2];
 	ikev2_notify_type_t ntype[2];
-	buf_t buf[3];
+	CK_MECHANISM mech = {
+		.mechanism = CKM_SHA_1,
+		.pParameter = NULL_PTR,
+		.ulParameterLen = 0
+	};
+	CK_SESSION_HANDLE h = p11h;
+	CK_RV ret = CKR_OK;
 
 	addr[0].sau_ss = &pkt->pkt_sa->laddr;
 	addr[1].sau_ss = &pkt->pkt_sa->raddr;
@@ -430,42 +437,62 @@ add_nat(pkt_t *pkt)
 	spi[0] = htonll(pkt->pkt_header.initiator_spi);
 	spi[1] = htonll(pkt->pkt_header.responder_spi);
 
-	buf[0].b_ptr = (CK_BYTE_PTR)&spi;
-	buf[0].b_len = sizeof (spi);
-
 	for (int i = 0; i < 2; i++) {
 		uint8_t data[NAT_LEN] = { 0 };
-		buf_t out = { .b_ptr = data, .b_len = sizeof (data) };
+		CK_ULONG datalen = sizeof (data);
+		CK_ULONG paramlen = 0;
+		CK_MECHANISM mech = {
+			.mechanism = CKM_SHA_1,
+			.pParameter = NULL_PTR,
+			.ulParameterLen = 0
+		};
+
+		CK_BYTE_PTR addrp = (CK_BYTE_PTR)ss_addr(addr[i].sau_ss);
+		uint16_t port = (uint16_t)ss_port(addr[i].sau_ss);
+
+		pkfunc = "C_DigestInit";
+		if ((ret = C_DigestInit(h, &mech)) != CKR_OK)
+			goto fail;
+
+		pkfunc = "C_DigestUpdate";
+		ret = C_DigestUpdate(h, (CK_BYTE_PTR)&spi, sizeof (spi));
+		if (ret != CKR_OK)
+			goto fail;
 
 		switch (addr[i].sau_ss->ss_family) {
 		case AF_INET:
-			buf[1].b_ptr = (CK_BYTE_PTR)&addr[i].sau_sin->sin_addr;
-			buf[1].b_len = sizeof (in_addr_t);
-			buf[2].b_ptr = (CK_BYTE_PTR)&addr[i].sau_sin->sin_port;
-			buf[2].b_len = sizeof (addr[i].sau_sin->sin_port);
+			paramlen = sizeof (in_addr_t);
 			break;
 		case AF_INET6:
-			buf[1].b_ptr =
-			    (CK_BYTE_PTR)&addr[i].sau_sin6->sin6_addr;
-			buf[1].b_len = sizeof (in6_addr_t);
-			buf[2].b_ptr =
-			    (CK_BYTE_PTR)&addr[i].sau_sin6->sin6_port;
-			buf[2].b_len = sizeof (addr[i].sau_sin6->sin6_port);
+			paramlen = sizeof (in6_addr_t);
 			break;
 		default:
 			INVALID("addr.sau_ss->ss_family");
 			return (B_FALSE);
 		}
+		ret = C_DigestUpdate(h, addrp, paramlen);
+		if (ret != CKR_OK)
+			goto fail;
 
-		if (!pkcs11_digest(CKM_SHA_1, buf, ARRAY_SIZE(buf), &out, l))
-			return (B_FALSE);
+		ret = C_DigestUpdate(h, (CK_BYTE_PTR)&port, sizeof (port));
+		if (ret != CKR_OK)
+			goto fail;
 
+		pkfunc = "C_DigestFinal";
+		ret = C_DigestFinal(h, data, &datalen);
+		if (ret != CKR_OK)
+			goto fail;
+		
 		if (!ikev2_add_notify(pkt, IKEV2_PROTO_IKE, 0, ntype[i],
 		    data, sizeof (data)))
 			return (B_FALSE);
 	}
 
 	return (B_TRUE);
+
+fail:
+	PKCS11ERR(error, l, pkfunc, ret);
+	return (B_FALSE);
 }
 
 static void
