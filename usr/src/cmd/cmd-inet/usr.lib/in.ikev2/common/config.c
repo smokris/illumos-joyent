@@ -153,8 +153,10 @@ cfg_rule_free(config_rule_t *rule)
 		return;
 
 	if (rule->rule_xf != NULL) {
-		for (size_t i = 0; rule->rule_xf[i] != NULL; i++)
+		for (size_t i = 0; rule->rule_xf[i] != NULL; i++) {
+			free(rule->rule_xf[i]->xf_str);
 			free(rule->rule_xf[i]);
+		}
 	}
 
 	free(rule->rule_xf);

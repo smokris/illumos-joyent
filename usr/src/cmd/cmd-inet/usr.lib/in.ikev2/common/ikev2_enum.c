@@ -256,6 +256,21 @@ ikev2_dh_str(ikev2_dh_t id)
 }
 
 const char *
+ikev2_prf_str(ikev2_prf_t id)
+{
+	switch (id) {
+	STR(IKEV2_PRF_HMAC_MD5);
+	STR(IKEV2_PRF_HMAC_SHA1);
+	STR(IKEV2_PRF_HMAC_TIGER);
+	STR(IKEV2_PRF_AES128_XCBC);
+	STR(IKEV2_PRF_HMAC_SHA2_256);
+	STR(IKEV2_PRF_HMAC_SHA2_384);
+	STR(IKEV2_PRF_HMAC_SHA2_512);
+	STR(IKEV2_PRF_AES128_CMAC);
+	}
+	return ("UNKNOWN");
+}
+const char *
 ikev2_notify_str(ikev2_notify_type_t id)
 {
 	switch (id) {

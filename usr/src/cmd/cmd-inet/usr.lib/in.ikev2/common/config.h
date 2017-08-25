@@ -78,6 +78,7 @@ typedef struct config_id_s {
 } config_id_t;
 
 typedef struct config_xf_s {
+	char			*xf_str;
 	ikev2_xf_encr_t		xf_encr;
 	size_t			xf_minbits;
 	size_t			xf_maxbits;

@@ -544,13 +544,14 @@ parse_xform(input_cursor_t *restrict ic, config_xf_t **restrict xfp)
 {
 	config_xf_t *xf = NULL;
 	token_t *t = NULL, *targ = NULL;
+	uint64_t val = 0;
+	const char *start = NULL, *end = NULL;
 	boolean_t seen_authalg = B_FALSE;
 	boolean_t seen_encralg = B_FALSE;
 	boolean_t seen_dh = B_FALSE;
 	boolean_t seen_authmethod = B_FALSE;
 	boolean_t seen_lifetime_secs = B_FALSE;
 	boolean_t seen_nonce_len = B_FALSE;
-	uint64_t val = 0;
 
 	xf = calloc(1, sizeof (*xf));
 	VERIFY3P(xf, !=, NULL);
@@ -567,6 +568,8 @@ parse_xform(input_cursor_t *restrict ic, config_xf_t **restrict xfp)
 		    BUNYAN_T_END);
 		goto fail;
 	}
+
+	start = t->t_linep + t->t_col;
 
 	/*CONSTCOND*/
 	while (1) {
@@ -679,6 +682,16 @@ parse_xform(input_cursor_t *restrict ic, config_xf_t **restrict xfp)
 		t = NULL;
 		targ = NULL;
 	}
+
+	end = t->t_linep + t->t_col;
+
+	val = (uint64_t)(end - start) + 1;
+	xf->xf_str = calloc(1, val);
+	VERIFY3P(xf->xf_str, !=, NULL);
+	(void) strlcpy(xf->xf_str, start, val);
+
+	tok_free(t);
+	tok_free(targ);
 	*xfp = xf;
 	return (B_TRUE);
 

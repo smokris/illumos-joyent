@@ -32,6 +32,7 @@ const char *ikev2_xf_auth_str(ikev2_xf_auth_t);
 const char *ikev2_auth_type_str(ikev2_auth_type_t);
 const char *ikev2_dh_str(ikev2_dh_t);
 const char *ikev2_notify_str(ikev2_notify_type_t);
+const char *ikev2_prf_str(ikev2_prf_t);
 
 #ifdef __cplusplus
 }

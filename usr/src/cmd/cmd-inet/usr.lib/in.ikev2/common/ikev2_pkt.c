@@ -720,6 +720,7 @@ ikev2_add_prop(pkt_t *pkt, uint8_t propnum, ikev2_spi_proto_t proto,
 	switch (proto) {
 	case IKEV2_PROTO_AH:
 	case IKEV2_PROTO_ESP:
+		/* pkt_add_prop() verifies spi value is in range */
 		spilen = sizeof (uint32_t);
 		break;
 	case IKEV2_PROTO_IKE:
