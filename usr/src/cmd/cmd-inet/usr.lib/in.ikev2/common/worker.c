@@ -26,6 +26,24 @@
 #include "pkcs11.h"
 #include "ikev2_proto.h"
 
+/*
+ * Workers handle all the heavy lifting (including crypto) in in.ikev2d.
+ * An event port (port) waits for packets from our UDP sockets (IPv4, IPv6,
+ * and IPv4 NAT) as well as for pfkey messages.  For UDP messages, some
+ * minimal sanity checks (such as verifying payload lengths) occur, an IKEv2
+ * SA is located for the message (or if appropriate, a larval IKEv2 SA is
+ * created), and then the packet is handed off to a worker thread to do the
+ * rest of the work.  Currently dispatching works by merely taking the local
+ * IKEv2 SA SPI modulo the number of worker threads.  Since we control
+ * the local IKEv2 SA SPI value (and is randomly chosen), this should prevent
+ * a single connection from saturating the process by making all IKEv2
+ * processing for a given IKEv2 SA occur all within the same thread (it also
+ * simplifies some of the synchronization requirements for manipulating
+ * IKEv2 SAs).  Obviously this does not address a DOS with spoofed source
+ * addresses.  Cookies are used to mitigate such threats (to the extent it
+ * can by dropping inbound packets without valid cookie values when enabled).
+ */
+
 typedef enum worker_cmd {
 	WC_NONE,
 	WC_SUSPEND,

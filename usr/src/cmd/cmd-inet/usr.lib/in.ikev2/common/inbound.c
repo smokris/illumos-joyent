@@ -113,6 +113,8 @@ inbound(int s, void *arg)
 		return;
 	}
 
+	/* XXX: Version check */
+
 	pkt = ikev2_pkt_new_inbound(buf, pktlen, l);
 	if (pkt == NULL)
 		return;
