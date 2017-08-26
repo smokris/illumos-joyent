@@ -66,9 +66,15 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 	sa->init = pkt;
 
 	if (!ikev2_sa_match_rule(sa->i2sa_rule, pkt, &sa_result)) {
-		/* XXX: no proposal chosen */
+		ikev2_no_proposal_chosen(sa, pkt, IKEV2_PROTO_IKE, 0);
 		goto fail;
 	}
+
+	sa->encr = sa_result.sar_encr;
+	sa->encr_key_len = sa_result.sar_encr_keylen;
+	sa->auth = sa_result.sar_auth;
+	sa->prf = sa_result.sar_prf;
+	sa->dhgrp = sa_result.sar_dh;
 
 	/* RFC7296 2.10 nonce length should be at least half key size of PRF */
 	noncelen = ikev2_prf_keylen(sa_result.sar_prf) / 2;
@@ -500,7 +506,7 @@ static boolean_t
 add_cookie(pkt_t *restrict pkt, void *restrict cookie, size_t len)
 {
 	pkt_notify_t *n = pkt_get_notify(pkt, IKEV2_N_COOKIE, NULL);
-	uint8_t *start = (uint8_t *)pkt_start(pkt) + sizeof (ike_header_t) +
+	uint8_t *start = pkt_start(pkt) + sizeof (ike_header_t) +
 	    sizeof (ikev2_payload_t);
 	ssize_t total = sizeof (ikev2_payload_t) + sizeof (ikev2_notify_t) +
 	    len;

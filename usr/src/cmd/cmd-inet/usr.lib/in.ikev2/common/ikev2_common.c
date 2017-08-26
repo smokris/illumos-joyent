@@ -15,9 +15,13 @@
 #include <sys/types.h>
 #include <net/pfkeyv2.h>
 #include <sys/debug.h>
+#include <string.h>
 #include "defs.h"
+#include "ikev2_sa.h"
 #include "ikev2_pkt.h"
 #include "ikev2_common.h"
+#include "ikev2_enum.h"
+#include "ikev2_proto.h"
 #include "config.h"
 #include "pkcs11.h"
 
@@ -67,8 +71,9 @@ ikev2_sa_from_acquire(pkt_t *pkt, parsedmsg_t *pmsg, uint32_t spi,
 		if (comb->sadb_comb_auth != SADB_AALG_NONE) {
 			ikev2_xf_auth_t xf_auth;
 			/*
-			 * nothing currently supports this either local algs
-			 * or the IKE protocol
+			 * Neither the auth algorithms currently supported
+			 * nor the IKE protocol itself supports specifying
+			 * a key/bits size for the auth alg.
 			 */
 			VERIFY3U(comb->sadb_comb_auth_minbits, ==, 0);
 			VERIFY3U(comb->sadb_comb_auth_maxbits, ==, 0);
@@ -80,11 +85,7 @@ ikev2_sa_from_acquire(pkt_t *pkt, parsedmsg_t *pmsg, uint32_t spi,
 		if (dh != IKEV2_DH_NONE)
 			ok &= ikev2_add_xform(pkt, IKEV2_XF_DH, dh);
 
-		/*
-		 * XXX: RFC7296 isn't entirely clear if an ESN transform
-		 * is required for AH or ESP.  For now we'll always include
-		 * it (with a value of NO since we don't support ESNs yet).
-		 */
+		/* We currently don't support ESNs */
 		ok &= ikev2_add_xform(pkt, IKEV2_XF_ESN, IKEV2_ESN_NONE);
 	}
 
@@ -166,37 +167,160 @@ ikev2_sa_add_result(pkt_t *restrict pkt,
 	return (ok);
 }
 
+struct rule_data_s {
+	bunyan_logger_t		*rd_log;
+	config_rule_t		*rd_rule;
+	config_xf_t		*rd_xf;
+	ikev2_sa_result_t	*rd_res;
+	boolean_t		rd_match;
+	boolean_t		rd_skip;
+	boolean_t		rd_has_auth;
+	boolean_t		rd_keylen_match;
+};
+
+static boolean_t match_rule_prop_cb(ikev2_sa_proposal_t *, uint64_t, uint8_t *,
+    size_t, void *);
+static boolean_t match_rule_xf_cb(ikev2_transform_t *, uint8_t *, size_t,
+    void *);
+static boolean_t match_rule_attr_cb(ikev2_attribute_t *, void *);
+
 boolean_t
 ikev2_sa_match_rule(config_rule_t *restrict rule, pkt_t *restrict pkt,
     ikev2_sa_result_t *restrict result)
 {
 	pkt_payload_t *pay = pkt_get_payload(pkt, IKEV2_PAYLOAD_SA, NULL);
+	bunyan_logger_t *l = pkt->pkt_sa->i2sa_log;
 
 	VERIFY3P(pay, !=, NULL);
-	/* TODO */
+
+	bunyan_debug(l, "Checking rules against proposals",
+	    BUNYAN_T_STRING, "rule", rule->rule_label,
+	    BUNYAN_T_END);
+
+	for (size_t i = 0; rule->rule_xf[i] != NULL; i++) {
+		struct rule_data_s data = {
+			.rd_log = l,
+			.rd_rule = rule,
+			.rd_xf = rule->rule_xf[i],
+			.rd_res = result,
+			.rd_match = B_FALSE
+		};
+
+		(void) memset(result, 0, sizeof (*result));
+
+		bunyan_debug(l, "Checking rule transform against proposals",
+		    BUNYAN_T_UINT32, "xfnum", (uint32_t)i,
+		    BUNYAN_T_STRING, "xf", rule->rule_xf[i]->xf_str,
+		    BUNYAN_T_END);
+
+		VERIFY(ikev2_walk_proposals(pay->pp_ptr, pay->pp_len,
+		    match_rule_prop_cb, &data, l));
+
+		if (data.rd_match) {
+			bunyan_debug(l, "Found proposal match",
+			    BUNYAN_T_STRING, "xf", rule->rule_xf[i]->xf_str,
+			    BUNYAN_T_UINT32, "propnum",
+			    (uint32_t)result->sar_propnum,
+			    BUNYAN_T_UINT64, "spi", result->sar_spi,
+			    BUNYAN_T_STRING, "encr",
+			    ikev2_xf_encr_str(result->sar_encr),
+			    BUNYAN_T_UINT32, "keylen",
+			    (uint32_t)result->sar_encr_keylen,
+			    BUNYAN_T_STRING, "auth",
+			    ikev2_xf_auth_str(result->sar_auth),
+			    BUNYAN_T_STRING, "prf",
+			    ikev2_prf_str(result->sar_prf),
+			    BUNYAN_T_STRING, "dh", ikev2_dh_str(result->sar_dh),
+			    BUNYAN_T_END);
+			return (B_TRUE);
+		}
+	}
+
+	bunyan_debug(l, "No matching proposals found", BUNYAN_T_END);
 	return (B_FALSE);
 }
 
-boolean_t
-ikev2_sa_match_acquire(parsedmsg_t *restrict pmsg, pkt_t *restrict pkt,
-    ikev2_sa_result_t *restrict result)
+static boolean_t
+match_rule_prop_cb(ikev2_sa_proposal_t *prop, uint64_t spi, uint8_t *buf,
+    size_t buflen, void *cookie)
 {
-	/* TODO */
+	struct rule_data_s *data = cookie;
+
+	bunyan_debug(data->rd_log, "Checking proposal",
+	    BUNYAN_T_UINT32, "propnum", (uint32_t)prop->proto_proposalnr,
+	    BUNYAN_T_END);
+
+	if (prop->proto_protoid != IKEV2_PROTO_IKE) {
+		bunyan_debug(data->rd_log, "Proposal is not for IKE",
+		    BUNYAN_T_STRING, "protocol",
+		    ikev2_spi_str(prop->proto_protoid),
+		    BUNYAN_T_END);
+		return (B_FALSE);
+	}
+
+	(void) memset(data->rd_res, 0, sizeof (*data->rd_res));
+	data->rd_skip = B_FALSE;
+	data->rd_has_auth = B_FALSE;
+
+	VERIFY(ikev2_walk_xfs(buf, buflen, match_rule_xf_cb, cookie,
+	    data->rd_log));
+
+	if (data->rd_skip)
+		return (B_TRUE);
+
+	/* These must all match, otherwise next proposal */
+	if (!SA_RESULT_HAS(data->rd_res, IKEV2_XF_ENCR) ||
+	    !SA_RESULT_HAS(data->rd_res, IKEV2_XF_PRF) ||
+	    !SA_RESULT_HAS(data->rd_res, IKEV2_XF_DH) ||
+	    (!MODE_IS_COMBINED(ikev2_encr_mode(data->rd_res->sar_encr) &&
+	    !SA_RESULT_HAS(data->rd_res, IKEV2_XF_AUTH))))
+		return (B_TRUE);
+
+	/* A match.  Stop walk of remaining proposals */
+	data->rd_res->sar_spi = spi;
+	data->rd_res->sar_propnum = prop->proto_proposalnr;
+	data->rd_match = B_TRUE;
 	return (B_FALSE);
 }
 
-#if 0
-sa_compare_xf_cb(ikev2_transform_t *xf, uint8_t *buf, size_t buflen,
+static boolean_t
+match_rule_xf_cb(ikev2_transform_t *xf, uint8_t *buf, size_t buflen,
     void *cookie)
 {
-	ikev2_sa_result_t *data = cookie;
+	struct rule_data_s *data = cookie;
 	boolean_t match = B_FALSE;
 
-	/* xf_id */
 	switch (xf->xf_type) {
 	case IKEV2_XF_ENCR:
-		if (data->xf->xf_encr == xf->xf_id)
+		if (data->rd_xf->xf_encr != xf->xf_id)
+			break;
+
+		if (buflen > 0) {
+			/* XXX: Verify if there should be attributes for this particular alg? */
+			data->rd_keylen_match = B_FALSE;
+			VERIFY(ikev2_walk_xfattrs(buf, buflen,
+			    match_rule_attr_cb, cookie, data->rd_log));
+
+			/*
+			 * RFC7296 3.3.6 - Unknown attribute means skip
+			 * the transform, but not the whole proposal.
+			 */
+			if (data->rd_skip) {
+				data->rd_skip = B_FALSE;
+				break;
+			}
+			if (!data->rd_keylen_match)
+				break;
+		}
+		data->rd_res->sar_encr = xf->xf_id;
+		match = B_TRUE;
+		break;
+	case IKEV2_XF_AUTH:
+		data->rd_has_auth = B_TRUE;
+		if (data->rd_xf->xf_auth == xf->xf_id) {
+			data->rd_res->sar_auth = xf->xf_id;
 			match = B_TRUE;
+		}
 		break;
 	case IKEV2_XF_PRF:
 		switch (xf->xf_id) {
@@ -206,29 +330,252 @@ sa_compare_xf_cb(ikev2_transform_t *xf, uint8_t *buf, size_t buflen,
 		case IKEV2_PRF_HMAC_SHA1:
 		case IKEV2_PRF_HMAC_MD5:
 			match = B_TRUE;
+			data->rd_res->sar_prf = xf->xf_id;
 			break;
 		}
 		break;
-	case IKEV2_XF_AUTH:
-		if (data->xf->xf_auth == xf->xf_id)
-			match = B_TRUE;
-		break;
 	case IKEV2_XF_DH:
-		if (data->xf->xf_dh == xf->xf_id)
+		if (data->rd_xf->xf_dh == xf->xf_id) {
 			match = B_TRUE;
+			data->rd_res->sar_dh = xf->xf_id;
+		}
 		break;
 	case IKEV2_XF_ESN:
-		return (B_FALSE);
+		/* Not valid in IKE proposals */
+		bunyan_debug(data->rd_log,
+		    "Encountered ESN transform in IKE transform", BUNYAN_T_END);
+		data->rd_skip = B_TRUE;
+		break;
 	default:
-		bunyan_debug(data->log, "Unknown transform type",
+		/*
+		 * RFC7296 3.3.6 - An unrecognized transform type means the
+		 * proposal should be ignored.
+		 */
+		bunyan_debug(data->rd_log, "Unknown transform type in proposal",
 		    BUNYAN_T_UINT32, "xftype", (uint32_t)xf->xf_type,
 		    BUNYAN_T_END);
-		return (B_FALSE);
+		data->rd_skip = B_TRUE;
 	}
 
 	if (match)
-		data->match |= (uint32_t)1 << xf->xf_type;
+		data->rd_res->sar_match |= (uint32_t)1 << xf->xf_type;
+
+	return (!data->rd_skip);
+}
+
+static boolean_t
+match_rule_attr_cb(ikev2_attribute_t *attr, void *cookie)
+{
+	struct rule_data_s *data = cookie;
+
+	/* Only one attribute type is recognized currently */
+	if (attr->attr_type != IKEV2_XF_ATTR_KEYLEN) {
+		data->rd_skip = B_TRUE;
+		return (B_FALSE);
+	}
+
+	if (attr->attr_length >= data->rd_xf->xf_minbits &&
+	    attr->attr_length <= data->rd_xf->xf_maxbits) {
+		data->rd_res->sar_encr_keylen = attr->attr_length;
+		data->rd_keylen_match = B_TRUE;
+		return (B_FALSE);
+	}
 
 	return (B_TRUE);
 }
-#endif
+
+struct acquire_data_s {
+	bunyan_logger_t		*ad_log;
+	sadb_comb_t		*ad_comb;
+	ikev2_sa_result_t	*ad_res;
+	ikev2_spi_proto_t	ad_spitype;
+	ikev2_dh_t		ad_dh;
+	boolean_t		ad_skip;
+	boolean_t		ad_match;
+};
+
+static boolean_t match_acq_prop_cb(ikev2_sa_proposal_t *, uint64_t,
+    uint8_t *, size_t, void *);
+static boolean_t match_acq_xf_cb(ikev2_transform_t *, uint8_t *, size_t,
+    void *);
+static boolean_t match_acq_attr_cb(ikev2_attribute_t *, void *);
+
+boolean_t
+ikev2_sa_match_acquire(parsedmsg_t *restrict pmsg, ikev2_dh_t dh,
+    pkt_t *restrict pkt, ikev2_sa_result_t *restrict result)
+{
+	pkt_payload_t *pay = pkt_get_payload(pkt, IKEV2_PAYLOAD_SA, NULL);
+	bunyan_logger_t *l = pkt->pkt_sa->i2sa_log;
+	sadb_msg_t *samsg = pmsg->pmsg_samsg;
+	sadb_prop_t *prop;
+	sadb_comb_t *comb;
+	ikev2_spi_proto_t spitype = IKEV2_PROTO_NONE;
+
+	VERIFY3P(pay, !=, NULL);
+
+	bunyan_debug(l, "Checking rules against acquire", BUNYAN_T_END);
+
+	switch (samsg->sadb_msg_satype) {
+	case SADB_SATYPE_AH:
+		spitype = IKEV2_PROTO_AH;
+		break;
+	case SADB_SATYPE_ESP:
+		spitype = IKEV2_PROTO_ESP;
+		break;
+	default:
+		INVALID("sadb_msg_satype");
+	}
+
+	prop = (sadb_prop_t *)pmsg->pmsg_exts[SADB_EXT_PROPOSAL];
+	comb = (sadb_comb_t *)(prop + 1);
+
+	for (size_t i = 0; i < prop->sadb_x_prop_numecombs; i++, comb++) {
+		struct acquire_data_s data = {
+			.ad_log = l,
+			.ad_comb = comb,
+			.ad_res = result,
+			.ad_spitype = spitype,
+			.ad_dh = dh
+		};
+
+		(void) memset(result, 0, sizeof (*result));
+
+		VERIFY(ikev2_walk_proposals(pay->pp_ptr, pay->pp_len,
+		    match_acq_prop_cb, &data, l));
+
+		if (data.ad_match) {
+			bunyan_debug(l, "Found proposal match",
+			    BUNYAN_T_UINT32, "propnum",
+			    (uint32_t)result->sar_propnum,
+			    BUNYAN_T_UINT64, "spi", result->sar_spi,
+			    BUNYAN_T_STRING, "encr",
+			    ikev2_xf_encr_str(result->sar_encr),
+			    BUNYAN_T_UINT32, "keylen",
+			    (uint32_t)result->sar_encr_keylen,
+			    BUNYAN_T_STRING, "auth",
+			    ikev2_xf_auth_str(result->sar_auth),
+			    BUNYAN_T_STRING, "prf",
+			    ikev2_prf_str(result->sar_prf),
+			    BUNYAN_T_STRING, "dh", ikev2_dh_str(result->sar_dh),
+			    BUNYAN_T_UINT32, "esn", (uint32_t)result->sar_esn,
+			    BUNYAN_T_END);
+			return (B_TRUE);
+		}
+	}
+
+	bunyan_debug(l, "No matching proposals found", BUNYAN_T_END);
+	return (B_FALSE);
+}
+
+static boolean_t
+match_acq_prop_cb(ikev2_sa_proposal_t *prop, uint64_t spi, uint8_t *buf,
+    size_t buflen, void *cookie)
+{
+	struct acquire_data_s *data = cookie;
+
+	if (prop->proto_protoid != data->ad_spitype) {
+		bunyan_debug(data->ad_log, "Proposal is not for this SA type",
+		    BUNYAN_T_STRING, "exp_satype",
+		    ikev2_spi_str(data->ad_spitype),
+		    BUNYAN_T_STRING, "prop_satype",
+		    ikev2_spi_str(prop->proto_protoid),
+		    BUNYAN_T_UINT32, "prop_satype_val",
+		    (uint32_t)prop->proto_protoid, BUNYAN_T_END);
+		return (B_FALSE);
+	}
+
+	(void) memset(data->ad_res, 0, sizeof (*data->ad_res));
+	data->ad_skip = B_FALSE;
+
+	VERIFY(ikev2_walk_xfs(buf, buflen, match_acq_xf_cb, cookie,
+	    data->ad_log));
+
+	if (data->ad_skip)
+		return (B_TRUE);
+
+	/*
+	 * Go on to the next proposal if no match.  Check mandatory types
+	 * and optional types if we've specified one.
+	 * RFC7296 3.3.3 Lists mandatory and optional transform types
+	 */
+	switch (data->ad_spitype) {
+	case IKEV2_PROTO_ESP:
+		/* Mandatory: ENCR, ESN  Optional: AUTH, DH */
+		if (!SA_RESULT_HAS(data->ad_res, IKEV2_XF_ENCR) ||
+		    !SA_RESULT_HAS(data->ad_res, IKEV2_XF_ESN) ||
+		    (data->ad_comb->sadb_comb_auth != SADB_AALG_NONE &&
+		    !SA_RESULT_HAS(data->ad_res, IKEV2_XF_AUTH)) ||
+		    (data->ad_dh != IKEV2_DH_NONE &&
+		    !SA_RESULT_HAS(data->ad_res, IKEV2_XF_DH)))
+			return (B_TRUE);
+		break;
+	case IKEV2_PROTO_AH:
+		/* Mandatory: AUTH, ESN, Optional: DH */
+		if (!SA_RESULT_HAS(data->ad_res, IKEV2_XF_AUTH) ||
+		    !SA_RESULT_HAS(data->ad_res, IKEV2_XF_ESN) ||
+		    (data->ad_dh != IKEV2_DH_NONE &&
+		    !SA_RESULT_HAS(data->ad_res, IKEV2_XF_DH)))
+			return (B_TRUE);
+		break;
+	case IKEV2_PROTO_NONE:
+	case IKEV2_PROTO_IKE:
+	case IKEV2_PROTO_FC_ESP_HEADER:
+	case IKEV2_PROTO_FC_CT_AUTH:
+		INVALID("data->ad_spitype");
+		break;
+	}
+
+	return (B_FALSE);
+}
+static boolean_t
+match_acq_xf_cb(ikev2_transform_t *xf, uint8_t *buf, size_t buflen,
+    void *cookie)
+{
+	return (B_FALSE);
+}
+
+static boolean_t
+match_acq_attr_cb(ikev2_attribute_t *attr, void *cookie)
+{
+	return (B_FALSE);
+}
+
+void
+ikev2_no_proposal_chosen(ikev2_sa_t *restrict i2sa, const pkt_t *restrict src,
+    ikev2_spi_proto_t proto, uint64_t spi)
+{
+	pkt_t *resp = ikev2_pkt_new_response(src);
+
+	if (resp == NULL)
+		return;
+
+	if (!ikev2_add_notify(resp, proto, spi, IKEV2_N_NO_PROPOSAL_CHOSEN,
+	    NULL, 0)) {
+		ikev2_pkt_free(resp);
+		return;
+	}
+
+	/* Nothing can be done if send fails for this, so ignore return val */
+	(void) ikev2_send(resp, B_TRUE);
+
+	/* ikev2_send consumes packet, no need to free afterwards */
+}
+
+void
+ikev2_invalid_ke(const pkt_t *src, ikev2_spi_proto_t proto, uint64_t spi,
+    ikev2_dh_t dh)
+{
+	pkt_t *resp = ikev2_pkt_new_response(src);
+	uint16_t val = htons((uint16_t)dh);
+
+	if (resp == NULL)
+		return;
+
+	if (!ikev2_add_notify(resp, proto, spi, IKEV2_N_INVALID_KE_PAYLOAD,
+	    &val, sizeof (val))) {
+		ikev2_pkt_free(resp);
+		return;
+	}
+
+	(void) ikev2_send(resp, B_TRUE);
+}

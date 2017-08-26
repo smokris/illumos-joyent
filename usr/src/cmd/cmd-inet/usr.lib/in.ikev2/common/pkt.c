@@ -250,16 +250,20 @@ payload_finish(pkt_t *restrict pkt, uint8_t *restrict ptr, uintptr_t arg,
 	NOTE(ARGUNUSED(numsub))
 	ike_payload_t pay = { 0 };
 	size_t len = (size_t)(pkt->pkt_ptr - ptr);
+	uint8_t type = 0;
 
 	VERIFY3P(pkt->pkt_ptr, >, ptr);
 	VERIFY3U(len, <, MAX_PACKET_SIZE);
 	VERIFY3U(arg, <, 256);
 
 	(void) memcpy(&pay, ptr, sizeof (pay));
+	type = pay.pay_next;
 	pay.pay_next = (uint8_t)arg;
 	pay.pay_length = htons((uint16_t)len);
 	(void) memcpy(ptr, &pay, sizeof (pay));
-	return (B_TRUE);
+
+	return (pkt_add_index(pkt, type, ptr + sizeof (pay),
+	    len - sizeof (pay)));
 }
 
 boolean_t
@@ -281,7 +285,7 @@ pkt_add_payload(pkt_t *pkt, uint8_t ptype, uint8_t resv)
 	pkt_stack_item_t type =
 	    (ptype == IKEV2_PAYLOAD_SA) ? PSI_SA : PSI_PAYLOAD;
 	pkt_stack_push(pkt, type, payload_finish, (uintptr_t)ptype);
-	pay.pay_next = IKE_PAYLOAD_NONE;
+	pay.pay_next = ptype;
 	pay.pay_reserved = resv;
 	PKT_APPEND_STRUCT(pkt, pay);
 	return (B_TRUE);
