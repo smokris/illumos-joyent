@@ -262,78 +262,62 @@ find_config(pkt_t *pkt, sockaddr_u_t laddr, sockaddr_u_t raddr)
 	return (B_TRUE);
 }
 
-#define	NAT_LEN	(20)
 /*
- * Check if the NAT {src,dest} payload matches our IP address.
- * Return 0 if match (i.e. no nat)
- *     1 if match
- *     -1 on error
+ * Size of a SHA1 hash.  NAT detection always uses SHA1 to compute the
+ * NAT detection payload contents.
  */
-static int
-check_one_nat(pkt_t *pkt, pkt_notify_t *n)
+#define	NAT_LEN	(20)
+
+/* Compute a NAT detection payload and place result into buf */
+static boolean_t
+compute_nat(uint64_t *restrict spi, struct sockaddr_storage *restrict addr,
+    uint8_t *restrict buf, size_t buflen, bunyan_logger_t *l)
 {
-	bunyan_logger_t *l = pkt->pkt_sa->i2sa_log;
+	const char *p11f = NULL;
 	CK_SESSION_HANDLE h = p11h();
-	sockaddr_u_t addr;
-	CK_MECHANISM mech = { .mechanism = CKM_SHA_1 };
-	buf_t buf[3];
-	CK_BYTE data[NAT_LEN] = { 0 };
-	buf_t out = { .b_ptr = data, .b_len = sizeof (data) };
-	CK_LONG len = 0;
-	CK_RV rv;
+	CK_MECHANISM mech = {
+		.mechanism = CKM_SHA_1,
+		.pParameter = NULL_PTR,
+		.ulParameterLen = 0
+	};
+	CK_BYTE_PTR addrp = (CK_BYTE_PTR)ss_addr(addr);
+	CK_ULONG len = buflen;
+	CK_RV ret = CKR_OK;
+	size_t addrlen = (addr->ss_family == AF_INET) ?
+	    sizeof (in_addr_t) : sizeof (in6_addr_t);
+	uint16_t port = (uint16_t)ss_port(addr);
 
-	switch (n->pn_type) {
-	case IKEV2_N_NAT_DETECTION_SOURCE_IP:
-		addr.sau_ss = &pkt->pkt_sa->laddr;
-		break;
-	case IKEV2_N_NAT_DETECTION_DESTINATION_IP:
-		addr.sau_ss = &pkt->pkt_sa->raddr;
-		break;
-	default:
-		INVALID(n->pn_type);
-		/*NOTREACHED*/
-		return (-1);
-	}
+	VERIFY3U(buflen, >=, NAT_LEN);
 
-	buf[0].b_ptr = pkt_start(pkt);
-	buf[0].b_len = 2 * sizeof (uint64_t);
+	p11f = "C_DigestInit";
+	ret = C_DigestInit(h, &mech);
+	if (ret != CKR_OK)
+		goto fail;
 
-	switch (addr.sau_ss->ss_family) {
-	case AF_INET:
-		buf[1].b_ptr = (CK_BYTE_PTR)&addr.sau_sin->sin_addr;
-		buf[1].b_len = sizeof (in_addr_t);
-		buf[2].b_ptr = (CK_BYTE_PTR)&addr.sau_sin->sin_port;
-		buf[2].b_len = sizeof (addr.sau_sin->sin_port);
-		break;
-	case AF_INET6:
-		buf[1].b_ptr = (CK_BYTE_PTR)&addr.sau_sin6->sin6_addr;
-		buf[1].b_len = sizeof (in6_addr_t);
-		buf[2].b_ptr = (CK_BYTE_PTR)&addr.sau_sin6->sin6_port;
-		buf[2].b_len = sizeof (addr.sau_sin6->sin6_port);
-		break;
-	default:
-		INVALID("addr.sau_ss->ss_family");
-		return (-1);
-	}
+	/* Both SPIs (in order) */
+	p11f = "C_DigestUpdate";
+	ret = C_DigestUpdate(h, (CK_BYTE_PTR)spi, 2 * sizeof (uint64_t));
+	if (ret != CKR_OK)
+		goto fail;
 
-	if (n->pn_len != NAT_LEN) {
-		bunyan_error(l, "Invalid notify payload size",
-		    BUNYAN_T_STRING, "notify_type",
-		    ikev2_notify_str(n->pn_type),
-		    BUNYAN_T_UINT32, "payload_size", (uint32_t)n->pn_len,
-		    BUNYAN_T_UINT32, "expected_size", (uint32_t)NAT_LEN,
-		    BUNYAN_T_END);
-		return (-1);
-	}
+	ret = C_DigestUpdate(h, addrp, addrlen);
+	if (ret != CKR_OK)
+		goto fail;
 
-	if (!pkcs11_digest(CKM_SHA_1, buf, ARRAY_SIZE(buf), &out, l))
-		return (-1);
+	ret = C_DigestUpdate(h, (CK_BYTE_PTR)&port, sizeof (port));
+	if (ret != CKR_OK)
+		goto fail;
 
-	VERIFY3U(n->pn_len, ==, sizeof (data));
-	if (memcmp(n->pn_ptr, data, sizeof (data)) == 0)
-		return (0);
+	p11f = "C_DigestFinal";
+	ret = C_DigestFinal(h, buf, &len);
+	if (ret != CKR_OK)
+		goto fail;
 
-	return (1);
+	return (B_TRUE);
+
+fail:
+	PKCS11ERR(error, l, p11f, ret);
+	return (B_FALSE);
 }
 
 /*
@@ -344,60 +328,84 @@ static boolean_t
 check_nats(pkt_t *pkt)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
-	pkt_notify_t *n = NULL;
-	int rc = 0;
-	boolean_t local_nat = B_TRUE;
-	boolean_t remote_nat = B_TRUE;
+	struct {
+		ikev2_notify_type_t	ntype;
+		struct sockaddr_storage *addr;
+		const char		*msg;
+		uint32_t		flag;
+	} params[] = {
+		/*
+		 * Since these are from the perspective of the remote system,
+		 * we check the local address against the NAT destination IP
+		 * and vice versa.
+		 */
+		{
+			IKEV2_N_NAT_DETECTION_DESTINATION_IP,
+			&pkt->pkt_sa->laddr,
+			"Local NAT detected",
+			I2SA_NAT_LOCAL
+		},
+		{
+			IKEV2_N_NAT_DETECTION_SOURCE_IP,
+			&pkt->pkt_sa->raddr,
+			"Remote NAT detected",
+			I2SA_NAT_REMOTE
+		}
+	};
 
-	/*
-	 * Since the SOURCE/DESTINATION designation is from the perspective
-	 * of the remote side, the local/remote notion is reversed on our
-	 * side.
-	 */
-	n = pkt_get_notify(pkt, IKEV2_N_NAT_DETECTION_SOURCE_IP, NULL);
-	if (n == NULL) {
-		/* If the notification isn't present, assume no NAT */
-		remote_nat = B_FALSE;
-	} else {
+	for (size_t i = 0; i < 2; i++) {
+		pkt_notify_t *n = pkt_get_notify(pkt, params[i].ntype, NULL);
+		ikev2_notify_t ntfy = { 0 };
+		uint8_t data[NAT_LEN] = { 0 };
+
+		/* If notification isn't present, assume no NAT */
+		if (n == NULL)
+			continue;
+
+		if (!compute_nat(pkt->pkt_raw, params[i].addr, data,
+		    sizeof (data), sa->i2sa_log))
+			return (B_FALSE);
+
 		while (n != NULL) {
-			rc = check_one_nat(pkt, n);
-			if (rc == -1) {
+			ikev2_notify_t ntfy = { 0 };
+
+			VERIFY3U(n->pn_len, >, sizeof (ntfy));
+			(void) memcpy(&ntfy, n->pn_ptr, sizeof (ntfy));
+			ntfy.n_type = ntohs(ntfy.n_type);
+			VERIFY3U(ntfy.n_type, ==, params[i].ntype);
+
+			if (ntfy.n_spisize != 0) {
+				bunyan_error(sa->i2sa_log,
+				    "Non-zero SPI size in NAT notification",
+				    BUNYAN_T_STRING, "notification",
+				    ikev2_notify_str(params[i].ntype),
+				    BUNYAN_T_END);
 				return (B_FALSE);
-			} else if (rc == 0) {
-				remote_nat = B_FALSE;
+			}
+
+			if (n->pn_len != sizeof (ntfy) + NAT_LEN) {
+				bunyan_error(sa->i2sa_log,
+				    "NAT notification size mismatch",
+				    BUNYAN_T_STRING, "notification",
+				    ikev2_notify_str(params[i].ntype),
+				    BUNYAN_T_UINT32, "notifylen",
+				    (uint32_t)n->pn_len,
+				    BUNYAN_T_UINT32, "expected",
+				    (uint32_t)(sizeof (ntfy) + NAT_LEN),
+				    BUNYAN_T_END);
+				return (B_FALSE);
+			}
+
+			if (memcmp(data, n->pn_ptr + sizeof (ntfy),
+			    NAT_LEN) == 0) {
+				sa->flags |= params[i].flag;
+				bunyan_debug(sa->i2sa_log, params[i].msg,
+				    BUNYAN_T_END);
 				break;
 			}
-			n = pkt_get_notify(pkt,
-			    IKEV2_N_NAT_DETECTION_SOURCE_IP, n);
+
+			n = pkt_get_notify(pkt, params[i].ntype, n);
 		}
-	}
-
-	if (remote_nat) {
-		bunyan_debug(sa->i2sa_log, "Remote NAT detected", BUNYAN_T_END);
-		sa->flags |= I2SA_NAT_REMOTE;
-	}
-
-	n = pkt_get_notify(pkt, IKEV2_N_NAT_DETECTION_DESTINATION_IP, NULL);
-	if (n == NULL) {
-		/* Similar as above */
-		local_nat = B_FALSE;
-	} else {
-		while (n != NULL) {
-			rc = check_one_nat(pkt, n);
-			if (rc == -1) {
-				return (B_FALSE);
-			} else if (rc == 0) {
-				local_nat = B_FALSE;
-				break;
-			}
-			n = pkt_get_notify(pkt,
-			    IKEV2_N_NAT_DETECTION_DESTINATION_IP, n);
-		}
-	}
-
-	if (local_nat) {
-		bunyan_debug(sa->i2sa_log, "Local NAT detected", BUNYAN_T_END);
-		sa->flags |= I2SA_NAT_LOCAL;
 	}
 
 	return (B_TRUE);
@@ -411,79 +419,44 @@ check_nats(pkt_t *pkt)
 static boolean_t
 add_nat(pkt_t *pkt)
 {
-	bunyan_logger_t *l = pkt->pkt_sa->i2sa_log;
-	const char *pkfunc = NULL;
-	sockaddr_u_t addr[2];
-	uint64_t spi[2];
-	ikev2_notify_type_t ntype[2];
-	CK_MECHANISM mech = {
-		.mechanism = CKM_SHA_1,
-		.pParameter = NULL_PTR,
-		.ulParameterLen = 0
+	ikev2_sa_t *sa = pkt->pkt_sa;
+	struct {
+		ikev2_notify_type_t	ntype;
+		struct sockaddr_storage *addr;
+	} params[] = {
+		/*
+		 * Since these are from our perspective, the local address
+		 * corresponds to the source address and remote to the
+		 * destination address.
+		 */
+		{
+			IKEV2_N_NAT_DETECTION_SOURCE_IP,
+			&pkt->pkt_sa->laddr,
+		},
+		{
+			IKEV2_N_NAT_DETECTION_DESTINATION_IP,
+			&pkt->pkt_sa->raddr,
+		}
 	};
-	CK_SESSION_HANDLE h = p11h();
-	CK_RV ret = CKR_OK;
-
-	addr[0].sau_ss = &pkt->pkt_sa->laddr;
-	addr[1].sau_ss = &pkt->pkt_sa->raddr;
-	ntype[0] = IKEV2_N_NAT_DETECTION_SOURCE_IP;
-	ntype[1] = IKEV2_N_NAT_DETECTION_DESTINATION_IP;
 
 	/*
 	 * These normally don't get converted to network byte order until
 	 * the packet has finished construction, so we need to do local
 	 * conversion for the NAT payload creation
 	 */
-	spi[0] = htonll(pkt->pkt_header.initiator_spi);
-	spi[1] = htonll(pkt->pkt_header.responder_spi);
+	uint64_t spi[2] = {
+		htonll(pkt->pkt_header.initiator_spi),
+		htonll(pkt->pkt_header.responder_spi)
+	};
 
 	for (int i = 0; i < 2; i++) {
 		uint8_t data[NAT_LEN] = { 0 };
-		CK_ULONG datalen = sizeof (data);
-		CK_ULONG paramlen = 0;
-		CK_MECHANISM mech = {
-			.mechanism = CKM_SHA_1,
-			.pParameter = NULL_PTR,
-			.ulParameterLen = 0
-		};
 
-		CK_BYTE_PTR addrp = (CK_BYTE_PTR)ss_addr(addr[i].sau_ss);
-		uint16_t port = (uint16_t)ss_port(addr[i].sau_ss);
-
-		pkfunc = "C_DigestInit";
-		if ((ret = C_DigestInit(h, &mech)) != CKR_OK)
-			goto fail;
-
-		pkfunc = "C_DigestUpdate";
-		ret = C_DigestUpdate(h, (CK_BYTE_PTR)&spi, sizeof (spi));
-		if (ret != CKR_OK)
-			goto fail;
-
-		switch (addr[i].sau_ss->ss_family) {
-		case AF_INET:
-			paramlen = sizeof (in_addr_t);
-			break;
-		case AF_INET6:
-			paramlen = sizeof (in6_addr_t);
-			break;
-		default:
-			INVALID("addr.sau_ss->ss_family");
+		if (!compute_nat(spi, params[i].addr, data, sizeof (data),
+		    sa->i2sa_log))
 			return (B_FALSE);
-		}
-		ret = C_DigestUpdate(h, addrp, paramlen);
-		if (ret != CKR_OK)
-			goto fail;
 
-		ret = C_DigestUpdate(h, (CK_BYTE_PTR)&port, sizeof (port));
-		if (ret != CKR_OK)
-			goto fail;
-
-		pkfunc = "C_DigestFinal";
-		ret = C_DigestFinal(h, data, &datalen);
-		if (ret != CKR_OK)
-			goto fail;
-		
-		if (!ikev2_add_notify(pkt, IKEV2_PROTO_IKE, 0, ntype[i],
+		if (!ikev2_add_notify(pkt, IKEV2_PROTO_IKE, 0, params[i].ntype,
 		    data, sizeof (data)))
 			return (B_FALSE);
 	}
@@ -491,7 +464,6 @@ add_nat(pkt_t *pkt)
 	return (B_TRUE);
 
 fail:
-	PKCS11ERR(error, l, pkfunc, ret);
 	return (B_FALSE);
 }
 
