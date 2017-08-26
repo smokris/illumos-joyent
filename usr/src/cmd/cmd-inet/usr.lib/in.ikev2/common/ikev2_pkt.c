@@ -1652,45 +1652,26 @@ ikev2_pkt_decrypt(pkt_t *pkt)
 		}
 	}
 
-	ike_payload_t *payp, pay = { 0 };
-	size_t paycount = 0, ncount = 0;
-	size_t paystart, nstart;
+	ike_payload_t *sk = ((ike_payload_t *)iv) - 1;
 
-	payp = (ike_payload_t *)iv;
-	payp--;
-	(void) memcpy(&pay, payp, sizeof (ike_payload_t));
-
-	if (!pkt_count_payloads(data, datalen, pay.pay_next, &paycount,
-	    &ncount, sa->i2sa_log)) {
-		return (B_FALSE);
-	}
-
-	paystart = pkt->pkt_payload_count;
-	nstart = pkt->pkt_notify_count;
-	if (!pkt_size_index(pkt, pkt->pkt_payload_count + paycount,
-	    pkt->pkt_notify_count + ncount))
+	/* sk->pay_next is uint8_t, so no alignment concerns dereferencing */
+	if (!pkt_index_payloads(pkt, data, datalen, sk->pay_next, sa->i2sa_log))
 		return (B_FALSE);
 
-	if (!pkt_index_payloads(pkt, data, datalen, pay.pay_next, paystart,
-	    sa->i2sa_log))
-		return (B_FALSE);
-
-	ncount = nstart;
 	for (size_t i = 0; i < pkt->pkt_payload_count; i++) {
 		pkt_payload_t *pp = pkt_payload(pkt, i);
 
 		if (pp->pp_type != IKEV2_PAYLOAD_NOTIFY)
 			continue;
 
-		pkt_notify_t *np = NULL;
 		ikev2_notify_t n = { 0 };
 
-		np = pkt_notify(pkt, ncount++);
-		ASSERT3U(pp->pp_len, >=, sizeof (n));
+		VERIFY3U(pp->pp_len, >=, sizeof (n));
 		(void) memcpy(&n, pp->pp_ptr, sizeof (n));
-		np->pn_ptr = pp->pp_ptr;
-		np->pn_len = pp->pp_len;
-		np->pn_type = ntohs(n.n_type);
+
+		if (!pkt_add_nindex(pkt, ntohs(n.n_type), pp->pp_ptr,
+		    pp->pp_len))
+			return (B_FALSE);
 	}
 
 	return (B_TRUE);

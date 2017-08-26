@@ -87,129 +87,122 @@ pkt_finish(pkt_t *restrict pkt, uint8_t *restrict ptr, uintptr_t swaparg,
 	return (B_TRUE);
 }
 
-struct pkt_count_s {
-	pkt_t *pc_pkt;
-	size_t pc_paycount;
-	size_t pc_ncount;
-};
-
 static pkt_walk_ret_t
-pkt_count_cb(uint8_t paytype, uint8_t resv, uint8_t *restrict ptr, size_t len,
+pkt_index_cb(uint8_t paytype, uint8_t resv, uint8_t *restrict ptr, size_t len,
     void *restrict cookie)
 {
-	struct pkt_count_s *data = cookie;
+	pkt_t *pkt = cookie;
 
-	data->pc_paycount++;
-	if (paytype == IKEV1_PAYLOAD_NOTIFY ||
-	    paytype == IKEV2_PAYLOAD_NOTIFY)
-		data->pc_ncount++;
-	return (PKT_WALK_OK);
-}
-
-boolean_t
-pkt_count_payloads(uint8_t *restrict buf, size_t buflen, uint8_t first,
-    size_t *paycount, size_t *ncount, bunyan_logger_t *restrict l)
-{
-	struct pkt_count_s count = { 0 };
-	if (pkt_payload_walk(buf, buflen, pkt_count_cb, first,
-	    &count, l) != PKT_WALK_OK)
-		return (B_FALSE);
-
-	if (paycount != NULL)
-		*paycount = count.pc_paycount;
-	if (ncount != NULL)
-		*ncount = count.pc_ncount;
-	return (B_TRUE);
-}
-
-static pkt_walk_ret_t
-pkt_payload_cb(uint8_t paytype, uint8_t resv, uint8_t *restrict ptr, size_t len,
-    void *restrict cookie)
-{
-	struct pkt_count_s *data = cookie;
-	pkt_payload_t *payp = NULL;
-
-	payp = pkt_payload(data->pc_pkt, data->pc_paycount++);
-	payp->pp_ptr = ptr;
-	payp->pp_len = len;
-	payp->pp_type = paytype;
+	if (!pkt_add_index(pkt, paytype, ptr, len))
+		return (PKT_WALK_ERROR);
 	return (PKT_WALK_OK);
 }
 
 boolean_t
 pkt_index_payloads(pkt_t *pkt, uint8_t *buf, size_t buflen, uint8_t first,
-    size_t start_idx, bunyan_logger_t *restrict l)
+    bunyan_logger_t *restrict l)
 {
-	struct pkt_count_s data = {
-		.pc_pkt = pkt,
-		.pc_paycount = start_idx
-	};
-
 	VERIFY3P(pkt_start(pkt), <, buf);
 	VERIFY3P(pkt->pkt_ptr, >=, buf + buflen);
 
-	if (pkt_payload_walk(buf, buflen, pkt_payload_cb, first,
-	    &data, l) != PKT_WALK_OK)
+	if (pkt_payload_walk(buf, buflen, pkt_index_cb, first,
+	    pkt, l) != PKT_WALK_OK)
 		return (B_FALSE);
 	return (B_TRUE);
 }
 
-/* make sure pkt can hold paycount payloads indexes and ncount notify indexes */
+#define	PKT_CHUNK_SZ	(8)
 boolean_t
-pkt_size_index(pkt_t *pkt, size_t paycount, size_t ncount)
+pkt_add_index(pkt_t *pkt, uint8_t type, uint8_t *buf, uint16_t buflen)
 {
-	size_t amt = 0;
+	pkt_payload_t *pay = NULL;
+	ssize_t idx = pkt->pkt_payload_count - PKT_PAYLOAD_NUM;
 
-	if (paycount > PKT_PAYLOAD_NUM && paycount != pkt->pkt_payload_count) {
-		pkt_payload_t *payp = NULL;
+	if (pkt->pkt_payload_count < PKT_PAYLOAD_NUM) {
+		VERIFY3S(idx, <, 0);
+		pay = &pkt->pkt_payloads[pkt->pkt_payload_count];
+	} else if (idx < pkt->pkt_payload_alloc) {
+		VERIFY3S(idx, >=, 0);
+		pay = &pkt->pkt_payload_extra[idx];
+	} else {
+		pkt_payload_t *newpay = NULL;
+		size_t newsz = pkt->pkt_payload_alloc + PKT_CHUNK_SZ;
+		size_t amt = newsz * sizeof (pkt_payload_t);
 
-		amt = paycount - PKT_PAYLOAD_NUM;
-		amt *= sizeof (pkt_payload_t);
-		payp = umem_zalloc(amt, UMEM_DEFAULT);
-		if (payp == NULL)
+		VERIFY3U(amt, <, newsz);
+		VERIFY3U(amt, <=, sizeof (pkt_payload_t));
+
+		newpay = umem_zalloc(amt, UMEM_DEFAULT);
+		if (newpay == NULL)
 			return (B_FALSE);
 
 		if (pkt->pkt_payload_extra != NULL) {
-			/* XXX: ASSERT() / VERIFY() on shrink? */
-			if (paycount > pkt->pkt_payload_count) {
-				amt = pkt->pkt_payload_count - PKT_PAYLOAD_NUM;
-				amt *= sizeof (pkt_payload_t);
-			}
-			(void) memcpy(payp, pkt->pkt_payload_extra, amt);
-
-			amt = pkt->pkt_payload_count - PKT_PAYLOAD_NUM;
-			amt *= sizeof (pkt_payload_t);
-			umem_free(pkt->pkt_payload_extra, amt);
+			/*
+			 * If the new size doesn't overflow, the original,
+			 * smaller size cannot either.
+			 */
+			(void) memcpy(newpay, pkt->pkt_payload_extra,
+			    pkt->pkt_payload_count * sizeof (pkt_payload_t));
+			umem_free(pkt->pkt_payload_extra,
+			    pkt->pkt_payload_alloc * sizeof (pkt_payload_t));
 		}
-		pkt->pkt_payload_extra = payp;
-		pkt->pkt_payload_count = paycount;
+
+		pkt->pkt_payload_extra = newpay;
+		pkt->pkt_payload_alloc = newsz;
+
+		VERIFY3S(idx, >=, 0);
+		pay = &pkt->pkt_payload_extra[idx];
 	}
 
-	if (ncount > PKT_NOTIFY_NUM && ncount != pkt->pkt_notify_count) {
-		pkt_notify_t *np;
+	pkt->pkt_payload_count++;
+	pay->pp_type = type;
+	pay->pp_ptr = buf;
+	pay->pp_len = buflen;
+	return (B_TRUE);
+}
 
-		amt = ncount - PKT_NOTIFY_NUM;
-		amt *= sizeof (pkt_notify_t);
-		np = umem_zalloc(amt, UMEM_DEFAULT);
-		if (np == NULL)
+boolean_t
+pkt_add_nindex(pkt_t *pkt, uint16_t type, uint8_t *buf, size_t buflen)
+{
+	pkt_notify_t *n = NULL;
+	ssize_t idx = pkt->pkt_notify_count - PKT_NOTIFY_NUM;
+
+	if (pkt->pkt_notify_count < PKT_NOTIFY_NUM) {
+		VERIFY3S(idx, <, 0);
+		n = &pkt->pkt_notify[pkt->pkt_notify_count];
+	} else if (idx < pkt->pkt_notify_alloc) {
+		VERIFY3S(idx, >=, 0);
+		n = &pkt->pkt_notify_extra[idx];
+	} else {
+		pkt_notify_t *newn = NULL;
+		size_t newsz = pkt->pkt_notify_alloc + PKT_CHUNK_SZ;
+		size_t amt = newsz * sizeof (pkt_notify_t);
+
+		VERIFY3U(amt, <, newsz);
+		VERIFY3U(amt, <=, sizeof (pkt_notify_t));
+
+		newn = umem_zalloc(amt, UMEM_DEFAULT);
+		if (newn == NULL)
 			return (B_FALSE);
 
 		if (pkt->pkt_notify_extra != NULL) {
-			/* XXX: ASSERT() / VERIFY() on shrink? */
-			if (ncount > pkt->pkt_notify_count) {
-				amt = pkt->pkt_notify_count - PKT_NOTIFY_NUM;
-				amt *= sizeof (pkt_notify_t);
-			}
-			(void) memcpy(np, pkt->pkt_notify_extra, amt);
-
-			amt = pkt->pkt_notify_count - PKT_NOTIFY_NUM;
-			amt *= sizeof (pkt_notify_t);
-			umem_free(pkt->pkt_notify_extra, amt);
+			(void) memcpy(newn, pkt->pkt_notify_extra,
+			    pkt->pkt_notify_count * sizeof (pkt_notify_t));
+			umem_free(pkt->pkt_notify_extra,
+			    pkt->pkt_notify_alloc * sizeof (pkt_notify_t));
 		}
-		pkt->pkt_notify_extra = np;
-		pkt->pkt_notify_count = ncount;
+
+		pkt->pkt_notify_extra = newn;
+		pkt->pkt_notify_alloc = newsz;
+
+		VERIFY3S(idx, >=, 0);
+		n = &pkt->pkt_notify_extra[idx];
 	}
 
+	pkt->pkt_notify_count++;
+	n->pn_type = type;
+	n->pn_ptr = buf;
+	n->pn_len = buflen;
 	return (B_TRUE);
 }
 
@@ -222,7 +215,6 @@ pkt_in_alloc(uint8_t *restrict buf, size_t buflen, bunyan_logger_t *restrict l)
 {
 	ike_header_t *hdr = (ike_header_t *)buf;
 	pkt_t *pkt = NULL;
-	size_t paycount = 0, ncount = 0;
 	uint8_t first;
 
 	/* If inbound checks didn't catch these, it's a bug */
@@ -233,42 +225,21 @@ pkt_in_alloc(uint8_t *restrict buf, size_t buflen, bunyan_logger_t *restrict l)
 	first = hdr->next_payload;
 	buf += sizeof (*hdr);
 	buflen -= sizeof (*hdr);
-	if (!pkt_count_payloads(buf, buflen, first, &paycount, &ncount, l))
-		return (NULL);
 
 	if ((pkt = umem_cache_alloc(pkt_cache, UMEM_DEFAULT)) == NULL) {
 		STDERR(error, l, "umem_cache_alloc failed");
 		return (NULL);
 	}
 
-	if (paycount > PKT_PAYLOAD_NUM) {
-		size_t len = paycount - PKT_PAYLOAD_NUM;
-		len *= sizeof (pkt_payload_t);
-		pkt->pkt_payload_extra = umem_zalloc(len, UMEM_DEFAULT);
-		if (pkt->pkt_payload_extra == NULL) {
-			pkt_free(pkt);
-			return (NULL);
-		}
-	}
-
-	if (ncount > PKT_NOTIFY_NUM) {
-		size_t len = ncount - PKT_NOTIFY_NUM;
-		len *= sizeof (pkt_notify_t);
-		pkt->pkt_notify_extra = umem_zalloc(len, UMEM_DEFAULT);
-		if (pkt->pkt_notify_extra == NULL) {
-			pkt_free(pkt);
-			return (NULL);
-		}
-	}
-
 	(void) memcpy(&pkt->pkt_raw, buf, buflen);
-	pkt->pkt_payload_count = paycount;
-	pkt->pkt_notify_count = ncount;
 	pkt_hdr_ntoh(&pkt->pkt_header, (const ike_header_t *)&pkt->pkt_raw);
 	pkt->pkt_ptr += buflen;
 
-	VERIFY(pkt_index_payloads(pkt, pkt_start(pkt), pkt_len(pkt), first,
-	    0, l));
+	if (!pkt_index_payloads(pkt, pkt_start(pkt), pkt_len(pkt), first, l)) {
+		pkt_free(pkt);
+		return (NULL);
+	}
+
 	return (pkt);
 }
 
@@ -508,30 +479,52 @@ pkt_pay_shift(pkt_t *pkt, uint8_t type, size_t num, ssize_t amt)
 	uint8_t *start = pkt_start(pkt) + sizeof (ike_header_t);
 	pkt_payload_t *pay = NULL;
 
-	if (pkt_write_left(pkt) < amt)
-		return (B_FALSE);
-	if (!pkt_size_index(pkt, pkt->pkt_payload_count + num,
-	    pkt->pkt_notify_count))
+	if (amt > 0 && pkt_write_left(pkt) < amt)
 		return (B_FALSE);
 
-	(void) memmove(start + amt, start, (size_t)(pkt->pkt_ptr - start));
+	if (num > 0) {
+		VERIFY3S(amt, >, 0);
+		if (!pkt_add_index(pkt, type, start, (uint16_t)amt))
+			return (B_FALSE);
+	}
+
+	/* Shift the data in the packet */
+	(void) memmove(start + amt, start, pkt_len(pkt));
+
+	/* Adjust index pointers, except for the one we just added */
+	for (uint16_t i = 0; i < pkt->pkt_payload_count - 1; i++) {
+		pay = pkt_payload(pkt, i);
+		pay->pp_ptr += amt;
+	}
 	pkt->pkt_ptr += amt;
 
-	for (uint16_t i = 0; i < pkt->pkt_payload_count; i++) {
-		pay = pkt_payload(pkt, pkt->pkt_payload_count - i);
-		pay[0] = pay[-1];
-		pay[0].pp_ptr += amt;
-	}
-	pay[-1].pp_type = type;
-	pay[-1].pp_len = amt;
+	if (num == 0 || pkt->pkt_payload_count == 1)
+		return (B_TRUE);
 
-	ike_header_t *hdr = (ike_header_t *)&pkt->pkt_raw;
-	ike_payload_t pld = {
-	    .pay_next = pkt->pkt_header.next_payload,
-	    .pay_length = htons((uint16_t)amt)
-	};
+	pkt_payload_t save = { 0 };
+	pay = pkt_payload(pkt, pkt->pkt_payload_count - 1);
+	save = *pay;
+
+	/* Move indexes over to make room */
+	if (pkt->pkt_payload_count > PKT_PAYLOAD_NUM) {
+		(void) memmove(pkt->pkt_payload_extra + 1,
+		    pkt->pkt_payload_extra,
+		    sizeof (pkt_payload_t) *
+		    (pkt->pkt_payload_count - PKT_PAYLOAD_NUM - 1));
+		(void) memcpy(pkt->pkt_payload_extra,
+		    &pkt->pkt_payloads[PKT_PAYLOAD_NUM - 1],
+		    sizeof (pkt_payload_t));
+	}
+	(void) memmove(pkt->pkt_payloads + 1, pkt->pkt_payloads,
+	    (PKT_PAYLOAD_NUM - 1) * sizeof (pkt_payload_t));
+	pkt->pkt_payloads[0] = save;
 
 	/* Keep the two in sync for sanity's sake */
+	ike_header_t *hdr = (ike_header_t *)pkt_start(pkt);
+	ike_payload_t pld = {
+		.pay_next = pkt->pkt_header.next_payload,
+		.pay_length = (uint16_t)amt
+	};
 	pkt->pkt_header.next_payload = hdr->next_payload = type;
 
 	(void) memcpy(start, &pld, sizeof (pld));
@@ -966,14 +959,12 @@ pkt_free(pkt_t *pkt)
 
 	size_t len = 0;
 	if (pkt->pkt_payload_extra != NULL) {
-		len = pkt->pkt_payload_count - PKT_PAYLOAD_NUM;
-		len *= sizeof (pkt_payload_t);
+		len = pkt->pkt_payload_alloc * sizeof (pkt_payload_t);
 		umem_free(pkt->pkt_payload_extra, len);
 	}
 
 	if (pkt->pkt_notify_extra != NULL) {
-		len = pkt->pkt_notify_count - PKT_NOTIFY_NUM;
-		len *= sizeof (pkt_notify_t);
+		len = pkt->pkt_notify_alloc * sizeof (pkt_notify_t);
 		umem_free(pkt->pkt_notify_extra, len);
 	}
 

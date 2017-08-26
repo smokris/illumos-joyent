@@ -393,24 +393,3 @@ select_socket(const ikev2_sa_t *i2sa, const struct sockaddr_storage *local)
 		return (nattsock);
 	return (ikesock4);
 }
-
-void
-ikev2_no_proposal_chosen(ikev2_sa_t *restrict i2sa, const pkt_t *restrict src,
-    ikev2_spi_proto_t proto, uint64_t spi)
-{
-	pkt_t *resp = ikev2_pkt_new_response(src);
-
-	if (resp == NULL)
-		return;
-
-	if (!ikev2_add_notify(resp, proto, spi, IKEV2_N_NO_PROPOSAL_CHOSEN,
-	    NULL, 0)) {
-		ikev2_pkt_free(resp);
-		return;
-	}
-
-	/* Nothing can be done if send fails for this, so ignore return val */
-	(void) ikev2_send(resp, B_TRUE);
-
-	/* ikev2_send consumes packet, no need to free afterwards */
-}

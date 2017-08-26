@@ -63,7 +63,7 @@ struct config_rule_s;
 
 #define	I2SA_NUM_HASH	2	/* The number of IKEv2 SA hashes we have */
 
-#define	I2SA_SALT_LEN	(32)	/* Maximum size of salt */
+#define	I2SA_SALT_LEN	(32)	/* Maximum size of salt, may be smaller */
 
 /*
  * The IKEv2 SA.
@@ -106,11 +106,11 @@ struct ikev2_sa_s {
 	/* Current number of outstanding messages prior to outmsgid. */
 	int		msgwin;
 
-	int		encr;		/* Encryption algorithm */
+	ikev2_xf_encr_t	encr;		/* Encryption algorithm */
 	size_t		encr_key_len;	/* Key length (bytes) for encr */
-	int		auth;		/* Authentication algorithm */
-	int		prf;		/* PRF algorithm */
-	int		dhgrp;		/* Diffie-Hellman group. */
+	ikev2_xf_auth_t	auth;		/* Authentication algorithm */
+	ikev2_prf_t	prf;		/* PRF algorithm */
+	ikev2_dh_t	dhgrp;		/* Diffie-Hellman group. */
 
 	uint32_t	outmsgid;	/* Next msgid for outbound packets. */
 	uint32_t	inmsgid;	/* Next expected inbound msgid. */
@@ -137,14 +137,21 @@ struct ikev2_sa_s {
 	CK_OBJECT_HANDLE sk_pi;
 	CK_OBJECT_HANDLE sk_pr;
 
+	/* Salt size may be smaller, but no larger than I2SA_SALT_LEN */
 	uint8_t		salt[I2SA_SALT_LEN];
 	size_t		saltlen;
 };
 
 struct ikev2_child_sa {
 	ikev2_child_sa_t	*next;
-	ikev2_spi_proto_t	satype;
-	uint32_t		spi;
+	ikev2_spi_proto_t	i2c_satype;
+	uint32_t		i2c_spi;
+
+	/* Nonces */
+	uint8_t			i2c_ni[IKEV2_NONCE_MAX];
+	size_t			i2c_nilen;
+	uint8_t			i2c_nr[IKEV2_NONCE_MAX];
+	size_t			i2c_nrlen;
 	/* XXX: more to come probably */
 };
 

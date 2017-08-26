@@ -37,9 +37,6 @@ void ikev2_sa_init_inbound_init(struct pkt_s *);
 void ikev2_sa_init_inbound_resp(struct pkt_s *);
 void ikev2_sa_init_outbound(struct ikev2_sa_s *);
 
-void ikev2_no_proposal_chosen(struct ikev2_sa_s *, const struct pkt_s *,
-    ikev2_spi_proto_t, uint64_t);
-
 #ifdef __cplusplus
 }
 #endif

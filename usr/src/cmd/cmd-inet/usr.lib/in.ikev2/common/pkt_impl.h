@@ -38,9 +38,10 @@ pkt_walk_ret_t pkt_payload_walk(uint8_t *restrict, size_t, pkt_walk_fn_t,
 
 boolean_t pkt_count_payloads(uint8_t *restrict, size_t, uint8_t, size_t *,
     size_t *, struct bunyan_logger *restrict);
-boolean_t pkt_index_payloads(pkt_t *, uint8_t *, size_t, uint8_t, size_t,
+boolean_t pkt_index_payloads(pkt_t *, uint8_t *, size_t, uint8_t,
     struct bunyan_logger *restrict);
-boolean_t pkt_size_index(pkt_t *, size_t, size_t);
+boolean_t pkt_add_index(pkt_t *, uint8_t, uint8_t *, uint16_t);
+boolean_t pkt_add_nindex(pkt_t *, uint16_t, uint8_t *, size_t);
 
 pkt_t *pkt_in_alloc(uint8_t *restrict, size_t, struct bunyan_logger *restrict);
 pkt_t *pkt_out_alloc(uint64_t, uint64_t, uint8_t, uint8_t, uint32_t);

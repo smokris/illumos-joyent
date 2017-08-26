@@ -104,10 +104,12 @@ struct pkt_s {
 	pkt_payload_t		pkt_payloads[PKT_PAYLOAD_NUM];
 	pkt_payload_t		*pkt_payload_extra;
 	uint16_t		pkt_payload_count;
+	uint16_t		pkt_payload_alloc;
 
 	pkt_notify_t		pkt_notify[PKT_NOTIFY_NUM];
 	pkt_notify_t		*pkt_notify_extra;
 	uint16_t		pkt_notify_count;
+	uint16_t		pkt_notify_alloc;
 
 	struct pkt_stack_s	stack[PKT_STACK_DEPTH];
 	uint_t			stksize;
