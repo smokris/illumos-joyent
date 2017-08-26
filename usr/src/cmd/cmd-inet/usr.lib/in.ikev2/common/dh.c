@@ -356,7 +356,7 @@ dh_genpair(int group, CK_OBJECT_HANDLE_PTR restrict pub,
 	template[1].pValue = dh->generator;
 	template[1].ulValueLen = dh->genbits / 8;
 
-	return (C_GenerateKeyPair(p11h, &mech, template, ARRAY_SIZE(template),
+	return (C_GenerateKeyPair(p11h(), &mech, template, ARRAY_SIZE(template),
 	    NULL_PTR, 0, pub, priv));
 }
 
@@ -377,7 +377,7 @@ dh_derivekey(CK_OBJECT_HANDLE privkey, uint8_t *restrict pub, size_t len,
 		{ CKA_DECRYPT, &trueval, sizeof (trueval) }
 	};
 
-	return (C_DeriveKey(p11h, &mech, privkey, template,
+	return (C_DeriveKey(p11h(), &mech, privkey, template,
 	    ARRAY_SIZE(template), seckey));
 }
 

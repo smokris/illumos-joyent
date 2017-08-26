@@ -273,7 +273,7 @@ static int
 check_one_nat(pkt_t *pkt, pkt_notify_t *n)
 {
 	bunyan_logger_t *l = pkt->pkt_sa->i2sa_log;
-	CK_SESSION_HANDLE h = p11h;
+	CK_SESSION_HANDLE h = p11h();
 	sockaddr_u_t addr;
 	CK_MECHANISM mech = { .mechanism = CKM_SHA_1 };
 	buf_t buf[3];
@@ -421,7 +421,7 @@ add_nat(pkt_t *pkt)
 		.pParameter = NULL_PTR,
 		.ulParameterLen = 0
 	};
-	CK_SESSION_HANDLE h = p11h;
+	CK_SESSION_HANDLE h = p11h();
 	CK_RV ret = CKR_OK;
 
 	addr[0].sau_ss = &pkt->pkt_sa->laddr;

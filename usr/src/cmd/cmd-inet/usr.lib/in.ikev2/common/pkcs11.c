@@ -46,12 +46,16 @@
 #define	METASLOT_ID	(0)
 
 CK_INFO			pkcs11_info = { 0 };
-CK_SESSION_HANDLE	p11h = CK_INVALID_HANDLE;
+static pthread_key_t	pkcs11_key = PTHREAD_ONCE_KEY_NP;
+static CK_SESSION_HANDLE	*handles;
+static size_t			nhandles;
+static size_t			handlesz;
 
 #define	PKCS11_FUNC		"func"
 #define	PKCS11_RC		"errnum"
 #define	PKCS11_ERRMSG		"err"
 
+static void pkcs11_free(void *);
 static void fmtstr(char *, size_t, CK_UTF8CHAR *, size_t);
 static CK_RV pkcs11_callback_handler(CK_SESSION_HANDLE, CK_NOTIFICATION,
     void *);
@@ -74,6 +78,8 @@ pkcs11_init(void)
 		CKF_OS_LOCKING_OK,	/* flags */
 		NULL_PTR		/* reserved */
 	};
+
+	PTH(pthread_key_create_once_np(&pkcs11_key, pkcs11_free));
 
 	if ((rv = C_Initialize(&args)) != CKR_OK) {
 		PKCS11ERR(fatal, log, "C_Initialize", rv);
@@ -126,17 +132,6 @@ pkcs11_init(void)
 
 	for (size_t i = 0; i < nslot; i++)
 		log_slotinfo(slots[i]);
-
-	rv = C_OpenSession(METASLOT_ID, CKF_SERIAL_SESSION, NULL,
-	    pkcs11_callback_handler, &p11h);
-	if (rv != CKR_OK) {
-		PKCS11ERR(fatal, log, "C_OpenSession", rv);
-		exit(1);
-	}
-
-	(void) bunyan_trace(log, "PKCS#11 session opened",
-	    BUNYAN_T_UINT64, "pkcs11 handle", (uint64_t)p11h,
-	    BUNYAN_T_END);
 }
 
 static void
@@ -239,9 +234,15 @@ pkcs11_fini(void)
 {
 	CK_RV rv;
 
-	rv = C_CloseSession(p11h);
-	if (rv != CKR_OK)
-		PKCS11ERR(error, log, "C_CloseSession", rv);
+	for (size_t i = 0; i < nhandles; i++) {
+		rv = C_CloseSession(handles[i]);
+		if (rv != CKR_OK)
+			PKCS11ERR(error, log, "C_CloseSession", rv);
+	}
+	free(handles);
+	handles = NULL;
+	nhandles = 0;
+	handlesz = 0;
 
 	rv = C_Finalize(NULL_PTR);
 	if (rv != CKR_OK)
@@ -519,7 +520,7 @@ pkcs11_destroy_obj(const char *name, CK_OBJECT_HANDLE_PTR objp,
 	if (objp == NULL || *objp == CK_INVALID_HANDLE)
 		return;
 
-	if ((ret = C_DestroyObject(p11h, *objp)) != CKR_OK) {
+	if ((ret = C_DestroyObject(p11h(), *objp)) != CKR_OK) {
 		PKCS11ERR(error, (l == NULL) ? log : l, "C_DestroyObject", ret);
 	} else {
 		*objp = CK_INVALID_HANDLE;
@@ -540,13 +541,13 @@ pkcs11_digest(CK_MECHANISM_TYPE alg, const buf_t *restrict in, size_t n,
 	mech.pParameter = NULL_PTR;
 	mech.ulParameterLen = 0;
 
-	if ((ret = C_DigestInit(p11h, &mech)) != CKR_OK) {
+	if ((ret = C_DigestInit(p11h(), &mech)) != CKR_OK) {
 		PKCS11ERR(error, l, "C_DigestInit", ret);
 		return (B_FALSE);
 	}
 
 	for (size_t i = 0; i < n; i++) {
-		ret = C_DigestUpdate(p11h, in[i].b_ptr, buf_left(&in[i]));
+		ret = C_DigestUpdate(p11h(), in[i].b_ptr, buf_left(&in[i]));
 		if (ret != CKR_OK) {
 			PKCS11ERR(error, l, "C_DigestUpdate", ret);
 			return (B_FALSE);
@@ -555,7 +556,7 @@ pkcs11_digest(CK_MECHANISM_TYPE alg, const buf_t *restrict in, size_t n,
 
 	CK_ULONG len = out->b_len;
 
-	ret = C_DigestFinal(p11h, out->b_ptr, &len);
+	ret = C_DigestFinal(p11h(), out->b_ptr, &len);
 	if (ret != CKR_OK) {
 		PKCS11ERR(error, l, "C_DigestFinal", ret);
 		return (B_FALSE);
@@ -583,6 +584,71 @@ pkcs11_callback_handler(CK_SESSION_HANDLE session, CK_NOTIFICATION surrender,
 	VERIFY3U(surrender, ==, CKN_SURRENDER);
 
 	return (CKR_OK);
+}
+
+#define	CHUNK_SZ (8)
+static void
+pkcs11_free(void *arg)
+{
+	CK_SESSION_HANDLE h = (CK_SESSION_HANDLE)arg;
+
+	/*
+	 * Per the PKCS#11 standard, multiple handles in the same process
+	 * share any objects created.  However, when a particular handle is
+	 * closed, any objects created by that handle are deleted.  Due to
+	 * this behavior, we do not close any sessions and instead keep
+	 * unused sessions around on a free list for re-use.
+	 *
+	 * It also means in the (hopefully) rare instance we cannot expand
+	 * 'handles' to hold additional unused handles, we just leak them.
+	 * In practice if we are so low on memory that we cannot expand
+	 * 'handles', things are likely messed up enough we'll probably
+	 * end up restarting things anyway.
+	 */
+	if (nhandles + 1 > handlesz) {
+		CK_SESSION_HANDLE *nh = NULL;
+		size_t newamt = handlesz + 8;
+		size_t newsz = newamt * sizeof (CK_SESSION_HANDLE);
+
+		if (newsz < newamt || newsz < sizeof (CK_SESSION_HANDLE))
+			return;
+
+		nh = realloc(handles, newsz);
+		if (nh == NULL)
+			return;
+
+		handles = nh;
+		handlesz = newamt;
+	}
+
+	handles[nhandles++] = h;
+}
+
+CK_SESSION_HANDLE
+p11h(void)
+{
+	CK_SESSION_HANDLE h =
+	    (CK_SESSION_HANDLE)pthread_getspecific(pkcs11_key);
+	CK_RV ret;
+
+	if (h != CK_INVALID_HANDLE)
+		return (h);
+
+	if (nhandles > 0) {
+		h = handles[--nhandles];
+		goto done;
+	}
+
+	ret = C_OpenSession(METASLOT_ID, CKF_SERIAL_SESSION, NULL,
+	    pkcs11_callback_handler, &h);
+	if (ret != CKR_OK) {
+		PKCS11ERR(error, log, "C_OpenSession", ret);
+		return (CK_INVALID_HANDLE);
+	}
+
+done:
+	PTH(pthread_setspecific(pkcs11_key, (void *)h));
+	return (h);
 }
 
 /*

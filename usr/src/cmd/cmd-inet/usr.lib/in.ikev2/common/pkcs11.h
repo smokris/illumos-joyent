@@ -59,12 +59,11 @@ typedef enum encr_mode {
 #define	MODE_IS_COMBINED(m) ((m) == MODE_CCM || (m) == MODE_GCM)
 
 extern CK_INFO pkcs11_info;
-extern CK_SESSION_HANDLE p11h;
 
-/* PKCS#11 functions. */
 void pkcs11_init(void);
 void pkcs11_fini(void);
 
+CK_SESSION_HANDLE p11h(void);
 boolean_t pkcs11_digest(CK_MECHANISM_TYPE, const buf_t *restrict, size_t,
     buf_t *restrict, bunyan_logger_t *);
 void pkcs11_destroy_obj(const char *, CK_OBJECT_HANDLE_PTR, bunyan_logger_t *);

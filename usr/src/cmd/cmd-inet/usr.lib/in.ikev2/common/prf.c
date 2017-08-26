@@ -119,7 +119,7 @@ prf_genkey(int alg, buf_t *restrict src, size_t n,
 	template[0].pValue = key.b_buf;
 	template[0].ulValueLen = keylen;
 
-	rc = C_CreateObject(p11h, template,
+	rc = C_CreateObject(p11h(), template,
 	    sizeof (template) / sizeof (CK_ATTRIBUTE), kp);
 
 done:
@@ -136,6 +136,7 @@ prf(int alg, CK_OBJECT_HANDLE key, buf_t *restrict seed, size_t nseed,
     buf_t *restrict out)
 {
 	const prf_alg_t		*algp;
+	CK_SESSION_HANDLE	h = p11h();
 	CK_MECHANISM		mech;
 	CK_RV			rc = CKR_OK;
 	CK_ULONG		len;
@@ -147,12 +148,12 @@ prf(int alg, CK_OBJECT_HANDLE key, buf_t *restrict seed, size_t nseed,
 	mech.pParameter = NULL;
 	mech.ulParameterLen = 0;
 
-	if ((rc = C_SignInit(p11h, &mech, key)) != CKR_OK)
+	if ((rc = C_SignInit(h, &mech, key)) != CKR_OK)
 		return (rc);
 
 	for (size_t i = 0; i < nseed; i++, seed) {
 		BUF_IS_READ(seed);
-		rc = C_SignUpdate(p11h, seed->b_ptr, buf_left(seed));
+		rc = C_SignUpdate(h, seed->b_ptr, buf_left(seed));
 		/* XXX: should we still call C_SignFinal? */
 		if (rc != CKR_OK)
 			return (rc);
@@ -161,7 +162,7 @@ prf(int alg, CK_OBJECT_HANDLE key, buf_t *restrict seed, size_t nseed,
 	BUF_IS_WRITE(out);
 
 	len = buf_left(out);
-	rc = C_SignFinal(p11h, out->b_ptr, &len);
+	rc = C_SignFinal(h, out->b_ptr, &len);
 	if (rc == CKR_OK)
 		VERIFY3U(len, ==, buf_left(out));
 

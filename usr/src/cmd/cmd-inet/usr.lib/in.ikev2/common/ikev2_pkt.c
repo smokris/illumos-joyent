@@ -1243,7 +1243,7 @@ static boolean_t
 cbc_iv(pkt_t *restrict pkt, uint8_t *ivp)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
-	CK_SESSION_HANDLE handle = p11h;
+	CK_SESSION_HANDLE handle = p11h();
 	CK_MECHANISM mech;
 	CK_OBJECT_HANDLE key;
 	CK_RV rv;
@@ -1307,7 +1307,7 @@ crypt_common(pkt_t *pkt, boolean_t encrypt, uint8_t *iv, CK_ULONG ivlen,
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
 	const char *fn;
-	CK_SESSION_HANDLE handle = p11h;
+	CK_SESSION_HANDLE handle = p11h();
 	CK_OBJECT_HANDLE key;
 	CK_MECHANISM mech;
 	union {
@@ -1419,7 +1419,7 @@ auth_common(pkt_t *pkt, boolean_t encrypt, uint8_t *icv, size_t icvlen)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
 	const char *fn = NULL;
-	CK_SESSION_HANDLE handle = p11h;
+	CK_SESSION_HANDLE handle = p11h();
 	CK_OBJECT_HANDLE key;
 	CK_MECHANISM mech = { 0 };
 	CK_RV rc;
