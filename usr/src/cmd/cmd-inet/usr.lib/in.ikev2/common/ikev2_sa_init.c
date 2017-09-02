@@ -32,6 +32,7 @@
 #include "ikev2_enum.h"
 #include "ikev2_common.h"
 #include "prf.h"
+#include "dh.h"
 
 static boolean_t find_config(pkt_t *, sockaddr_u_t, sockaddr_u_t);
 static boolean_t add_nat(pkt_t *);
@@ -90,12 +91,6 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 		return;
 	}
 
-	sa->encr = sa_result.sar_encr;
-	sa->encr_key_len = sa_result.sar_encr_keylen;
-	sa->auth = sa_result.sar_auth;
-	sa->prf = sa_result.sar_prf;
-	sa->dhgrp = sa_result.sar_dh;
-
 	/* RFC7296 2.10 nonce length should be at least half key size of PRF */
 	noncelen = ikev2_prf_keylen(sa_result.sar_prf) / 2;
 
@@ -105,15 +100,20 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 	if (noncelen > IKEV2_NONCE_MAX)
 		noncelen = IKEV2_NONCE_MAX;
 
+	if (!dh_genpair(sa_result.sar_dh, &sa->dh_pubkey, &sa->dh_privkey, sa->i2sa_log))
+		goto fail;
+	if (!dh_derivekey(sa->dh_privkey, ke_i->pp_ptr, ke_i->pp_len, &sa->dh_key,
+	    sa->i2sa_log))
+		goto fail;
+
 	resp = ikev2_pkt_new_response(pkt);
 	if (resp == NULL)
 		goto fail;
 
 	if (!ikev2_sa_add_result(resp, &sa_result))
 		goto fail;
-
-	/* XXX: KE */
-
+	if (!ikev2_add_ke(resp, sa_result.sar_dh, sa->dh_key))
+		goto fail;
 	if (!ikev2_add_nonce(resp, NULL, noncelen))
 		goto fail;
 	if (!add_nat(resp))
@@ -125,7 +125,6 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 	if (!add_vendor(resp))
 		goto fail;
 
-	/* XXX: DH priv key */
 	if (!ikev2_sa_keygen(&sa_result, pkt, resp))
 		goto fail;
 
@@ -142,9 +141,11 @@ fail:
 void
 ikev2_sa_init_inbound_resp(pkt_t *pkt)
 {
+	ikev2_sa_t *sa = pkt->pkt_sa;
 	pkt_notify_t *cookie = pkt_get_notify(pkt, IKEV2_N_COOKIE, NULL);
 	pkt_notify_t *invalid_ke = pkt_get_notify(pkt,
 	    IKEV2_N_INVALID_KE_PAYLOAD, NULL);
+	pkt_payload_t *ke_r = pkt_payload(pkt, IKEV2_PAYLOAD_KE);
 	ikev2_sa_result_t sa_result = { 0 };
 
 	/* XXX: Check for no proposal chosen? */
@@ -166,7 +167,7 @@ ikev2_sa_init_inbound_resp(pkt_t *pkt)
 			dh = ntohs(val);
 		}
 
-		ikev2_sa_init_outbound(pkt->pkt_sa, cookie->pn_ptr, cookie->pn_len,
+		ikev2_sa_init_outbound(sa, cookie->pn_ptr, cookie->pn_len,
 		    dh, nonce->pp_ptr, nonce->pp_len);
 
 		ikev2_pkt_free(out);
@@ -177,7 +178,7 @@ ikev2_sa_init_inbound_resp(pkt_t *pkt)
 		goto fail;
 	check_vendor(pkt);
 
-	if (!ikev2_sa_match_rule(pkt->pkt_sa->i2sa_rule, pkt, &sa_result)) {
+	if (!ikev2_sa_match_rule(sa->i2sa_rule, pkt, &sa_result)) {
 		/*
 		 * XXX: Tried to send back something that wasn't in the propsals
 		 * we sent.  What should we do?  Just destroy the IKE SA? Ignore?
@@ -185,7 +186,10 @@ ikev2_sa_init_inbound_resp(pkt_t *pkt)
 		goto fail;
 	}
 
-	if (!ikev2_sa_keygen(&sa_result, pkt->pkt_sa->init, pkt))
+	if (!dh_derivekey(sa->dh_privkey, ke_r->pp_ptr, ke_r->pp_len, &sa->dh_key,
+	    sa->i2sa_log))
+		goto fail;
+	if (!ikev2_sa_keygen(&sa_result, sa->init, pkt))
 		goto fail;
 
 	return;
@@ -215,8 +219,14 @@ ikev2_sa_init_outbound(ikev2_sa_t *restrict i2sa, uint8_t *restrict cookie,
 	if (!add_rule_proposals(pkt, i2sa->i2sa_rule, 0))
 		goto fail;
 
-	/* XXX: KE */
+	/* These will do nothing if there isn't an existing key */
+	pkcs11_destroy_obj("dh_pubkey", &i2sa->dh_pubkey, i2sa->i2sa_log);
+	pkcs11_destroy_obj("dh_privkey", &i2sa->dh_privkey, i2sa->i2sa_log);
+	if (!dh_genpair(dh, &i2sa->dh_pubkey, &i2sa->dh_privkey, i2sa->i2sa_log))
+		goto fail;
 
+	if (!ikev2_add_ke(pkt, dh, i2sa->dh_pubkey))
+		goto fail;
 	if (!ikev2_add_nonce(pkt, nonce, noncelen))
 		goto fail;
 	if (!add_nat(pkt))

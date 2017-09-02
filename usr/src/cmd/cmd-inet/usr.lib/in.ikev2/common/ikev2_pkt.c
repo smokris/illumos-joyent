@@ -843,19 +843,44 @@ ikev2_add_xf_encr(pkt_t *pkt, ikev2_xf_encr_t encr, uint16_t minbits,
 }
 
 boolean_t
-ikev2_add_ke(pkt_t *restrict pkt, uint_t group,
-    const uint8_t *restrict data, size_t len)
+ikev2_add_ke(pkt_t *restrict pkt, ikev2_dh_t group, CK_OBJECT_HANDLE key)
 {
-	ikev2_ke_t	ke = { 0 };
+	bunyan_logger_t		*l = pkt->pkt_sa->i2sa_log;
+	ikev2_ke_t		ke = { 0 };
+	CK_SESSION_HANDLE	h = p11h();
+	CK_ULONG		keylen = 0;
+	CK_ATTRIBUTE		template;
+	CK_RV			rc = CKR_OK;
 
-	ASSERT3U(group, <, 0x10000);
-	if (pkt_write_left(pkt) < sizeof (ikev2_payload_t) + sizeof (ke) + len)
+	rc = C_GetObjectSize(h, key, &keylen);
+	if (rc != CKR_OK) {
+		PKCS11ERR(error, l, "C_GetObjectSize", rc);
 		return (B_FALSE);
+	}
+
+	if (pkt_write_left(pkt) < sizeof (ikev2_payload_t) + sizeof (ke) +
+	    keylen) {
+		bunyan_error(l, "Not enough space in packet for DH pubkey",
+		    BUNYAN_T_UINT64, "keylen", (uint64_t)keylen,
+		    BUNYAN_T_END);
+		return (B_FALSE);
+	}
 
 	ikev2_add_payload(pkt, IKEV2_PAYLOAD_KE, B_FALSE);
 	ke.kex_dhgroup = htons((uint16_t)group);
 	PKT_APPEND_STRUCT(pkt, ke);
-	PKT_APPEND_DATA(pkt, data, len);
+
+	template.type = CKA_VALUE;
+	template.pValue = pkt->pkt_ptr;
+	template.ulValueLen = pkt_write_left(pkt);
+
+	rc = C_GetAttributeValue(h, key, &template, 1);
+	if (rc != CKR_OK) {
+		PKCS11ERR(error, l, "C_GetAttributeValue", rc);
+		return (B_FALSE);
+	}
+	pkt->pkt_ptr += keylen;
+
 	return (B_TRUE);
 }
 
@@ -981,11 +1006,12 @@ ikev2_add_nonce(pkt_t *restrict pkt, uint8_t *restrict nonce, size_t len)
 		return (B_FALSE);
 
 	ikev2_add_payload(pkt, IKEV2_PAYLOAD_NONCE, B_FALSE);
-	if (nonce != NULL)
+	if (nonce != NULL) {
 		PKT_APPEND_DATA(pkt, nonce, len);
-	else
+	} else {
 		random_high(pkt->pkt_ptr, len);
-	pkt->pkt_ptr += len;
+		pkt->pkt_ptr += len;
+	}
 	return (B_TRUE);
 }
 

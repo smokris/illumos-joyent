@@ -16,15 +16,16 @@
 
 #include <sys/types.h>
 #include <security/cryptoki.h>
+#include <bunyan.h>
 #include "dh.h"
 #include "pkcs11.h"
 
 typedef struct {
-	int	id;
-	int	bits;
-	int	genbits;
-	uint8_t	*prime;
-	uint8_t	*generator;
+	ikev2_dh_t	id;
+	size_t		bits;
+	size_t		genbits;
+	uint8_t		*prime;
+	uint8_t		*generator;
 } dhgroup_t;
 
 
@@ -325,7 +326,7 @@ static dhgroup_t dh_groups[] = {
 #define	NUM_DHGROUPS	(ARRAY_SIZE(dh_groups))
 
 static dhgroup_t *
-dh_get_group(int id)
+dh_get_group(ikev2_dh_t id)
 {
 	int i;
 
@@ -337,13 +338,14 @@ dh_get_group(int id)
 	return (NULL);
 }
 
-CK_RV
-dh_genpair(int group, CK_OBJECT_HANDLE_PTR restrict pub,
-    CK_OBJECT_HANDLE_PTR restrict priv)
+boolean_t
+dh_genpair(ikev2_dh_t group, CK_OBJECT_HANDLE_PTR restrict pub,
+    CK_OBJECT_HANDLE_PTR restrict priv, bunyan_logger_t *restrict l)
 {
 	dhgroup_t *dh;
 	CK_MECHANISM mech = { CKM_DH_PKCS_KEY_PAIR_GEN, NULL_PTR, 0 };
 	CK_ATTRIBUTE template[2];
+	CK_RV rc;
 
 	dh = dh_get_group(group);
 	if (dh == NULL)
@@ -356,13 +358,18 @@ dh_genpair(int group, CK_OBJECT_HANDLE_PTR restrict pub,
 	template[1].pValue = dh->generator;
 	template[1].ulValueLen = dh->genbits / 8;
 
-	return (C_GenerateKeyPair(p11h(), &mech, template, ARRAY_SIZE(template),
-	    NULL_PTR, 0, pub, priv));
+	rc = C_GenerateKeyPair(p11h(), &mech, template, ARRAY_SIZE(template),
+	    NULL_PTR, 0, pub, priv);
+	if (rc != CKR_OK) {
+		PKCS11ERR(error, l, "C_GenerateKeyPair", rc);
+		return (B_FALSE);
+	}
+	return (B_TRUE);
 }
 
-CK_RV
+boolean_t
 dh_derivekey(CK_OBJECT_HANDLE privkey, uint8_t *restrict pub, size_t len,
-    CK_OBJECT_HANDLE_PTR restrict seckey)
+    CK_OBJECT_HANDLE_PTR restrict seckey, bunyan_logger_t *restrict l)
 {
 	CK_OBJECT_CLASS key_class = CKO_SECRET_KEY;
 	CK_KEY_TYPE key_type = CKK_GENERIC_SECRET;
@@ -376,13 +383,19 @@ dh_derivekey(CK_OBJECT_HANDLE privkey, uint8_t *restrict pub, size_t len,
 		{ CKA_ENCRYPT, &trueval, sizeof (trueval) },
 		{ CKA_DECRYPT, &trueval, sizeof (trueval) }
 	};
+	CK_RV rc;
 
-	return (C_DeriveKey(p11h(), &mech, privkey, template,
-	    ARRAY_SIZE(template), seckey));
+	rc = C_DeriveKey(p11h(), &mech, privkey, template,
+	    ARRAY_SIZE(template), seckey);
+	if (rc != CKR_OK) {
+		PKCS11ERR(error, l, "C_DeriveKey", rc);
+		return (B_FALSE);
+	}
+	return (B_TRUE);
 }
 
 size_t
-dh_keysize(int group)
+dh_keysize(ikev2_dh_t group)
 {
 	dhgroup_t *dhg = dh_get_group(group);
 

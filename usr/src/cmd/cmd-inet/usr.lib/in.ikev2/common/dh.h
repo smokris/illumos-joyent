@@ -18,16 +18,19 @@
 
 #include <sys/types.h>
 #include <security/cryptoki.h>
+#include "ikev2.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-size_t dh_keysize(int);
-CK_RV dh_genpair(int, CK_OBJECT_HANDLE_PTR restrict,
-    CK_OBJECT_HANDLE_PTR restrict);
-CK_RV dh_derivekey(CK_OBJECT_HANDLE, uchar_t *restrict, size_t,
-    CK_OBJECT_HANDLE_PTR restrict);
+struct bunyan_logger;
+
+size_t dh_keysize(ikev2_dh_t);
+boolean_t dh_genpair(ikev2_dh_t, CK_OBJECT_HANDLE_PTR restrict,
+    CK_OBJECT_HANDLE_PTR restrict, struct bunyan_logger *restrict);
+boolean_t dh_derivekey(CK_OBJECT_HANDLE, uint8_t *restrict, size_t,
+    CK_OBJECT_HANDLE_PTR restrict, struct bunyan_logger *restrict);
 
 #ifdef __cplusplus
 }
