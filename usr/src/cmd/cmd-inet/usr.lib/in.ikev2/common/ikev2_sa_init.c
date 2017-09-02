@@ -41,6 +41,8 @@ static boolean_t add_vendor(pkt_t *);
 static boolean_t add_rule_proposals(pkt_t *restrict,
     const config_rule_t *restrict, uint64_t);
 static boolean_t add_cookie(pkt_t *restrict, void *restrict, size_t len);
+static boolean_t ikev2_sa_keygen(ikev2_sa_result_t *restrict, pkt_t *restrict,
+    pkt_t *restrict);
 
 /*
  * New inbound IKE_SA_INIT exchange
@@ -52,10 +54,13 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 	pkt_t *resp = NULL;
 	sockaddr_u_t laddr = { .sau_ss = &sa->laddr };
 	sockaddr_u_t raddr = { .sau_ss = &sa->raddr };
+	pkt_payload_t *ke_i = pkt_payload(pkt, IKEV2_PAYLOAD_KE);
 	ikev2_sa_result_t sa_result = { 0 };
 	size_t noncelen = 0;
+	uint16_t dhgrp = 0;
 
 	VERIFY(!(sa->flags & I2SA_INITIATOR));
+	VERIFY3P(ke_i, !=, NULL);
 
 	if (!find_config(pkt, laddr, raddr))
 		goto fail;
@@ -67,7 +72,22 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 
 	if (!ikev2_sa_match_rule(sa->i2sa_rule, pkt, &sa_result)) {
 		ikev2_no_proposal_chosen(sa, pkt, IKEV2_PROTO_IKE, 0);
-		goto fail;
+		ikev2_pkt_free(pkt);
+		return;
+	}
+
+	/*
+	 * A bit annoying, but it's possible the negotiated DH group is
+	 * different than the public key value that was sent in the IKE_SA_INIT
+	 * exchange.  In that case, we respond with an INVALID_KE_PAYLOAD
+	 * notification and include the result we want.
+	 */
+	(void) memcpy(&dhgrp, ke_i->pp_ptr, sizeof (dhgrp));
+	dhgrp = ntohs(dhgrp);
+	if (dhgrp != sa_result.sar_dh) {
+		ikev2_invalid_ke(pkt, IKEV2_PROTO_IKE, 0, sa_result.sar_dh);
+		ikev2_pkt_free(pkt);
+		return;
 	}
 
 	sa->encr = sa_result.sar_encr;
@@ -94,7 +114,7 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 
 	/* XXX: KE */
 
-	if (!ikev2_add_nonce(resp, noncelen))
+	if (!ikev2_add_nonce(resp, NULL, noncelen))
 		goto fail;
 	if (!add_nat(resp))
 		goto fail;
@@ -103,6 +123,10 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 	/* XXX: other notifications */
 
 	if (!add_vendor(resp))
+		goto fail;
+
+	/* XXX: DH priv key */
+	if (!ikev2_sa_keygen(&sa_result, pkt, resp))
 		goto fail;
 
 	if (!ikev2_send(resp, B_FALSE))
@@ -118,16 +142,34 @@ fail:
 void
 ikev2_sa_init_inbound_resp(pkt_t *pkt)
 {
-	pkt_notify_t *cookie = pkt_get_notify(pkt, (uint16_t)IKEV2_N_COOKIE,
-	    NULL);
+	pkt_notify_t *cookie = pkt_get_notify(pkt, IKEV2_N_COOKIE, NULL);
+	pkt_notify_t *invalid_ke = pkt_get_notify(pkt,
+	    IKEV2_N_INVALID_KE_PAYLOAD, NULL);
+	ikev2_sa_result_t sa_result = { 0 };
 
-	if (cookie != NULL) {
+	/* XXX: Check for no proposal chosen? */
+	if (cookie != NULL || invalid_ke != NULL) {
 		pkt_t *out = pkt->pkt_sa->init;
+		pkt_payload_t *nonce = pkt_payload(out, IKEV2_PAYLOAD_NONCE);
+		ikev2_dh_t dh = IKEV2_DH_NONE;
 
-		if (!add_cookie(out, cookie->pn_ptr, cookie->pn_len) ||
-		    !ikev2_send(out, B_FALSE)) {
-			/* XXX: destroy larval IKE SA? */
+		if (invalid_ke != NULL) {
+			ikev2_notify_t *np = (ikev2_notify_t *)invalid_ke->pn_ptr;
+			uint16_t val = 0;
+
+			/* If the notification was invalid (too short) just ignore it */
+			if (invalid_ke->pn_len <
+			    sizeof (ikev2_notify_t) + sizeof (uint16_t))
+				return; /* XXX log? */
+
+			(void) memcpy(&val, np + 1, sizeof (uint16_t));
+			dh = ntohs(val);
 		}
+
+		ikev2_sa_init_outbound(pkt->pkt_sa, cookie->pn_ptr, cookie->pn_len,
+		    dh, nonce->pp_ptr, nonce->pp_len);
+
+		ikev2_pkt_free(out);
 		return;
 	}
 
@@ -135,7 +177,16 @@ ikev2_sa_init_inbound_resp(pkt_t *pkt)
 		goto fail;
 	check_vendor(pkt);
 
-	/* XXX: Verify SA payload */
+	if (!ikev2_sa_match_rule(pkt->pkt_sa->i2sa_rule, pkt, &sa_result)) {
+		/*
+		 * XXX: Tried to send back something that wasn't in the propsals
+		 * we sent.  What should we do?  Just destroy the IKE SA? Ignore?
+		 */
+		goto fail;
+	}
+
+	if (!ikev2_sa_keygen(&sa_result, pkt->pkt_sa->init, pkt))
+		goto fail;
 
 	return;
 fail:
@@ -144,12 +195,12 @@ fail:
 }
 
 void
-ikev2_sa_init_outbound(ikev2_sa_t *i2sa)
+ikev2_sa_init_outbound(ikev2_sa_t *restrict i2sa, uint8_t *restrict cookie,
+    size_t cookielen, ikev2_dh_t dh, uint8_t *restrict nonce, size_t noncelen)
 {
 	pkt_t *pkt = NULL;
 	sockaddr_u_t laddr = { .sau_ss = &i2sa->laddr };
 	sockaddr_u_t raddr = { .sau_ss = &i2sa->raddr };
-	size_t noncelen = 0;
 
 	VERIFY(i2sa->flags & I2SA_INITIATOR);
 
@@ -158,12 +209,15 @@ ikev2_sa_init_outbound(ikev2_sa_t *i2sa)
 	if (!find_config(pkt, laddr, raddr))
 		goto fail;
 
+	if (cookie != NULL && !add_cookie(pkt, cookie, cookielen))
+		goto fail;
+
 	if (!add_rule_proposals(pkt, i2sa->i2sa_rule, 0))
 		goto fail;
 
 	/* XXX: KE */
 
-	if (!ikev2_add_nonce(pkt, noncelen))
+	if (!ikev2_add_nonce(pkt, nonce, noncelen))
 		goto fail;
 	if (!add_nat(pkt))
 		goto fail;
@@ -250,6 +304,9 @@ find_config(pkt_t *pkt, sockaddr_u_t laddr, sockaddr_u_t raddr)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
 
+	if (sa->i2sa_rule != NULL)
+		goto done;
+
 	sa->i2sa_rule = config_get_rule(&laddr, &raddr);
 
 	if (sa->i2sa_rule->rule_xf[0] == NULL) {
@@ -258,6 +315,7 @@ find_config(pkt_t *pkt, sockaddr_u_t laddr, sockaddr_u_t raddr)
 		return (B_FALSE);
 	}
 
+done:
 	if (RULE_IS_DEFAULT(sa->i2sa_rule)) {
 		bunyan_debug(sa->i2sa_log, "Using default rule", BUNYAN_T_END);
 	} else {
@@ -553,3 +611,175 @@ add_cookie(pkt_t *restrict pkt, void *restrict cookie, size_t len)
 	(void) memcpy(start + sizeof (ntfy), cookie, len);
 	return (B_TRUE);
 }
+
+static size_t
+skeyseed_noncelen(ikev2_prf_t prf, size_t len)
+{
+	switch (prf) {
+	/*
+	 * RFC7296 2.14 - For these PRFs, only the first 64 bits of Ni and Nr are
+	 * used when calculating skeyseed, though all bits are used for the prf+
+	 * function
+	 */
+	case IKEV2_PRF_AES128_XCBC:
+	case IKEV2_PRF_AES128_CMAC:
+		if (len > 8)
+			return (8);
+		/*FALLTHRU*/
+	default:
+		return (len);
+	}
+}
+
+static boolean_t
+create_nonceobj(ikev2_prf_t prf, pkt_payload_t *restrict ni, pkt_payload_t *restrict nr,
+    CK_OBJECT_HANDLE_PTR restrict objp, bunyan_logger_t *restrict l)
+{
+	size_t noncelen = MAX(ni->pp_len + nr->pp_len, ikev2_prf_outlen(prf));
+	uint8_t nonce[noncelen];
+	size_t ni_len = skeyseed_noncelen(prf, ni->pp_len);
+	size_t nr_len = skeyseed_noncelen(prf, nr->pp_len);
+	CK_RV rc;
+
+	(void) memset(nonce, 0, noncelen);
+	(void) memcpy(nonce, ni->pp_ptr, ni_len);
+	(void) memcpy(nonce + ni_len, nr->pp_ptr, nr_len);
+	rc = SUNW_C_KeyToObject(p11h(), ikev2_prf_to_p11(prf), nonce, noncelen, objp);
+	explicit_bzero(nonce, noncelen);
+
+	if (rc != CKR_OK)
+		PKCS11ERR(error, l, "SUNW_C_KeyToObject", rc,
+		    BUNYAN_T_STRING, "objname", "Ni|Nr");
+
+	return ((rc == CKR_OK) ? B_TRUE : B_FALSE);
+}
+
+static boolean_t
+create_skeyseed(ikev2_sa_t *restrict sa, CK_OBJECT_HANDLE nonce,
+    CK_OBJECT_HANDLE_PTR restrict keyp)
+{
+	CK_SESSION_HANDLE h = p11h();
+	uint8_t *dh_key = NULL, *skeyseed = NULL;
+	size_t dh_key_len = 0, skeyseed_len = 0;
+	CK_RV rc = CKR_OK;
+	boolean_t ok = B_TRUE;
+
+	skeyseed_len = ikev2_prf_outlen(sa->prf);
+	skeyseed = umem_zalloc(skeyseed_len, UMEM_DEFAULT);
+	if (skeyseed == NULL)
+		goto fail;
+
+	/*
+	 * Unfortunately, to generate SKEYSEED, we need to copy down the g^ir value
+	 * to perform the prf function since there is no C_SignKey function in PKCS#11.
+	 * As such we try to keep the value in memory for as short a time as possible.
+	 */
+	rc = pkcs11_ObjectToKey(h, sa->dh_key, (void **)&dh_key, &dh_key_len, B_FALSE);
+	if (rc != CKR_OK) {
+		PKCS11ERR(error, sa->i2sa_log, "pkcs11_ObjectToKey", rc,
+		    BUNYAN_T_STRING, "objname", "dh_key");
+		goto fail;
+	}
+
+	ok = prf(sa->prf, nonce, skeyseed, skeyseed_len, sa->i2sa_log, dh_key,
+	    dh_key_len, NULL);
+	explicit_bzero(dh_key, dh_key_len);
+	free(dh_key);
+	dh_key = NULL;
+	dh_key_len = 0;
+
+	if (!ok) {
+		explicit_bzero(skeyseed, skeyseed_len);
+		goto fail;
+	}
+
+	rc = SUNW_C_KeyToObject(h, ikev2_prf_to_p11(sa->prf), skeyseed, skeyseed_len, keyp);
+	explicit_bzero(skeyseed, skeyseed_len);
+	if (rc != CKR_OK) {
+		PKCS11ERR(error, sa->i2sa_log, "SUNW_C_KeyToObject", rc,
+		    BUNYAN_T_STRING, "objname", "skeyseed");
+		goto fail;
+	}
+
+	return (B_TRUE);
+
+fail:
+	if (dh_key != NULL) {
+		explicit_bzero(dh_key, dh_key_len);
+		free(dh_key);
+	}
+	if (skeyseed != NULL) {
+		explicit_bzero(skeyseed, skeyseed_len);
+		umem_free(skeyseed, skeyseed_len);
+	}
+	return (B_FALSE);
+}
+
+static boolean_t
+ikev2_sa_keygen(ikev2_sa_result_t *restrict result, pkt_t *restrict init,
+    pkt_t *restrict resp)
+{
+	ikev2_sa_t *sa = resp->pkt_sa;
+	pkt_payload_t *ni = pkt_payload(init, IKEV2_PAYLOAD_NONCE);
+	pkt_payload_t *nr = pkt_payload(resp, IKEV2_PAYLOAD_NONCE);
+	CK_SESSION_HANDLE h = p11h();
+	CK_OBJECT_HANDLE nonce = CK_INVALID_HANDLE;
+	CK_OBJECT_HANDLE skeyseed = CK_INVALID_HANDLE;
+	size_t prflen = ikev2_prf_keylen(result->sar_prf);
+	size_t authlen = ikev2_auth_keylen(result->sar_auth);
+	int p11prf = ikev2_prf_to_p11(result->sar_prf);
+	int p11encr = ikev2_encr_to_p11(result->sar_encr);
+	int p11auth = ikev2_auth_to_p11(result->sar_auth);
+	prfp_t prfp = { 0 };
+
+	sa->encr = result->sar_encr;
+	sa->encr_key_len = ikev2_encr_keylen(result->sar_encr, result->sar_encr_keylen);
+	sa->auth = result->sar_auth;
+	sa->prf = result->sar_prf;
+	sa->dhgrp = result->sar_dh;
+	sa->saltlen = ikev2_encr_saltlen(result->sar_encr);
+
+	if (!create_nonceobj(sa->prf, ni, nr, &nonce, sa->i2sa_log))
+		goto fail;
+	if (!create_skeyseed(sa, nonce, &skeyseed))
+		goto fail;
+	pkcs11_destroy_obj("Ni|Nr", &nonce, sa->i2sa_log);
+
+	if (!prfplus_init(&prfp, sa->prf, skeyseed, sa->i2sa_log,
+	    ni->pp_ptr, (size_t)ni->pp_len,
+	    nr->pp_ptr, (size_t)nr->pp_len,
+	    pkt_start(init), sizeof (uint64_t) * 2, NULL))
+		goto fail;
+
+	if (!prf_to_p11key(&prfp, "SK_d", p11prf, prflen, &sa->sk_d))
+		goto fail;
+	if (!prf_to_p11key(&prfp, "SK_ai", p11auth, authlen, &sa->sk_ai))
+		goto fail;
+	if (!prf_to_p11key(&prfp, "SK_ar", p11auth, authlen, &sa->sk_ar))
+		goto fail;
+	if (!prf_to_p11key(&prfp, "SK_ei", p11encr, sa->encr_key_len, &sa->sk_ei))
+		goto fail;
+	if (!prfplus(&prfp, sa->salt_i, sa->saltlen))
+		goto fail;
+	if (!prf_to_p11key(&prfp, "SK_er", p11encr, sa->encr_key_len, &sa->sk_er))
+		goto fail;
+	if (!prfplus(&prfp, sa->salt_r, sa->saltlen))
+		goto fail;
+	if (!prf_to_p11key(&prfp, "SK_pi", p11prf, prflen, &sa->sk_pi))
+		goto fail;
+	if (!prf_to_p11key(&prfp, "SK_pr", p11prf, prflen, &sa->sk_pr))
+		goto fail;
+
+	pkcs11_destroy_obj("Ni|Nr", &nonce, sa->i2sa_log);
+	pkcs11_destroy_obj("skeyseed", &skeyseed, sa->i2sa_log);
+	prfplus_fini(&prfp);
+	return (B_TRUE);
+
+fail:
+	pkcs11_destroy_obj("Ni|Nr", &nonce, sa->i2sa_log);
+	pkcs11_destroy_obj("skeyseed", &skeyseed, sa->i2sa_log);
+	prfplus_fini(&prfp);
+	return (B_FALSE);
+}
+
+

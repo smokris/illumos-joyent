@@ -36,6 +36,7 @@
 #include <pthread.h>
 #include <sys/debug.h>
 #include <note.h>
+#include <stdarg.h>
 #include "pkcs11.h"
 #include "defs.h"
 
@@ -249,6 +250,13 @@ pkcs11_fini(void)
 		PKCS11ERR(error, log, "C_Finalize", rv);
 }
 
+size_t
+ikev2_encr_keylen(ikev2_xf_encr_t encr, size_t keylen)
+{
+	/* TODO */
+	return (0);
+}
+
 /*
  * We explicitly avoid using the default: case in these switch statements
  * so that the addition of new IKEv2 encryption algs will cause compilation
@@ -403,6 +411,43 @@ ikev2_encr_mode(ikev2_xf_encr_t encr)
 	return (MODE_NONE);
 }
 
+size_t
+ikev2_auth_keylen(ikev2_xf_auth_t auth)
+{
+	/* TODO */
+	switch (auth) {
+	case IKEV2_XF_AUTH_NONE:
+		return (0);
+	case IKEV2_XF_AUTH_HMAC_MD5_96:
+	case IKEV2_XF_AUTH_AES_XCBC_96:
+	case IKEV2_XF_AUTH_HMAC_MD5_128:
+	case IKEV2_XF_AUTH_AES_CMAC_96:
+		return (16);
+	case IKEV2_XF_AUTH_HMAC_SHA1_96:
+	case IKEV2_XF_AUTH_HMAC_SHA1_160:
+	case IKEV2_XF_AUTH_AES_128_GMAC:
+		return (20);
+	case IKEV2_XF_AUTH_DES_MAC:
+		return (CKM_DES_MAC);
+	case IKEV2_XF_AUTH_KPDK_MD5:
+		return (CKM_MD5_HMAC);	/* XXX: verify */
+	case IKEV2_XF_AUTH_AES_192_GMAC:
+		return (28);
+	case IKEV2_XF_AUTH_AES_256_GMAC:
+		return (36);
+	case IKEV2_XF_AUTH_HMAC_SHA2_256_128:
+		return (CKM_SHA256_HMAC);
+	case IKEV2_XF_AUTH_HMAC_SHA2_384_192:
+		return (CKM_SHA384_HMAC);
+	case IKEV2_XF_AUTH_HMAC_SHA2_512_256:
+		return (CKM_SHA512_HMAC);
+	}
+
+	/*NOTREACHED*/
+	return (0);
+	return (0);
+}
+
 CK_MECHANISM_TYPE
 ikev2_auth_to_p11(ikev2_xf_auth_t auth)
 {
@@ -508,6 +553,47 @@ ikev2_auth_icv_size(ikev2_xf_encr_t encr, ikev2_xf_auth_t auth)
 	return (0);
 }
 
+size_t
+ikev2_encr_saltlen(ikev2_xf_encr_t encr)
+{
+	switch (encr) {
+	case IKEV2_ENCR_AES_CCM_8:
+	case IKEV2_ENCR_AES_CCM_12:
+	case IKEV2_ENCR_AES_CCM_16:
+	case IKEV2_ENCR_CAMELLIA_CCM_8:
+	case IKEV2_ENCR_CAMELLIA_CCM_12:
+	case IKEV2_ENCR_CAMELLIA_CCM_16:
+		return (3);
+	case IKEV2_ENCR_AES_GCM_8:
+	case IKEV2_ENCR_AES_GCM_12:
+	case IKEV2_ENCR_AES_GCM_16:
+		return (4);
+	case IKEV2_ENCR_NONE:
+	case IKEV2_ENCR_DES_IV64:
+	case IKEV2_ENCR_DES:
+	case IKEV2_ENCR_3DES:
+	case IKEV2_ENCR_RC5:
+	case IKEV2_ENCR_IDEA:
+	case IKEV2_ENCR_CAST:
+	case IKEV2_ENCR_BLOWFISH:
+	case IKEV2_ENCR_3IDEA:
+	case IKEV2_ENCR_DES_IV32:
+	case IKEV2_ENCR_RC4:
+	case IKEV2_ENCR_NULL:
+	case IKEV2_ENCR_AES_CBC:
+	case IKEV2_ENCR_AES_CTR:
+	case IKEV2_ENCR_NULL_AES_GMAC:
+	case IKEV2_ENCR_XTS_AES:
+	case IKEV2_ENCR_CAMELLIA_CBC:
+	case IKEV2_ENCR_CAMELLIA_CTR:
+		return (0);
+	}
+
+	INVALID("encr");
+	/*NOTREACHED*/
+	return (0);
+}
+
 /*
  * Destroy a PKCS#11 object with nicer error messages in case of failure.
  */
@@ -521,7 +607,8 @@ pkcs11_destroy_obj(const char *name, CK_OBJECT_HANDLE_PTR objp,
 		return;
 
 	if ((ret = C_DestroyObject(p11h(), *objp)) != CKR_OK) {
-		PKCS11ERR(error, (l == NULL) ? log : l, "C_DestroyObject", ret);
+		PKCS11ERR(error, (l == NULL) ? log : l, "C_DestroyObject", ret,
+		    BUNYAN_T_STRING, "objname", name);
 	} else {
 		*objp = CK_INVALID_HANDLE;
 	}

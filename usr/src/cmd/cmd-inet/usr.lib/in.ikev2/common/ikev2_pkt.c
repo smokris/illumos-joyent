@@ -975,13 +975,16 @@ ikev2_add_auth(pkt_t *restrict pkt, ikev2_auth_type_t auth_method,
 }
 
 boolean_t
-ikev2_add_nonce(pkt_t *restrict pkt, size_t len)
+ikev2_add_nonce(pkt_t *restrict pkt, uint8_t *restrict nonce, size_t len)
 {
 	if (pkt_write_left(pkt) < sizeof (ikev2_payload_t) + len)
 		return (B_FALSE);
 
 	ikev2_add_payload(pkt, IKEV2_PAYLOAD_NONCE, B_FALSE);
-	random_high(pkt->pkt_ptr, len);
+	if (nonce != NULL)
+		PKT_APPEND_DATA(pkt, nonce, len);
+	else
+		random_high(pkt->pkt_ptr, len);
 	pkt->pkt_ptr += len;
 	return (B_TRUE);
 }
@@ -1318,13 +1321,17 @@ crypt_common(pkt_t *pkt, boolean_t encrypt, uint8_t *iv, CK_ULONG ivlen,
 	} params;
 	CK_RV rc = 0;
 	encr_modes_t mode = ikev2_encr_mode(sa->encr);
+	uint8_t *salt = NULL;
 	uint8_t *nonce = NULL;
 	CK_ULONG noncelen = 0;
 
-	if (sa->flags & I2SA_INITIATOR)
+	if (sa->flags & I2SA_INITIATOR) {
 		key = pkt->pkt_sa->sk_ei;
-	else
+		salt = pkt->pkt_sa->salt_i;
+	} else {
 		key = pkt->pkt_sa->sk_er;
+		salt = pkt->pkt_sa->salt_r;
+	}
 
 	/*
 	 * For GCM and CCM, the nonce/IV used is a combination of both
@@ -1347,7 +1354,7 @@ crypt_common(pkt_t *pkt, boolean_t encrypt, uint8_t *iv, CK_ULONG ivlen,
 	case MODE_CCM:
 		noncelen = sa->saltlen + ivlen;
 		nonce = alloca(noncelen);
-		(void) memcpy(nonce, sa->salt, sa->saltlen);
+		(void) memcpy(nonce, salt, sa->saltlen);
 		(void) memcpy(nonce + sa->saltlen, iv, ivlen);
 		params.ccm.pAAD = pkt_start(pkt);
 		params.ccm.ulAADLen = (CK_ULONG)(iv - params.ccm.pAAD);
@@ -1360,7 +1367,7 @@ crypt_common(pkt_t *pkt, boolean_t encrypt, uint8_t *iv, CK_ULONG ivlen,
 	case MODE_GCM:
 		noncelen = sa->saltlen + ivlen;
 		nonce = alloca(noncelen);
-		(void) memcpy(nonce, sa->salt, sa->saltlen);
+		(void) memcpy(nonce, salt, sa->saltlen);
 		(void) memcpy(nonce + sa->saltlen, iv, ivlen);
 		params.gcm.pIv = nonce;
 		params.gcm.ulIvLen = noncelen;

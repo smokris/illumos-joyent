@@ -19,38 +19,42 @@
 
 #include <sys/types.h>
 #include <security/cryptoki.h>
-#include "buf.h"
+#include "ikev2.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#ifndef _PRFP_T
-#define	_PRFP_T
-struct prfp_s {
-	CK_OBJECT_HANDLE	key;
-	int			i2alg;
-	buf_t			tbuf[2];
-	buf_t			seed;
-	buf_t			prf_arg[3];
-	size_t			pos;
-	uint8_t			n;
-};
-typedef struct prfp_s prfp_t;
-#endif /* _PRFP_T */
+struct bunyan_logger;
 
-/* These are internal to in.ikev2d, so don't bother with ugly !C99 compat */
-CK_RV	prf_key(CK_MECHANISM_TYPE, buf_t *restrict, size_t,
-	    CK_OBJECT_HANDLE_PTR restrict);
+typedef struct prfp_s {
+	struct bunyan_logger	*prfp_log;
+	CK_OBJECT_HANDLE	prfp_key;
+	ikev2_prf_t		prfp_alg;
+	uint8_t			*prfp_tbuf[2];
+	size_t			prfp_tbuflen;
+	uint8_t			*prfp_seed;
+	size_t			prfp_seedlen;
+	size_t			prfp_pos;
+	uint8_t			prfp_n;
+} prfp_t;
 
-CK_RV	prf(int, CK_OBJECT_HANDLE, buf_t *restrict, size_t, buf_t *restrict);
+struct bunyan_logger;
 
-CK_RV	prfplus_init(prfp_t *restrict, int, CK_OBJECT_HANDLE,
-	    const buf_t *restrict);
-void	prfplus_fini(prfp_t *);
-CK_RV	prfplus(prfp_t *restrict, buf_t *restrict);
+boolean_t prf(ikev2_prf_t, CK_OBJECT_HANDLE, uint8_t *restrict, size_t,
+    struct bunyan_logger *restrict, ...);
 
-size_t	ikev2_prf_keylen(int);
+boolean_t prfplus_init(prfp_t *restrict, ikev2_prf_t, CK_OBJECT_HANDLE,
+    struct bunyan_logger *restrict, ...);
+void prfplus_fini(prfp_t *);
+boolean_t prfplus(prfp_t *restrict, uint8_t *restrict, size_t);
+
+boolean_t prf_to_p11key(prfp_t *restrict, const char *restrict, int, size_t,
+    CK_OBJECT_HANDLE_PTR restrict);
+
+CK_MECHANISM_TYPE ikev2_prf_to_p11(ikev2_prf_t);
+size_t	ikev2_prf_keylen(ikev2_prf_t);
+size_t	ikev2_prf_outlen(ikev2_prf_t);
 
 #ifdef __cplusplus
 }

@@ -35,7 +35,8 @@ void ikev2_inbound(struct pkt_s *);
 
 void ikev2_sa_init_inbound_init(struct pkt_s *);
 void ikev2_sa_init_inbound_resp(struct pkt_s *);
-void ikev2_sa_init_outbound(struct ikev2_sa_s *);
+void ikev2_sa_init_outbound(struct ikev2_sa_s *restrict, uint8_t *restrict,
+    size_t, ikev2_dh_t, uint8_t *restrict, size_t);
 
 #ifdef __cplusplus
 }

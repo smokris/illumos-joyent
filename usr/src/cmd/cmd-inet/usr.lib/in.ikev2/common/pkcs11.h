@@ -23,8 +23,8 @@
  * Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
  *
- * Copyright 2017 Jason King.  All rights reserved.
- * Use is subject to license terms.
+ * Copyright 2017 Jason King.
+ * Copyright (c) 2017, Joyent, Inc.
  */
 
 #ifndef _PKCS11_H
@@ -72,6 +72,9 @@ CK_MECHANISM_TYPE ikev2_encr_to_p11(ikev2_xf_encr_t);
 encr_modes_t ikev2_encr_mode(ikev2_xf_encr_t);
 size_t ikev2_encr_block_size(ikev2_xf_encr_t);
 size_t ikev2_encr_iv_size(ikev2_xf_encr_t);
+size_t ikev2_encr_keylen(ikev2_xf_encr_t, size_t);
+size_t ikev2_auth_keylen(ikev2_xf_auth_t);
+size_t ikev2_encr_saltlen(ikev2_xf_encr_t);
 
 CK_MECHANISM_TYPE ikev2_auth_to_p11(ikev2_xf_auth_t);
 size_t ikev2_auth_icv_size(ikev2_xf_encr_t, ikev2_xf_auth_t);

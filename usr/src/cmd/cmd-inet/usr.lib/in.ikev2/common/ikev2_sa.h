@@ -138,7 +138,8 @@ struct ikev2_sa_s {
 	CK_OBJECT_HANDLE sk_pr;
 
 	/* Salt size may be smaller, but no larger than I2SA_SALT_LEN */
-	uint8_t		salt[I2SA_SALT_LEN];
+	uint8_t		salt_i[I2SA_SALT_LEN];
+	uint8_t		salt_r[I2SA_SALT_LEN];
 	size_t		saltlen;
 };
 

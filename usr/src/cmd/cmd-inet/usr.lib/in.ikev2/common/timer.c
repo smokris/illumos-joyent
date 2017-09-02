@@ -268,6 +268,9 @@ cancel_cb(void *elem, void *arg)
 	return (UU_WALK_NEXT);
 }
 
+/* XXX: If called for an existing event (e.g. SA_INIT timeout w/ new pkt,
+ * replace
+ */
 boolean_t
 schedule_timeout(te_event_t type, tevent_cb_fn fn, void *arg, hrtime_t val)
 {

@@ -58,7 +58,7 @@ boolean_t ikev2_add_certreq(pkt_t *restrict, ikev2_cert_t,
     const uint8_t *restrict, size_t);
 boolean_t ikev2_add_auth(pkt_t *restrict, ikev2_auth_type_t,
     const uint8_t *restrict, size_t);
-boolean_t ikev2_add_nonce(pkt_t *restrict, size_t);
+boolean_t ikev2_add_nonce(pkt_t *restrict, uint8_t *restrict, size_t);
 boolean_t ikev2_add_notify(pkt_t *restrict, ikev2_spi_proto_t, uint64_t,
     ikev2_notify_type_t, const void *restrict, size_t);
 
