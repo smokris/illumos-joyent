@@ -49,7 +49,10 @@ typedef enum ikev2_exch_e {
 	IKEV2_EXCH_IKE_AUTH		= 35,
 	IKEV2_EXCH_CREATE_CHILD_SA	= 36,
 	IKEV2_EXCH_INFORMATIONAL	= 37,
-	IKEV2_EXCH_IKE_SESSION_RESUME	= 38
+	IKEV2_EXCH_IKE_SESSION_RESUME	= 38,
+	IKEV2_EXCH_GSA_AUTH		= 39,	/* draft-yeung-g-ikev2 */
+	IKEV2_EXCH_GSA_REGISTRATION	= 40,	/* draft-yeung-g-ikev2 */
+	IKEV2_EXCH_GSA_REKEY		= 41,	/* draft-yeung-g-ikev2 */
 } ikev2_exch_t;
 
 /* IKEv2 message flags */
@@ -87,11 +90,16 @@ typedef enum ikev2_pay_type {
 	IKEV2_PAYLOAD_SK =	46,	/* Encrypted */
 	IKEV2_PAYLOAD_CP =	47,	/* Configuration Payload */
 	IKEV2_PAYLOAD_EAP =	48,	/* Extensible Authentication */
-	IKEV2_PAYLOAD_GSPM =	49	/* RFC6467 Generic Secure Password */
+	IKEV2_PAYLOAD_GSPM =	49,	/* RFC6467 Generic Secure Password */
+	IKEV2_PAYLOAD_IDg =	50,	/* draft-yeung-g-ikev2 */
+	IKEV2_PAYLOAD_GSA =	51,	/* draft-yeung-g-ikev2 */
+	IKEV2_PAYLOAD_KD =	52,	/* draft-yeung-g-ikev2 */
+	IKEV2_PAYLOAD_SKF =	53,	/* RFC7383 */
+	IKEV2_PAYLOAD_PS =	54,	/* RFC8019 */
 } ikev2_pay_type_t;
 
 #define	IKEV2_PAYLOAD_MIN	IKEV2_PAYLOAD_SA
-#define	IKEV2_PAYLOAD_MAX	IKEV2_PAYLOAD_GSPM
+#define	IKEV2_PAYLOAD_MAX	IKEV2_PAYLOAD_PS
 #define	IKEV2_NUM_PAYLOADS	(IKEV2_PAYLOAD_MAX - IKEV2_PAYLOAD_MIN + 1)
 #define	IKEV2_VALID_PAYLOAD(paytype) \
 	(((paytype) >= IKEV2_PAYLOAD_MIN) && ((paytype) <= IKEV2_PAYLOAD_MAX))

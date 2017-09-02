@@ -98,6 +98,8 @@ boolean_t ikev2_walk_xfattrs(uint8_t *restrict, size_t, ikev2_xfattr_cb_t,
 void ikev2_pkt_log(pkt_t *restrict, bunyan_logger_t *restrict, const char *,
     bunyan_level_t);
 
+ikev2_dh_t ikev2_get_dhgrp(pkt_t *);
+
 #ifdef __cplusplus
 }
 #endif

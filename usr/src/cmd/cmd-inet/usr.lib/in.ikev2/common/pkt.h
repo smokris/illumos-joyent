@@ -80,8 +80,11 @@ typedef struct pkt_payload {
 
 typedef struct pkt_notify {
 	uint8_t		*pn_ptr;
-	uint16_t	pn_type;
+	uint32_t	pn_doi;		/* Ignored with IKEv2 */
 	uint16_t	pn_len;
+	uint16_t	pn_type;
+	uint8_t		pn_proto;
+	uint64_t	pn_spi;
 } pkt_notify_t;
 #define	PKT_NOTIFY_NUM	(8)
 

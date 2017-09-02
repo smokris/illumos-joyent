@@ -39,14 +39,12 @@ static boolean_t add_nat(pkt_t *);
 static boolean_t check_nats(pkt_t *);
 static void check_vendor(pkt_t *);
 static boolean_t add_vendor(pkt_t *);
-static boolean_t add_rule_proposals(pkt_t *restrict,
-    const config_rule_t *restrict, uint64_t);
 static boolean_t add_cookie(pkt_t *restrict, void *restrict, size_t len);
 static boolean_t ikev2_sa_keygen(ikev2_sa_result_t *restrict, pkt_t *restrict,
     pkt_t *restrict);
 
 /*
- * New inbound IKE_SA_INIT exchange
+ * New inbound IKE_SA_INIT exchange, we are the responder.
  */
 void
 ikev2_sa_init_inbound_init(pkt_t *pkt)
@@ -58,8 +56,8 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 	pkt_payload_t *ke_i = pkt_payload(pkt, IKEV2_PAYLOAD_KE);
 	ikev2_sa_result_t sa_result = { 0 };
 	size_t noncelen = 0;
-	uint16_t dhgrp = 0;
 
+	/* Verify inbound sanity checks */
 	VERIFY(!(sa->flags & I2SA_INITIATOR));
 	VERIFY3P(ke_i, !=, NULL);
 
@@ -69,27 +67,34 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 		goto fail;
 	check_vendor(pkt);
 
-	sa->init = pkt;
-
 	if (!ikev2_sa_match_rule(sa->i2sa_rule, pkt, &sa_result)) {
+		/*
+		 * It seems very unlikely that an initiator will be able to
+		 * react and resend a new payload in this situation (as opposed
+		 * to a DH group mismatch or if we were to respond with a
+		 * cookie).  Therefore, we can delete the larval IKE SA.
+		 */
 		ikev2_no_proposal_chosen(sa, pkt, IKEV2_PROTO_IKE, 0);
-		ikev2_pkt_free(pkt);
-		return;
+		goto fail;
 	}
 
 	/*
 	 * A bit annoying, but it's possible the negotiated DH group is
 	 * different than the public key value that was sent in the IKE_SA_INIT
 	 * exchange.  In that case, we respond with an INVALID_KE_PAYLOAD
-	 * notification and include the result we want.
+	 * notification and include the result we want.  In this instance, we
+	 * expect that the initiator will respond with a new KE payload
+	 * containing the desired DH group (and otherwise identical).
+	 * Therefore, keep the larval IKE SA around until we either proceed to
+	 * an AUTH exchange, or we time out.
 	 */
-	(void) memcpy(&dhgrp, ke_i->pp_ptr, sizeof (dhgrp));
-	dhgrp = ntohs(dhgrp);
-	if (dhgrp != sa_result.sar_dh) {
+	if (ikev2_get_dhgrp(pkt) != sa_result.sar_dh) {
 		ikev2_invalid_ke(pkt, IKEV2_PROTO_IKE, 0, sa_result.sar_dh);
 		ikev2_pkt_free(pkt);
 		return;
 	}
+
+	sa->init = pkt;
 
 	/* RFC7296 2.10 nonce length should be at least half key size of PRF */
 	noncelen = ikev2_prf_keylen(sa_result.sar_prf) / 2;
@@ -100,20 +105,26 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 	if (noncelen > IKEV2_NONCE_MAX)
 		noncelen = IKEV2_NONCE_MAX;
 
-	if (!dh_genpair(sa_result.sar_dh, &sa->dh_pubkey, &sa->dh_privkey, sa->i2sa_log))
-		goto fail;
-	if (!dh_derivekey(sa->dh_privkey, ke_i->pp_ptr, ke_i->pp_len, &sa->dh_key,
-	    sa->i2sa_log))
-		goto fail;
-
 	resp = ikev2_pkt_new_response(pkt);
 	if (resp == NULL)
 		goto fail;
 
 	if (!ikev2_sa_add_result(resp, &sa_result))
 		goto fail;
-	if (!ikev2_add_ke(resp, sa_result.sar_dh, sa->dh_key))
+	/*
+	 * While premissible, we do not currently reuse DH exponentials.  Since
+	 * generating them is a potentially an expensive operation, we wait
+	 * until necessary to create them.
+	 */
+	if (!dh_genpair(sa_result.sar_dh, &sa->dh_pubkey, &sa->dh_privkey,
+	    sa->i2sa_log))
 		goto fail;
+	if (!dh_derivekey(sa->dh_privkey, ke_i->pp_ptr + sizeof (ikev2_ke_t),
+	    ke_i->pp_len - sizeof (ikev2_ke_t), &sa->dh_key, sa->i2sa_log))
+		goto fail;
+	if (!ikev2_add_ke(resp, sa_result.sar_dh, sa->dh_pubkey))
+		goto fail;
+
 	if (!ikev2_add_nonce(resp, NULL, noncelen))
 		goto fail;
 	if (!add_nat(resp))
@@ -145,25 +156,45 @@ ikev2_sa_init_inbound_resp(pkt_t *pkt)
 	pkt_notify_t *cookie = pkt_get_notify(pkt, IKEV2_N_COOKIE, NULL);
 	pkt_notify_t *invalid_ke = pkt_get_notify(pkt,
 	    IKEV2_N_INVALID_KE_PAYLOAD, NULL);
+	pkt_notify_t *no_proposal = pkt_get_notify(pkt,
+	    IKEV2_N_NO_PROPOSAL_CHOSEN, NULL);
 	pkt_payload_t *ke_r = pkt_payload(pkt, IKEV2_PAYLOAD_KE);
 	ikev2_sa_result_t sa_result = { 0 };
 
-	/* XXX: Check for no proposal chosen? */
+	if (no_proposal != NULL) {
+		bunyan_error(sa->i2sa_log,
+		    "IKE_SA_INIT exchange failed, no proposal chosen",
+		    BUNYAN_T_END);
+		ikev2_pkt_free(pkt);
+		/* XXX: delete larval IKE SA */
+		return;
+	}
+
 	if (cookie != NULL || invalid_ke != NULL) {
 		pkt_t *out = pkt->pkt_sa->init;
 		pkt_payload_t *nonce = pkt_payload(out, IKEV2_PAYLOAD_NONCE);
 		ikev2_dh_t dh = IKEV2_DH_NONE;
 
 		if (invalid_ke != NULL) {
-			ikev2_notify_t *np = (ikev2_notify_t *)invalid_ke->pn_ptr;
+			if (invalid_ke->pn_len != sizeof (uint16_t)) {
+				/*
+				 * The notification does not have the correct
+				 * format
+				 */
+				bunyan_info(sa->i2sa_log,
+				    "INVALID_KE_PAYLOAD notification does not "
+				    "include a 16-bit DH group payload",
+				    BUNYAN_T_UINT32, "ntfylen",
+				    (uint32_t)invalid_ke->pn_len, BUNYAN_T_END);
+
+				/* We will just ignore it for now */
+				ikev2_pkt_free(pkt);
+				return;
+			}
+
 			uint16_t val = 0;
-
-			/* If the notification was invalid (too short) just ignore it */
-			if (invalid_ke->pn_len <
-			    sizeof (ikev2_notify_t) + sizeof (uint16_t))
-				return; /* XXX log? */
-
-			(void) memcpy(&val, np + 1, sizeof (uint16_t));
+			(void) memcpy(&val, invalid_ke->pn_ptr,
+			    sizeof (uint16_t));
 			dh = ntohs(val);
 		}
 
@@ -181,13 +212,14 @@ ikev2_sa_init_inbound_resp(pkt_t *pkt)
 	if (!ikev2_sa_match_rule(sa->i2sa_rule, pkt, &sa_result)) {
 		/*
 		 * XXX: Tried to send back something that wasn't in the propsals
-		 * we sent.  What should we do?  Just destroy the IKE SA? Ignore?
+		 * we sent.  What should we do?  Just destroy the IKE SA?
+		 * Ignore?
 		 */
 		goto fail;
 	}
 
-	if (!dh_derivekey(sa->dh_privkey, ke_r->pp_ptr, ke_r->pp_len, &sa->dh_key,
-	    sa->i2sa_log))
+	if (!dh_derivekey(sa->dh_privkey, ke_r->pp_ptr, ke_r->pp_len,
+	    &sa->dh_key, sa->i2sa_log))
 		goto fail;
 	if (!ikev2_sa_keygen(&sa_result, sa->init, pkt))
 		goto fail;
@@ -213,16 +245,18 @@ ikev2_sa_init_outbound(ikev2_sa_t *restrict i2sa, uint8_t *restrict cookie,
 	if (!find_config(pkt, laddr, raddr))
 		goto fail;
 
-	if (cookie != NULL && !add_cookie(pkt, cookie, cookielen))
+	if (!add_cookie(pkt, cookie, cookielen))
 		goto fail;
 
-	if (!add_rule_proposals(pkt, i2sa->i2sa_rule, 0))
+	if (!ikev2_sa_from_rule(pkt, i2sa->i2sa_rule, 0))
 		goto fail;
 
 	/* These will do nothing if there isn't an existing key */
 	pkcs11_destroy_obj("dh_pubkey", &i2sa->dh_pubkey, i2sa->i2sa_log);
 	pkcs11_destroy_obj("dh_privkey", &i2sa->dh_privkey, i2sa->i2sa_log);
-	if (!dh_genpair(dh, &i2sa->dh_pubkey, &i2sa->dh_privkey, i2sa->i2sa_log))
+
+	if (!dh_genpair(dh, &i2sa->dh_pubkey, &i2sa->dh_privkey,
+	    i2sa->i2sa_log))
 		goto fail;
 
 	if (!ikev2_add_ke(pkt, dh, i2sa->dh_pubkey))
@@ -245,68 +279,6 @@ ikev2_sa_init_outbound(ikev2_sa_t *restrict i2sa, uint8_t *restrict cookie,
 fail:
 	ikev2_pkt_free(pkt);
 	/* XXX: destroy SA? */
-}
-
-/*
- * XXX: These two functions should probably be moved at some point so they
- * can be used both for initial IKE SA creation and for IKE re-keying
- * (which operates as a type of CREATE_CHILD_SA exchange
- */
-static boolean_t
-add_rule_xform(pkt_t *restrict pkt, const config_xf_t *restrict xf)
-{
-	encr_modes_t mode = ikev2_encr_mode(xf->xf_encr);
-	boolean_t ok = B_TRUE;
-
-	ok &= ikev2_add_xf_encr(pkt, xf->xf_encr, xf->xf_minbits,
-	    xf->xf_maxbits);
-
-	/*
-	 * For all currently known combined mode ciphers, we don't need
-	 * to also include an integrity transform
-	 */
-	if (!MODE_IS_COMBINED(mode))
-		ok &= ikev2_add_xform(pkt, IKEV2_XF_AUTH, xf->xf_auth);
-
-	ok &= ikev2_add_xform(pkt, IKEV2_XF_DH, xf->xf_dh);
-
-	/*
-	 * XXX: IKEV1 determined the PRF based on the authentication method.
-	 * IKEV2 allows it to be negotiated separately.  Eventually we
-	 * should probably add an option to specify it in a transform
-	 * definition.  For now, we just include all the ones we support
-	 * in decreasing order of preference.
-	 */
-	ikev2_prf_t supported[] = {
-	    IKEV2_PRF_HMAC_SHA2_512,
-	    IKEV2_PRF_HMAC_SHA2_384,
-	    IKEV2_PRF_HMAC_SHA2_256,
-	    IKEV2_PRF_HMAC_SHA1,
-	    IKEV2_PRF_HMAC_MD5
-	};
-
-	for (size_t i = 0; i < ARRAY_SIZE(supported); i++)
-		ok &= ikev2_add_xform(pkt, IKEV2_XF_PRF, supported[i]);
-
-	return (ok);
-}
-
-static boolean_t
-add_rule_proposals(pkt_t *restrict pkt, const config_rule_t *restrict rule,
-    uint64_t spi)
-{
-	boolean_t ok = B_TRUE;
-
-	if (!ikev2_add_sa(pkt))
-		return (B_FALSE);
-
-	for (uint8_t i = 0; rule->rule_xf[i] != NULL; i++) {
-		/* RFC7296 3.3.1 proposal numbers start with 1 */
-		ok &= ikev2_add_prop(pkt, i + 1, IKEV2_PROTO_IKE, spi);
-		ok &= add_rule_xform(pkt, rule->rule_xf[i]);
-	}
-
-	return (ok);
 }
 
 static boolean_t
@@ -429,7 +401,6 @@ check_nats(pkt_t *pkt)
 
 	for (size_t i = 0; i < 2; i++) {
 		pkt_notify_t *n = pkt_get_notify(pkt, params[i].ntype, NULL);
-		ikev2_notify_t ntfy = { 0 };
 		uint8_t data[NAT_LEN] = { 0 };
 
 		/* If notification isn't present, assume no NAT */
@@ -441,14 +412,23 @@ check_nats(pkt_t *pkt)
 			return (B_FALSE);
 
 		while (n != NULL) {
-			ikev2_notify_t ntfy = { 0 };
-
-			VERIFY3U(n->pn_len, >, sizeof (ntfy));
-			(void) memcpy(&ntfy, n->pn_ptr, sizeof (ntfy));
-			ntfy.n_type = ntohs(ntfy.n_type);
-			VERIFY3U(ntfy.n_type, ==, params[i].ntype);
-
-			if (ntfy.n_spisize != 0) {
+			/*
+			 * XXX: Should these validation failures just ignore
+			 * the individual payload, or discard the packet
+			 * entirely?
+			 */
+			if (n->pn_proto != IKEV2_PROTO_IKE) {
+				bunyan_error(sa->i2sa_log,
+				    "Invalid SPI protocol in notification",
+				    BUNYAN_T_STRING, "notification",
+				    ikev2_notify_str(params[i].ntype),
+				    BUNYAN_T_STRING, "protocol",
+				    ikev2_spi_str(n->pn_proto),
+				    BUNYAN_T_UINT32, "protonum",
+				    (uint32_t)n->pn_proto, BUNYAN_T_END);
+				return (B_FALSE);
+			}
+			if (n->pn_spi != 0) {
 				bunyan_error(sa->i2sa_log,
 				    "Non-zero SPI size in NAT notification",
 				    BUNYAN_T_STRING, "notification",
@@ -456,8 +436,7 @@ check_nats(pkt_t *pkt)
 				    BUNYAN_T_END);
 				return (B_FALSE);
 			}
-
-			if (n->pn_len != sizeof (ntfy) + NAT_LEN) {
+			if (n->pn_len != NAT_LEN) {
 				bunyan_error(sa->i2sa_log,
 				    "NAT notification size mismatch",
 				    BUNYAN_T_STRING, "notification",
@@ -465,13 +444,12 @@ check_nats(pkt_t *pkt)
 				    BUNYAN_T_UINT32, "notifylen",
 				    (uint32_t)n->pn_len,
 				    BUNYAN_T_UINT32, "expected",
-				    (uint32_t)(sizeof (ntfy) + NAT_LEN),
+				    (uint32_t)NAT_LEN,
 				    BUNYAN_T_END);
 				return (B_FALSE);
 			}
 
-			if (memcmp(data, n->pn_ptr + sizeof (ntfy),
-			    NAT_LEN) == 0) {
+			if (memcmp(data, n->pn_ptr, NAT_LEN) == 0) {
 				sa->flags |= params[i].flag;
 				bunyan_debug(sa->i2sa_log, params[i].msg,
 				    BUNYAN_T_END);
@@ -481,7 +459,6 @@ check_nats(pkt_t *pkt)
 			n = pkt_get_notify(pkt, params[i].ntype, n);
 		}
 	}
-
 	return (B_TRUE);
 }
 
@@ -534,7 +511,6 @@ add_nat(pkt_t *pkt)
 		    data, sizeof (data)))
 			return (B_FALSE);
 	}
-
 	return (B_TRUE);
 
 fail:
@@ -573,53 +549,14 @@ add_vendor(pkt_t *pkt)
 static boolean_t
 add_cookie(pkt_t *restrict pkt, void *restrict cookie, size_t len)
 {
-	pkt_notify_t *n = pkt_get_notify(pkt, IKEV2_N_COOKIE, NULL);
-	uint8_t *start = pkt_start(pkt) + sizeof (ike_header_t) +
-	    sizeof (ikev2_payload_t);
-	ssize_t total = sizeof (ikev2_payload_t) + sizeof (ikev2_notify_t) +
-	    len;
-	size_t num = 1;
-	ikev2_notify_t ntfy = {
-	    .n_protoid = IKEV2_PROTO_IKE,
-	    .n_spisize = 0,
-	    .n_type = htons((uint16_t)IKEV2_N_COOKIE)
-	};
+	if (cookie == NULL)
+		return (B_TRUE);
 
-	/*
-	 * If there's no existing cookie payload, make room for one,
-	 * otherwise just shift existing payloads (if necessary) to reuse
-	 * existing cookie payload
-	 */
-	if (n == NULL) {
-		total += sizeof (ikev2_payload_t) + sizeof (ikev2_notify_t);
-		num = 1;
-	} else {
-		/* Per RFC7296 2.6, this better be the first payload */
-		VERIFY3P(start, ==, (uint8_t *)n->pn_ptr);
-		total += len - (ssize_t)n->pn_len;
-		num = 0;
-	}
+	/* Should be the first payload */
+	VERIFY3U(pkt->pkt_payload_count, ==, 0);
 
-	if (total > 0 && pkt_write_left(pkt) < total)
-		return (B_FALSE);
-
-	if (!(pkt->pkt_header.flags & IKEV2_FLAG_INITIATOR)) {
-		/* Simple case, we are responding with own cookie */
-
-		/* Should be the only payload */
-		VERIFY3U(pkt->pkt_payload_count, ==, 0);
-
-		return (ikev2_add_notify(pkt, IKEV2_PROTO_IKE, 0,
-		    IKEV2_N_COOKIE, cookie, len));
-	}
-
-	/* Make room to insert new first payload */
-	if (!pkt_pay_shift(pkt, (uint8_t)IKEV2_PAYLOAD_NOTIFY, num, total))
-		return (B_FALSE);
-
-	(void) memcpy(start, &ntfy, sizeof (ntfy));
-	(void) memcpy(start + sizeof (ntfy), cookie, len);
-	return (B_TRUE);
+	return (ikev2_add_notify(pkt, IKEV2_PROTO_IKE, 0, IKEV2_N_COOKIE,
+	    cookie, len));
 }
 
 static size_t
@@ -627,9 +564,9 @@ skeyseed_noncelen(ikev2_prf_t prf, size_t len)
 {
 	switch (prf) {
 	/*
-	 * RFC7296 2.14 - For these PRFs, only the first 64 bits of Ni and Nr are
-	 * used when calculating skeyseed, though all bits are used for the prf+
-	 * function
+	 * RFC7296 2.14 - For these PRFs, only the first 64 bits of Ni and Nr
+	 * are used when calculating skeyseed, though all bits are used for
+	 * the prf+ function
 	 */
 	case IKEV2_PRF_AES128_XCBC:
 	case IKEV2_PRF_AES128_CMAC:
@@ -642,8 +579,9 @@ skeyseed_noncelen(ikev2_prf_t prf, size_t len)
 }
 
 static boolean_t
-create_nonceobj(ikev2_prf_t prf, pkt_payload_t *restrict ni, pkt_payload_t *restrict nr,
-    CK_OBJECT_HANDLE_PTR restrict objp, bunyan_logger_t *restrict l)
+create_nonceobj(ikev2_prf_t prf, pkt_payload_t *restrict ni,
+    pkt_payload_t *restrict nr, CK_OBJECT_HANDLE_PTR restrict objp,
+    bunyan_logger_t *restrict l)
 {
 	size_t noncelen = MAX(ni->pp_len + nr->pp_len, ikev2_prf_outlen(prf));
 	uint8_t nonce[noncelen];
@@ -654,7 +592,8 @@ create_nonceobj(ikev2_prf_t prf, pkt_payload_t *restrict ni, pkt_payload_t *rest
 	(void) memset(nonce, 0, noncelen);
 	(void) memcpy(nonce, ni->pp_ptr, ni_len);
 	(void) memcpy(nonce + ni_len, nr->pp_ptr, nr_len);
-	rc = SUNW_C_KeyToObject(p11h(), ikev2_prf_to_p11(prf), nonce, noncelen, objp);
+	rc = SUNW_C_KeyToObject(p11h(), ikev2_prf_to_p11(prf), nonce, noncelen,
+	    objp);
 	explicit_bzero(nonce, noncelen);
 
 	if (rc != CKR_OK)
@@ -680,11 +619,13 @@ create_skeyseed(ikev2_sa_t *restrict sa, CK_OBJECT_HANDLE nonce,
 		goto fail;
 
 	/*
-	 * Unfortunately, to generate SKEYSEED, we need to copy down the g^ir value
-	 * to perform the prf function since there is no C_SignKey function in PKCS#11.
-	 * As such we try to keep the value in memory for as short a time as possible.
+	 * Unfortunately, to generate SKEYSEED, we need to copy down the g^ir
+	 * value to perform the prf function since there is no C_SignKey
+	 * function in PKCS#11. As such we try to keep the value in memory for
+	 * as short a time as possible.
 	 */
-	rc = pkcs11_ObjectToKey(h, sa->dh_key, (void **)&dh_key, &dh_key_len, B_FALSE);
+	rc = pkcs11_ObjectToKey(h, sa->dh_key, (void **)&dh_key, &dh_key_len,
+	    B_FALSE);
 	if (rc != CKR_OK) {
 		PKCS11ERR(error, sa->i2sa_log, "pkcs11_ObjectToKey", rc,
 		    BUNYAN_T_STRING, "objname", "dh_key");
@@ -703,7 +644,8 @@ create_skeyseed(ikev2_sa_t *restrict sa, CK_OBJECT_HANDLE nonce,
 		goto fail;
 	}
 
-	rc = SUNW_C_KeyToObject(h, ikev2_prf_to_p11(sa->prf), skeyseed, skeyseed_len, keyp);
+	rc = SUNW_C_KeyToObject(h, ikev2_prf_to_p11(sa->prf), skeyseed,
+	    skeyseed_len, keyp);
 	explicit_bzero(skeyseed, skeyseed_len);
 	if (rc != CKR_OK) {
 		PKCS11ERR(error, sa->i2sa_log, "SUNW_C_KeyToObject", rc,
@@ -743,7 +685,8 @@ ikev2_sa_keygen(ikev2_sa_result_t *restrict result, pkt_t *restrict init,
 	prfp_t prfp = { 0 };
 
 	sa->encr = result->sar_encr;
-	sa->encr_key_len = ikev2_encr_keylen(result->sar_encr, result->sar_encr_keylen);
+	sa->encr_key_len = ikev2_encr_keylen(result->sar_encr,
+	    result->sar_encr_keylen);
 	sa->auth = result->sar_auth;
 	sa->prf = result->sar_prf;
 	sa->dhgrp = result->sar_dh;
@@ -767,11 +710,13 @@ ikev2_sa_keygen(ikev2_sa_result_t *restrict result, pkt_t *restrict init,
 		goto fail;
 	if (!prf_to_p11key(&prfp, "SK_ar", p11auth, authlen, &sa->sk_ar))
 		goto fail;
-	if (!prf_to_p11key(&prfp, "SK_ei", p11encr, sa->encr_key_len, &sa->sk_ei))
+	if (!prf_to_p11key(&prfp, "SK_ei", p11encr, sa->encr_key_len,
+	    &sa->sk_ei))
 		goto fail;
 	if (!prfplus(&prfp, sa->salt_i, sa->saltlen))
 		goto fail;
-	if (!prf_to_p11key(&prfp, "SK_er", p11encr, sa->encr_key_len, &sa->sk_er))
+	if (!prf_to_p11key(&prfp, "SK_er", p11encr, sa->encr_key_len,
+	    &sa->sk_er))
 		goto fail;
 	if (!prfplus(&prfp, sa->salt_r, sa->saltlen))
 		goto fail;
@@ -791,5 +736,3 @@ fail:
 	prfplus_fini(&prfp);
 	return (B_FALSE);
 }
-
-

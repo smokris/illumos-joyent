@@ -45,8 +45,13 @@ struct ikev2_sa_s;
 ikev2_xf_auth_t ikev2_pfkey_to_auth(int);
 ikev2_xf_encr_t ikev2_pfkey_to_encr(int);
 
+boolean_t ikev2_sa_from_acquire(struct pkt_s *restrict,
+    struct parsedmsg_s *restrict, uint32_t, ikev2_dh_t);
 boolean_t ikev2_sa_add_result(struct pkt_s *restrict,
     const ikev2_sa_result_t *restrict);
+boolean_t ikev2_sa_from_rule(struct pkt_s *restrict,
+    const struct config_rule_s *restrict, uint64_t);
+
 boolean_t ikev2_sa_match_rule(struct config_rule_s *restrict,
     struct pkt_s *restrict, ikev2_sa_result_t *restrict);
 boolean_t ikev2_sa_match_acquire(struct parsedmsg_s *restrict, ikev2_dh_t,

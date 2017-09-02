@@ -60,15 +60,13 @@ pkt_out_alloc(uint64_t i_spi, uint64_t r_spi, uint8_t version,
 	pkt->pkt_header.version = version;
 	pkt->pkt_header.exch_type = exch_type;
 	pkt->pkt_header.msgid = msgid;
+	pkt_stack_push(pkt, PSI_PACKET, pkt_finish, 0);
 
 	/*
-	 * Skip over bytes in pkt->raw for the header -- we keep
-	 * pkt->header (the local byte order copy) updated and then
-	 * write out the final version (in network byte order) in this
-	 * space once we're done building the packet by stacking a
-	 * finish callback before anything else.
+	 * Keep the local byte order copy and wire-format versions in sync.  However
+	 * the length field will not be filled in until the packet is ready to send.
 	 */
-	pkt_stack_push(pkt, PSI_PACKET, pkt_finish, 0);
+	pkt_hdr_hton((ike_header_t *)pkt->pkt_raw, &pkt->pkt_header);
 	pkt->pkt_ptr += sizeof (ike_header_t);
 	return (pkt);
 }
@@ -87,14 +85,84 @@ pkt_finish(pkt_t *restrict pkt, uint8_t *restrict ptr, uintptr_t swaparg,
 	return (B_TRUE);
 }
 
+struct index_data {
+	pkt_t		*id_pkt;
+	bunyan_logger_t	*id_log;
+};
+
 static pkt_walk_ret_t
 pkt_index_cb(uint8_t paytype, uint8_t resv, uint8_t *restrict ptr, size_t len,
     void *restrict cookie)
 {
-	pkt_t *pkt = cookie;
-
+	struct index_data *data = cookie;
+	pkt_t *pkt = data->id_pkt;
+	
 	if (!pkt_add_index(pkt, paytype, ptr, len))
 		return (PKT_WALK_ERROR);
+	if (paytype != IKEV1_PAYLOAD_NOTIFY && paytype != IKEV2_PAYLOAD_NOTIFY)
+		return (PKT_WALK_OK);
+
+	ikev2_notify_t ntfy = { 0 };
+	uint64_t spi = 0;
+	uint32_t doi = 0;
+
+	if (len < sizeof (ikev2_notify_t)) {
+		bunyan_warn(data->id_log, "Notify payload is truncated",
+		    BUNYAN_T_END);
+		return (PKT_WALK_ERROR);
+	}
+
+	if (pkt->pkt_header.version == IKEV1_VERSION) {
+		/*
+		 * The IKEv1 notification payload is identical to the IKEv2
+		 * with the exception of the 32-bit DOI field at the begining
+		 * of the struct.
+		 */
+	 	if (len < sizeof (ikev2_notify_t) + sizeof (uint32_t)) {
+			bunyan_warn(data->id_log, "Notify payload is truncated",
+			    BUNYAN_T_END);
+			return (PKT_WALK_ERROR);
+		}
+
+		(void) memcpy(&doi, ptr, sizeof (doi));
+		doi = ntohl(doi);
+		ptr += sizeof (uint32_t);
+		len -= sizeof (uint32_t);
+	}
+
+	(void) memcpy(&ntfy, ptr, sizeof (ntfy));
+	ptr -= sizeof (ntfy);
+	len -= sizeof (ntfy);
+
+	/* This is a single byte, so don't need to worry about byte order */
+	if (ntfy.n_spisize > 0) {
+		if (len < ntfy.n_spisize)
+			return (PKT_WALK_ERROR);
+
+		if (ntfy.n_spisize == sizeof (uint32_t)) {
+			uint32_t val = 0;
+
+			(void) memcpy(&val, ptr, sizeof (uint32_t));
+			spi = ntohl(val);
+		} else if (ntfy.n_spisize == sizeof (uint64_t)) {
+			(void) memcpy(&spi, ptr, sizeof (uint64_t));
+			spi = ntohll(spi);
+		} else {
+			bunyan_warn(data->id_log,
+			    "Invalid SPI length in notify payload",
+			    BUNYAN_T_UINT32, "spilen", (uint32_t)ntfy.n_spisize,
+			    BUNYAN_T_END);
+			return (PKT_WALK_ERROR);
+		}
+
+		ptr += ntfy.n_spisize;
+		len -= ntfy.n_spisize;
+	}
+
+	if (!pkt_add_nindex(pkt, spi, doi, ntfy.n_protoid, ntohs(ntfy.n_type),
+	    ptr, len))
+		return (PKT_WALK_ERROR);
+
 	return (PKT_WALK_OK);
 }
 
@@ -105,8 +173,13 @@ pkt_index_payloads(pkt_t *pkt, uint8_t *buf, size_t buflen, uint8_t first,
 	VERIFY3P(pkt_start(pkt), <, buf);
 	VERIFY3P(pkt->pkt_ptr, >=, buf + buflen);
 
+	struct index_data data = {
+		.id_pkt = pkt,
+		.id_log = l
+	};
+
 	if (pkt_payload_walk(buf, buflen, pkt_index_cb, first,
-	    pkt, l) != PKT_WALK_OK)
+	    &data, l) != PKT_WALK_OK)
 		return (B_FALSE);
 	return (B_TRUE);
 }
@@ -162,7 +235,8 @@ pkt_add_index(pkt_t *pkt, uint8_t type, uint8_t *buf, uint16_t buflen)
 }
 
 boolean_t
-pkt_add_nindex(pkt_t *pkt, uint16_t type, uint8_t *buf, size_t buflen)
+pkt_add_nindex(pkt_t *pkt, uint64_t spi, uint32_t doi, uint8_t proto,
+    uint16_t type, uint8_t *buf, size_t buflen)
 {
 	pkt_notify_t *n = NULL;
 	ssize_t idx = pkt->pkt_notify_count - PKT_NOTIFY_NUM;
@@ -203,6 +277,9 @@ pkt_add_nindex(pkt_t *pkt, uint16_t type, uint8_t *buf, size_t buflen)
 	n->pn_type = type;
 	n->pn_ptr = buf;
 	n->pn_len = buflen;
+	n->pn_doi = doi;
+	n->pn_spi = spi;
+	n->pn_proto = proto;
 	return (B_TRUE);
 }
 

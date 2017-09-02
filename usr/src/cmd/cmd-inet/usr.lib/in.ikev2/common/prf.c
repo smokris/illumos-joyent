@@ -98,11 +98,12 @@ prfplus_init(prfp_t *restrict prfp, ikev2_prf_t alg, CK_OBJECT_HANDLE key,
 		prfp->prfp_seedlen += va_arg(ap, size_t);
 	va_end(ap);
 
-	if ((prfp->prfp_tbuf[0] = umem_zalloc(prfp->prfp_tbuflen, UMEM_DEFAULT)) == NULL ||
-	    (prfp->prfp_tbuf[1] = umem_zalloc(prfp->prfp_tbuflen, UMEM_DEFAULT)) == NULL ||
-	    (prfp->prfp_seed = umem_zalloc(prfp->prfp_seedlen, UMEM_DEFAULT)) == NULL) {
+	prfp->prfp_tbuf[0] = umem_zalloc(prfp->prfp_tbuflen, UMEM_DEFAULT);
+	prfp->prfp_tbuf[1] = umem_zalloc(prfp->prfp_tbuflen, UMEM_DEFAULT);
+	prfp->prfp_seed = umem_zalloc(prfp->prfp_seedlen, UMEM_DEFAULT);
+	if (prfp->prfp_tbuf[0] == NULL || prfp->prfp_tbuf[1] == NULL ||
+	    prfp->prfp_seed == NULL)
 		goto fail;
-	}
 
 	va_start(ap, l);
 	while ((p = va_arg(ap, uint8_t *)) != NULL) {
@@ -122,10 +123,11 @@ prfplus_init(prfp_t *restrict prfp, ikev2_prf_t alg, CK_OBJECT_HANDLE key,
 	 * 	T3 = prf (K, T2 | S | 0x03)
 	 * 	T4 = prf (K, T3 | S | 0x04)
 	 *
-	 * Since the next iteration uses the previous iteration's output (plus the seed and
-	 * iteration number), we keep a copy of the output of the current iteration as well
-	 * as the previous iteration.  We use the low bit of the current iteration number
-	 * to index into prfp_tbuf (and effectively flip flow between the two buffers).
+	 * Since the next iteration uses the previous iteration's output (plus
+	 * the seed and iteration number), we keep a copy of the output of the
+	 * current iteration as well as the previous iteration.  We use the
+	 * low bit of the current iteration number to index into prfp_tbuf
+	 * (and effectively flip flow between the two buffers).
 	 */
 	prfp->prfp_n = 1;
 
@@ -150,7 +152,8 @@ fail:
 }
 
 /*
- * Fill buffer with output of prf+ function.  If outlen == 0, it's explicitly a no-op.
+ * Fill buffer with output of prf+ function.  If outlen == 0, it's explicitly
+ * a no-op.
  */
 boolean_t
 prfplus(prfp_t *restrict prfp, uint8_t *restrict out, size_t outlen)
@@ -190,8 +193,8 @@ prfplus_update(prfp_t *prfp)
 	VERIFY3U(prfp->prfp_n, >, 0);
 
 	if (prfp->prfp_n == 0xff) {
-		bunyan_error(prfp->prfp_log, "prf+ iteration count reached max (0xff)",
-		    BUNYAN_T_END);
+		bunyan_error(prfp->prfp_log,
+		    "prf+ iteration count reached max (0xff)", BUNYAN_T_END);
 		return (B_FALSE);
 	}
 

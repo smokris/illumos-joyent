@@ -10,7 +10,8 @@
  */
 
 /*
- * Copyright 2014 Jason King.  All rights reserved.
+ * Copyright 2017 Jason King.
+ * Copyright (c) 2017, Joyent, Inc.
  */
 
 #ifndef _DH_H

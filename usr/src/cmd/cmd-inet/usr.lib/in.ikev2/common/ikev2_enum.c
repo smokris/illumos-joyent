@@ -39,6 +39,12 @@ ikev2_exch_str(ikev2_exch_t id)
 		return ("INFORMATIONAL");
 	case IKEV2_EXCH_IKE_SESSION_RESUME:
 		return ("SESSION_RESUME");
+	case IKEV2_EXCH_GSA_AUTH:
+		return ("GSA_AUTH");
+	case IKEV2_EXCH_GSA_REGISTRATION:
+		return ("GSA_REGISTRATION");
+	case IKEV2_EXCH_GSA_REKEY:
+		return ("GSA_REKEY");
 	}
 	return ("UNKNOWN");
 }
@@ -65,6 +71,11 @@ ikev2_pay_str(ikev2_pay_type_t id)
 	STR(IKEV2_PAYLOAD_CP);
 	STR(IKEV2_PAYLOAD_EAP);
 	STR(IKEV2_PAYLOAD_GSPM);
+	STR(IKEV2_PAYLOAD_IDg);
+	STR(IKEV2_PAYLOAD_GSA);
+	STR(IKEV2_PAYLOAD_KD);
+	STR(IKEV2_PAYLOAD_SKF);
+	STR(IKEV2_PAYLOAD_PS);
 	}
 	return ("UNKNOWN");
 }
@@ -109,6 +120,16 @@ ikev2_pay_short_str(ikev2_pay_type_t id)
 		return ("EAP");
 	case IKEV2_PAYLOAD_GSPM:
 		return ("GSPM");
+	case IKEV2_PAYLOAD_IDg:
+		return ("IDg");
+	case IKEV2_PAYLOAD_GSA:
+		return ("GSA");
+	case IKEV2_PAYLOAD_KD:
+		return ("KD");
+	case IKEV2_PAYLOAD_SKF:
+		return ("SKF");
+	case IKEV2_PAYLOAD_PS:
+		return ("PS");
 	}
 	return ("UNKNOWN");
 }

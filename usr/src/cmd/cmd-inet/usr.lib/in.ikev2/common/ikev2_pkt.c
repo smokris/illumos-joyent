@@ -195,6 +195,11 @@ ikev2_pkt_new_inbound(uint8_t *restrict buf, size_t buflen,
 		case IKEV2_PAYLOAD_CP:
 		case IKEV2_PAYLOAD_EAP:
 		case IKEV2_PAYLOAD_GSPM:
+		case IKEV2_PAYLOAD_IDg:
+		case IKEV2_PAYLOAD_GSA:
+		case IKEV2_PAYLOAD_KD:
+		case IKEV2_PAYLOAD_SKF:
+		case IKEV2_PAYLOAD_PS:	/* Not yet */
 			if (count > 0) {
 				bunyan_info(l, "Disallowed payload present "
 				    "in IKE_SA_INIT exchange",
@@ -260,171 +265,6 @@ discard:
 	return (NULL);
 #undef PAYCOUNT
 #undef HAS_NOTIFY
-}
-
-/*
- * Slightly subtle point about the *_walk_* functions - they return B_FALSE
- * on an error during the walk (mostly if payload lengths don't agree). The
- * callback functions however return B_FALSE to terminate the walk early or
- * B_TRUE to continue the walk.  Any error state that needs to propagate up
- * from the walker callbacks needs to be sent through the cookie parameter
- */
-boolean_t
-ikev2_walk_proposals(uint8_t *restrict start, size_t len,
-    ikev2_prop_cb_t cb, void *restrict cookie,
-    bunyan_logger_t *restrict l)
-{
-	uint8_t *ptr = start, *end = start + len;
-
-	while (ptr < end) {
-		ikev2_sa_proposal_t prop = { 0 };
-
-		if (ptr + sizeof (prop) > end) {
-			bunyan_error(l, "Proposal length mismatch",
-			    BUNYAN_T_END);
-			return (B_FALSE);
-		}
-
-		(void) memcpy(&prop, ptr, sizeof (prop));
-		prop.proto_length = ntohs(prop.proto_length);
-
-		if (ptr + prop.proto_length > end) {
-			bunyan_error(l, "Proposal overruns SA payload",
-			    BUNYAN_T_UINT32, "propnum",
-			    (uint32_t)prop.proto_proposalnr,
-			    BUNYAN_T_UINT32, "proplen",
-			    (uint32_t)prop.proto_length, BUNYAN_T_END);
-			return (B_FALSE);
-		}
-
-		if (ptr + prop.proto_length == end) {
-			if (prop.proto_more != IKEV2_PROP_LAST) {
-				bunyan_error(l, "Last proposal does not have "
-				    "IKEV2_PROP_LAST set", BUNYAN_T_END);
-				return (B_FALSE);
-			}
-		} else {
-			if (prop.proto_more != IKEV2_PROP_MORE) {
-				bunyan_error(l, "Non-last proposal does not "
-				    "have IKEV2_PROP_MORE set", BUNYAN_T_END);
-				return (B_FALSE);
-			}
-		}
-		ptr += sizeof (prop);
-
-		uint64_t spi = 0;
-		for (size_t i = 0; i < prop.proto_spisize; i++) {
-			uint64_t val = *ptr;
-			spi = (spi << 8) | (val & 0xffULL);
-			ptr++;
-		}
-
-		if (cb != NULL && !cb(&prop, spi, ptr,
-		    len - (size_t)(ptr - start), cookie))
-			return (B_TRUE);
-
-		ptr += prop.proto_length;
-	}
-	return (B_TRUE);
-}
-
-boolean_t
-ikev2_walk_xfs(uint8_t *restrict start, size_t len, ikev2_xf_cb_t cb,
-    void *restrict cookie, bunyan_logger_t *restrict l)
-{
-	uint8_t *ptr = start, *end = start + len;
-
-	while (ptr < end) {
-		ikev2_transform_t xf = { 0 };
-		uint8_t *attrp = NULL;
-		size_t attrlen = 0;
-
-		if (ptr + sizeof (xf) > end) {
-			bunyan_error(l, "Transform length mismatch",
-			    BUNYAN_T_END);
-			return (B_FALSE);
-		}
-
-		(void) memcpy(&xf, ptr, sizeof (xf));
-		xf.xf_length = ntohs(xf.xf_length);
-		xf.xf_id = ntohs(xf.xf_id);
-
-		if (ptr + xf.xf_length > end) {
-			bunyan_error(l, "Transform overruns SA payload",
-			    BUNYAN_T_END);
-			return (B_FALSE);
-		}
-
-		if (ptr + xf.xf_length == end) {
-			if (xf.xf_more != IKEV2_XF_LAST) {
-				bunyan_error(l, "Last transform does not have "
-				    "IKEV2_XF_LAST set", BUNYAN_T_END);
-				return (B_FALSE);
-			}
-		} else {
-			if (xf.xf_more != IKEV2_XF_MORE) {
-				bunyan_error(l, "Non-last transform does not "
-				    "have IKEV2_XF_MORE set", BUNYAN_T_END);
-				return (B_FALSE);
-			}
-		}
-
-		if (xf.xf_length > sizeof (xf)) {
-			attrp = ptr + sizeof (xf);
-			attrlen = xf.xf_length - sizeof (xf);
-		}
-
-		if (cb != NULL && !cb(&xf, attrp, attrlen, cookie))
-			return (B_TRUE);
-
-		ptr += xf.xf_length;
-	}
-	return (B_TRUE);
-}
-
-boolean_t
-ikev2_walk_xfattrs(uint8_t *restrict start, size_t len, ikev2_xfattr_cb_t cb,
-    void *restrict cookie, bunyan_logger_t *restrict l)
-{
-	uint8_t *ptr = start, *end = start + len;
-
-	while (ptr < end) {
-		size_t amt = 0;
-		ikev2_attribute_t attr = { 0 };
-
-		if (ptr + sizeof (attr) > end) {
-			bunyan_error(l, "Attribute length overruns end of "
-			    "transform", BUNYAN_T_END);
-			return (B_FALSE);
-		}
-
-		(void) memcpy(&attr, ptr, sizeof (attr));
-		attr.attr_type = ntohs(attr.attr_type);
-		attr.attr_length = ntohs(attr.attr_length);
-
-		if (attr.attr_type & IKEV2_ATTRAF_TV) {
-			amt = sizeof (attr);
-		} else {
-			/*
-			 * XXX: it's unclear if this length includes the
-			 * attribute length includes the header.  Need to check
-			 */
-			amt = attr.attr_length;
-		}
-
-		if (ptr + amt > end) {
-			bunyan_error(l, "Attribute value overruns end of "
-			    "transform", BUNYAN_T_END);
-			return (B_FALSE);
-		}
-
-		if (cb != NULL && !cb(&attr, cookie))
-			return (B_TRUE);
-
-		ptr += amt;
-	}
-
-	return (B_TRUE);
 }
 
 static boolean_t check_sa_payload(uint8_t *restrict, size_t, boolean_t,
@@ -679,6 +519,171 @@ check_sa_payload(uint8_t *restrict pay, size_t len, boolean_t is_response,
 	if (!ikev2_walk_proposals(pay, len, check_sa_cb, &data, l))
 		return (B_FALSE);
 	return (data.error);
+}
+
+/*
+ * Slightly subtle point about the *_walk_* functions - they return B_FALSE
+ * on an error during the walk (mostly if payload lengths don't agree). The
+ * callback functions however return B_FALSE to terminate the walk early or
+ * B_TRUE to continue the walk.  Any error state that needs to propagate up
+ * from the walker callbacks needs to be sent through the cookie parameter
+ */
+boolean_t
+ikev2_walk_proposals(uint8_t *restrict start, size_t len,
+    ikev2_prop_cb_t cb, void *restrict cookie,
+    bunyan_logger_t *restrict l)
+{
+	uint8_t *ptr = start, *end = start + len;
+
+	while (ptr < end) {
+		ikev2_sa_proposal_t prop = { 0 };
+
+		if (ptr + sizeof (prop) > end) {
+			bunyan_error(l, "Proposal length mismatch",
+			    BUNYAN_T_END);
+			return (B_FALSE);
+		}
+
+		(void) memcpy(&prop, ptr, sizeof (prop));
+		prop.proto_length = ntohs(prop.proto_length);
+
+		if (ptr + prop.proto_length > end) {
+			bunyan_error(l, "Proposal overruns SA payload",
+			    BUNYAN_T_UINT32, "propnum",
+			    (uint32_t)prop.proto_proposalnr,
+			    BUNYAN_T_UINT32, "proplen",
+			    (uint32_t)prop.proto_length, BUNYAN_T_END);
+			return (B_FALSE);
+		}
+
+		if (ptr + prop.proto_length == end) {
+			if (prop.proto_more != IKEV2_PROP_LAST) {
+				bunyan_error(l, "Last proposal does not have "
+				    "IKEV2_PROP_LAST set", BUNYAN_T_END);
+				return (B_FALSE);
+			}
+		} else {
+			if (prop.proto_more != IKEV2_PROP_MORE) {
+				bunyan_error(l, "Non-last proposal does not "
+				    "have IKEV2_PROP_MORE set", BUNYAN_T_END);
+				return (B_FALSE);
+			}
+		}
+		ptr += sizeof (prop);
+
+		uint64_t spi = 0;
+		for (size_t i = 0; i < prop.proto_spisize; i++) {
+			uint64_t val = *ptr;
+			spi = (spi << 8) | (val & 0xffULL);
+			ptr++;
+		}
+
+		if (cb != NULL && !cb(&prop, spi, ptr,
+		    len - (size_t)(ptr - start), cookie))
+			return (B_TRUE);
+
+		ptr += prop.proto_length;
+	}
+	return (B_TRUE);
+}
+
+boolean_t
+ikev2_walk_xfs(uint8_t *restrict start, size_t len, ikev2_xf_cb_t cb,
+    void *restrict cookie, bunyan_logger_t *restrict l)
+{
+	uint8_t *ptr = start, *end = start + len;
+
+	while (ptr < end) {
+		ikev2_transform_t xf = { 0 };
+		uint8_t *attrp = NULL;
+		size_t attrlen = 0;
+
+		if (ptr + sizeof (xf) > end) {
+			bunyan_error(l, "Transform length mismatch",
+			    BUNYAN_T_END);
+			return (B_FALSE);
+		}
+
+		(void) memcpy(&xf, ptr, sizeof (xf));
+		xf.xf_length = ntohs(xf.xf_length);
+		xf.xf_id = ntohs(xf.xf_id);
+
+		if (ptr + xf.xf_length > end) {
+			bunyan_error(l, "Transform overruns SA payload",
+			    BUNYAN_T_END);
+			return (B_FALSE);
+		}
+
+		if (ptr + xf.xf_length == end) {
+			if (xf.xf_more != IKEV2_XF_LAST) {
+				bunyan_error(l, "Last transform does not have "
+				    "IKEV2_XF_LAST set", BUNYAN_T_END);
+				return (B_FALSE);
+			}
+		} else {
+			if (xf.xf_more != IKEV2_XF_MORE) {
+				bunyan_error(l, "Non-last transform does not "
+				    "have IKEV2_XF_MORE set", BUNYAN_T_END);
+				return (B_FALSE);
+			}
+		}
+
+		if (xf.xf_length > sizeof (xf)) {
+			attrp = ptr + sizeof (xf);
+			attrlen = xf.xf_length - sizeof (xf);
+		}
+
+		if (cb != NULL && !cb(&xf, attrp, attrlen, cookie))
+			return (B_TRUE);
+
+		ptr += xf.xf_length;
+	}
+	return (B_TRUE);
+}
+
+boolean_t
+ikev2_walk_xfattrs(uint8_t *restrict start, size_t len, ikev2_xfattr_cb_t cb,
+    void *restrict cookie, bunyan_logger_t *restrict l)
+{
+	uint8_t *ptr = start, *end = start + len;
+
+	while (ptr < end) {
+		size_t amt = 0;
+		ikev2_attribute_t attr = { 0 };
+
+		if (ptr + sizeof (attr) > end) {
+			bunyan_error(l, "Attribute length overruns end of "
+			    "transform", BUNYAN_T_END);
+			return (B_FALSE);
+		}
+
+		(void) memcpy(&attr, ptr, sizeof (attr));
+		attr.attr_type = ntohs(attr.attr_type);
+		attr.attr_length = ntohs(attr.attr_length);
+
+		if (attr.attr_type & IKEV2_ATTRAF_TV) {
+			amt = sizeof (attr);
+		} else {
+			/*
+			 * XXX: it's unclear if this length includes the
+			 * attribute length includes the header.  Need to check
+			 */
+			amt = attr.attr_length;
+		}
+
+		if (ptr + amt > end) {
+			bunyan_error(l, "Attribute value overruns end of "
+			    "transform", BUNYAN_T_END);
+			return (B_FALSE);
+		}
+
+		if (cb != NULL && !cb(&attr, cookie))
+			return (B_TRUE);
+
+		ptr += amt;
+	}
+
+	return (B_TRUE);
 }
 
 void
@@ -1006,6 +1011,13 @@ ikev2_add_nonce(pkt_t *restrict pkt, uint8_t *restrict nonce, size_t len)
 		return (B_FALSE);
 
 	ikev2_add_payload(pkt, IKEV2_PAYLOAD_NONCE, B_FALSE);
+
+	/*
+	 * We allow a NULL value to generate a new nonce of size len,
+	 * and otherwise use the existing one passed in to simplify
+	 * creating a new initiator packet for a IKE_SA_INIT exchange
+	 * when we have to add additional payloads (COOKIE, new DH group).
+	 */
 	if (nonce != NULL) {
 		PKT_APPEND_DATA(pkt, nonce, len);
 	} else {
@@ -1063,6 +1075,10 @@ ikev2_add_notify(pkt_t *restrict pkt, ikev2_spi_proto_t proto, uint64_t spi,
 	default:
 		INVALID(spisize);
 	}
+
+	if (!pkt_add_nindex(pkt, spi, 0, proto, ntfy_type,
+	    (data != NULL) ? pkt->pkt_ptr : NULL, len))
+		return (B_FALSE);
 
 	if (data != NULL)
 		PKT_APPEND_DATA(pkt, data, len);
@@ -1691,22 +1707,6 @@ ikev2_pkt_decrypt(pkt_t *pkt)
 	if (!pkt_index_payloads(pkt, data, datalen, sk->pay_next, sa->i2sa_log))
 		return (B_FALSE);
 
-	for (size_t i = 0; i < pkt->pkt_payload_count; i++) {
-		pkt_payload_t *pp = pkt_payload(pkt, i);
-
-		if (pp->pp_type != IKEV2_PAYLOAD_NOTIFY)
-			continue;
-
-		ikev2_notify_t n = { 0 };
-
-		VERIFY3U(pp->pp_len, >=, sizeof (n));
-		(void) memcpy(&n, pp->pp_ptr, sizeof (n));
-
-		if (!pkt_add_nindex(pkt, ntohs(n.n_type), pp->pp_ptr,
-		    pp->pp_len))
-			return (B_FALSE);
-	}
-
 	return (B_TRUE);
 }
 
@@ -1744,7 +1744,7 @@ ikev2_pkt_desc(pkt_t *pkt)
 		const char *paystr =
 		    ikev2_pay_short_str((ikev2_pay_type_t)pay->pp_type);
 
-		len += strlen(paystr) + 2; 
+		len += strlen(paystr) + 2;
 		if (pay->pp_type == IKEV2_PAYLOAD_NOTIFY) {
 			pkt_notify_t *n = pkt_notify(pkt, j++);
 			const char *nstr =
@@ -1793,4 +1793,19 @@ ikev2_pkt_log(pkt_t *restrict pkt, bunyan_logger_t *restrict log,
 	    BUNYAN_T_STRING, "payloads", descstr,
 	    BUNYAN_T_END);
 	free(descstr);
+}
+
+/* Retrieve the DH group value from a key exchange payload */
+ikev2_dh_t
+ikev2_get_dhgrp(pkt_t *pkt)
+{
+	pkt_payload_t *ke = pkt_payload(pkt, IKEV2_PAYLOAD_KE);
+	uint16_t val = 0;
+
+	if (ke == NULL)
+		return (IKEV2_DH_NONE);
+
+	VERIFY3U(ke->pp_len, >, sizeof (val));
+	(void) memcpy(&val, ke->pp_ptr, sizeof (val));
+	return ((ikev2_dh_t)ntohs(val));
 }

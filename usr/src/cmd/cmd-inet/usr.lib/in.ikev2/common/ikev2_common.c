@@ -24,10 +24,26 @@
 #include "ikev2_proto.h"
 #include "config.h"
 #include "pkcs11.h"
+#include "pkt.h"
+
+/*
+ * XXX: IKEv1 selected the PRF based on the authentication algorithm.
+ * IKEv2 allows the PRF to be negotiated separately.  Eventually, we
+ * should probably add the ability to specify PRFs in the configuration
+ * file.  For now, we just include all the ones we support in decreasing
+ * order of preference.
+ */
+static ikev2_prf_t prf_supported[] = {
+	IKEV2_PRF_HMAC_SHA2_512,
+	IKEV2_PRF_HMAC_SHA2_384,
+	IKEV2_PRF_HMAC_SHA2_256,
+	IKEV2_PRF_HMAC_SHA1,
+	IKEV2_PRF_HMAC_MD5
+};
 
 boolean_t
-ikev2_sa_from_acquire(pkt_t *pkt, parsedmsg_t *pmsg, uint32_t spi,
-    ikev2_dh_t dh)
+ikev2_sa_from_acquire(pkt_t *restrict pkt, parsedmsg_t *restrict pmsg,
+    uint32_t spi, ikev2_dh_t dh)
 {
 	sadb_msg_t *samsg = pmsg->pmsg_samsg;
 	sadb_sa_t *sa;
@@ -137,6 +153,45 @@ ikev2_pfkey_to_encr(int alg)
 		/*NOTREACHED*/
 		return (alg);
 	}
+}
+
+static boolean_t add_rule_xform(pkt_t *restrict, const config_xf_t *restrict);
+
+boolean_t
+ikev2_sa_from_rule(pkt_t *restrict pkt, const config_rule_t *restrict rule,
+    uint64_t spi)
+{
+	boolean_t ok = B_TRUE;
+
+	if (!ikev2_add_sa(pkt))
+		return (B_FALSE);
+
+	for (uint8_t i = 0; rule->rule_xf[i] != NULL; i++) {
+		/* RFC 7296 3.3.1 - Proposal numbers start with 1 */
+		ok &= ikev2_add_prop(pkt, i + 1, IKEV2_PROTO_IKE, spi);
+		ok &= add_rule_xform(pkt, rule->rule_xf[i]);
+	}
+	return (ok);
+}
+
+static boolean_t
+add_rule_xform(pkt_t *restrict pkt, const config_xf_t *restrict xf)
+{
+	encr_modes_t mode = ikev2_encr_mode(xf->xf_encr);
+	boolean_t ok = B_TRUE;
+
+	/*
+	 * For all currently known combined mode ciphers, we can omit an
+	 * integrity transform
+	 */
+	if (!MODE_IS_COMBINED(mode))
+		ok &= ikev2_add_xform(pkt, IKEV2_XF_AUTH, xf->xf_auth);
+	ok &= ikev2_add_xform(pkt, IKEV2_XF_DH, xf->xf_dh);
+
+	for (size_t i = 0; i < ARRAY_SIZE(prf_supported); i++)
+		ok &= ikev2_add_xform(pkt, IKEV2_XF_PRF, prf_supported[i]);
+
+	return (ok);
 }
 
 boolean_t
