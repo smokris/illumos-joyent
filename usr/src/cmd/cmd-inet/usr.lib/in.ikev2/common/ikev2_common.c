@@ -227,6 +227,7 @@ struct rule_data_s {
 	config_rule_t		*rd_rule;
 	config_xf_t		*rd_xf;
 	ikev2_sa_result_t	*rd_res;
+	ikev2_prf_t		rd_prf;
 	boolean_t		rd_match;
 	boolean_t		rd_skip;
 	boolean_t		rd_has_auth;
@@ -253,41 +254,46 @@ ikev2_sa_match_rule(config_rule_t *restrict rule, pkt_t *restrict pkt,
 	    BUNYAN_T_END);
 
 	for (size_t i = 0; rule->rule_xf[i] != NULL; i++) {
-		struct rule_data_s data = {
-			.rd_log = l,
-			.rd_rule = rule,
-			.rd_xf = rule->rule_xf[i],
-			.rd_res = result,
-			.rd_match = B_FALSE
-		};
+		for (size_t j = 0; j < ARRAY_SIZE(prf_supported); j++) {
+			struct rule_data_s data = {
+				.rd_log = l,
+				.rd_rule = rule,
+				.rd_xf = rule->rule_xf[i],
+				.rd_res = result,
+				.rd_match = B_FALSE
+			};
 
-		(void) memset(result, 0, sizeof (*result));
+			(void) memset(result, 0, sizeof (*result));
 
-		bunyan_debug(l, "Checking rule transform against proposals",
-		    BUNYAN_T_UINT32, "xfnum", (uint32_t)i,
-		    BUNYAN_T_STRING, "xf", rule->rule_xf[i]->xf_str,
-		    BUNYAN_T_END);
-
-		VERIFY(ikev2_walk_proposals(pay->pp_ptr, pay->pp_len,
-		    match_rule_prop_cb, &data, l));
-
-		if (data.rd_match) {
-			bunyan_debug(l, "Found proposal match",
+			bunyan_debug(l,
+			    "Checking rule transform against proposals",
+			    BUNYAN_T_UINT32, "xfnum", (uint32_t)i,
 			    BUNYAN_T_STRING, "xf", rule->rule_xf[i]->xf_str,
-			    BUNYAN_T_UINT32, "propnum",
-			    (uint32_t)result->sar_propnum,
-			    BUNYAN_T_UINT64, "spi", result->sar_spi,
-			    BUNYAN_T_STRING, "encr",
-			    ikev2_xf_encr_str(result->sar_encr),
-			    BUNYAN_T_UINT32, "keylen",
-			    (uint32_t)result->sar_encr_keylen,
-			    BUNYAN_T_STRING, "auth",
-			    ikev2_xf_auth_str(result->sar_auth),
-			    BUNYAN_T_STRING, "prf",
-			    ikev2_prf_str(result->sar_prf),
-			    BUNYAN_T_STRING, "dh", ikev2_dh_str(result->sar_dh),
 			    BUNYAN_T_END);
-			return (B_TRUE);
+
+			VERIFY(ikev2_walk_proposals(pay->pp_ptr, pay->pp_len,
+			    match_rule_prop_cb, &data, l));
+
+			if (data.rd_match) {
+				bunyan_debug(l, "Found proposal match",
+				    BUNYAN_T_STRING, "xf",
+				    rule->rule_xf[i]->xf_str,
+				    BUNYAN_T_UINT32, "propnum",
+				    (uint32_t)result->sar_propnum,
+				    BUNYAN_T_UINT64, "spi", result->sar_spi,
+				    BUNYAN_T_STRING, "encr",
+				    ikev2_xf_encr_str(result->sar_encr),
+				    BUNYAN_T_UINT32, "keylen",
+				    (uint32_t)result->sar_encr_keylen,
+				    BUNYAN_T_STRING, "auth",
+				    ikev2_xf_auth_str(result->sar_auth),
+				    BUNYAN_T_STRING, "prf",
+				    ikev2_prf_str(result->sar_prf),
+				    BUNYAN_T_STRING, "dh",
+				    ikev2_dh_str(result->sar_dh),
+				    BUNYAN_T_END);
+				return (B_TRUE);
+			}
 		}
 	}
 
@@ -351,7 +357,10 @@ match_rule_xf_cb(ikev2_transform_t *xf, uint8_t *buf, size_t buflen,
 			break;
 
 		if (buflen > 0) {
-			/* XXX: Verify if there should be attributes for this particular alg? */
+			/*
+			 * XXX: Verify if there should be attributes for this
+			 * particular alg?
+			 */
 			data->rd_keylen_match = B_FALSE;
 			VERIFY(ikev2_walk_xfattrs(buf, buflen,
 			    match_rule_attr_cb, cookie, data->rd_log));
@@ -378,15 +387,9 @@ match_rule_xf_cb(ikev2_transform_t *xf, uint8_t *buf, size_t buflen,
 		}
 		break;
 	case IKEV2_XF_PRF:
-		switch (xf->xf_id) {
-		case IKEV2_PRF_HMAC_SHA2_512:
-		case IKEV2_PRF_HMAC_SHA2_384:
-		case IKEV2_PRF_HMAC_SHA2_256:
-		case IKEV2_PRF_HMAC_SHA1:
-		case IKEV2_PRF_HMAC_MD5:
+		if (xf->xf_id == data->rd_prf) {
 			match = B_TRUE;
-			data->rd_res->sar_prf = xf->xf_id;
-			break;
+			data->rd_res->sar_prf = data->rd_prf;
 		}
 		break;
 	case IKEV2_XF_DH:
@@ -447,6 +450,7 @@ struct acquire_data_s {
 	ikev2_dh_t		ad_dh;
 	boolean_t		ad_skip;
 	boolean_t		ad_match;
+	boolean_t		ad_keylen_match;
 };
 
 static boolean_t match_acq_prop_cb(ikev2_sa_proposal_t *, uint64_t,
@@ -586,13 +590,65 @@ static boolean_t
 match_acq_xf_cb(ikev2_transform_t *xf, uint8_t *buf, size_t buflen,
     void *cookie)
 {
-	return (B_FALSE);
+	struct acquire_data_s *data = cookie;
+	boolean_t match = B_FALSE;
+
+	switch (xf->xf_type) {
+	case IKEV2_XF_ENCR:
+		if (xf->xf_id != data->ad_comb->sadb_comb_encrypt)
+			break;
+		/* XXX: match attr */
+		break;
+	case IKEV2_XF_PRF:
+		bunyan_debug(data->ad_log,
+		    "Encountered PRF transform in AH/ESP transform",
+		    BUNYAN_T_END);
+		data->ad_skip = B_TRUE;
+		break;
+	case IKEV2_XF_AUTH:
+		if (xf->xf_id != data->ad_comb->sadb_comb_auth)
+			break;
+		match = B_TRUE;
+		data->ad_res->sar_auth = xf->xf_id;
+		break;
+	case IKEV2_XF_DH:
+		if (xf->xf_id != data->ad_dh)
+			break;
+		match = B_TRUE;
+		data->ad_res->sar_dh = xf->xf_id;
+		break;
+	case IKEV2_XF_ESN:
+		if (xf->xf_id != IKEV2_ESN_NONE)
+			break;
+		match = B_TRUE;
+		data->ad_res->sar_esn = B_FALSE;
+		break;
+	}
+
+	if (match)
+		data->ad_res->sar_match |= (uint32_t)1 << xf->xf_type;
+
+	return (!data->ad_skip);
 }
 
 static boolean_t
 match_acq_attr_cb(ikev2_attribute_t *attr, void *cookie)
 {
-	return (B_FALSE);
+	struct acquire_data_s *data = cookie;
+
+	if (attr->attr_type != IKEV2_XF_ATTR_KEYLEN) {
+		data->ad_skip = B_TRUE;
+		return (B_FALSE);
+	}
+
+	if (attr->attr_length >= data->ad_comb->sadb_comb_encrypt_minbits &&
+	    attr->attr_length <= data->ad_comb->sadb_comb_encrypt_maxbits) {
+		data->ad_res->sar_encr_keylen = attr->attr_length;
+		data->ad_keylen_match = B_TRUE;
+		return (B_FALSE);
+	}
+
+	return (B_TRUE);
 }
 
 void
