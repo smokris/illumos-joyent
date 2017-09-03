@@ -44,11 +44,15 @@ static int high_random = -1;
 void
 random_init(void)
 {
+	bunyan_trace(log, "random_init() enter", BUNYAN_T_END);
+
 	if ((low_random = open("/dev/urandom", 0)) == -1)
 		err(EXIT_FAILURE, "/dev/urandom open failed");
 
 	if ((high_random = open("/dev/random", 0)) == -1)
 		err(EXIT_FAILURE, "/dev/random open failed");
+
+	bunyan_trace(log, "random_init() exit", BUNYAN_T_END);
 }
 
 uint64_t

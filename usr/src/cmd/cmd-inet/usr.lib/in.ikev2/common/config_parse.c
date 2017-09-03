@@ -293,9 +293,13 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 		uint64_t	ui;
 		double		d;
 	} val;
+	size_t rule_count = 0;
+
+	bunyan_trace(log, "process_config() enter", BUNYAN_T_END);
 
 	if (in == NULL) {
 		STDERR(error, blog, "failure reading input");
+		bunyan_trace(log, "process_config() exit", BUNYAN_T_END);
 		return;
 	}
 
@@ -314,6 +318,7 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 
 			add_rule(cfg, rule);
 			tok_free(t);
+			rule_count++;
 			continue;
 		}
 
@@ -516,6 +521,10 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 	input_cursor_fini(&ic);
 	input_free(in);
 
+	bunyan_info(blog, "Finished processing config",
+	    BUNYAN_T_UINT32, "numrules", (uint32_t)rule_count,
+	    BUNYAN_T_END);
+
 	if (check_only) {
 		cfg_free(cfg);
 	} else {
@@ -527,8 +536,10 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 		old = config;
 		config = cfg;
 		PTH(pthread_rwlock_unlock(&cfg_lock));
-		CONFIG_REFRELE(old);
+		if (old != NULL)
+			CONFIG_REFRELE(old);
 	}
+	bunyan_trace(log, "process_config() exit", BUNYAN_T_END);
 	return;
 
 fail:
@@ -537,6 +548,7 @@ fail:
 	input_cursor_fini(&ic);
 	input_free(in);
 	cfg_free(cfg);
+	bunyan_trace(log, "process_config() exit", BUNYAN_T_END);
 }
 
 static boolean_t

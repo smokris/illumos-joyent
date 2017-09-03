@@ -110,13 +110,18 @@ main(int argc, char **argv)
 		errx(EXIT_FAILURE, "bunyan_stream_add() failed: %s",
 		    strerror(errno));
 
-	if ((f = fopen(cfgfile, "rF")) == NULL)
+	if ((f = fopen(cfgfile, "rF")) == NULL) {
 		STDERR(fatal, log, "cannot open config file",
 		    BUNYAN_T_STRING, "filename", cfgfile);
+		exit(EXIT_FAILURE);
+	}
 
 	process_config(f, check_cfg, log);
 
 	(void) fclose(f);
+
+	if (check_cfg)
+		return (0);
 
 	if ((port = port_create()) < 0)
 		STDERR(fatal, log, "port_create() failed");
@@ -296,6 +301,8 @@ signal_init(void)
 	pthread_attr_t attr;
 	sigset_t nset;
 
+	bunyan_trace(log, "signal_init() enter", BUNYAN_T_END);
+
 	/* block all signals in main thread */
 	(void) sigfillset(&nset);
 	(void) pthread_sigmask(SIG_SETMASK, &nset, NULL);
@@ -304,6 +311,8 @@ signal_init(void)
 	PTH(pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED));
 	PTH(pthread_create(&signal_tid, &attr, signal_thread, NULL));
 	PTH(pthread_attr_destroy(&attr));
+
+	bunyan_trace(log, "signal_init() exit", BUNYAN_T_END);
 }
 
 static const char *

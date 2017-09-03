@@ -198,6 +198,7 @@ ikev2_sa_init_inbound_resp(pkt_t *pkt)
 			dh = ntohs(val);
 		}
 
+		(void) cancel_timeout(TE_TRANSMIT, out, sa->i2sa_log);
 		ikev2_sa_init_outbound(sa, cookie->pn_ptr, cookie->pn_len,
 		    dh, nonce->pp_ptr, nonce->pp_len);
 

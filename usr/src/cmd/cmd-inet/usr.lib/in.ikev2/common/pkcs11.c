@@ -198,7 +198,9 @@ log_slotinfo(CK_SLOT_ID slot)
 	fmtstr(utctime, sizeof (utctime), tinfo.utcTime,
 	    sizeof (tinfo.utcTime));
 
-#define	F(_inf, _flg) BUNYAN_T_BOOLEAN, #_flg, !!((_inf).flags & (_flg))
+#define	F(_inf, _flg) BUNYAN_T_BOOLEAN, #_flg, ((_inf).flags & (_flg))
+	char flagstr[19];
+	(void) snprintf(flagstr, sizeof (flagstr), "0x%lu", info.flags);
 
 	(void) bunyan_debug(log, "PKCS#11 token info",
 	    BUNYAN_T_UINT32, "slot", (uint32_t)slot,
@@ -206,7 +208,7 @@ log_slotinfo(CK_SLOT_ID slot)
 	    BUNYAN_T_STRING, "manuf", manuf,
 	    BUNYAN_T_STRING, "model", model,
 	    BUNYAN_T_STRING, "serial", serial,
-	    BUNYAN_T_UINT64, "flags", (uint64_t)tinfo.flags,
+	    BUNYAN_T_STRING, "flags", flagstr,
 	    F(info, CKF_RNG),
 	    F(info, CKF_WRITE_PROTECTED),
 	    F(info, CKF_LOGIN_REQUIRED),
