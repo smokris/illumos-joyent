@@ -33,7 +33,6 @@
 #include <sys/types.h>
 #include "ike.h"
 #include "ikev2.h"
-#include "buf.h"
 
 #ifdef __cplusplus
 extern "C" {

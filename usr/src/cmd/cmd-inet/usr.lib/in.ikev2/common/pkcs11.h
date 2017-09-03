@@ -35,7 +35,6 @@
 #include <bunyan.h>
 #include "defs.h"
 #include "ikev2.h"
-#include "buf.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -64,8 +63,6 @@ void pkcs11_init(void);
 void pkcs11_fini(void);
 
 CK_SESSION_HANDLE p11h(void);
-boolean_t pkcs11_digest(CK_MECHANISM_TYPE, const buf_t *restrict, size_t,
-    buf_t *restrict, bunyan_logger_t *);
 void pkcs11_destroy_obj(const char *, CK_OBJECT_HANDLE_PTR, bunyan_logger_t *);
 
 CK_MECHANISM_TYPE ikev2_encr_to_p11(ikev2_xf_encr_t);

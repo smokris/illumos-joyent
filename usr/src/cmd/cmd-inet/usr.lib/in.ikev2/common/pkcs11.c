@@ -616,55 +616,6 @@ pkcs11_destroy_obj(const char *name, CK_OBJECT_HANDLE_PTR objp,
 	}
 }
 
-/*
- * Scatter/gather digest calculation.  Upon failure, B_FALSE is returned.
- */
-boolean_t
-pkcs11_digest(CK_MECHANISM_TYPE alg, const buf_t *restrict in, size_t n,
-    buf_t *restrict out, bunyan_logger_t *l)
-{
-	CK_MECHANISM	mech;
-	CK_RV		ret;
-
-	mech.mechanism = alg;
-	mech.pParameter = NULL_PTR;
-	mech.ulParameterLen = 0;
-
-	if ((ret = C_DigestInit(p11h(), &mech)) != CKR_OK) {
-		PKCS11ERR(error, l, "C_DigestInit", ret);
-		return (B_FALSE);
-	}
-
-	for (size_t i = 0; i < n; i++) {
-		ret = C_DigestUpdate(p11h(), in[i].b_ptr, buf_left(&in[i]));
-		if (ret != CKR_OK) {
-			PKCS11ERR(error, l, "C_DigestUpdate", ret);
-			return (B_FALSE);
-		}
-	}
-
-	CK_ULONG len = out->b_len;
-
-	ret = C_DigestFinal(p11h(), out->b_ptr, &len);
-	if (ret != CKR_OK) {
-		PKCS11ERR(error, l, "C_DigestFinal", ret);
-		return (B_FALSE);
-	}
-
-	if (len > buf_left(out)) {
-		bunyan_error(l, "Output buffer for C_Digest was too small",
-		    BUNYAN_T_STRING, "func", __func__,
-		    BUNYAN_T_STRING, "file", __FILE__,
-		    BUNYAN_T_INT32, "line", __LINE__,
-		    BUNYAN_T_UINT32, "outsz", (uint32_t)buf_left(out),
-		    BUNYAN_T_UINT32, "digestsz", (uint32_t)len,
-		    BUNYAN_T_END);
-		return (B_FALSE);
-	}
-
-	return (B_TRUE);
-}
-
 static CK_RV
 pkcs11_callback_handler(CK_SESSION_HANDLE session, CK_NOTIFICATION surrender,
     void *context)

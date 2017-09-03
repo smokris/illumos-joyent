@@ -44,7 +44,6 @@
 #include <ipsec_util.h>
 #include <libuutil.h>
 #include "defs.h"
-#include "buf.h"
 #include "timer.h"
 #include "pkcs11.h"
 #include "ikev2_pkt.h"
