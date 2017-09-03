@@ -295,7 +295,8 @@ i2sa_expire_cb(te_event_t evt, void *data)
 
 	ikev2_sa_t *i2sa = (ikev2_sa_t *)data;
 
-	/* TODO */
+	ikev2_sa_condemn(i2sa);
+	/* XXX: Anything else? */
 	I2SA_REFRELE(i2sa);
 }
 
@@ -308,6 +309,16 @@ ikev2_sa_flush(void)
 void
 ikev2_sa_condemn(ikev2_sa_t *i2sa)
 {
+	I2SA_REFHOLD(i2sa);
+
+	i2sa_unlink(i2sa);
+
+	PTH(pthread_mutex_lock(&i2sa->lock));
+	i2sa->flags |= I2SA_CONDEMNED;
+	PTH(pthread_mutex_unlock(&i2sa->lock));
+
+	I2SA_REFRELE(i2sa);
+	/* XXX: should we do anything else here? */
 }
 
 void
