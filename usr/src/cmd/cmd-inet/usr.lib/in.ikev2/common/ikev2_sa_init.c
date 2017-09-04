@@ -53,7 +53,7 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 	pkt_t *resp = NULL;
 	sockaddr_u_t laddr = { .sau_ss = &sa->laddr };
 	sockaddr_u_t raddr = { .sau_ss = &sa->raddr };
-	pkt_payload_t *ke_i = pkt_payload(pkt, IKEV2_PAYLOAD_KE);
+	pkt_payload_t *ke_i = pkt_get_payload(pkt, IKEV2_PAYLOAD_KE, NULL);
 	ikev2_sa_result_t sa_result = { 0 };
 	size_t noncelen = 0;
 
@@ -109,6 +109,14 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 	if (resp == NULL)
 		goto fail;
 
+	/*
+	 * The packet response functions take their SPI values from the
+	 * initating packet, so for this one instance we must set it
+	 * manually since the initiator doesn't yet know our local SPI.
+	 */
+	pkt->pkt_raw[1] = htonll(I2SA_LOCAL_SPI(sa));
+	pkt->pkt_header.responder_spi = I2SA_LOCAL_SPI(sa);
+
 	if (!ikev2_sa_add_result(resp, &sa_result))
 		goto fail;
 	/*
@@ -158,7 +166,7 @@ ikev2_sa_init_inbound_resp(pkt_t *pkt)
 	    IKEV2_N_INVALID_KE_PAYLOAD, NULL);
 	pkt_notify_t *no_proposal = pkt_get_notify(pkt,
 	    IKEV2_N_NO_PROPOSAL_CHOSEN, NULL);
-	pkt_payload_t *ke_r = pkt_payload(pkt, IKEV2_PAYLOAD_KE);
+	pkt_payload_t *ke_r = pkt_get_payload(pkt, IKEV2_PAYLOAD_KE, NULL);
 	ikev2_sa_result_t sa_result = { 0 };
 
 	if (no_proposal != NULL) {
@@ -172,7 +180,8 @@ ikev2_sa_init_inbound_resp(pkt_t *pkt)
 
 	if (cookie != NULL || invalid_ke != NULL) {
 		pkt_t *out = pkt->pkt_sa->init;
-		pkt_payload_t *nonce = pkt_payload(out, IKEV2_PAYLOAD_NONCE);
+		pkt_payload_t *nonce =
+		    pkt_get_payload(out, IKEV2_PAYLOAD_NONCE, NULL);
 		ikev2_dh_t dh = IKEV2_DH_NONE;
 
 		if (invalid_ke != NULL) {
@@ -673,8 +682,8 @@ ikev2_sa_keygen(ikev2_sa_result_t *restrict result, pkt_t *restrict init,
     pkt_t *restrict resp)
 {
 	ikev2_sa_t *sa = resp->pkt_sa;
-	pkt_payload_t *ni = pkt_payload(init, IKEV2_PAYLOAD_NONCE);
-	pkt_payload_t *nr = pkt_payload(resp, IKEV2_PAYLOAD_NONCE);
+	pkt_payload_t *ni = pkt_get_payload(init, IKEV2_PAYLOAD_NONCE, NULL);
+	pkt_payload_t *nr = pkt_get_payload(resp, IKEV2_PAYLOAD_NONCE, NULL);
 	CK_SESSION_HANDLE h = p11h();
 	CK_OBJECT_HANDLE nonce = CK_INVALID_HANDLE;
 	CK_OBJECT_HANDLE skeyseed = CK_INVALID_HANDLE;

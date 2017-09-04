@@ -31,6 +31,7 @@
 #include <sys/socket.h>
 #include "defs.h"
 #include "config.h"
+#include "ikev2_cookie.h"
 #include "ikev2_sa.h"
 #include "ikev2_pkt.h"
 #include "worker.h"
@@ -69,12 +70,14 @@ ikev2_dispatch(pkt_t *pkt, const struct sockaddr_storage *restrict l_addr,
 	if (local_spi != 0) {
 		/*
 		 * If the local SPI is set, we should be able to find it
-		 * in our hash.
+		 * in our hash.  This may be a packet destined for a
+		 * condemned or recently deleted IKE SA.
 		 *
 		 * XXX: Should we respond with a notificaiton?
 		 *
-		 * RFC5996 2.21.4 we may send an INVALID_IKE_SPI
-		 * notification if we wish.
+		 * RFC7296 2.21.4 we may send an INVALID_IKE_SPI
+		 * notification if we wish, but is suggested responses are
+		 * rate limited.
 		 *
 		 * For now, discard.
 		 */
@@ -121,6 +124,9 @@ ikev2_dispatch(pkt_t *pkt, const struct sockaddr_storage *restrict l_addr,
 		    local_spi, remote_spi);
 		goto discard;
 	}
+
+	if (!ikev2_cookie_check(pkt, l_addr, r_addr))
+		goto discard;
 
 	/* otherwise create a larval SA */
 	i2sa = ikev2_sa_alloc(B_FALSE, pkt, l_addr, r_addr);
@@ -190,17 +196,9 @@ ikev2_send(pkt_t *pkt, boolean_t is_error)
 
 	PTH(pthread_mutex_lock(&i2sa->lock));
 	if (initiator) {
-		/* XXX: bump & save for error messages? */
+		/* XXX: bump msgid & save for error messages? */
 
-		/*
-		 * In a few instances (e.g. cookies) we explicitly re-send the
-		 * last packet instead of waiting for the retransmit timeout
-		 * to kick in.  In those instances, we don't want to bump
-		 * the message since it's not a new exchange.
-		 */
-		if (pkt != i2sa->last_sent)
-			i2sa->outmsgid++;
-
+		i2sa->outmsgid++;
 		i2sa->last_sent = pkt;
 
 		if (!is_error) {
@@ -210,7 +208,10 @@ ikev2_send(pkt_t *pkt, boolean_t is_error)
 			CONFIG_REFRELE(cfg);
 		}
 	} else {
-		i2sa->last_resp_sent = pkt;
+		if (pkt->pkt_header.exch_type != IKEV2_EXCH_IKE_SA_INIT ||
+		    pkt->pkt_raw[1] != 0) {
+			i2sa->last_resp_sent = pkt;
+		}
 	}
 	PTH(pthread_mutex_unlock(&i2sa->lock));
 

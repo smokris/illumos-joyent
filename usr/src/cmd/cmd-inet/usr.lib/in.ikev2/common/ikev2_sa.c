@@ -43,15 +43,16 @@
 #include <note.h>
 #include <ipsec_util.h>
 #include <libuutil.h>
+#include "config.h"
 #include "defs.h"
-#include "timer.h"
-#include "pkcs11.h"
+#include "ikev2_cookie.h"
 #include "ikev2_pkt.h"
 #include "ikev2_sa.h"
-#include "random.h"
-#include "worker.h"
-#include "config.h"
+#include "pkcs11.h"
 #include "pkt.h"
+#include "random.h"
+#include "timer.h"
+#include "worker.h"
 
 /* Our hashes */
 enum {
@@ -713,9 +714,8 @@ i2sa_rhash(const struct sockaddr_storage *ss, uint64_t spi)
 static void
 inc_half_open(void)
 {
-	atomic_inc_uint(&half_open);
-
-	/* TODO: cookie check */
+	if (atomic_inc_uint_nv(&half_open) == ikev2_cookie_threshold)
+		ikev2_cookie_enable();
 }
 
 /*
@@ -725,12 +725,16 @@ inc_half_open(void)
 static void
 dec_half_open(void)
 {
-	atomic_dec_uint(&half_open);
-
 	/*
-	 * TODO: Add cookie check.  Include hystersis to avoid potential
-	 * flopping.
+	 * Instead of merely disabling cookies once we're below
+	 * ikev2_cookie_threshold half-open IKE SAs, we wait for
+	 * IKEV2_COOKIE_OFF_ADD additional half-open IKE SAs to
+	 * disappear to add a small amount of hysteresis and prevent
+	 * constantly flopping on and off once we're at the threshold.
 	 */
+	if (atomic_dec_uint_nv(&half_open) ==
+	    ikev2_cookie_threshold - IKEV2_COOKIE_OFF_ADJ)
+		ikev2_cookie_disable();
 }
 
 static int

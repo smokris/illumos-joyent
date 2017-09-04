@@ -141,12 +141,14 @@ typedef struct config_s config_t;
 	    (cfg_free(cp), 0))
 #define	RULE_IS_DEFAULT(r) (!!(&(r)->rule_config->cfg_default == (r)))
 
+union sockaddr_u_s;
 extern pthread_rwlock_t cfg_lock;
 extern config_t *config;
 
 void process_config(FILE *, boolean_t, bunyan_logger_t *);
 config_t *config_get(void);
-config_rule_t *config_get_rule(sockaddr_u_t *restrict, sockaddr_u_t *restrict);
+config_rule_t *config_get_rule(union sockaddr_u_s *restrict,
+    union sockaddr_u_s *restrict);
 void cfg_rule_free(config_rule_t *);
 void cfg_free(config_t *);
 

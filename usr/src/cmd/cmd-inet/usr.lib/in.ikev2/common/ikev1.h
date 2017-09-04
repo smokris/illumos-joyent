@@ -123,6 +123,16 @@ typedef struct ike_xf_attr ikev1_xf_attr_t;
 #define	IKEV1_ATTR_GET_FORMAT(t)	IKE_GET_FORMAT(t)
 #define	IKEV1_ATTR_TYPE(f, t)		IKE_ATTR_TYPE(f, t)
 
+struct ikev1_notify {
+	uint32_t	n_doi;
+	uint8_t		n_protoid;
+	uint8_t		n_spisize;
+	uint16_t	n_type;
+	/* Followed by variable length SPI */
+	/* Followed by notification data */
+} __packed;
+typedef struct ikev1_notify ikev1_notify_t;
+
 #ifdef __cplusplus
 }
 #endif

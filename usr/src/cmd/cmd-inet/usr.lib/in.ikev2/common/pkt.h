@@ -30,6 +30,7 @@
 #ifndef _PKT_H
 #define	_PKT_H
 
+#include <stddef.h>
 #include <sys/types.h>
 #include "ike.h"
 #include "ikev2.h"
@@ -113,6 +114,9 @@ struct pkt_s {
 	uint16_t		pkt_notify_count;
 	uint16_t		pkt_notify_alloc;
 
+	pkt_payload_t		*pkt_encr_pay;
+	boolean_t		pkt_done;
+
 	struct pkt_stack_s	stack[PKT_STACK_DEPTH];
 	uint_t			stksize;
 	boolean_t		pkt_stk_error;
@@ -170,31 +174,71 @@ pkt_notify(pkt_t *pkt, uint16_t idx)
 	return (pkt->pkt_notify_extra + (idx - PKT_NOTIFY_NUM));
 }
 
-#define	PKT_APPEND_STRUCT(_pkt, _struct) do {				\
-	ASSERT3U(pkt_write_left(_pkt), <=, sizeof (_struct));		\
+inline void
+pkt_adv_ptr(pkt_t *pkt, size_t amt)
+{
+	ike_header_t *hdr = (ike_header_t *)&pkt->pkt_raw;
+
+	/*
+	 * The layout of ike_header_t and pkt->pkt_raw currently guarantees
+	 * this alignment
+	 */
+	ASSERT(I2_P2ALIGNED(&hdr->length, sizeof (uint32_t)));
+
+	pkt->pkt_ptr += amt;
+	pkt->pkt_header.length += amt;
+	hdr->length = htonl(pkt->pkt_header.length);
+
+	/* However no alignment guarantees for this unfortunately */
+	if (pkt->pkt_encr_pay != NULL) {
+		ike_payload_t *ip = ((ike_payload_t *)pkt->pkt_encr_pay) - 1;
+		uint16_t val = BE_IN16(&ip->pay_length) + amt;
+
+		BE_OUT16(&ip->pay_length, val);
+		pkt->pkt_encr_pay->pp_len += amt;
+	}
+}
+
+inline void
+put32(pkt_t *pkt, uint32_t val)
+{
+	BE_OUT32(pkt->pkt_ptr, val);
+	pkt_adv_ptr(pkt, sizeof (uint32_t));
+}
+
+inline void
+put64(pkt_t *pkt, uint64_t val)
+{
+	BE_OUT64(pkt->pkt_ptr, val);
+	pkt_adv_ptr(pkt, sizeof (uint64_t));
+}
+
+#define	PKT_APPEND_STRUCT(_pkt, _struct)				\
+do {									\
+	VERIFY3U(pkt_write_left(_pkt), <=, sizeof (_struct));		\
 	(void) memcpy((_pkt)->pkt_ptr, &(_struct), sizeof (_struct));	\
-	(_pkt)->pkt_ptr += sizeof (_struct);				\
+	pkt_adv_ptr(_pkt, sizeof (_struct));				\
 /*CONSTCOND*/								\
 } while (0)
 
-#define	PKT_APPEND_DATA(_pkt, _ptr, _len) do {		\
-	ASSERT3U(pkt_write_left(_pkt), <=, len);	\
+#define	PKT_APPEND_DATA(_pkt, _ptr, _len)		\
+do {							\
+	if ((_len) == 0)				\
+		break;					\
+	VERIFY3U(pkt_write_left(_pkt), <=, (_len));	\
 	(void) memcpy((_pkt)->pkt_ptr, (_ptr), (_len));	\
-	(_pkt)->pkt_ptr += (_len);			\
+	pkt_adv_ptr(_pkt, (_len));			\
 /*CONSTCOND*/						\
 } while (0)
 
 void pkt_hdr_ntoh(ike_header_t *restrict, const ike_header_t *restrict);
 void pkt_hdr_hton(ike_header_t *restrict, const ike_header_t *restrict);
-void put32(pkt_t *, uint32_t);
-void put64(pkt_t *, uint64_t);
 
 boolean_t pkt_done(pkt_t *);
 void pkt_init(void);
 void pkt_fini(void);
 void pkt_free(pkt_t *);
 
-boolean_t pkt_pay_shift(pkt_t *, uint8_t, size_t, ssize_t);
 pkt_payload_t *pkt_get_payload(pkt_t *, int, pkt_payload_t *);
 pkt_notify_t *pkt_get_notify(pkt_t *, int, pkt_notify_t *);
 

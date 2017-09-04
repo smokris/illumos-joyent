@@ -62,7 +62,8 @@ boolean_t ikev2_add_nonce(pkt_t *restrict, uint8_t *restrict, size_t);
 boolean_t ikev2_add_notify(pkt_t *restrict, ikev2_spi_proto_t, uint64_t,
     ikev2_notify_type_t, const void *restrict, size_t);
 
-boolean_t ikev2_add_delete(pkt_t *, ikev2_spi_proto_t);
+boolean_t ikev2_add_delete(pkt_t *, ikev2_spi_proto_t, uint64_t *restrict,
+    size_t);
 boolean_t ikev2_add_delete_spi(pkt_t *, uint64_t);
 
 boolean_t ikev2_add_vendor(pkt_t *restrict, const void *restrict,
@@ -80,6 +81,8 @@ boolean_t ikev2_add_config(pkt_t *restrict, ikev2_cfg_type_t);
 boolean_t ikev2_add_config_attr(pkt_t *restrict, ikev2_cfg_attr_type_t,
     const void *restrict);
 
+boolean_t ikev2_pkt_done(pkt_t *);
+boolean_t ikev2_pkt_signverify(pkt_t *, boolean_t);
 boolean_t ikev2_pkt_decrypt(pkt_t *);
 
 typedef boolean_t (*ikev2_prop_cb_t)(ikev2_sa_proposal_t *, uint64_t, uint8_t *,

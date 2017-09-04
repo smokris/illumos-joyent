@@ -62,12 +62,8 @@ pkt_out_alloc(uint64_t i_spi, uint64_t r_spi, uint8_t version,
 	pkt->pkt_header.msgid = msgid;
 	pkt_stack_push(pkt, PSI_PACKET, pkt_finish, 0);
 
-	/*
-	 * Keep the local byte order copy and wire-format versions in sync.  However
-	 * the length field will not be filled in until the packet is ready to send.
-	 */
 	pkt_hdr_hton((ike_header_t *)pkt->pkt_raw, &pkt->pkt_header);
-	pkt->pkt_ptr += sizeof (ike_header_t);
+	pkt_adv_ptr(pkt, sizeof (ike_header_t));
 	return (pkt);
 }
 
@@ -320,52 +316,34 @@ pkt_in_alloc(uint8_t *restrict buf, size_t buflen, bunyan_logger_t *restrict l)
 	return (pkt);
 }
 
-static boolean_t
-payload_finish(pkt_t *restrict pkt, uint8_t *restrict ptr, uintptr_t arg,
-    size_t numsub)
-{
-	NOTE(ARGUNUSED(numsub))
-	ike_payload_t pay = { 0 };
-	size_t len = (size_t)(pkt->pkt_ptr - ptr);
-	uint8_t type = 0;
-
-	VERIFY3P(pkt->pkt_ptr, >, ptr);
-	VERIFY3U(len, <, MAX_PACKET_SIZE);
-	VERIFY3U(arg, <, 256);
-
-	(void) memcpy(&pay, ptr, sizeof (pay));
-	type = pay.pay_next;
-	pay.pay_next = (uint8_t)arg;
-	pay.pay_length = htons((uint16_t)len);
-	(void) memcpy(ptr, &pay, sizeof (pay));
-
-	return (pkt_add_index(pkt, type, ptr + sizeof (pay),
-	    len - sizeof (pay)));
-}
-
 boolean_t
-pkt_add_payload(pkt_t *pkt, uint8_t ptype, uint8_t resv)
+pkt_add_payload(pkt_t *pkt, uint8_t ptype, uint8_t resv, uint16_t len)
 {
-	ike_payload_t pay = { 0 };
+	ike_payload_t pld = {
+		.pay_next = 0,
+		.pay_reserved = resv,
+		.pay_length = htons(len + sizeof (ike_payload_t))
+	};
 
-	if (pkt_write_left(pkt) < sizeof (pay))
+	VERIFY(!pkt->pkt_done);
+
+	if (pkt_write_left(pkt) < len + sizeof (ike_payload_t))
 		return (B_FALSE);
 
 	/* Special case for first payload */
-	if (pkt->pkt_ptr - (uint8_t *)&pkt->pkt_raw == sizeof (ike_header_t))
+	if (pkt->pkt_payload_count == 0) {
+		VERIFY3U(pkt_len(pkt), ==, sizeof (ike_header_t));
 		pkt->pkt_header.next_payload = (uint8_t)ptype;
+		((ike_header_t *)&pkt->pkt_raw)->next_payload = ptype;
+	} else {
+		pkt_payload_t *pp =
+		    pkt_payload(pkt, pkt->pkt_payload_count - 1);
+		ike_payload_t *payp = ((ike_payload_t *)pp->pp_ptr) - 1;
+		payp->pay_next = ptype;
+	}
 
-	/*
-	 * Otherwise we'll set it when we replace the current top of
-	 * the stack
-	 */
-	pkt_stack_item_t type =
-	    (ptype == IKEV2_PAYLOAD_SA) ? PSI_SA : PSI_PAYLOAD;
-	pkt_stack_push(pkt, type, payload_finish, (uintptr_t)ptype);
-	pay.pay_next = ptype;
-	pay.pay_reserved = resv;
-	PKT_APPEND_STRUCT(pkt, pay);
-	return (B_TRUE);
+	PKT_APPEND_STRUCT(pkt, pld);
+	return (pkt_add_index(pkt, ptype, pkt->pkt_ptr, len));
 }
 
 static boolean_t prop_finish(pkt_t *restrict, uint8_t *restrict, uintptr_t,
@@ -502,15 +480,71 @@ pkt_add_xform_attr_tlv(pkt_t *pkt, uint16_t type, const uint8_t *attrp,
 }
 
 boolean_t
-pkt_add_cert(pkt_t *restrict pkt, uint8_t encoding, const uint8_t *data,
+pkt_add_notify(pkt_t *restrict pkt, uint32_t doi, uint8_t proto,
+    uint8_t spilen, uint64_t spi, uint16_t type, const void *restrict data,
     size_t datalen)
 {
-	if (pkt_write_left(pkt) < 1 + datalen)
+	union {
+		ikev1_notify_t n1;
+		ikev2_notify_t n2;
+	} n;
+	uint8_t *ptr = NULL;
+	size_t len = spilen + datalen;
+
+	if (pkt->pkt_header.version == IKEV1_VERSION) {
+		len += sizeof (ikev1_notify_t);
+
+		if (!pkt_add_payload(pkt, IKEV1_PAYLOAD_NOTIFY, 0, len))
+			return (B_FALSE);
+
+		n.n1.n_doi = htonl(doi);
+		n.n1.n_protoid = proto;
+		n.n1.n_type = htons(type);
+		n.n1.n_spisize = spilen;
+		n.n1.n_type = htons(type);
+		PKT_APPEND_STRUCT(pkt, n.n1);
+	} else if (pkt->pkt_header.version == IKEV2_VERSION) {
+		len += sizeof (ikev2_notify_t);
+
+		if (!pkt_add_payload(pkt, IKEV2_PAYLOAD_NOTIFY, 0, len))
+			return (B_FALSE);
+
+		n.n2.n_protoid = proto;
+		n.n2.n_type = htons(type);
+		n.n2.n_spisize = spilen;
+		n.n2.n_type = htons(type);
+		PKT_APPEND_STRUCT(pkt, n.n2);
+	}
+
+	switch (spilen) {
+	case 0:
+		break;
+	case sizeof (uint32_t):
+		put32(pkt, spi);
+		break;
+	case sizeof (uint64_t):
+		put64(pkt, spi);
+		break;
+	default:
+		INVALID("spilen");
+	}
+
+	ptr = pkt->pkt_ptr;
+	PKT_APPEND_DATA(pkt, data, datalen);
+
+	return (pkt_add_nindex(pkt, spi, doi, proto, type, ptr, datalen));
+}
+
+boolean_t
+pkt_add_cert(pkt_t *restrict pkt, uint8_t paytype, uint8_t encoding,
+    const void *data, size_t datalen)
+{
+	if (!pkt_add_payload(pkt, paytype, 0, datalen + 1))
 		return (B_FALSE);
 
-	*(pkt->pkt_ptr++) = encoding;
-	(void) memcpy(pkt->pkt_ptr, data, datalen);
-	pkt->pkt_ptr += datalen;
+	pkt->pkt_ptr[0] = encoding;
+	pkt_adv_ptr(pkt, 1);
+	PKT_APPEND_DATA(pkt, data, datalen);
 	return (B_TRUE);
 }
 
@@ -548,69 +582,6 @@ pkt_hdr_hton(ike_header_t *restrict dest,
 	dest->exch_type = src->exch_type;
 	dest->flags = src->flags;
 	dest->version = src->version;
-}
-
-/*
- * Move all the payloads over amt to insert a payload at the front of the
- * packet.  Currently used for IKEV2 cookies.
- */
-boolean_t
-pkt_pay_shift(pkt_t *pkt, uint8_t type, size_t num, ssize_t amt)
-{
-	uint8_t *start = pkt_start(pkt) + sizeof (ike_header_t);
-	pkt_payload_t *pay = NULL;
-
-	if (amt > 0 && pkt_write_left(pkt) < amt)
-		return (B_FALSE);
-
-	if (num > 0) {
-		VERIFY3S(amt, >, 0);
-		if (!pkt_add_index(pkt, type, start, (uint16_t)amt))
-			return (B_FALSE);
-	}
-
-	/* Shift the data in the packet */
-	(void) memmove(start + amt, start, pkt_len(pkt));
-
-	/* Adjust index pointers, except for the one we just added */
-	for (uint16_t i = 0; i < pkt->pkt_payload_count - 1; i++) {
-		pay = pkt_payload(pkt, i);
-		pay->pp_ptr += amt;
-	}
-	pkt->pkt_ptr += amt;
-
-	if (num == 0 || pkt->pkt_payload_count == 1)
-		return (B_TRUE);
-
-	pkt_payload_t save = { 0 };
-	pay = pkt_payload(pkt, pkt->pkt_payload_count - 1);
-	save = *pay;
-
-	/* Move indexes over to make room */
-	if (pkt->pkt_payload_count > PKT_PAYLOAD_NUM) {
-		(void) memmove(pkt->pkt_payload_extra + 1,
-		    pkt->pkt_payload_extra,
-		    sizeof (pkt_payload_t) *
-		    (pkt->pkt_payload_count - PKT_PAYLOAD_NUM - 1));
-		(void) memcpy(pkt->pkt_payload_extra,
-		    &pkt->pkt_payloads[PKT_PAYLOAD_NUM - 1],
-		    sizeof (pkt_payload_t));
-	}
-	(void) memmove(pkt->pkt_payloads + 1, pkt->pkt_payloads,
-	    (PKT_PAYLOAD_NUM - 1) * sizeof (pkt_payload_t));
-	pkt->pkt_payloads[0] = save;
-
-	/* Keep the two in sync for sanity's sake */
-	ike_header_t *hdr = (ike_header_t *)pkt_start(pkt);
-	ike_payload_t pld = {
-		.pay_next = pkt->pkt_header.next_payload,
-		.pay_length = (uint16_t)amt
-	};
-	pkt->pkt_header.next_payload = hdr->next_payload = type;
-
-	(void) memcpy(start, &pld, sizeof (pld));
-	pkt->pkt_ptr += amt;
-	return (B_TRUE);
 }
 
 /*
@@ -1068,33 +1039,12 @@ pkt_fini(void)
 	umem_cache_destroy(pkt_cache);
 }
 
-void
-put32(pkt_t *pkt, uint32_t val)
-{
-	ASSERT3U(pkt_write_left(pkt), >=, sizeof (uint32_t));
-	*(pkt->pkt_ptr++) = (uint8_t)((val >> 24) & (uint32_t)0xff);
-	*(pkt->pkt_ptr++) = (uint8_t)((val >> 16) & (uint32_t)0xff);
-	*(pkt->pkt_ptr++) = (uint8_t)((val >> 8) & (uint32_t)0xff);
-	*(pkt->pkt_ptr++) = (uint8_t)(val & (uint32_t)0xff);
-}
-
-void
-put64(pkt_t *pkt, uint64_t val)
-{
-	ASSERT3U(pkt_write_left(pkt), >=, sizeof (uint64_t));
-	*(pkt->pkt_ptr++) = (uint8_t)((val >> 56) & 0xffULL);
-	*(pkt->pkt_ptr++) = (uint8_t)((val >> 48) & 0xffULL);
-	*(pkt->pkt_ptr++) = (uint8_t)((val >> 40) & 0xffULL);
-	*(pkt->pkt_ptr++) = (uint8_t)((val >> 32) & 0xffULL);
-	*(pkt->pkt_ptr++) = (uint8_t)((val >> 24) & 0xffULL);
-	*(pkt->pkt_ptr++) = (uint8_t)((val >> 16) & 0xffULL);
-	*(pkt->pkt_ptr++) = (uint8_t)((val >> 8) & 0xffULL);
-	*(pkt->pkt_ptr++) = (uint8_t)(val & 0xffULL);
-}
-
+extern void put32(pkt_t *, uint32_t);
+extern void put64(pkt_t *, uint64_t);
 extern uint8_t *pkt_start(pkt_t *);
 extern size_t pkt_len(const pkt_t *);
 extern size_t pkt_write_left(const pkt_t *);
 extern size_t pkt_read_left(const pkt_t *, const uint8_t *);
 extern pkt_payload_t *pkt_payload(pkt_t *, uint16_t);
 extern pkt_notify_t *pkt_notify(pkt_t *, uint16_t);
+extern void pkt_adv_ptr(pkt_t *, size_t);
