@@ -264,7 +264,7 @@ ikev2_sa_alloc(boolean_t initiator,
 	cfg = NULL;
 
 	I2SA_REFHOLD(i2sa);	/* for the timer */
-	if (!schedule_timeout(TE_SA_EXPIRE, i2sa_expire_cb, i2sa, expire)) {
+	if (!schedule_timeout(TE_P1_SA_EXPIRE, i2sa_expire_cb, i2sa, expire)) {
 		bunyan_warn(i2sa->i2sa_log, "aborting larval IKEv2 SA creation",
 		    BUNYAN_T_END);
 
@@ -312,6 +312,7 @@ ikev2_sa_flush(void)
 void
 ikev2_sa_condemn(ikev2_sa_t *i2sa)
 {
+	size_t num = 0;
 	I2SA_REFHOLD(i2sa);
 
 	i2sa_unlink(i2sa);
@@ -322,7 +323,7 @@ ikev2_sa_condemn(ikev2_sa_t *i2sa)
 	if (i2sa->last_sent != NULL)
 		cancel_timeout(TE_TRANSMIT, i2sa->last_sent, i2sa->i2sa_log);
 
-	if (cancel_timeout(TE_SA_EXPIRE, i2sa, i2sa->i2sa_log) > 0)
+	if (cancel_timeout(TE_P1_SA_EXPIRE, i2sa, i2sa->i2sa_log) > 0)
 		I2SA_REFRELE(i2sa);
 
 	/*

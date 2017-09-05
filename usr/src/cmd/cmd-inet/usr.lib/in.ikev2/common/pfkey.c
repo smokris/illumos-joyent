@@ -38,9 +38,10 @@
 #include <note.h>
 #include <atomic.h>
 #include <pthread.h>
+#include <sys/list.h>
 #include <sys/stropts.h>	/* For I_NREAD */
-#include <libuutil.h>
 #include <bunyan.h>
+#include <ucontext.h>
 
 #include "defs.h"
 #include "ikev2.h"
@@ -50,17 +51,16 @@
 
 struct pfreq;
 typedef struct pfreq {
-	uu_list_node_t	pr_node;
+	list_node_t	pr_node;
 	pfreq_cb_t	*pr_cb;
 	void		*pr_data;
 	uint32_t	pr_msgid;
 } pfreq_t;
 
 static bunyan_logger_t	*pflog;
-static uu_list_pool_t	*pfreq_pool;
 static umem_cache_t	*pfreq_cache;
 static pthread_mutex_t	pfreq_lock = PTHREAD_MUTEX_INITIALIZER;
-static uu_list_t	*pfreq_list;
+static list_t		pfreq_list;
 
 /* PF_KEY socket. */
 int pfkey;
@@ -78,6 +78,9 @@ static void handle_flush(sadb_msg_t *);
 static void handle_expire(sadb_msg_t *);
 static void handle_acquire(sadb_msg_t *, boolean_t);
 static void handle_register(sadb_msg_t *);
+
+static void sadb_log(bunyan_logger_t *restrict, bunyan_level_t,
+    const char *restrict, sadb_msg_t *restrict);
 
 #if 0
 static ikev2_pay_sa_t *convert_acquire(parsedmsg_t *);
@@ -244,8 +247,6 @@ pfkey_inbound(int s, void *arg)
 
 	if (ioctl(s, I_NREAD, &length) < 0) {
 		STDERR(error, log, "ioctl(I_NREAD) failed");
-
-		/* XXX KEBE ASKS - will we rapidly return at this point? */
 		schedule_socket(s, pfkey_inbound);
 		return;
 	}
@@ -256,14 +257,13 @@ pfkey_inbound(int s, void *arg)
 		    BUNYAN_T_STRING, "file", __FILE__,
 		    BUNYAN_T_INT32, "line", __LINE__,
 		    BUNYAN_T_END);
-		/* XXX KEBE ASKS - will we rapidly return at this point? */
 		schedule_socket(s, pfkey_inbound);
 		return;
 	}
 
 	samsg = malloc(length);
 	if (samsg == NULL) {
-		STDERR(error, log, "malloc failure");
+		bunyan_error(log, "No memory for pfkey message", BUNYAN_T_END);
 		schedule_socket(s, pfkey_inbound);
 		return;
 	}
@@ -272,10 +272,9 @@ pfkey_inbound(int s, void *arg)
 	if (rc <= 0) {
 		if (rc == -1) {
 			STDERR(error, log, "read failed");
-			/* Should I exit()? */
+			/* XXX: Should I exit()? */
 		}
 		free(samsg);
-		/* XXX KEBE ASKS - will we rapidly return at this point? */
 		schedule_socket(s, pfkey_inbound);
 		return;
 	}
@@ -283,21 +282,7 @@ pfkey_inbound(int s, void *arg)
 	/* At this point, we can safely re-schedule the socket for reading. */
 	schedule_socket(s, pfkey_inbound);
 
-	bunyan_debug(log, "SADB message received",
-	    BUNYAN_T_STRING, "msg_type", pfkey_type(samsg->sadb_msg_type),
-	    BUNYAN_T_UINT32, "msg_type_val", (uint32_t)samsg->sadb_msg_type,
-	    BUNYAN_T_STRING, "sa_type", pfkey_satype(samsg->sadb_msg_satype),
-	    BUNYAN_T_UINT32, "sa_type_val", (uint32_t)samsg->sadb_msg_satype,
-	    BUNYAN_T_UINT32, "msg_pid", samsg->sadb_msg_pid,
-	    BUNYAN_T_UINT32, "msg_seq", samsg->sadb_msg_seq,
-	    BUNYAN_T_UINT32, "msg_errno_val", (uint32_t)samsg->sadb_msg_errno,
-	    BUNYAN_T_STRING, "msg_errno", strerror(samsg->sadb_msg_errno),
-	    BUNYAN_T_UINT32, "msg_diagnostic_val",
-	    (uint32_t)samsg->sadb_x_msg_diagnostic,
-	    BUNYAN_T_UINT32, "msg_diagnostic",
-	    keysock_diag(samsg->sadb_x_msg_diagnostic),
-	    BUNYAN_T_UINT32, "length", (uint32_t)samsg->sadb_msg_len,
-	    BUNYAN_T_END);
+	sadb_log(log, BUNYAN_L_DEBUG, "SADB message received", samsg);
 
 	/*
 	 * XXX KEBE SAYS for now don't print the full inbound message.  An
@@ -316,7 +301,7 @@ pfkey_inbound(int s, void *arg)
 	 * Silently pitch the message if it's an error reply to someone else.
 	 */
 	if (samsg->sadb_msg_errno != 0) {
-		bunyan_debug(log, "reply not for us, dropped", BUNYAN_T_END);
+		bunyan_debug(log, "Reply not for us, dropped", BUNYAN_T_END);
 		free(samsg);
 		return;
 	}
@@ -347,7 +332,7 @@ pfkey_inbound(int s, void *arg)
 		handle_register(samsg);
 		/*
 		 * Explicitly free it here because handle_register() is also
-		 * called from pf_key_init(), which has samsg on the stack
+		 * called from pfkey_init(), which has samsg on the stack
 		 * instead.
 		 */
 		free(samsg);
@@ -370,7 +355,6 @@ boolean_t
 pfkey_send_msg(sadb_msg_t *msg, pfreq_cb_t *cb, void *data)
 {
 	pfreq_t *req;
-	uu_list_index_t idx;
 	ssize_t n;
 
 	req = pfreq_new(cb, data);
@@ -379,6 +363,11 @@ pfkey_send_msg(sadb_msg_t *msg, pfreq_cb_t *cb, void *data)
 
 	msg->sadb_msg_seq = req->pr_msgid;
 	msg->sadb_msg_pid = getpid();
+
+	PTH(pthread_mutex_lock(&pfreq_lock));
+	list_insert_tail(&pfreq_list, req);
+	PTH(pthread_mutex_unlock(&pfreq_lock));
+
 	n = write(pfkey, msg, msg->sadb_msg_len);
 	if (n != msg->sadb_msg_len) {
 		if (n < 0) {
@@ -388,15 +377,14 @@ pfkey_send_msg(sadb_msg_t *msg, pfreq_cb_t *cb, void *data)
 			    BUNYAN_T_UINT32, "n", (uint32_t)n,
 			    BUNYAN_T_END);
 		}
+
+		PTH(pthread_mutex_lock(&pfreq_lock));
+		list_remove(&pfreq_list, req);
+		PTH(pthread_mutex_unlock(&pfreq_lock));
+
 		pfreq_free(req);
 		return (B_FALSE);
 	}
-
-	(void) pthread_mutex_lock(&pfreq_lock);
-
-	(void) uu_list_find(pfreq_list, req, NULL, &idx);
-	uu_list_insert(pfreq_list, req, idx);
-	(void) pthread_mutex_unlock(&pfreq_lock);
 
 	return (B_TRUE);
 }
@@ -430,34 +418,29 @@ pfkey_send_error(const sadb_msg_t *src, uint8_t reason)
 static void
 handle_reply(sadb_msg_t *reply)
 {
-	pfreq_t *req;
-	uu_list_index_t idx;
+	pfreq_t *req = NULL;
 
 	PTH(pthread_mutex_lock(&pfreq_lock));
-	req = uu_list_find(pfreq_list, NULL, reply, &idx);
+
+	req = list_head(&pfreq_list);
+	while (req != NULL && req->pr_msgid != reply->sadb_msg_seq)
+		req = list_next(&pfreq_list, req);
+
 	if (req != NULL)
-		uu_list_remove(pfreq_list, req);
+		list_remove(&pfreq_list, req);
 	PTH(pthread_mutex_unlock(&pfreq_lock));
 
 	if (req == NULL) {
-		/* XXX: log more fields? */
-		bunyan_info(pflog, "Received a reply to an unknown request; "
-		    "ignorning.",
-		    BUNYAN_T_STRING, "msg_type",
-		    pfkey_satype(reply->sadb_msg_type),
-		    BUNYAN_T_UINT32, "msg_type_val",
-		    (uint32_t)reply->sadb_msg_type,
-		    BUNYAN_T_INT32, "pid", reply->sadb_msg_pid,
-		    BUNYAN_T_UINT32, "seq", reply->sadb_msg_seq,
-		    BUNYAN_T_END);
+		sadb_log(pflog, BUNYAN_L_INFO,
+		    "Received a reply to an unknown request", reply);
 		free(reply);
 		return;
 	}
 
 #if 0
 	req->pr_cb(reply, req->pr_data);
-	pfreq_free(req);
 #endif
+	pfreq_free(req);
 
 	switch (reply->sadb_msg_type) {
 	case SADB_ACQUIRE:
@@ -621,39 +604,14 @@ handle_acquire(sadb_msg_t *samsg, boolean_t create_child_sa)
 }
 
 static int
-pfreq_compare(const void *l_arg, const void *r_arg, void *msg_arg)
-{
-	const pfreq_t *l = l_arg;
-	const pfreq_t *r = r_arg;
-	sadb_msg_t *msg = msg_arg;
-	uint32_t msgid;
-	
-	ASSERT((r != NULL && msg == NULL) || (r == NULL && msg != NULL));
-
-	if (r != NULL)
-		msgid = r->pr_msgid;
-	else
-		msgid = msg->sadb_msg_seq;
-
-	if (l->pr_msgid < msgid)
-		return (-1);
-	if (l->pr_msgid > msgid)
-		return (1);
-	if (r == NULL)
-		return (0);
-
-	if (l->pr_data < r->pr_data)
-		return (-1);
-	if (l->pr_data > r->pr_data)
-		return (1);
-	return (0);
-}
-
-static int
 pfreq_ctor(void *buf, void *ignore, int flags)
 {
 	_NOTE(ARGUNUSED(ignore, flags))
+
+	pfreq_t *req = buf;
+
 	(void) memset(buf, 0, sizeof (pfreq_t));
+	list_link_init(&req->pr_node);
 	return (0);
 }
 
@@ -730,21 +688,33 @@ pfkey_register(uint8_t satype)
 	handle_register(samsg);
 }
 
+static void
+sadb_log(bunyan_logger_t *restrict blog, bunyan_level_t level,
+    const char *restrict msg, sadb_msg_t *restrict samsg)
+{
+	getlog(level)(blog, msg,
+	    BUNYAN_T_STRING, "msg_type", pfkey_type(samsg->sadb_msg_type),
+	    BUNYAN_T_UINT32, "msg_type_val", (uint32_t)samsg->sadb_msg_type,
+	    BUNYAN_T_STRING, "sa_type", pfkey_satype(samsg->sadb_msg_satype),
+	    BUNYAN_T_UINT32, "sa_type_val", (uint32_t)samsg->sadb_msg_satype,
+	    BUNYAN_T_UINT32, "msg_pid", samsg->sadb_msg_pid,
+	    BUNYAN_T_UINT32, "msg_seq", samsg->sadb_msg_seq,
+	    BUNYAN_T_UINT32, "msg_errno_val", (uint32_t)samsg->sadb_msg_errno,
+	    BUNYAN_T_STRING, "msg_errno", strerror(samsg->sadb_msg_errno),
+	    BUNYAN_T_UINT32, "msg_diagnostic_val",
+	    (uint32_t)samsg->sadb_x_msg_diagnostic,
+	    BUNYAN_T_UINT32, "msg_diagnostic",
+	    keysock_diag(samsg->sadb_x_msg_diagnostic),
+	    BUNYAN_T_UINT32, "length", (uint32_t)samsg->sadb_msg_len,
+	    BUNYAN_T_END);
+}
+
 void
 pfkey_init(void)
 {
-	uint32_t flag = 0;
 	int rc;
 
-#ifdef DEBUG
-	flag |= UU_LIST_POOL_DEBUG;
-#endif
-
-	pfreq_pool = uu_list_pool_create("pfreq_list", sizeof (pfreq_t),
-	    offsetof(pfreq_t, pr_node), pfreq_compare, flag);
-	if (pfreq_pool == NULL)
-		errx(EXIT_FAILURE, "Unable to create pfreq list pool: %s",
-		    uu_strerror(uu_error()));
+	list_create(&pfreq_list, sizeof (pfreq_t), offsetof (pfreq_t, pr_node));
 
 	pfreq_cache = umem_cache_create("pfreq cache", sizeof (pfreq_t),
 	    sizeof (uint64_t), pfreq_ctor, NULL, NULL, NULL, NULL, 0);

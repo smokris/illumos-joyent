@@ -42,11 +42,10 @@ extern "C" {
 #endif
 
 typedef enum {
-	TE_TEST = -1,   /* For code testing only, arg == NULL */
-	TE_ANY,		/* MUST NOT be passed to schedule_timeout() */
-	TE_SA_EXPIRE,   /* SA expiration */
-	TE_TRANSMIT,    /* Transmit timeout */
-	TE_PFKEY	/* pfkey timeout */
+	TE_ANY,			/* MUST NOT be passed to schedule_timeout() */
+	TE_P1_SA_EXPIRE,	/* Larval SA expiration */
+	TE_TRANSMIT,		/* Transmit timeout */
+	TE_PFKEY		/* pfkey timeout */
 } te_event_t;
 
 typedef void (*tevent_cb_fn)(te_event_t, void *);

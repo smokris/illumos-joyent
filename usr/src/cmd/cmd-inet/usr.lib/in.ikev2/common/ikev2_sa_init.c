@@ -153,9 +153,10 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 
 fail:
 	sa->init_r = NULL;
+	ikev2_sa_condemn(sa);
 	ikev2_pkt_free(pkt);
 	ikev2_pkt_free(resp);
-	/* XXX: Delete larval IKE SA? anything else? */
+	/* XXX: Anything else? */
 }
 
 /*
@@ -175,11 +176,11 @@ redo_init(pkt_t *pkt)
 	if (cookie == NULL && invalid_ke == NULL)
 		return (B_FALSE);
 
-	pkt_t *out = pkt->pkt_sa->init_i;
+	pkt_t *out = sa->init_i;
 	pkt_payload_t *nonce = pkt_get_payload(out, IKEV2_PAYLOAD_NONCE, NULL);
 	ikev2_dh_t dh = IKEV2_DH_NONE;
 
-	pkt->pkt_sa->init_i = NULL;
+	sa->init_i = NULL;
 
 	if (invalid_ke != NULL) {
 		if (invalid_ke->pn_len != sizeof (uint16_t)) {
@@ -205,6 +206,7 @@ redo_init(pkt_t *pkt)
 	ikev2_sa_init_outbound(sa, cookie->pn_ptr, cookie->pn_len,
 	    dh, nonce->pp_ptr, nonce->pp_len);
 
+	ikev2_pkt_free(pkt);
 	ikev2_pkt_free(out);
 	return (B_TRUE);
 }
@@ -223,8 +225,8 @@ ikev2_sa_init_inbound_resp(pkt_t *pkt)
 		bunyan_error(sa->i2sa_log,
 		    "IKE_SA_INIT exchange failed, no proposal chosen",
 		    BUNYAN_T_END);
+		ikev2_sa_condemn(sa);
 		ikev2_pkt_free(pkt);
-		/* XXX: delete larval IKE SA */
 		return;
 	}
 
@@ -240,9 +242,11 @@ ikev2_sa_init_inbound_resp(pkt_t *pkt)
 		/*
 		 * XXX: Tried to send back something that wasn't in the propsals
 		 * we sent.  What should we do?  Just destroy the IKE SA?
-		 * Ignore?
+		 * Ignore?  For now ignore and hope a valid answer comes
+		 * back before we timeout.
 		 */
-		goto fail;
+		ikev2_pkt_free(pkt);
+		return;
 	}
 
 	if (!dh_derivekey(sa->dh_privkey, ke_r->pp_ptr, ke_r->pp_len,
@@ -251,10 +255,13 @@ ikev2_sa_init_inbound_resp(pkt_t *pkt)
 	if (!ikev2_sa_keygen(&sa_result, sa->init_i, pkt))
 		goto fail;
 
+	sa->init_r = pkt;
 	return;
+
 fail:
-	/* XXX: destroy IKE SA? */
-	;
+	ikev2_sa_condemn(sa);
+	ikev2_pkt_free(pkt);
+	/* XXX: Anything else? */
 }
 
 /*
@@ -310,8 +317,8 @@ ikev2_sa_init_outbound(ikev2_sa_t *restrict i2sa, uint8_t *restrict cookie,
 
 fail:
 	i2sa->init_i = NULL;
+	ikev2_sa_condemn(i2sa);
 	ikev2_pkt_free(pkt);
-	/* XXX: destroy SA? */
 }
 
 static boolean_t

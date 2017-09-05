@@ -292,9 +292,8 @@ te_str(te_event_t te)
 {
 #define	STR(x) case x: return (#x)
 	switch (te) {
-	STR(TE_TEST);
 	STR(TE_ANY);
-	STR(TE_SA_EXPIRE);
+	STR(TE_P1_SA_EXPIRE);
 	STR(TE_TRANSMIT);
 	STR(TE_PFKEY);
 	}
