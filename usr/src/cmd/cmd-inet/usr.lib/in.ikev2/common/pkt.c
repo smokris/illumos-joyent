@@ -42,8 +42,6 @@
 static umem_cache_t	*pkt_cache;
 
 static size_t pkt_item_rank(pkt_stack_item_t);
-static boolean_t pkt_finish(pkt_t *restrict, uint8_t *restrict, uintptr_t,
-    size_t);
 static int pkt_reset(void *);
 
 pkt_t *
@@ -60,25 +58,47 @@ pkt_out_alloc(uint64_t i_spi, uint64_t r_spi, uint8_t version,
 	pkt->pkt_header.version = version;
 	pkt->pkt_header.exch_type = exch_type;
 	pkt->pkt_header.msgid = msgid;
-	pkt_stack_push(pkt, PSI_PACKET, pkt_finish, 0);
 
 	pkt_hdr_hton((ike_header_t *)pkt->pkt_raw, &pkt->pkt_header);
 	pkt_adv_ptr(pkt, sizeof (ike_header_t));
 	return (pkt);
 }
 
-static boolean_t
-pkt_finish(pkt_t *restrict pkt, uint8_t *restrict ptr, uintptr_t swaparg,
-    size_t numpay)
+/*
+ * Allocate an pkt_t for an inbound packet, populate the local byte order
+ * header, and cache the location of the payloads in the payload field.
+ */
+pkt_t *
+pkt_in_alloc(uint8_t *restrict buf, size_t buflen, bunyan_logger_t *restrict l)
 {
-	NOTE(ARGUNUSED(swaparg, numpay))
+	ike_header_t *hdr = (ike_header_t *)buf;
+	pkt_t *pkt = NULL;
+	uint8_t first;
 
-	ike_header_t *rawhdr;
+	/* If inbound checks didn't catch these, it's a bug */
+	VERIFY3U(buflen, >=, sizeof (ike_header_t));
+	VERIFY3U(buflen, ==, ntohl(hdr->length));
+	VERIFY3U(buflen, <=, MAX_PACKET_SIZE);
 
-	rawhdr = (ike_header_t *)ptr;
-	pkt->pkt_header.length = pkt_len(pkt);
-	pkt_hdr_hton(rawhdr, &pkt->pkt_header);
-	return (B_TRUE);
+	first = hdr->next_payload;
+	buf += sizeof (*hdr);
+	buflen -= sizeof (*hdr);
+
+	if ((pkt = umem_cache_alloc(pkt_cache, UMEM_DEFAULT)) == NULL) {
+		STDERR(error, l, "umem_cache_alloc failed");
+		return (NULL);
+	}
+
+	(void) memcpy(&pkt->pkt_raw, buf, buflen);
+	pkt_hdr_ntoh(&pkt->pkt_header, (const ike_header_t *)&pkt->pkt_raw);
+	pkt->pkt_ptr += buflen;
+
+	if (!pkt_index_payloads(pkt, pkt_start(pkt), pkt_len(pkt), first, l)) {
+		pkt_free(pkt);
+		return (NULL);
+	}
+
+	return (pkt);
 }
 
 struct index_data {
@@ -279,43 +299,6 @@ pkt_add_nindex(pkt_t *pkt, uint64_t spi, uint32_t doi, uint8_t proto,
 	return (B_TRUE);
 }
 
-/*
- * Allocate an pkt_t for an inbound packet, populate the local byte order
- * header, and cache the location of the payloads in the payload field.
- */
-pkt_t *
-pkt_in_alloc(uint8_t *restrict buf, size_t buflen, bunyan_logger_t *restrict l)
-{
-	ike_header_t *hdr = (ike_header_t *)buf;
-	pkt_t *pkt = NULL;
-	uint8_t first;
-
-	/* If inbound checks didn't catch these, it's a bug */
-	VERIFY3U(buflen, >=, sizeof (ike_header_t));
-	VERIFY3U(buflen, ==, ntohl(hdr->length));
-	VERIFY3U(buflen, <=, MAX_PACKET_SIZE);
-
-	first = hdr->next_payload;
-	buf += sizeof (*hdr);
-	buflen -= sizeof (*hdr);
-
-	if ((pkt = umem_cache_alloc(pkt_cache, UMEM_DEFAULT)) == NULL) {
-		STDERR(error, l, "umem_cache_alloc failed");
-		return (NULL);
-	}
-
-	(void) memcpy(&pkt->pkt_raw, buf, buflen);
-	pkt_hdr_ntoh(&pkt->pkt_header, (const ike_header_t *)&pkt->pkt_raw);
-	pkt->pkt_ptr += buflen;
-
-	if (!pkt_index_payloads(pkt, pkt_start(pkt), pkt_len(pkt), first, l)) {
-		pkt_free(pkt);
-		return (NULL);
-	}
-
-	return (pkt);
-}
-
 boolean_t
 pkt_add_payload(pkt_t *pkt, uint8_t ptype, uint8_t resv, uint16_t len)
 {
@@ -346,6 +329,28 @@ pkt_add_payload(pkt_t *pkt, uint8_t ptype, uint8_t resv, uint16_t len)
 	return (pkt_add_index(pkt, ptype, pkt->pkt_ptr, len));
 }
 
+boolean_t
+pkt_add_sa(pkt_t *restrict pkt, pkt_sa_state_t *restrict pss)
+{
+	ike_payload_t *payp = (ike_payload_t *)pkt->pkt_ptr;
+	boolean_t ok;
+
+	if (pkt->pkt_header.version == IKEV1_VERSION)
+		ok = pkt_add_payload(pkt, IKEV1_PAYLOAD_SA, 0, 0);
+	else
+		ok = pkt_add_payload(pkt, IKEV2_PAYLOAD_SA, 0, 0);
+
+	if (!ok)
+		return (B_FALSE);
+
+	(void) memset(pss, 0, sizeof (*pss));
+	pss->pss_pkt = pkt;
+	pss->pss_lenp = &payp->pay_length;
+	pss->pss_pld = pkt_payload(pkt, pkt->pkt_payload_count - 1);
+
+	return (B_TRUE);
+}
+
 static boolean_t prop_finish(pkt_t *restrict, uint8_t *restrict, uintptr_t,
     size_t);
 
@@ -364,21 +369,9 @@ pkt_add_prop(pkt_t *pkt, uint8_t propnum, uint8_t proto, size_t spilen,
 	prop.prop_num = propnum;
 	prop.prop_proto = (uint8_t)proto;
 	prop.prop_spilen = spilen;
-	PKT_APPEND_STRUCT(pkt, prop);
 
-	switch (spilen) {
-	case sizeof (uint32_t):
-		VERIFY3U(spi, <=, UINT_MAX);
-		put32(pkt, (uint32_t)spi);
-		break;
-	case sizeof (uint64_t):
-		put64(pkt, spi);
-		break;
-	case 0:
-		break;
-	default:
-		INVALID(spilen);
-	}
+	PKT_APPEND_STRUCT(pkt, prop);
+	VERIFY(pkt_add_spi(pkt, spilen, spi));
 
 	return (B_TRUE);
 }
@@ -516,19 +509,7 @@ pkt_add_notify(pkt_t *restrict pkt, uint32_t doi, uint8_t proto,
 		PKT_APPEND_STRUCT(pkt, n.n2);
 	}
 
-	switch (spilen) {
-	case 0:
-		break;
-	case sizeof (uint32_t):
-		put32(pkt, spi);
-		break;
-	case sizeof (uint64_t):
-		put64(pkt, spi);
-		break;
-	default:
-		INVALID("spilen");
-	}
-
+	VERIFY(pkt_add_spi(pkt, spilen, spi));
 	ptr = pkt->pkt_ptr;
 	PKT_APPEND_DATA(pkt, data, datalen);
 
@@ -990,6 +971,28 @@ pkt_get_notify(pkt_t *pkt, int type, pkt_notify_t *start)
 			return (n);
 	}
 	return (NULL);
+}
+
+boolean_t
+pkt_add_spi(pkt_t *pkt, size_t spilen, uint64_t spi)
+{
+	if (pkt_write_left(pkt) < spilen)
+		return (B_FALSE);
+
+	switch (spilen) {
+	case sizeof (uint32_t):
+		VERIFY3U(spi, <=, UINT_MAX);
+		put32(pkt, (uint32_t)spi);
+		break;
+	case sizeof (uint64_t):
+		put64(pkt, spi);
+		break;
+	case 0:
+		break;
+	default:
+		INVALID(spilen);
+	}
+	return (B_TRUE);
 }
 
 static int

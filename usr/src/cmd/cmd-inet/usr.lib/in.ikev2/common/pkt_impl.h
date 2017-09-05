@@ -62,6 +62,8 @@ boolean_t pkt_add_notify(pkt_t *restrict, uint32_t, uint8_t, uint8_t,
 boolean_t pkt_add_cert(pkt_t *restrict, uint8_t, uint8_t,
     const void *restrict, size_t);
 
+boolean_t pkt_add_spi(pkt_t *, size_t, uint64_t);
+
 #ifdef __cplusplus
 }
 #endif

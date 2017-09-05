@@ -48,7 +48,7 @@ extern "C" {
 	## __VA_ARGS__,							\
 	BUNYAN_T_END)
 
-typedef enum encr_mode {
+typedef enum encr_mode_e {
 	MODE_NONE,
 	MODE_CBC,
 	MODE_CTR,
@@ -56,6 +56,33 @@ typedef enum encr_mode {
 	MODE_GCM
 } encr_modes_t;
 #define	MODE_IS_COMBINED(m) ((m) == MODE_CCM || (m) == MODE_GCM)
+
+typedef struct encr_data_s {
+	CK_MECHANISM_TYPE	ed_p11id;
+	const char		*ed_name;
+	encr_modes_t		ed_mode;
+	size_t			ed_keymin;
+	size_t			ed_keymax;
+	size_t			ed_keyincr;
+	size_t			ed_keydefault;
+	size_t			ed_blocklen;
+	size_t			ed_ivlen;
+	size_t			ed_icvlen;	/* For combined modes */
+	size_t			ed_saltlen;	/* For combined modes */
+} encr_data_t;
+#define	ENCR_KEYLEN_REQ(e)	((e)->ed_keydefault == 0)
+#define	ENCR_KEYLEN_ALLOWED(e)	(!((e)->ed_keymin == (e)->ed_keymax))
+
+typedef struct auth_data_s {
+	CK_MECHANISM_TYPE	ad_p11id;
+	const char		*ad_name;
+	size_t			ad_keylen;
+	size_t			ad_outlen;
+	size_t			ad_icvlen;
+} auth_data_t;
+
+extern encr_data_t encr_data[];
+extern auth_data_t auth_data[];
 
 extern CK_INFO pkcs11_info;
 
@@ -65,13 +92,8 @@ void pkcs11_fini(void);
 CK_SESSION_HANDLE p11h(void);
 void pkcs11_destroy_obj(const char *, CK_OBJECT_HANDLE_PTR, bunyan_logger_t *);
 
-CK_MECHANISM_TYPE ikev2_encr_to_p11(ikev2_xf_encr_t);
 encr_modes_t ikev2_encr_mode(ikev2_xf_encr_t);
-size_t ikev2_encr_block_size(ikev2_xf_encr_t);
-size_t ikev2_encr_iv_size(ikev2_xf_encr_t);
-size_t ikev2_encr_keylen(ikev2_xf_encr_t, size_t);
 size_t ikev2_auth_keylen(ikev2_xf_auth_t);
-size_t ikev2_encr_saltlen(ikev2_xf_encr_t);
 
 CK_MECHANISM_TYPE ikev2_auth_to_p11(ikev2_xf_auth_t);
 size_t ikev2_auth_icv_size(ikev2_xf_encr_t, ikev2_xf_auth_t);

@@ -63,6 +63,66 @@ static CK_RV pkcs11_callback_handler(CK_SESSION_HANDLE, CK_NOTIFICATION,
 static void log_slotinfo(CK_SLOT_ID);
 
 /*
+ * Entries with 0 for the PKCS#11 mechanism are ones that aren't supported
+ * by PKCS#11, so their values aren't used beyond the stringified name.
+ */
+encr_data_t encr_data[IKEV2_ENCR_MAX + 1] = {
+	/* p11, desc, mode, min, max, incr, default, blocksz, iv, icv */
+	{ 0, "NONE", MODE_NONE, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ CKM_DES_CBC, "DES_IV64", MODE_CBC, 8, 8, 0, 8, 8, 8, 0, 0 },
+	{ CKM_DES_CBC, "DES", MODE_CBC, 8, 8, 0, 8, 8, 8, 0, 0 },
+	{ CKM_DES3_CBC, "3DES", MODE_CBC, 24, 24, 0, 24, 8, 8, 0, 0 },
+	{ CKM_RC5_CBC, "RC5", MODE_CBC, 5, 255, 1, 16, 8, 8, 0, 0 },
+	{ CKM_IDEA_CBC, "IDEA", MODE_CBC, 16, 16, 0, 16, 8, 8, 0, 0 },
+	{ CKM_CAST5_CBC, "CAST", MODE_CBC, 5, 16, 1, 16, 8, 8, 0, 0 },
+	{ CKM_BLOWFISH_CBC, "BLOWFISH", MODE_CBC, 5, 56, 1, 16, 8, 8, 0, 0 },
+	{ 0, "3IDEA", MODE_CBC, 16, 16, 0, 16, 8, 8, 0, 0 },
+	{ CKM_DES_CBC, "DES_IV32", MODE_CBC, 8, 8, 0, 8, 8, 4, 0, 0 },
+	{ CKM_RC4, "RC4", MODE_CBC, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ CKM_AES_CBC, "AES_CBC", MODE_CBC, 16, 32, 8, 0, 16, 16, 0, 0 },
+	{ CKM_AES_CTR, "AES_CTR", MODE_CTR, 16, 32, 8, 0, 16, 16, 0, 0 },
+	{ CKM_AES_CCM, "AES_CCM_8", MODE_CCM, 16, 32, 8, 0, 16, 16, 8, 3 },
+	{ CKM_AES_CCM, "AES_CCM_12", MODE_CCM, 16, 32, 8, 0, 16, 16, 12, 3 },
+	{ CKM_AES_CCM, "AES_CCM_12", MODE_CCM, 16, 32, 8, 0, 16, 16, 16, 3 },
+	{ CKM_AES_GCM, "AES_GCM_8", MODE_GCM, 16, 32, 8, 0, 16, 16, 8, 4 },
+	{ CKM_AES_GCM, "AES_GCM_12", MODE_GCM, 16, 32, 8, 0, 16, 16, 12, 4 },
+	{ CKM_AES_GCM, "AES_GCM_16", MODE_GCM, 16, 32, 8, 0, 16, 16, 16, 4 },
+	{ 0, "NULL_AES_GMAC", MODE_NONE, 16, 32, 8, 0, 16, 16, 16, 0 },
+	{ 0, "AES_XTS_AES", MODE_NONE, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ CKM_CAMELLIA_CBC, "CAMELLIA_CBC", MODE_CBC,
+	    16, 32, 8, 0, 16, 16, 0, 0 },
+	{ CKM_CAMELLIA_CTR, "CAMELLIA_CTR", MODE_CTR,
+	    16, 32, 8, 0, 16, 16, 0, 0 },
+	{ 0, "CAMELLIA_CCM_8", MODE_CCM, 16, 32, 8, 0, 16, 16, 8, 3 },
+	{ 0, "CAMELLIA_CCM_12", MODE_CCM, 16, 32, 8, 0, 16, 16, 12, 3 },
+	{ 0, "CAMELLIA_CCM_16", MODE_CCM, 16, 32, 8, 0, 16, 16, 16, 3 },
+};
+
+auth_data_t auth_data[] = {
+	{ 0, "NONE", 0, 0, 0 },
+	{ CKM_MD5_HMAC, "HMAC_MD5_96", 16, 16, 12 },
+	{ CKM_SHA_1_HMAC, "HMAC_SHA1_96", 20, 20, 12 },
+	{ CKM_DES_MAC, "DES_MAC", 0, 0, 0 },
+	{ 0, "KPDK_MD5", 0, 0, 0 },
+	{ CKM_AES_XCBC_MAC_96, "AES_XCBC_96", 16, 16, 12 },
+	{ CKM_MD5_HMAC, "HMAC_MD5_128", 16, 16, 16 },
+	{ CKM_SHA_1_HMAC, "HMAC_SHA1_160", 20, 20, 20 },
+	{ CKM_AES_CMAC, "AES_CMAC_96", 16, 16, 12 },
+
+	/*
+ 	 * These three aren't specified for IKE, just AH and ESP, so
+ 	 * their key length, etc. aren't needed.
+ 	 */
+	{ CKM_AES_GMAC, "AES_128_GMAC", 16, 0, 0 },
+	{ CKM_AES_GMAC, "AES_192_GMAC", 24, 0, 0 },
+	{ CKM_AES_GMAC, "AES_256_GMAC", 32, 0, 0 },
+
+	{ CKM_SHA256_HMAC, "HMAC_SHA2_256_128", 32, 32, 16 },
+	{ CKM_SHA384_HMAC, "HMAC_SHA2_384_192", 48, 48, 24 },
+	{ CKM_SHA512_HMAC, "HMAC_SHA2_512_256", 64, 64, 32 },
+};
+
+/*
  * Locates the metaslot among the available slots.  If the metaslot
  * is inable to be located, we terminate.
  */
@@ -252,126 +312,6 @@ pkcs11_fini(void)
 		PKCS11ERR(error, log, "C_Finalize", rv);
 }
 
-size_t
-ikev2_encr_keylen(ikev2_xf_encr_t encr, size_t keylen)
-{
-	/* TODO */
-	return (0);
-}
-
-/*
- * We explicitly avoid using the default: case in these switch statements
- * so that the addition of new IKEv2 encryption algs will cause compilation
- * errors if they are not added to these functions.
- */
-CK_MECHANISM_TYPE
-ikev2_encr_to_p11(ikev2_xf_encr_t encr)
-{
-	switch (encr) {
-	case IKEV2_ENCR_NONE:
-	case IKEV2_ENCR_NULL_AES_GMAC:
-	case IKEV2_ENCR_NULL:
-	case IKEV2_ENCR_3IDEA:
-	case IKEV2_ENCR_XTS_AES:
-		INVALID("encr");
-		/*NOTREACHED*/
-		return (0);
-	case IKEV2_ENCR_DES_IV64:
-	case IKEV2_ENCR_DES:
-	case IKEV2_ENCR_DES_IV32:
-		return (CKM_DES_CBC);
-	case IKEV2_ENCR_3DES:
-		return (CKM_DES3_CBC);
-	case IKEV2_ENCR_RC5:
-		return (CKM_RC5_CBC);
-	case IKEV2_ENCR_IDEA:
-		return (CKM_IDEA_CBC);
-	case IKEV2_ENCR_CAST:
-		return (CKM_CAST5_CBC);
-	case IKEV2_ENCR_BLOWFISH:
-		return (CKM_BLOWFISH_CBC);
-	case IKEV2_ENCR_RC4:
-		return (CKM_RC4);
-	case IKEV2_ENCR_AES_CBC:
-		return (CKM_AES_CBC);
-	case IKEV2_ENCR_AES_CTR:
-		return (CKM_AES_CTR);
-	case IKEV2_ENCR_AES_CCM_8:
-	case IKEV2_ENCR_AES_CCM_12:
-	case IKEV2_ENCR_AES_CCM_16:
-		return (CKM_AES_CCM);
-	case IKEV2_ENCR_AES_GCM_8:
-	case IKEV2_ENCR_AES_GCM_12:
-	case IKEV2_ENCR_AES_GCM_16:
-		return (CKM_AES_GCM);
-	case IKEV2_ENCR_CAMELLIA_CBC:
-		return (CKM_CAMELLIA_CBC);
-	case IKEV2_ENCR_CAMELLIA_CTR:
-		return (CKM_CAMELLIA_CTR);
-	case IKEV2_ENCR_CAMELLIA_CCM_8:
-	case IKEV2_ENCR_CAMELLIA_CCM_12:
-	case IKEV2_ENCR_CAMELLIA_CCM_16:
-		return (CKM_CAMELLIA_CBC);
-	}
-	/*NOTREACHED*/
-	return (0);
-}
-
-size_t
-ikev2_encr_block_size(ikev2_xf_encr_t encr)
-{
-	switch (encr) {
-	case IKEV2_ENCR_NONE:
-	case IKEV2_ENCR_NULL:
-	case IKEV2_ENCR_NULL_AES_GMAC:
-		return (0);
-	case IKEV2_ENCR_DES_IV64:
-	case IKEV2_ENCR_DES:
-	case IKEV2_ENCR_DES_IV32:
-	case IKEV2_ENCR_3DES:
-	case IKEV2_ENCR_RC5:
-	case IKEV2_ENCR_RC4:
-	case IKEV2_ENCR_IDEA:
-	case IKEV2_ENCR_CAST:
-	case IKEV2_ENCR_BLOWFISH:
-	case IKEV2_ENCR_3IDEA:
-		return (8);
-	case IKEV2_ENCR_AES_CBC:
-	case IKEV2_ENCR_AES_CTR:
-	case IKEV2_ENCR_XTS_AES:
-	case IKEV2_ENCR_AES_CCM_8:
-	case IKEV2_ENCR_AES_CCM_12:
-	case IKEV2_ENCR_AES_CCM_16:
-	case IKEV2_ENCR_AES_GCM_8:
-	case IKEV2_ENCR_AES_GCM_12:
-	case IKEV2_ENCR_AES_GCM_16:
-	case IKEV2_ENCR_CAMELLIA_CBC:
-	case IKEV2_ENCR_CAMELLIA_CTR:
-	case IKEV2_ENCR_CAMELLIA_CCM_8:
-	case IKEV2_ENCR_CAMELLIA_CCM_12:
-	case IKEV2_ENCR_CAMELLIA_CCM_16:
-		return (16);
-	}
-	/*NOTREACHED*/
-	return (0);
-}
-
-size_t
-ikev2_encr_iv_size(ikev2_xf_encr_t encr)
-{
-	switch (encr) {
-	case IKEV2_ENCR_NONE:
-	case IKEV2_ENCR_NULL:
-		return (0);
-	case IKEV2_ENCR_DES_IV32:
-		return (4);
-	case IKEV2_ENCR_DES_IV64:
-		return (8);
-	default:
-		return (ikev2_encr_block_size(encr));
-	}
-}
-
 encr_modes_t
 ikev2_encr_mode(ikev2_xf_encr_t encr)
 {
@@ -446,7 +386,6 @@ ikev2_auth_keylen(ikev2_xf_auth_t auth)
 	}
 
 	/*NOTREACHED*/
-	return (0);
 	return (0);
 }
 
@@ -551,47 +490,6 @@ ikev2_auth_icv_size(ikev2_xf_encr_t encr, ikev2_xf_auth_t auth)
 	case IKEV2_XF_AUTH_HMAC_SHA2_512_256:
 		return (32);
 	}
-	/*NOTREACHED*/
-	return (0);
-}
-
-size_t
-ikev2_encr_saltlen(ikev2_xf_encr_t encr)
-{
-	switch (encr) {
-	case IKEV2_ENCR_AES_CCM_8:
-	case IKEV2_ENCR_AES_CCM_12:
-	case IKEV2_ENCR_AES_CCM_16:
-	case IKEV2_ENCR_CAMELLIA_CCM_8:
-	case IKEV2_ENCR_CAMELLIA_CCM_12:
-	case IKEV2_ENCR_CAMELLIA_CCM_16:
-		return (3);
-	case IKEV2_ENCR_AES_GCM_8:
-	case IKEV2_ENCR_AES_GCM_12:
-	case IKEV2_ENCR_AES_GCM_16:
-		return (4);
-	case IKEV2_ENCR_NONE:
-	case IKEV2_ENCR_DES_IV64:
-	case IKEV2_ENCR_DES:
-	case IKEV2_ENCR_3DES:
-	case IKEV2_ENCR_RC5:
-	case IKEV2_ENCR_IDEA:
-	case IKEV2_ENCR_CAST:
-	case IKEV2_ENCR_BLOWFISH:
-	case IKEV2_ENCR_3IDEA:
-	case IKEV2_ENCR_DES_IV32:
-	case IKEV2_ENCR_RC4:
-	case IKEV2_ENCR_NULL:
-	case IKEV2_ENCR_AES_CBC:
-	case IKEV2_ENCR_AES_CTR:
-	case IKEV2_ENCR_NULL_AES_GMAC:
-	case IKEV2_ENCR_XTS_AES:
-	case IKEV2_ENCR_CAMELLIA_CBC:
-	case IKEV2_ENCR_CAMELLIA_CTR:
-		return (0);
-	}
-
-	INVALID("encr");
 	/*NOTREACHED*/
 	return (0);
 }

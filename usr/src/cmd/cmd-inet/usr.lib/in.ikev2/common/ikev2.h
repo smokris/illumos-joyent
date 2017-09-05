@@ -183,6 +183,7 @@ typedef enum ikev2_encr_e {
 	IKEV2_ENCR_CAMELLIA_CCM_12	= 26,	/* RFC5529 */
 	IKEV2_ENCR_CAMELLIA_CCM_16	= 27,	/* RFC5529 */
 } ikev2_xf_encr_t;
+#define	IKEV2_ENCR_MAX	IKEV2_ENCR_CAMELLIA_CCM_16
 
 #define	IKEV2_IPCOMP_OUI		1	/* RFC5996 */
 #define	IKEV2_IPCOMP_DEFLATE		2	/* RFC2394 */

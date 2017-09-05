@@ -71,17 +71,25 @@ struct pkt_stack_s {
 };
 #define	PKT_STACK_DEPTH	(6)	/* maximum depth needed */
 
+/*
+ * For both payload and notify indices, the pointers point to start of
+ * the payload data, which immediately follows the respective headers.
+ * If either type of index (more likely notify) has no associated data,
+ * the length will equal zero, however the data pointer will still contain
+ * the start of where the data would be if present.  This makes it possible
+ * to still access the respective headers if necessary.
+ */
 typedef struct pkt_payload {
-	uint8_t		*pp_ptr;
-	uint16_t	pp_len;
+	uint8_t		*pp_ptr;	/* Start of payload data */
+	uint16_t	pp_len;		/* Excludes payload header */
 	uint8_t		pp_type;
 } pkt_payload_t;
 #define	PKT_PAYLOAD_NUM	(16)	/* usually don't need more than this */
 
 typedef struct pkt_notify {
-	uint8_t		*pn_ptr;
+	uint8_t		*pn_ptr;	/* Start of payload data */
 	uint32_t	pn_doi;		/* Ignored with IKEv2 */
-	uint16_t	pn_len;
+	uint16_t	pn_len;		/* Excludes notify header + SPI */
 	uint16_t	pn_type;
 	uint8_t		pn_proto;
 	uint64_t	pn_spi;
@@ -93,8 +101,12 @@ struct pkt_s {
 				/* NOT refheld */
 	struct ikev2_sa_s	*pkt_sa;
 
+				/* Transmit count */
+	size_t			pkt_xmit;
+
 				/* Raw packet data */
 	uint64_t		pkt_raw[SADB_8TO64(MAX_PACKET_SIZE)];
+
 				/*
 				 * Points to one past last bit of valid data
 				 * in pkt_raw
@@ -104,6 +116,7 @@ struct pkt_s {
 				/* Copy of ISAKMP header in local byte order */
 	ike_header_t		pkt_header;
 
+				/* Payload index */
 	pkt_payload_t		pkt_payloads[PKT_PAYLOAD_NUM];
 	pkt_payload_t		*pkt_payload_extra;
 	uint16_t		pkt_payload_count;
@@ -114,15 +127,26 @@ struct pkt_s {
 	uint16_t		pkt_notify_count;
 	uint16_t		pkt_notify_alloc;
 
+				/* Set once we've added an encrypted payload */
 	pkt_payload_t		*pkt_encr_pay;
+
+				/* Ready for transmit */
 	boolean_t		pkt_done;
 
 	struct pkt_stack_s	stack[PKT_STACK_DEPTH];
 	uint_t			stksize;
 	boolean_t		pkt_stk_error;
 
-	size_t			pkt_xmit;
 };
+
+typedef struct pkt_sa_state {
+	pkt_t		*pss_pkt;
+	uint16_t	*pss_lenp;
+	pkt_payload_t	*pss_pld;
+	uint8_t		*pss_prop;
+	uint8_t		*pss_xf;
+	uint8_t		*pss_xfcountp;
+} pkt_sa_state_t;
 
 inline uint8_t *
 pkt_start(pkt_t *pkt)

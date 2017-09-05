@@ -687,20 +687,22 @@ ikev2_sa_keygen(ikev2_sa_result_t *restrict result, pkt_t *restrict init,
 	CK_SESSION_HANDLE h = p11h();
 	CK_OBJECT_HANDLE nonce = CK_INVALID_HANDLE;
 	CK_OBJECT_HANDLE skeyseed = CK_INVALID_HANDLE;
+	size_t encrlen = result->sar_encr_keylen;
 	size_t prflen = ikev2_prf_keylen(result->sar_prf);
 	size_t authlen = ikev2_auth_keylen(result->sar_auth);
 	int p11prf = ikev2_prf_to_p11(result->sar_prf);
-	int p11encr = ikev2_encr_to_p11(result->sar_encr);
+	int p11encr = encr_data[result->sar_encr].ed_p11id;
 	int p11auth = ikev2_auth_to_p11(result->sar_auth);
 	prfp_t prfp = { 0 };
 
+	if (encrlen == 0)
+		encrlen = encr_data[sa->encr].ed_keydefault;
+
 	sa->encr = result->sar_encr;
-	sa->encr_key_len = ikev2_encr_keylen(result->sar_encr,
-	    result->sar_encr_keylen);
 	sa->auth = result->sar_auth;
 	sa->prf = result->sar_prf;
 	sa->dhgrp = result->sar_dh;
-	sa->saltlen = ikev2_encr_saltlen(result->sar_encr);
+	sa->saltlen = encr_data[result->sar_encr].ed_saltlen;
 
 	if (!create_nonceobj(sa->prf, ni, nr, &nonce, sa->i2sa_log))
 		goto fail;

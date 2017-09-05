@@ -51,8 +51,9 @@ OBJS =	config.o	\
 	
 SRCS = $(OBJS:%.o=../common/%.c)
 
-include ../../../../Makefile.cmd
-include ../../Makefile.lib
+include $(SRC)/cmd/Makefile.cmd
+include $(SRC)/cmd/Makefile.ctf
+#include ../../Makefile.lib
 
 CPPFLAGS += -D__EXTENSIONS__
 CPPFLAGS += -DHAVE_POSIX_STYLE_SOCKET_PROTOTYPES -D_POSIX_PTHREAD_SEMANTICS
@@ -83,7 +84,7 @@ all: $(PROG)
 
 $(PROG): $(OBJS)
 	$(LINK.c) -o $@ $(OBJS) $(LDLIBS)
-	$(POST_PROCESS) ; $(STRIP_STABS)
+	$(POST_PROCESS)
 
 clean:
 	-$(RM) $(CLEANFILES)
@@ -92,5 +93,6 @@ lint: lint_SRCS
 
 %.o: ../common/%.c
 	$(COMPILE.c) $<
+	$(POST_PROCESS_O)
 
-include ../../../../Makefile.targ
+include $(SRC)/cmd/Makefile.targ

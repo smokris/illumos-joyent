@@ -102,6 +102,7 @@ void ikev2_pkt_log(pkt_t *restrict, bunyan_logger_t *restrict, const char *,
     bunyan_level_t);
 
 ikev2_dh_t ikev2_get_dhgrp(pkt_t *);
+size_t ikev2_spilen(ikev2_spi_proto_t);
 
 #ifdef __cplusplus
 }

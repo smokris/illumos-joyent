@@ -47,11 +47,15 @@ pkt_t *
 ikev2_pkt_new_initiator(ikev2_sa_t *i2sa, ikev2_exch_t exch_type)
 {
 	pkt_t *pkt;
+	uint32_t msgid = i2sa->outmsgid;
+
+	if (exch_type == IKEV2_EXCH_IKE_SA_INIT)
+		msgid = 0;
 
 	pkt = pkt_out_alloc(I2SA_LOCAL_SPI(i2sa),
 	    I2SA_REMOTE_SPI(i2sa),
 	    IKEV2_VERSION,
-	    exch_type, 0);
+	    exch_type, msgid);
 	if (pkt == NULL)
 		return (NULL);
 
@@ -569,6 +573,7 @@ ikev2_walk_proposals(uint8_t *restrict start, size_t len,
 				return (B_FALSE);
 			}
 		}
+
 		ptr += sizeof (prop);
 
 		uint64_t spi = 0;
@@ -717,23 +722,10 @@ boolean_t
 ikev2_add_prop(pkt_t *pkt, uint8_t propnum, ikev2_spi_proto_t proto,
     uint64_t spi)
 {
-	size_t spilen;
+	size_t spilen = ikev2_spilen(proto);
 
-	switch (proto) {
-	case IKEV2_PROTO_AH:
-	case IKEV2_PROTO_ESP:
-		/* pkt_add_prop() verifies spi value is in range */
-		spilen = sizeof (uint32_t);
-		break;
-	case IKEV2_PROTO_IKE:
-		spilen == (spi == 0) ? 0 : sizeof (uint64_t);
-		break;
-	case IKEV2_PROTO_NONE:
-	case IKEV2_PROTO_FC_ESP_HEADER:
-	case IKEV2_PROTO_FC_CT_AUTH:
-		INVALID("proto");
-		break;
-	}
+	if (proto == IKEV2_PROTO_IKE && spi == 0)
+		spilen = 0;
 
 	return (pkt_add_prop(pkt, propnum, proto, spilen, spi));
 }
@@ -822,9 +814,10 @@ ikev2_add_xf_encr(pkt_t *pkt, ikev2_xf_encr_t encr, uint16_t minbits,
 
 	if (incr == 1) {
 		/*
-		 * instead of adding potentially hundreds of transforms for
-		 * a range of keysizes, for those with arbitrary key sizes
-		 * we just add the min and max
+		 * For encryption methods that allow arbitrary key sizes,
+		 * instead of adding a transform with every key length
+		 * between the minimum and maximum values, we just add the
+		 * minimum and maximum values.
 		 */
 		if (minbits != maxbits) {
 			ok &= ikev2_add_xform(pkt, IKEV2_XF_ENCR, encr);
@@ -1006,26 +999,10 @@ boolean_t
 ikev2_add_notify(pkt_t *restrict pkt, ikev2_spi_proto_t proto, uint64_t spi,
     ikev2_notify_type_t ntfy_type, const void *restrict data, size_t len)
 {
-	size_t spisize = 0;
+	size_t spisize = ikev2_spilen(proto);
 
-	switch (proto) {
-	case IKEV2_PROTO_NONE:
-	case IKEV2_PROTO_FC_ESP_HEADER:
-	case IKEV2_PROTO_FC_CT_AUTH:
-		INVALID("proto");
-		/*NOTREACHED*/
-		return (B_FALSE);
-	case IKEV2_PROTO_IKE:
-		if (spi != 0)
-			spisize == sizeof (uint64_t);
-		break;
-	case IKEV2_PROTO_AH:
-	case IKEV2_PROTO_ESP:
-		spisize = sizeof (uint32_t);
-		VERIFY3U(spi, <=, UINT32_MAX);
-		VERIFY3U(spi, !=, 0);
-		break;
-	}
+	if (proto == IKEV2_PROTO_IKE && spi == 0)
+		spisize = 0;
 
 	return (pkt_add_notify(pkt, 0, proto, spisize, spi, ntfy_type, data,
 	    len));
@@ -1041,38 +1018,19 @@ ikev2_add_delete(pkt_t *restrict pkt, ikev2_spi_proto_t proto,
 	ikev2_delete_t del = { 0 };
 	size_t len = sizeof (del);
 
+	VERIFY(proto != IKEV2_PROTO_IKE || nspi == 0);
+
 	del.del_protoid = (uint8_t)proto;
-	switch (proto) {
-	case IKEV2_PROTO_IKE:
-		del.del_spisize = 0;
-		break;
-	case IKEV2_PROTO_AH:
-	case IKEV2_PROTO_ESP:
-		del.del_spisize = sizeof (uint32_t);
-		break;
-	case IKEV2_PROTO_NONE:
-	case IKEV2_PROTO_FC_ESP_HEADER:
-	case IKEV2_PROTO_FC_CT_AUTH:
-		INVALID("proto");
-	}
+	del.del_spisize = (proto == IKEV2_PROTO_IKE) ? 0 : ikev2_spilen(proto);
 
 	len += del.del_spisize * nspi;
 	if (!ikev2_add_payload(pkt, IKEV2_PAYLOAD_DELETE, B_FALSE, len))
 		return (B_FALSE);
 
 	PKT_APPEND_STRUCT(pkt, del);
-	for (size_t i = 0; i < nspi; i++) {
-		switch(del.del_spisize) {
-		case 0:
-			break;
-		case sizeof (uint32_t):
-			put32(pkt, spis[i]);
-			break;
-		case sizeof (uint64_t):
-			put64(pkt, spis[i]);
-			break;
-		}
-	}
+	for (size_t i = 0; i < nspi; i++)
+		VERIFY(pkt_add_spi(pkt, del.del_spisize, spis[i]));
+
 	return (B_TRUE);
 }
 
@@ -1217,7 +1175,6 @@ ikev2_add_sk(pkt_t *restrict pkt)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
 	ikev2_payload_t *payp = (ikev2_payload_t *)pkt->pkt_ptr;
-	size_t len = ikev2_encr_iv_size(sa->encr);
 
 	if (!ikev2_add_payload(pkt, IKEV2_PAYLOAD_SK, B_FALSE, 0))
 		return (B_FALSE);
@@ -1230,7 +1187,7 @@ static boolean_t
 add_iv(pkt_t *restrict pkt)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
-	size_t len = ikev2_encr_iv_size(sa->encr);
+	size_t len = encr_data[sa->encr].ed_blocklen;
 	encr_modes_t mode = ikev2_encr_mode(sa->encr);
 
 	if (pkt_write_left(pkt) < len)
@@ -1346,9 +1303,9 @@ ikev2_pkt_encryptdecrypt(pkt_t *pkt, boolean_t encrypt)
 		CK_CCM_PARAMS		ccm;
 	} params;
 	CK_BYTE_PTR salt = NULL, iv = NULL, data = NULL, icv = NULL;
-	CK_ULONG ivlen = ikev2_encr_iv_size(sa->encr);
+	CK_ULONG ivlen = encr_data[sa->encr].ed_blocklen;
 	CK_ULONG icvlen = ikev2_auth_icv_size(sa->encr, sa->auth);
-	CK_ULONG blocklen = ikev2_encr_block_size(sa->encr);
+	CK_ULONG blocklen = encr_data[sa->encr].ed_blocklen;
 	CK_ULONG noncelen = ivlen + sa->saltlen;
 	CK_ULONG datalen = 0, outlen = 0;
 	CK_BYTE nonce[noncelen];
@@ -1396,7 +1353,7 @@ ikev2_pkt_encryptdecrypt(pkt_t *pkt, boolean_t encrypt)
 		}
 	}
  
-	mech.mechanism = ikev2_encr_to_p11(sa->encr);
+	mech.mechanism = encr_data[sa->encr].ed_p11id;
 	switch (mode) {
 	case MODE_NONE:
 		break;
@@ -1517,12 +1474,14 @@ ikev2_pkt_signverify(pkt_t *pkt, boolean_t sign)
 	CK_SESSION_HANDLE h = p11h();
 	CK_OBJECT_HANDLE key;
 	CK_MECHANISM mech = {
-		.mechanism = ikev2_auth_to_p11(sa->auth),
+		.mechanism = auth_data[sa->auth].ad_p11id,
 		.pParameter = NULL_PTR,
 		.ulParameterLen = 0
 	};
 	CK_BYTE_PTR icv;
 	CK_ULONG signlen, icvlen;
+	CK_ULONG outlen = auth_data[sa->auth].ad_outlen;
+	CK_BYTE outbuf[outlen];
 	CK_RV rc;
 
 	if (sa->flags & I2SA_INITIATOR)
@@ -1534,37 +1493,29 @@ ikev2_pkt_signverify(pkt_t *pkt, boolean_t sign)
 	signlen = pkt_len(pkt) - icvlen;
 	icv = pkt->pkt_ptr - icvlen;
 
-	if (sign) {
-		fn = "C_SignInit";
-		rc = C_SignInit(h, &mech, key);
-	} else {
-		fn = "C_VerifyInit";
-		rc = C_VerifyInit(h, &mech, key);
-	}
+	rc = C_SignInit(h, &mech, key);
 	if (rc != CKR_OK) {
-		PKCS11ERR(error, sa->i2sa_log, fn, rc);
+		PKCS11ERR(error, sa->i2sa_log, "C_SignInit", rc);
+		return (B_FALSE);
+	}
+
+	rc = C_Sign(h, pkt_start(pkt), signlen, outbuf, &outlen);
+	if (rc != CKR_OK) {
+		PKCS11ERR(error, sa->i2sa_log, "C_Sign", rc);
 		return (B_FALSE);
 	}
 
 	if (sign) {
-		fn = "C_Sign";
-		rc = C_Sign(h, pkt_start(pkt), signlen, icv, &icvlen);
-	} else {
-		fn = "C_Verify";
-		rc = C_Verify(h, pkt_start(pkt), signlen, icv, icvlen);
-	}
-	if (rc != CKR_OK) {
-		if (sign && rc == CKR_SIGNATURE_INVALID) {
-			bunyan_info(sa->i2sa_log,
-			    "Packet failed signature verification",
-			    BUNYAN_T_END);
-		} else {
-			PKCS11ERR(error, sa->i2sa_log, "C_Sign", rc);
-		}
-		return (B_FALSE);
+		(void) memcpy(icv, outbuf, auth_data[sa->auth].ad_icvlen);
+		return (B_TRUE);
 	}
 
-	return (B_TRUE);
+	if (memcmp(icv, outbuf, auth_data[sa->auth].ad_icvlen) == 0)
+		return (B_TRUE);
+
+	bunyan_info(sa->i2sa_log, "Payload signature validation failed",
+	    BUNYAN_T_END);
+	return (B_FALSE);
 }
 
 boolean_t
@@ -1576,7 +1527,7 @@ ikev2_pkt_done(pkt_t *pkt)
 	ikev2_sa_t *sa = pkt->pkt_sa;
 	CK_ULONG datalen = (CK_ULONG)(pkt->pkt_ptr - pkt->pkt_encr_pay->pp_ptr);
 	CK_ULONG icvlen = ikev2_auth_icv_size(sa->encr, sa->auth);
-	CK_ULONG blocklen = ikev2_encr_block_size(sa->encr);
+	CK_ULONG blocklen = encr_data[sa->encr].ed_blocklen;
 	boolean_t ok = B_TRUE;
 	uint8_t padlen = 0;
 
@@ -1704,4 +1655,23 @@ ikev2_get_dhgrp(pkt_t *pkt)
 	VERIFY3U(ke->pp_len, >, sizeof (val));
 	(void) memcpy(&val, ke->pp_ptr, sizeof (val));
 	return ((ikev2_dh_t)ntohs(val));
+}
+
+size_t
+ikev2_spilen(ikev2_spi_proto_t proto)
+{
+	switch (proto) {
+	case IKEV2_PROTO_NONE:
+		return (0);
+	case IKEV2_PROTO_AH:
+	case IKEV2_PROTO_ESP:
+	case IKEV2_PROTO_FC_ESP_HEADER:
+	case IKEV2_PROTO_FC_CT_AUTH:
+		return (sizeof (uint32_t));
+	case IKEV2_PROTO_IKE:
+		return (sizeof (uint64_t));
+	}
+
+	/*NOTREACHED*/
+	return (0);
 }
