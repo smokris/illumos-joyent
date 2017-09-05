@@ -52,10 +52,11 @@ void pkt_stack_push(pkt_t *restrict, pkt_stack_item_t, pkt_finish_fn,
     uintptr_t);
 
 boolean_t pkt_add_payload(pkt_t *, uint8_t, uint8_t, uint16_t);
-boolean_t pkt_add_prop(pkt_t *, uint8_t, uint8_t, size_t, uint64_t);
-boolean_t pkt_add_xform(pkt_t *, uint8_t, uint16_t);
-boolean_t pkt_add_xform_attr_tv(pkt_t *, uint16_t, uint16_t);
-boolean_t pkt_add_xform_attr_tlv(pkt_t *restrict, uint16_t,
+boolean_t pkt_add_sa(pkt_t *restrict, pkt_sa_state_t *restrict);
+boolean_t pkt_add_prop(pkt_sa_state_t *, uint8_t, uint8_t, size_t, uint64_t);
+boolean_t pkt_add_xform(pkt_sa_state_t *, uint8_t, uint16_t);
+boolean_t pkt_add_xform_attr_tv(pkt_sa_state_t *, uint16_t, uint16_t);
+boolean_t pkt_add_xform_attr_tlv(pkt_sa_state_t *restrict, uint16_t,
     const uint8_t *restrict, size_t);
 boolean_t pkt_add_notify(pkt_t *restrict, uint32_t, uint8_t, uint8_t,
     uint64_t, uint16_t, const void *restrict, size_t);

@@ -713,13 +713,13 @@ ikev2_add_payload(pkt_t *pkt, ikev2_pay_type_t ptype, boolean_t critical,
 }
 
 boolean_t
-ikev2_add_sa(pkt_t *pkt)
+ikev2_add_sa(pkt_t *restrict pkt, pkt_sa_state_t *restrict pss)
 {
-	return (ikev2_add_payload(pkt, IKEV2_PAYLOAD_SA, B_FALSE, 0));
+	return (pkt_add_sa(pkt, pss));
 }
 
 boolean_t
-ikev2_add_prop(pkt_t *pkt, uint8_t propnum, ikev2_spi_proto_t proto,
+ikev2_add_prop(pkt_sa_state_t *pss, uint8_t propnum, ikev2_spi_proto_t proto,
     uint64_t spi)
 {
 	size_t spilen = ikev2_spilen(proto);
@@ -727,23 +727,23 @@ ikev2_add_prop(pkt_t *pkt, uint8_t propnum, ikev2_spi_proto_t proto,
 	if (proto == IKEV2_PROTO_IKE && spi == 0)
 		spilen = 0;
 
-	return (pkt_add_prop(pkt, propnum, proto, spilen, spi));
+	return (pkt_add_prop(pss, propnum, proto, spilen, spi));
 }
 
 boolean_t
-ikev2_add_xform(pkt_t *pkt, ikev2_xf_type_t xftype, int xfid)
+ikev2_add_xform(pkt_sa_state_t *pss, ikev2_xf_type_t xftype, int xfid)
 {
-	return (pkt_add_xform(pkt, xftype, xfid));
+	return (pkt_add_xform(pss, xftype, xfid));
 }
 
 boolean_t
-ikev2_add_xf_attr(pkt_t *pkt, ikev2_xf_attr_type_t xf_attr_type,
+ikev2_add_xf_attr(pkt_sa_state_t *pss, ikev2_xf_attr_type_t xf_attr_type,
     uintptr_t arg)
 {
 	switch (xf_attr_type) {
 	case IKEV2_XF_ATTR_KEYLEN:
 		ASSERT3U(arg, <, 0x10000);
-		return (pkt_add_xform_attr_tv(pkt, IKEV2_XF_ATTR_KEYLEN,
+		return (pkt_add_xform_attr_tv(pss, IKEV2_XF_ATTR_KEYLEN,
 		    (uint16_t)arg));
 	}
 
@@ -751,7 +751,7 @@ ikev2_add_xf_attr(pkt_t *pkt, ikev2_xf_attr_type_t xf_attr_type,
 }
 
 boolean_t
-ikev2_add_xf_encr(pkt_t *pkt, ikev2_xf_encr_t encr, uint16_t minbits,
+ikev2_add_xf_encr(pkt_sa_state_t *pss, ikev2_xf_encr_t encr, uint16_t minbits,
     uint16_t maxbits)
 {
 	uint16_t incr = 0;
@@ -777,7 +777,7 @@ ikev2_add_xf_encr(pkt_t *pkt, ikev2_xf_encr_t encr, uint16_t minbits,
 	case IKEV2_ENCR_DES_IV32:
 		VERIFY3U(minbits, ==, 0);
 		VERIFY3U(maxbits, ==, 0);
-		return (ikev2_add_xform(pkt, IKEV2_XF_ENCR, encr));
+		return (ikev2_add_xform(pss, IKEV2_XF_ENCR, encr));
 
 	/* optional key size */
 	case IKEV2_ENCR_RC4:
@@ -785,7 +785,7 @@ ikev2_add_xf_encr(pkt_t *pkt, ikev2_xf_encr_t encr, uint16_t minbits,
 	case IKEV2_ENCR_BLOWFISH:
 	case IKEV2_ENCR_CAST:
 		if (minbits == 0 && maxbits == 0)
-			return (ikev2_add_xform(pkt, IKEV2_XF_ENCR, encr));
+			return (ikev2_add_xform(pss, IKEV2_XF_ENCR, encr));
 		incr = 1;
 		break;
 
@@ -820,18 +820,18 @@ ikev2_add_xf_encr(pkt_t *pkt, ikev2_xf_encr_t encr, uint16_t minbits,
 		 * minimum and maximum values.
 		 */
 		if (minbits != maxbits) {
-			ok &= ikev2_add_xform(pkt, IKEV2_XF_ENCR, encr);
-			ok &= ikev2_add_xf_attr(pkt, IKEV2_XF_ATTR_KEYLEN,
+			ok &= ikev2_add_xform(pss, IKEV2_XF_ENCR, encr);
+			ok &= ikev2_add_xf_attr(pss, IKEV2_XF_ATTR_KEYLEN,
 			    minbits);
 		}
-		ok &= ikev2_add_xform(pkt, IKEV2_XF_ENCR, encr);
-		ok &= ikev2_add_xf_attr(pkt, IKEV2_XF_ATTR_KEYLEN, maxbits);
+		ok &= ikev2_add_xform(pss, IKEV2_XF_ENCR, encr);
+		ok &= ikev2_add_xf_attr(pss, IKEV2_XF_ATTR_KEYLEN, maxbits);
 		return (ok);
 	}
 
 	for (size_t bits = minbits; bits <= maxbits; bits += incr) {
-		ok &= ikev2_add_xform(pkt, IKEV2_XF_ENCR, encr);
-		ok &= ikev2_add_xf_attr(pkt, IKEV2_XF_ATTR_KEYLEN, bits);
+		ok &= ikev2_add_xform(pss, IKEV2_XF_ENCR, encr);
+		ok &= ikev2_add_xf_attr(pss, IKEV2_XF_ATTR_KEYLEN, bits);
 	}
 
 	return (ok);

@@ -351,124 +351,137 @@ pkt_add_sa(pkt_t *restrict pkt, pkt_sa_state_t *restrict pss)
 	return (B_TRUE);
 }
 
-static boolean_t prop_finish(pkt_t *restrict, uint8_t *restrict, uintptr_t,
-    size_t);
-
 boolean_t
-pkt_add_prop(pkt_t *pkt, uint8_t propnum, uint8_t proto, size_t spilen,
+pkt_add_prop(pkt_sa_state_t *pss, uint8_t propnum, uint8_t proto, size_t spilen,
     uint64_t spi)
 {
 	ike_prop_t	prop = { 0 };
+	uint16_t	val = 0, amt = sizeof (prop) + spilen;
 
-	if (pkt_write_left(pkt) < sizeof (prop) + spilen)
+	if (pkt_write_left(pss->pss_pkt) < amt)
 		return (B_FALSE);
 
-	pkt_stack_push(pkt, PSI_PROP, prop_finish, (uintptr_t)IKE_PROP_MORE);
+	if (pss->pss_prop != NULL)
+		pss->pss_prop->prop_more = IKE_PROP_MORE;
 
+	pss->pss_prop = (ike_prop_t *)pss->pss_pkt->pkt_ptr;
+
+	prop.prop_len = htons(amt);
 	prop.prop_more = IKE_PROP_NONE;
 	prop.prop_num = propnum;
 	prop.prop_proto = (uint8_t)proto;
 	prop.prop_spilen = spilen;
+	PKT_APPEND_STRUCT(pss->pss_pkt, prop);
+	VERIFY(pkt_add_spi(pss->pss_pkt, spilen, spi));
 
-	PKT_APPEND_STRUCT(pkt, prop);
-	VERIFY(pkt_add_spi(pkt, spilen, spi));
+	pss->pss_pld->pp_len += amt;
+	pss->pss_xf = NULL;
+
+	val = BE_IN16(pss->pss_lenp);
+	val += amt;
+	BE_OUT16(pss->pss_lenp, val);
 
 	return (B_TRUE);
 }
-
-static boolean_t
-prop_finish(pkt_t *restrict pkt, uint8_t *restrict ptr, uintptr_t more,
-    size_t numxform)
-{
-	ike_prop_t	prop = { 0 };
-	ptrdiff_t	len = pkt->pkt_ptr - ptr;
-
-	VERIFY3U(len, <=, USHRT_MAX);
-	VERIFY3U(numxform, <, 256);
-
-	(void) memcpy(&prop, ptr, sizeof (prop));
-	prop.prop_more = (uint8_t)more;
-	prop.prop_len = htons((uint16_t)len);
-	prop.prop_numxform = (uint8_t)numxform;
-	(void) memcpy(ptr, &prop, sizeof (prop));
-	return (B_TRUE);
-}
-
-static boolean_t pkt_xform_finish(pkt_t *restrict, uint8_t *restrict, uintptr_t,
-    size_t);
 
 boolean_t
-pkt_add_xform(pkt_t *pkt, uint8_t xftype, uint16_t xfid)
+pkt_add_xform(pkt_sa_state_t *pss, uint8_t xftype, uint16_t xfid)
 {
 	ike_xform_t	xf = { 0 };
+	uint16_t	len = 0;
 
-	if (pkt_write_left(pkt) < sizeof (xf))
+	if (pkt_write_left(pss->pss_pkt) < sizeof (xf))
 		return (B_FALSE);
 
-	pkt_stack_push(pkt, PSI_XFORM, pkt_xform_finish,
-	    (uintptr_t)IKE_XFORM_MORE);
+	if (pss->pss_xf != NULL)
+		pss->pss_xf->xf_more = IKE_XFORM_MORE;
 
-	ASSERT3U(xfid, <, USHRT_MAX);
+	pss->pss_xf = (ike_xform_t *)pss->pss_pkt->pkt_ptr;
 
-	/* mostly for completeness */
+	xf.xf_len = htons(sizeof (xf));
 	xf.xf_more = IKE_XFORM_NONE;
 	xf.xf_type = xftype;
 	xf.xf_id = htons(xfid);
-	PKT_APPEND_STRUCT(pkt, xf);
-	return (B_TRUE);
-}
+	PKT_APPEND_STRUCT(pss->pss_pkt, xf);
 
-static boolean_t
-pkt_xform_finish(pkt_t *restrict pkt, uint8_t *restrict ptr, uintptr_t more,
-    size_t numattr)
-{
-	ike_xform_t	xf = { 0 };
-	ptrdiff_t	len = pkt->pkt_ptr - ptr;
+	/* This is uint8_t */
+	pss->pss_prop->prop_numxform++;
 
-	VERIFY3U(len, <=, USHRT_MAX);
-	(void) memcpy(&xf, ptr, sizeof (xf));
-	xf.xf_more = more;
-	xf.xf_len = htons((uint16_t)len);
-	(void) memcpy(ptr, &xf, sizeof (xf));
+	len = BE_IN16(&pss->pss_prop->prop_len);
+	len += sizeof (xf);
+	BE_OUT16(&pss->pss_prop->prop_len, len);
+
+	len = BE_IN16(pss->pss_lenp);
+	len += sizeof (xf);
+	BE_OUT16(pss->pss_lenp, len);
+
+	pss->pss_pld->pp_len += sizeof (xf);
 	return (B_TRUE);
 }
 
 boolean_t
-pkt_add_xform_attr_tv(pkt_t *pkt, uint16_t type, uint16_t val)
+pkt_add_xform_attr_tv(pkt_sa_state_t *pss, uint16_t type, uint16_t val)
 {
 	ike_xf_attr_t	attr = { 0 };
+	uint16_t len = 0;
 
 	VERIFY3U(type, <, 0x8000);
 	VERIFY3U(val, <, 0x10000);
 
-	if (pkt_write_left(pkt) < sizeof (attr))
+	if (pkt_write_left(pss->pss_pkt) < sizeof (attr))
 		return (B_FALSE);
 
-	pkt_stack_push(pkt, PSI_XFORM_ATTR, NULL, 0);
 	attr.attr_type = htons(IKE_ATTR_TYPE(IKE_ATTR_TV, type));
 	attr.attr_len = htons(val);
-	PKT_APPEND_STRUCT(pkt, attr);
+	PKT_APPEND_STRUCT(pss->pss_pkt, attr);
+
+	len = BE_IN16(&pss->pss_xf->xf_len);
+	len += sizeof (attr);
+	BE_OUT16(&pss->pss_xf->xf_len, len);
+
+	len = BE_IN16(&pss->pss_prop->prop_len);
+	len += sizeof (attr);
+	BE_OUT16(&pss->pss_prop->prop_len, len);
+
+	len = BE_IN16(pss->pss_lenp);
+	len += sizeof (attr);
+	BE_OUT16(pss->pss_lenp, len);
+
+	pss->pss_pld->pp_len += sizeof (attr);
 	return (B_TRUE);
 }
 
 boolean_t
-pkt_add_xform_attr_tlv(pkt_t *pkt, uint16_t type, const uint8_t *attrp,
+pkt_add_xform_attr_tlv(pkt_sa_state_t *pss, uint16_t type, const uint8_t *attrp,
     size_t attrlen)
 {
 	ike_xf_attr_t attr = { 0 };
+	size_t len = 0, amt = sizeof (attr) + attrlen;
 
 	VERIFY3U(type, <, 0x8000);
 	VERIFY3U(attrlen, <, 0x10000);
 
-	if (pkt_write_left(pkt) < sizeof (attr) + attrlen)
+	if (pkt_write_left(pss->pss_pkt) < amt)
 		return (B_FALSE);
 
-	pkt_stack_push(pkt, PSI_XFORM_ATTR, NULL, 0);
 	attr.attr_type = htons(IKE_ATTR_TYPE(IKE_ATTR_TLV, type));
 	attr.attr_len = htons(attrlen);
-	PKT_APPEND_STRUCT(pkt, attr);
-	(void) memcpy(pkt->pkt_ptr, attrp, attrlen);
-	pkt->pkt_ptr += attrlen;
+	PKT_APPEND_STRUCT(pss->pss_pkt, attr);
+	PKT_APPEND_DATA(pss->pss_pkt, attrp, attrlen);
+
+	len = BE_IN16(&pss->pss_xf->xf_len);
+	len += sizeof (attr);
+	BE_OUT16(&pss->pss_xf->xf_len, len);
+
+	len = BE_IN16(&pss->pss_prop->prop_len);
+	len += sizeof (attr);
+	BE_OUT16(&pss->pss_prop->prop_len, len);
+
+	len = BE_IN16(pss->pss_lenp);
+	len += sizeof (attr);
+	BE_OUT16(pss->pss_lenp, len);
+
+	pss->pss_pld->pp_len += sizeof (attr);
 	return (B_TRUE);
 }
 

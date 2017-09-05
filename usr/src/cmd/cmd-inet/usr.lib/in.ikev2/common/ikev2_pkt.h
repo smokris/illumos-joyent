@@ -44,11 +44,13 @@ pkt_t *ikev2_pkt_new_initiator(struct ikev2_sa_s *, ikev2_exch_t);
 pkt_t *ikev2_pkt_new_response(const pkt_t *);
 void ikev2_pkt_free(pkt_t *);
 
-boolean_t ikev2_add_sa(pkt_t *);
-boolean_t ikev2_add_prop(pkt_t *, uint8_t, ikev2_spi_proto_t, uint64_t);
-boolean_t ikev2_add_xform(pkt_t *, ikev2_xf_type_t, int);
-boolean_t ikev2_add_xf_attr(pkt_t *, ikev2_xf_attr_type_t, uintptr_t);
-boolean_t ikev2_add_xf_encr(pkt_t *, ikev2_xf_encr_t, uint16_t, uint16_t);
+boolean_t ikev2_add_sa(pkt_t *restrict, pkt_sa_state_t *restrict);
+boolean_t ikev2_add_prop(pkt_sa_state_t *, uint8_t, ikev2_spi_proto_t,
+    uint64_t);
+boolean_t ikev2_add_xform(pkt_sa_state_t *, ikev2_xf_type_t, int);
+boolean_t ikev2_add_xf_attr(pkt_sa_state_t *, ikev2_xf_attr_type_t, uintptr_t);
+boolean_t ikev2_add_xf_encr(pkt_sa_state_t *, ikev2_xf_encr_t, uint16_t,
+    uint16_t);
 boolean_t ikev2_add_ke(pkt_t *restrict, ikev2_dh_t, CK_OBJECT_HANDLE);
 boolean_t ikev2_add_id_i(pkt_t *restrict, ikev2_id_type_t, ...);
 boolean_t ikev2_add_id_r(pkt_t *restrict, ikev2_id_type_t, ...);

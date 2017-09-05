@@ -51,6 +51,7 @@ ikev2_sa_from_acquire(pkt_t *restrict pkt, parsedmsg_t *restrict pmsg,
 	sadb_comb_t *comb;
 	boolean_t ok;
 	ikev2_spi_proto_t spi_type = IKEV2_PROTO_NONE;
+	pkt_sa_state_t pss;
 
 	ASSERT3U(samsg->sadb_msg_type, ==, SADB_ACQUIRE);
 
@@ -68,11 +69,11 @@ ikev2_sa_from_acquire(pkt_t *restrict pkt, parsedmsg_t *restrict pmsg,
 	prop = (sadb_prop_t *)pmsg->pmsg_exts[SADB_EXT_PROPOSAL];
 	ASSERT3U(prop->sadb_prop_exttype, ==, SADB_EXT_PROPOSAL);
 
-	ok = ikev2_add_sa(pkt);
+	ok = ikev2_add_sa(pkt, &pss);
 
 	comb = (sadb_comb_t *)(prop + 1);
 	for (size_t i = 0; i < prop->sadb_x_prop_numecombs; i++, comb++) {
-		ok &= ikev2_add_prop(pkt, i + 1, spi_type, spi);
+		ok &= ikev2_add_prop(&pss, i + 1, spi_type, spi);
 
 		if (comb->sadb_comb_encrypt != SADB_EALG_NONE) {
 			ikev2_xf_encr_t encr;
@@ -81,7 +82,7 @@ ikev2_sa_from_acquire(pkt_t *restrict pkt, parsedmsg_t *restrict pmsg,
 			encr = ikev2_pfkey_to_encr(comb->sadb_comb_encrypt);
 			minbits = comb->sadb_comb_encrypt_minbits;
 			maxbits = comb->sadb_comb_encrypt_maxbits;
-			ok &= ikev2_add_xf_encr(pkt, encr, minbits, maxbits);
+			ok &= ikev2_add_xf_encr(&pss, encr, minbits, maxbits);
 		}
 
 		if (comb->sadb_comb_auth != SADB_AALG_NONE) {
@@ -95,14 +96,14 @@ ikev2_sa_from_acquire(pkt_t *restrict pkt, parsedmsg_t *restrict pmsg,
 			VERIFY3U(comb->sadb_comb_auth_maxbits, ==, 0);
 
 			xf_auth = ikev2_pfkey_to_auth(comb->sadb_comb_auth);
-			ok &= ikev2_add_xform(pkt, IKEV2_XF_AUTH, xf_auth);
+			ok &= ikev2_add_xform(&pss, IKEV2_XF_AUTH, xf_auth);
 		}
 
 		if (dh != IKEV2_DH_NONE)
-			ok &= ikev2_add_xform(pkt, IKEV2_XF_DH, dh);
+			ok &= ikev2_add_xform(&pss, IKEV2_XF_DH, dh);
 
 		/* We currently don't support ESNs */
-		ok &= ikev2_add_xform(pkt, IKEV2_XF_ESN, IKEV2_ESN_NONE);
+		ok &= ikev2_add_xform(&pss, IKEV2_XF_ESN, IKEV2_ESN_NONE);
 	}
 
 	return (ok);
@@ -155,27 +156,29 @@ ikev2_pfkey_to_encr(int alg)
 	}
 }
 
-static boolean_t add_rule_xform(pkt_t *restrict, const config_xf_t *restrict);
+static boolean_t add_rule_xform(pkt_sa_state_t *restrict,
+    const config_xf_t *restrict);
 
 boolean_t
 ikev2_sa_from_rule(pkt_t *restrict pkt, const config_rule_t *restrict rule,
     uint64_t spi)
 {
 	boolean_t ok = B_TRUE;
+	pkt_sa_state_t pss;
 
-	if (!ikev2_add_sa(pkt))
+	if (!ikev2_add_sa(pkt, &pss))
 		return (B_FALSE);
 
 	for (uint8_t i = 0; rule->rule_xf[i] != NULL; i++) {
 		/* RFC 7296 3.3.1 - Proposal numbers start with 1 */
-		ok &= ikev2_add_prop(pkt, i + 1, IKEV2_PROTO_IKE, spi);
-		ok &= add_rule_xform(pkt, rule->rule_xf[i]);
+		ok &= ikev2_add_prop(&pss, i + 1, IKEV2_PROTO_IKE, spi);
+		ok &= add_rule_xform(&pss, rule->rule_xf[i]);
 	}
 	return (ok);
 }
 
 static boolean_t
-add_rule_xform(pkt_t *restrict pkt, const config_xf_t *restrict xf)
+add_rule_xform(pkt_sa_state_t *restrict pss, const config_xf_t *restrict xf)
 {
 	encr_modes_t mode = ikev2_encr_mode(xf->xf_encr);
 	boolean_t ok = B_TRUE;
@@ -185,11 +188,11 @@ add_rule_xform(pkt_t *restrict pkt, const config_xf_t *restrict xf)
 	 * integrity transform
 	 */
 	if (!MODE_IS_COMBINED(mode))
-		ok &= ikev2_add_xform(pkt, IKEV2_XF_AUTH, xf->xf_auth);
-	ok &= ikev2_add_xform(pkt, IKEV2_XF_DH, xf->xf_dh);
+		ok &= ikev2_add_xform(pss, IKEV2_XF_AUTH, xf->xf_auth);
+	ok &= ikev2_add_xform(pss, IKEV2_XF_DH, xf->xf_dh);
 
 	for (size_t i = 0; i < ARRAY_SIZE(prf_supported); i++)
-		ok &= ikev2_add_xform(pkt, IKEV2_XF_PRF, prf_supported[i]);
+		ok &= ikev2_add_xform(pss, IKEV2_XF_PRF, prf_supported[i]);
 
 	return (ok);
 }
@@ -199,25 +202,26 @@ ikev2_sa_add_result(pkt_t *restrict pkt,
     const ikev2_sa_result_t *restrict result)
 {
 	boolean_t ok;
+	pkt_sa_state_t pss;
 
-	ok = ikev2_add_sa(pkt);
-	ok &= ikev2_add_prop(pkt, result->sar_propnum, result->sar_proto,
+	ok = ikev2_add_sa(pkt, &pss);
+	ok &= ikev2_add_prop(&pss, result->sar_propnum, result->sar_proto,
 	    result->sar_spi);
 
 	if (SA_RESULT_HAS(result, IKEV2_XF_ENCR)) {
-		ok &= ikev2_add_xform(pkt, IKEV2_XF_ENCR, result->sar_encr);
+		ok &= ikev2_add_xform(&pss, IKEV2_XF_ENCR, result->sar_encr);
 		if (result->sar_encr_keylen != 0)
-			ok &= ikev2_add_xf_attr(pkt, IKEV2_XF_ATTR_KEYLEN,
+			ok &= ikev2_add_xf_attr(&pss, IKEV2_XF_ATTR_KEYLEN,
 			    result->sar_encr_keylen);
 	}
 	if (SA_RESULT_HAS(result, IKEV2_XF_AUTH))
-		ok &= ikev2_add_xform(pkt, IKEV2_XF_AUTH, result->sar_auth);
+		ok &= ikev2_add_xform(&pss, IKEV2_XF_AUTH, result->sar_auth);
 	if (SA_RESULT_HAS(result, IKEV2_XF_DH))
-		ok &= ikev2_add_xform(pkt, IKEV2_XF_DH, result->sar_dh);
+		ok &= ikev2_add_xform(&pss, IKEV2_XF_DH, result->sar_dh);
 	if (SA_RESULT_HAS(result, IKEV2_XF_PRF))
-		ok &= ikev2_add_xform(pkt, IKEV2_XF_PRF, result->sar_prf);
+		ok &= ikev2_add_xform(&pss, IKEV2_XF_PRF, result->sar_prf);
 	if (SA_RESULT_HAS(result, IKEV2_XF_ESN))
-		ok &= ikev2_add_xform(pkt, IKEV2_XF_ESN, result->sar_esn);
+		ok &= ikev2_add_xform(&pss, IKEV2_XF_ESN, result->sar_esn);
 
 	return (ok);
 }

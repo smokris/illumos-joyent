@@ -143,9 +143,8 @@ typedef struct pkt_sa_state {
 	pkt_t		*pss_pkt;
 	uint16_t	*pss_lenp;
 	pkt_payload_t	*pss_pld;
-	uint8_t		*pss_prop;
-	uint8_t		*pss_xf;
-	uint8_t		*pss_xfcountp;
+	ike_prop_t	*pss_prop;
+	ike_xform_t	*pss_xf;
 } pkt_sa_state_t;
 
 inline uint8_t *
