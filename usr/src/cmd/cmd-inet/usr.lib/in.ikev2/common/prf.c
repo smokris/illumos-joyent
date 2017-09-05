@@ -233,6 +233,11 @@ prfplus_fini(prfp_t *prfp)
 	prfp->prfp_seedlen = 0;
 }
 
+/*
+ * Take 'len' bytes from the prf+ output stream and create a PKCS#11 object
+ * for use with the given mechanism.  A descriptive name (e.g. 'SK_i') is
+ * passed for debugging purposes.
+ */
 boolean_t
 prf_to_p11key(prfp_t *restrict prfp, const char *restrict name, int alg,
     size_t len, CK_OBJECT_HANDLE_PTR restrict objp)
@@ -249,6 +254,10 @@ prf_to_p11key(prfp_t *restrict prfp, const char *restrict name, int alg,
 	rc = SUNW_C_KeyToObject(p11h(), alg, buf, len, objp);
 	explicit_bzero(buf, len);
 
+	/*
+	 * XXX: Might it be worth setting the object label attribute to 'name'
+	 * for diagnostic purposes?
+	 */
 	if (rc != CKR_OK)
 		PKCS11ERR(error, prfp->prfp_log, "SUNW_C_KeyToObject", rc,
 		    BUNYAN_T_STRING, "objname", name);

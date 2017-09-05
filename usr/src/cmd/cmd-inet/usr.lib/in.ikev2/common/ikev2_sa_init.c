@@ -157,6 +157,9 @@ fail:
 	/* XXX: Delete larval IKE SA? anything else? */
 }
 
+/*
+ * We initiated the IKE_SA_INIT exchange, this is the remote response
+ */
 void
 ikev2_sa_init_inbound_resp(pkt_t *pkt)
 {
@@ -240,6 +243,11 @@ fail:
 	;
 }
 
+/*
+ * Start a new IKE_SA_INIT using the given larval IKE SA.
+ * The other parameters are normally NULL / 0 and are used when the response
+ * requests a cookie or a new DH group.
+ */
 void
 ikev2_sa_init_outbound(ikev2_sa_t *restrict i2sa, uint8_t *restrict cookie,
     size_t cookielen, ikev2_dh_t dh, uint8_t *restrict nonce, size_t noncelen)
@@ -588,6 +596,7 @@ skeyseed_noncelen(ikev2_prf_t prf, size_t len)
 	}
 }
 
+/* Create a PKCS#11 object of Ni | Nr */
 static boolean_t
 create_nonceobj(ikev2_prf_t prf, pkt_payload_t *restrict ni,
     pkt_payload_t *restrict nr, CK_OBJECT_HANDLE_PTR restrict objp,
