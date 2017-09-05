@@ -173,7 +173,7 @@ ikev2_send(pkt_t *pkt, boolean_t is_error)
 		pkt->pkt_header.msgid = i2sa->outmsgid;
 	}
 
-	if (!pkt_done(pkt)) {
+	if (!ikev2_pkt_done(pkt)) {
 		I2SA_REFRELE(i2sa);
 		ikev2_pkt_free(pkt);
 		return (B_FALSE);

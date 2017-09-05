@@ -44,32 +44,6 @@ struct pkt_s;
 struct pkt_stack_s;
 
 typedef struct pkt_s		pkt_t;
-typedef struct pkt_stack_s	pkt_stack_t;
-
-typedef boolean_t (*pkt_finish_fn)(pkt_t *restrict, uint8_t *restrict,
-    uintptr_t, size_t);
-
-typedef enum pkt_stack_item_e {
-	PSI_NONE,
-	PSI_PACKET,
-	PSI_SK,
-	PSI_SA,
-	PSI_PAYLOAD,
-	PSI_PROP,
-	PSI_XFORM,
-	PSI_XFORM_ATTR,
-	PSI_DEL,
-	PSI_TSP,
-	PSI_TS
-} pkt_stack_item_t;
-
-struct pkt_stack_s {
-	pkt_finish_fn		stk_finish;
-	uint8_t			*stk_ptr;
-	size_t			stk_count;
-	pkt_stack_item_t	stk_type;
-};
-#define	PKT_STACK_DEPTH	(6)	/* maximum depth needed */
 
 /*
  * For both payload and notify indices, the pointers point to start of
@@ -132,11 +106,6 @@ struct pkt_s {
 
 				/* Ready for transmit */
 	boolean_t		pkt_done;
-
-	struct pkt_stack_s	stack[PKT_STACK_DEPTH];
-	uint_t			stksize;
-	boolean_t		pkt_stk_error;
-
 };
 
 typedef struct pkt_sa_state {
