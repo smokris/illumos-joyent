@@ -39,6 +39,7 @@ OBJS =	config.o	\
 	ikev2_sa.o	\
 	ikev2_sa_init.o	\
 	inbound.o	\
+	list.o		\
 	main.o		\
 	pfkey.o		\
 	preshared.o	\
@@ -92,6 +93,10 @@ clean:
 lint: lint_SRCS
 
 %.o: ../common/%.c
+	$(COMPILE.c) $<
+	$(POST_PROCESS_O)
+
+%.o: $(SRC)/common/list/%.c
 	$(COMPILE.c) $<
 	$(POST_PROCESS_O)
 

@@ -24,7 +24,7 @@
  * Use is subject to license terms.
  *
  * Copyright 2017 Jason King.
- * Copyright 2017 Joyent, Inc.
+ * Copyright (c) 2017, Joyent, Inc.
  */
 /*
  * Timer events are sorted into a single mutex-protected list.
@@ -45,7 +45,6 @@ typedef enum {
 	TE_TEST = -1,   /* For code testing only, arg == NULL */
 	TE_ANY,		/* MUST NOT be passed to schedule_timeout() */
 	TE_SA_EXPIRE,   /* SA expiration */
-	TE_COOKIE_GEN,  /* Cookie generation */
 	TE_TRANSMIT,    /* Transmit timeout */
 	TE_PFKEY	/* pfkey timeout */
 } te_event_t;
@@ -53,7 +52,7 @@ typedef enum {
 typedef void (*tevent_cb_fn)(te_event_t, void *);
 
 extern void		process_timer(timespec_t *, bunyan_logger_t *);
-extern int		cancel_timeout(te_event_t, void *, bunyan_logger_t *);
+extern size_t		cancel_timeout(te_event_t, void *, bunyan_logger_t *);
 extern boolean_t	schedule_timeout(te_event_t, tevent_cb_fn, void *,
     hrtime_t);
 

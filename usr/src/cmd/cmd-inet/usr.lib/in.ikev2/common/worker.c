@@ -273,8 +273,6 @@ worker(void *arg)
 	timespec_t ts = { 0 };
 	boolean_t done = B_FALSE;
 
-	ike_timer_thread_init();
-
 	(void) bunyan_trace(w->w_log, "Worker starting", BUNYAN_T_END);
 
 	PTH(pthread_mutex_lock(&wq->wq_lock));
