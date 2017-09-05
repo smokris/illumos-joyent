@@ -1194,7 +1194,7 @@ add_iv(pkt_t *restrict pkt)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
 	size_t len = encr_data[sa->encr].ed_blocklen;
-	encr_modes_t mode = ikev2_encr_mode(sa->encr);
+	encr_modes_t mode = encr_data[sa->encr].ed_mode;
 
 	if (pkt_write_left(pkt) < len)
 		return (B_FALSE);
@@ -1316,7 +1316,7 @@ ikev2_pkt_encryptdecrypt(pkt_t *pkt, boolean_t encrypt)
 	CK_ULONG datalen = 0, outlen = 0;
 	CK_BYTE nonce[noncelen];
 	CK_RV rc = CKR_OK;
-	encr_modes_t mode = ikev2_encr_mode(sa->encr);
+	encr_modes_t mode = encr_data[sa->encr].ed_mode;
 	uint8_t padlen = 0;
 
 	if (encrypt)
@@ -1472,7 +1472,7 @@ ikev2_pkt_signverify(pkt_t *pkt, boolean_t sign)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
 
-	if (MODE_IS_COMBINED(ikev2_encr_mode(sa->encr)))
+	if (MODE_IS_COMBINED(encr_data[sa->encr].ed_mode))
 		return (B_TRUE);
 
 	const char *fn = NULL;

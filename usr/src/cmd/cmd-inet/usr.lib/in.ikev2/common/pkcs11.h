@@ -92,10 +92,6 @@ void pkcs11_fini(void);
 CK_SESSION_HANDLE p11h(void);
 void pkcs11_destroy_obj(const char *, CK_OBJECT_HANDLE_PTR, bunyan_logger_t *);
 
-encr_modes_t ikev2_encr_mode(ikev2_xf_encr_t);
-size_t ikev2_auth_keylen(ikev2_xf_auth_t);
-
-CK_MECHANISM_TYPE ikev2_auth_to_p11(ikev2_xf_auth_t);
 size_t ikev2_auth_icv_size(ikev2_xf_encr_t, ikev2_xf_auth_t);
 
 #ifdef __cplusplus

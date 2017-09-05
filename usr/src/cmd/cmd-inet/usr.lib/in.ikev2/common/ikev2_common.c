@@ -180,7 +180,7 @@ ikev2_sa_from_rule(pkt_t *restrict pkt, const config_rule_t *restrict rule,
 static boolean_t
 add_rule_xform(pkt_sa_state_t *restrict pss, const config_xf_t *restrict xf)
 {
-	encr_modes_t mode = ikev2_encr_mode(xf->xf_encr);
+	encr_modes_t mode = encr_data[xf->xf_encr].ed_mode;
 	boolean_t ok = B_TRUE;
 
 	/*
@@ -337,8 +337,8 @@ match_rule_prop_cb(ikev2_sa_proposal_t *prop, uint64_t spi, uint8_t *buf,
 	if (!SA_RESULT_HAS(data->rd_res, IKEV2_XF_ENCR) ||
 	    !SA_RESULT_HAS(data->rd_res, IKEV2_XF_PRF) ||
 	    !SA_RESULT_HAS(data->rd_res, IKEV2_XF_DH) ||
-	    (!MODE_IS_COMBINED(ikev2_encr_mode(data->rd_res->sar_encr) &&
-	    !SA_RESULT_HAS(data->rd_res, IKEV2_XF_AUTH))))
+	    (!MODE_IS_COMBINED(encr_data[data->rd_res->sar_encr].ed_mode) &&
+	    !SA_RESULT_HAS(data->rd_res, IKEV2_XF_AUTH)))
 		return (B_TRUE);
 
 	/* A match.  Stop walk of remaining proposals */

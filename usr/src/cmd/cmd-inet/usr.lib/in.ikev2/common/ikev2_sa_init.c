@@ -713,10 +713,10 @@ ikev2_sa_keygen(ikev2_sa_result_t *restrict result, pkt_t *restrict init,
 	CK_OBJECT_HANDLE skeyseed = CK_INVALID_HANDLE;
 	size_t encrlen = result->sar_encr_keylen;
 	size_t prflen = ikev2_prf_keylen(result->sar_prf);
-	size_t authlen = ikev2_auth_keylen(result->sar_auth);
+	size_t authlen = auth_data[result->sar_auth].ad_keylen;
 	int p11prf = ikev2_prf_to_p11(result->sar_prf);
 	int p11encr = encr_data[result->sar_encr].ed_p11id;
-	int p11auth = ikev2_auth_to_p11(result->sar_auth);
+	int p11auth = auth_data[result->sar_auth].ad_p11id;
 	prfp_t prfp = { 0 };
 
 	if (encrlen == 0)
