@@ -138,6 +138,7 @@ ikev2_dispatch(pkt_t *pkt, const struct sockaddr_storage *restrict l_addr,
 	local_spi = I2SA_LOCAL_SPI(i2sa);
 
 dispatch:
+	/* Regardless of how we get here, i2sa is refheld, pass to pkt */
 	pkt->pkt_sa = i2sa;
 	if (worker_dispatch(EVT_PACKET, pkt, local_spi % nworkers))
 		return;
@@ -146,8 +147,6 @@ dispatch:
 	    r_addr, l_addr, local_spi, remote_spi);
 
 discard:
-	if (i2sa != NULL)
-		I2SA_REFRELE(i2sa);
 	ikev2_pkt_free(pkt);
 }
 
@@ -182,7 +181,7 @@ ikev2_send(pkt_t *pkt, boolean_t is_error)
 	s = select_socket(i2sa, NULL);
 	len = sendfromto(s, pkt_start(pkt), pkt_len(pkt), &i2sa->laddr,
 	    &i2sa->raddr);
-	if (len == -1 && pkt != i2sa->init) {
+	if (len == -1 && pkt != i2sa->init_i && pkt != i2sa->init_r) {
 		/*
 		 * If it failed, should we still save it and let
 		 * ikev2_retransmit attempt?  For now, no.
@@ -306,7 +305,7 @@ ikev2_discard_pkt(pkt_t *pkt)
 			sa->last_sent = NULL;
 
 		/* Keep the initial packet for duration of IKE SA */
-		if (last != sa->init)
+		if (last != sa->init_i && last != sa->init_r)
 			ikev2_pkt_free(last);
 		discard = B_FALSE;
 		goto done;

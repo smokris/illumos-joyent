@@ -60,6 +60,8 @@ ikev2_pkt_new_initiator(ikev2_sa_t *i2sa, ikev2_exch_t exch_type)
 		return (NULL);
 
 	pkt->pkt_header.flags = IKEV2_FLAG_INITIATOR;
+	pkt->pkt_sa = i2sa;
+	I2SA_REFHOLD(i2sa);
 	return (pkt);
 }
 
@@ -79,6 +81,8 @@ ikev2_pkt_new_response(const pkt_t *init)
 	if (pkt == NULL)
 		return (NULL);
 
+	pkt->pkt_sa = init->pkt_sa;
+	I2SA_REFHOLD(pkt->pkt_sa);
 	pkt->pkt_header.flags = IKEV2_FLAG_RESPONSE;
 	return (pkt);
 }
@@ -694,6 +698,8 @@ ikev2_walk_xfattrs(uint8_t *restrict start, size_t len, ikev2_xfattr_cb_t cb,
 void
 ikev2_pkt_free(pkt_t *pkt)
 {
+	if (pkt->pkt_sa != NULL)
+		I2SA_REFRELE(pkt->pkt_sa);
 	pkt_free(pkt);
 }
 

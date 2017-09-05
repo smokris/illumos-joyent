@@ -94,7 +94,7 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 		return;
 	}
 
-	sa->init = pkt;
+	sa->init_r = pkt;
 
 	/* RFC7296 2.10 nonce length should be at least half key size of PRF */
 	noncelen = ikev2_prf_keylen(sa_result.sar_prf) / 2;
@@ -152,9 +152,61 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 	return;
 
 fail:
+	sa->init_r = NULL;
 	ikev2_pkt_free(pkt);
 	ikev2_pkt_free(resp);
 	/* XXX: Delete larval IKE SA? anything else? */
+}
+
+/*
+ * If we get a cookie request or a new DH group in response to our
+ * initiated IKE_SA_INIT exchange, restart with the new parameters.
+ *
+ * XXX: Better name?
+ */
+static boolean_t
+redo_init(pkt_t *pkt)
+{
+	ikev2_sa_t *sa = pkt->pkt_sa;
+	pkt_notify_t *cookie = pkt_get_notify(pkt, IKEV2_N_COOKIE, NULL);
+	pkt_notify_t *invalid_ke = pkt_get_notify(pkt,
+	    IKEV2_N_INVALID_KE_PAYLOAD, NULL);
+
+	if (cookie == NULL && invalid_ke == NULL)
+		return (B_FALSE);
+
+	pkt_t *out = pkt->pkt_sa->init_i;
+	pkt_payload_t *nonce = pkt_get_payload(out, IKEV2_PAYLOAD_NONCE, NULL);
+	ikev2_dh_t dh = IKEV2_DH_NONE;
+
+	pkt->pkt_sa->init_i = NULL;
+
+	if (invalid_ke != NULL) {
+		if (invalid_ke->pn_len != sizeof (uint16_t)) {
+			/*
+			 * The notification does not have the correct format
+			 */
+			bunyan_info(sa->i2sa_log,
+			    "INVALID_KE_PAYLOAD notification does not "
+			    "include a 16-bit DH group payload",
+			    BUNYAN_T_UINT32, "ntfylen",
+			    (uint32_t)invalid_ke->pn_len, BUNYAN_T_END);
+
+			/* We will just ignore it for now */
+			ikev2_pkt_free(pkt);
+			return (B_FALSE);
+		}
+
+		uint16_t val = BE_IN16(invalid_ke->pn_ptr);
+		dh = val;
+	}
+
+	(void) cancel_timeout(TE_TRANSMIT, out, sa->i2sa_log);
+	ikev2_sa_init_outbound(sa, cookie->pn_ptr, cookie->pn_len,
+	    dh, nonce->pp_ptr, nonce->pp_len);
+
+	ikev2_pkt_free(out);
+	return (B_TRUE);
 }
 
 /*
@@ -164,15 +216,10 @@ void
 ikev2_sa_init_inbound_resp(pkt_t *pkt)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
-	pkt_notify_t *cookie = pkt_get_notify(pkt, IKEV2_N_COOKIE, NULL);
-	pkt_notify_t *invalid_ke = pkt_get_notify(pkt,
-	    IKEV2_N_INVALID_KE_PAYLOAD, NULL);
-	pkt_notify_t *no_proposal = pkt_get_notify(pkt,
-	    IKEV2_N_NO_PROPOSAL_CHOSEN, NULL);
 	pkt_payload_t *ke_r = pkt_get_payload(pkt, IKEV2_PAYLOAD_KE, NULL);
 	ikev2_sa_result_t sa_result = { 0 };
 
-	if (no_proposal != NULL) {
+	if (pkt_get_notify(pkt, IKEV2_N_NO_PROPOSAL_CHOSEN, NULL) != NULL) {
 		bunyan_error(sa->i2sa_log,
 		    "IKE_SA_INIT exchange failed, no proposal chosen",
 		    BUNYAN_T_END);
@@ -181,42 +228,9 @@ ikev2_sa_init_inbound_resp(pkt_t *pkt)
 		return;
 	}
 
-	if (cookie != NULL || invalid_ke != NULL) {
-		pkt_t *out = pkt->pkt_sa->init;
-		pkt_payload_t *nonce =
-		    pkt_get_payload(out, IKEV2_PAYLOAD_NONCE, NULL);
-		ikev2_dh_t dh = IKEV2_DH_NONE;
-
-		if (invalid_ke != NULL) {
-			if (invalid_ke->pn_len != sizeof (uint16_t)) {
-				/*
-				 * The notification does not have the correct
-				 * format
-				 */
-				bunyan_info(sa->i2sa_log,
-				    "INVALID_KE_PAYLOAD notification does not "
-				    "include a 16-bit DH group payload",
-				    BUNYAN_T_UINT32, "ntfylen",
-				    (uint32_t)invalid_ke->pn_len, BUNYAN_T_END);
-
-				/* We will just ignore it for now */
-				ikev2_pkt_free(pkt);
-				return;
-			}
-
-			uint16_t val = 0;
-			(void) memcpy(&val, invalid_ke->pn_ptr,
-			    sizeof (uint16_t));
-			dh = ntohs(val);
-		}
-
-		(void) cancel_timeout(TE_TRANSMIT, out, sa->i2sa_log);
-		ikev2_sa_init_outbound(sa, cookie->pn_ptr, cookie->pn_len,
-		    dh, nonce->pp_ptr, nonce->pp_len);
-
-		ikev2_pkt_free(out);
+	/* Did we get a request for cookies or a new DH group? */
+	if (redo_init(pkt))
 		return;
-	}
 
 	if (!check_nats(pkt))
 		goto fail;
@@ -234,7 +248,7 @@ ikev2_sa_init_inbound_resp(pkt_t *pkt)
 	if (!dh_derivekey(sa->dh_privkey, ke_r->pp_ptr, ke_r->pp_len,
 	    &sa->dh_key, sa->i2sa_log))
 		goto fail;
-	if (!ikev2_sa_keygen(&sa_result, sa->init, pkt))
+	if (!ikev2_sa_keygen(&sa_result, sa->init_i, pkt))
 		goto fail;
 
 	return;
@@ -288,13 +302,14 @@ ikev2_sa_init_outbound(ikev2_sa_t *restrict i2sa, uint8_t *restrict cookie,
 
 	/* XXX: CERTREQ */
 
-	i2sa->init = pkt;
+	i2sa->init_i = pkt;
 
 	if (!ikev2_send(pkt, B_FALSE))
 		goto fail;
 	return;
 
 fail:
+	i2sa->init_i = NULL;
 	ikev2_pkt_free(pkt);
 	/* XXX: destroy SA? */
 }

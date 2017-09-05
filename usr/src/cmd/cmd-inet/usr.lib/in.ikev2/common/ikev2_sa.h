@@ -115,7 +115,8 @@ struct ikev2_sa_s {
 	uint32_t	outmsgid;	/* Next msgid for outbound packets. */
 	uint32_t	inmsgid;	/* Next expected inbound msgid. */
 
-	struct pkt_s	*init;  	/* IKE_SA_INIT packet. */
+	struct pkt_s	*init_i;  	/* IKE_SA_INIT packet. */
+	struct pkt_s	*init_r;
 	struct pkt_s	*last_resp_sent;
 	struct pkt_s	*last_sent;
 	struct pkt_s	*last_recvd;
@@ -170,6 +171,10 @@ struct ikev2_child_sa {
 #define	I2SA_REMOTE_SPI(i2sa) \
 	(((i2sa)->flags & I2SA_INITIATOR) ? (i2sa)->r_spi : \
 	    (i2sa)->i_spi)
+
+#define	I2SA_REMOTE_INIT(i2sa) \
+	(((i2sa)->flags & I2SA_INITIATOR) ? (i2sa)->init_r : \
+	    (i2sa)->init_i)
 
 #define	I2SA_IS_NAT(i2sa) \
 	(!!((i2sa)->flags && (I2SA_NAT_LOCAL|I2SA_NAT_REMOTE)))

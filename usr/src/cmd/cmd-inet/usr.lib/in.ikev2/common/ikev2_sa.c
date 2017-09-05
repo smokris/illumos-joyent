@@ -230,7 +230,10 @@ ikev2_sa_alloc(boolean_t initiator,
 			ASSERT(i2sa->refcnt == 1);
 
 			/* XXX: refhold i2sa in init_pkt */
-			i2sa->init = init_pkt;
+			if (initiator)
+				i2sa->init_i = init_pkt;
+			else
+				i2sa->init_r = init_pkt;
 
 			/* refhold for caller */
 			I2SA_REFHOLD(i2sa);
@@ -315,44 +318,56 @@ ikev2_sa_condemn(ikev2_sa_t *i2sa)
 
 	PTH(pthread_mutex_lock(&i2sa->lock));
 	i2sa->flags |= I2SA_CONDEMNED;
+
+	if (i2sa->last_sent != NULL)
+		cancel_timeout(TE_TRANSMIT, i2sa->last_sent, i2sa->i2sa_log);
+
+	if (cancel_timeout(TE_SA_EXPIRE, i2sa, i2sa->i2sa_log) > 0)
+		I2SA_REFRELE(i2sa);
+
+	/*
+ 	* Since packets keep a reference to the SA they are associated with,
+ 	* we must free them here so that their references go away
+ 	*/
+	ikev2_pkt_free(i2sa->init_i);
+	ikev2_pkt_free(i2sa->init_r);
+	ikev2_pkt_free(i2sa->last_resp_sent);
+	ikev2_pkt_free(i2sa->last_sent);
+	ikev2_pkt_free(i2sa->last_recvd);
+	i2sa->init_i = NULL;
+	i2sa->init_r = NULL;
+	i2sa->last_resp_sent = NULL;
+	i2sa->last_sent = NULL;
+	i2sa->last_recvd = NULL;
+
 	PTH(pthread_mutex_unlock(&i2sa->lock));
 
 	I2SA_REFRELE(i2sa);
 	/* XXX: should we do anything else here? */
 }
 
+/*
+ * Should normally only be called as a result of I2SA_REFRELE()
+ */
 void
 ikev2_sa_free(ikev2_sa_t *i2sa)
 {
 	if (i2sa == NULL)
 		return;
 
-	ASSERT(i2sa->refcnt == 0);
-
+	VERIFY3U(i2sa->refcnt, ==, 0);
+	VERIFY3P(i2sa->init_i, ==, NULL);
+	VERIFY3P(i2sa->init_r, ==, NULL);
+	VERIFY3P(i2sa->last_resp_sent, ==, NULL);
+	VERIFY3P(i2sa->last_sent, ==, NULL);
+	VERIFY3P(i2sa->last_recvd, ==, NULL);
+	
 	if (i2sa->i2sa_rule != NULL)
 		CONFIG_REFRELE(i2sa->i2sa_rule->rule_config);
 
 	/* All unauthenticated IKEv2 SAs are considered larval */
 	if (!(i2sa->flags & I2SA_AUTHENTICATED))
 		dec_half_open();
-
-	/*
-	 * XXX: we have potential circular references here
-	 * as ikev2_pkt_t->sa and i2sa->init,
-	 * i2sa->last_{resp_sent,sent,recvd} reference each other.
-	 *
-	 * We will need to sit and think about the lifecycles of
-	 * these packets to make sure when we want this SA to go
-	 * away for any reason, everything is properly cleaned up.
-	 *
-	 * For now, my thought is to punt until after the
-	 * IKE_SA_INIT and IKE_AUTH exchanges are written, as that
-	 * will likely help identify the best approach to resolving this.
-	 */
-	pkt_free(i2sa->init);
-	pkt_free(i2sa->last_resp_sent);
-	pkt_free(i2sa->last_sent);
-	pkt_free(i2sa->last_recvd);
 
 #define	DESTROY(x, y) pkcs11_destroy_obj(#y, &(x)->y, i2sa->i2sa_log)
 	DESTROY(i2sa, dh_pubkey);
@@ -869,7 +884,7 @@ i2sa_compare(const void *larg, const void *rarg, void *arg)
 		cmpdata.rspi = I2SA_REMOTE_SPI(r);
 		cmpdata.raddr.sau_ss = (struct sockaddr_storage *)&r->raddr;
 		cmpdata.laddr.sau_ss = (struct sockaddr_storage *)&r->laddr;
-		cmpdata.init_pkt = r->init;
+		cmpdata.init_pkt = I2SA_REMOTE_INIT(r);
 		carg = &cmpdata;
 	}
 
@@ -899,13 +914,13 @@ i2sa_compare(const void *larg, const void *rarg, void *arg)
 	 * an issue for half-opened remotely initiated SAs, as this is the
 	 * only time the local SPI is not yet known.
 	 */
-	cmp = memcmp(l->init->pkt_raw, carg->init_pkt->pkt_raw,
-	    MIN(pkt_len(l->init), pkt_len(carg->init_pkt)));
+	cmp = memcmp(I2SA_REMOTE_INIT(l)->pkt_raw, carg->init_pkt->pkt_raw,
+	    MIN(pkt_len(I2SA_REMOTE_INIT(l)), pkt_len(carg->init_pkt)));
 	if (cmp != 0)
 		return ((cmp < 0) ? -1 : 1);
-	if (pkt_len(l->init) < pkt_len(carg->init_pkt))
+	if (pkt_len(I2SA_REMOTE_INIT(l)) < pkt_len(carg->init_pkt))
 		return (-1);
-	if (pkt_len(l->init) > pkt_len(carg->init_pkt))
+	if (pkt_len(I2SA_REMOTE_INIT(l)) > pkt_len(carg->init_pkt))
 		return (1);
 
 	return (0);
