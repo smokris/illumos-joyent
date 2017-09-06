@@ -76,6 +76,7 @@ typedef enum keyword_e {
 	KW_P2_PFS,
 	KW_LOCAL_ID,
 	KW_REMOTE_ID,
+	KW_IMMEDIATE,
 	KW_MAX
 } keyword_t;
 
@@ -117,6 +118,7 @@ static struct {
 	{ "p2_pfs", B_TRUE, B_FALSE },
 	{ "local_id", B_TRUE, B_FALSE },
 	{ "remote_id", B_TRUE, B_FALSE },
+	{ "immediate", B_FALSE, B_FALSE },
 };
 
 static struct {
@@ -505,6 +507,7 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 		case KW_REMOTE_ADDR:
 		case KW_LOCAL_ID:
 		case KW_REMOTE_ID:
+		case KW_IMMEDIATE:
 			tok_error(t, blog, "Configuration parameter cannot be "
 			    "used outside of a rule definition", "parameter");
 			goto fail;
@@ -838,6 +841,7 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 	boolean_t seen_p2_pfs = B_FALSE;
 	boolean_t seen_p1_xform = B_FALSE;
 	boolean_t has_non_preshared = B_FALSE;
+	boolean_t seen_immediate = B_FALSE;
 
 	*rulep = NULL;
 
@@ -943,6 +947,11 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 				goto fail;
 			}
 			seen_local_id_type = B_TRUE;
+			break;
+		case KW_IMMEDIATE:
+			if (seen_immediate)
+				goto duplicate;
+			rule->rule_immediate = B_TRUE;
 			break;
 		default:
 			tok_log(t, ic->ic_log, BUNYAN_L_ERROR, "Configuration "

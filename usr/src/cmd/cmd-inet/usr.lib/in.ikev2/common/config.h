@@ -104,6 +104,7 @@ typedef struct config_rule_s {
 	ikev2_dh_t		rule_p2_dh;
 	char			*rule_local_id;
 	char			*rule_remote_id;
+	boolean_t		rule_immediate;
 } config_rule_t;
 
 struct config_s {

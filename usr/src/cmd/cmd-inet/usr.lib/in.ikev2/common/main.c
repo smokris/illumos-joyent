@@ -31,6 +31,7 @@
 #include "timer.h"
 #include "worker.h"
 #include "config.h"
+#include "ikev2_sa.h"
 
 extern void pkt_init(void);
 extern void pkt_fini(void);
@@ -42,6 +43,8 @@ static void signal_init(void);
 static void event(event_t, void *);
 static void do_signal(int);
 static void main_loop(void);
+
+static void do_immediate(void);
 
 static const char *port_source_str(ushort_t);
 static const char *event_str(event_t);
@@ -136,12 +139,51 @@ main(int argc, char **argv)
 	/* XXX: make these configurable */
 	worker_init(8, 8);
 
+	do_immediate();
 	main_loop();
 
 	pkt_fini();
 	pkcs11_fini();
 
 	return (0);
+}
+
+static void
+do_immediate(void)
+{
+	config_t *cfg = config_get();
+
+	for (size_t i = 0; cfg->cfg_rules[i] != NULL; i++) {
+		if (!cfg->cfg_rules[i]->rule_immediate)
+			continue;
+
+		config_rule_t *rule = cfg->cfg_rules[i];
+		ikev2_sa_t *sa = NULL;
+		struct sockaddr_storage laddr = { 0 };
+		struct sockaddr_storage raddr = { 0 };
+		sockaddr_u_t sl = { .sau_ss = &laddr };
+		sockaddr_u_t sr = { .sau_ss = &raddr };
+
+		VERIFY3S(rule->rule_local_addr[0].cfa_type, ==, CFG_ADDR_IPV4);
+		VERIFY3S(rule->rule_remote_addr[0].cfa_type, ==, CFG_ADDR_IPV4);
+
+		sl.sau_sin->sin_family = AF_INET;
+		sl.sau_sin->sin_port = 500;
+		(void) memcpy(&sl.sau_sin->sin_addr,
+		    &rule->rule_local_addr[0].cfa_startu.cfa_ip4,
+		    sizeof (in_addr_t));
+
+		sr.sau_sin->sin_family = AF_INET;
+		sr.sau_sin->sin_port = 500;
+		(void) memcpy(&sr.sau_sin->sin_addr,
+		    &rule->rule_remote_addr[0].cfa_startu.cfa_ip4,
+		    sizeof (in_addr_t));
+
+		sa = ikev2_sa_alloc(B_TRUE, NULL, &laddr, &raddr);
+		VERIFY3P(sa, !=, NULL);
+
+		worker_dispatch(EVT_START, sa, I2SA_LOCAL_SPI(sa) % nworkers);
+	}
 }
 
 static void

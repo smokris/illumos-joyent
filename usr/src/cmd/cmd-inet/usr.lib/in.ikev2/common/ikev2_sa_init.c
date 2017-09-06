@@ -277,7 +277,7 @@ fail:
 }
 
 /*
- * Start a new IKE_SA_INIT using the given larval IKE SA.
+ * Start a new IKE_SA_INIT using the given larval refheld IKE SA.
  * The other parameters are normally NULL / 0 and are used when the response
  * requests a cookie or a new DH group.
  */
@@ -325,12 +325,15 @@ ikev2_sa_init_outbound(ikev2_sa_t *restrict i2sa, uint8_t *restrict cookie,
 
 	if (!ikev2_send(pkt, B_FALSE))
 		goto fail;
+
+	I2SA_REFRELE(i2sa);
 	return;
 
 fail:
 	i2sa->init_i = NULL;
 	ikev2_sa_condemn(i2sa);
 	ikev2_pkt_free(pkt);
+	I2SA_REFRELE(i2sa);
 }
 
 static boolean_t

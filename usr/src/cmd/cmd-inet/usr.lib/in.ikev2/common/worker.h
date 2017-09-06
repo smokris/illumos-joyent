@@ -25,7 +25,8 @@ extern "C" {
 typedef enum worker_evt {
 	EVT_NONE,
 	EVT_PACKET,
-	EVT_PFKEY
+	EVT_PFKEY,
+	EVT_START	/* Temp. for testing */
 } worker_evt_t;
 
 extern size_t nworkers;

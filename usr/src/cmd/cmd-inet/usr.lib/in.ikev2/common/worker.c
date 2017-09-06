@@ -333,6 +333,10 @@ worker(void *arg)
 			case EVT_PFKEY:
 				/* TODO */
 				break;
+			case EVT_START:
+				ikev2_sa_init_outbound(wi.wi_data, NULL, 0,
+				    IKEV2_DH_NONE, NULL, 0);
+				break;
 			}
 
 			PTH(pthread_mutex_lock(&wq->wq_lock));
@@ -434,6 +438,7 @@ worker_evt_str(worker_evt_t evt)
 	STR(EVT_NONE);
 	STR(EVT_PACKET);
 	STR(EVT_PFKEY);
+	STR(EVT_START);
 	}
 	return ("UNKNOWN");
 }
