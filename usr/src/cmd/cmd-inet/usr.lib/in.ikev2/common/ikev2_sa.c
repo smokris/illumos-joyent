@@ -298,6 +298,9 @@ i2sa_expire_cb(te_event_t evt, void *data)
 
 	ikev2_sa_t *i2sa = (ikev2_sa_t *)data;
 
+	bunyan_info(i2sa->i2sa_log, "Larval IKE SA timeout; deleting",
+	    BUNYAN_T_END);
+
 	ikev2_sa_condemn(i2sa);
 	/* XXX: Anything else? */
 	I2SA_REFRELE(i2sa);
@@ -321,7 +324,7 @@ ikev2_sa_condemn(ikev2_sa_t *i2sa)
 	i2sa->flags |= I2SA_CONDEMNED;
 
 	if (i2sa->last_sent != NULL)
-		cancel_timeout(TE_TRANSMIT, i2sa->last_sent, i2sa->i2sa_log);
+		(void) cancel_timeout(TE_TRANSMIT, i2sa, i2sa->i2sa_log);
 
 	if (cancel_timeout(TE_P1_SA_EXPIRE, i2sa, i2sa->i2sa_log) > 0)
 		I2SA_REFRELE(i2sa);

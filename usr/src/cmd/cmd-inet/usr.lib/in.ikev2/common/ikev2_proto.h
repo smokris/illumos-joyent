@@ -33,8 +33,7 @@ void ikev2_dispatch(struct pkt_s *, const struct sockaddr_storage *,
 boolean_t ikev2_send(struct pkt_s *, boolean_t);
 void ikev2_inbound(struct pkt_s *);
 
-void ikev2_sa_init_inbound_init(struct pkt_s *);
-void ikev2_sa_init_inbound_resp(struct pkt_s *);
+void ikev2_sa_init_inbound(struct pkt_s *);
 void ikev2_sa_init_outbound(struct ikev2_sa_s *restrict, uint8_t *restrict,
     size_t, ikev2_dh_t, uint8_t *restrict, size_t);
 

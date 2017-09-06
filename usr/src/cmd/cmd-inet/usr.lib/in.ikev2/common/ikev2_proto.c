@@ -51,6 +51,10 @@
 static void ikev2_retransmit(te_event_t, void *);
 static int select_socket(const ikev2_sa_t *, const struct sockaddr_storage *);
 
+static ikev2_sa_t *ikev2_try_new_sa(pkt_t *restrict,
+    const struct sockaddr_storage *restrict,
+    const struct sockaddr_storage *restrict);
+
 /*
  * Find the IKEv2 SA for a given inbound packet (or create a new one if
  * an IKE_SA_INIT exchange) and send packet to worker.
@@ -64,8 +68,34 @@ ikev2_dispatch(pkt_t *pkt, const struct sockaddr_storage *restrict l_addr,
 	uint64_t remote_spi = INBOUND_REMOTE_SPI(&pkt->pkt_header);
 
 	i2sa = ikev2_sa_get(local_spi, remote_spi, l_addr, r_addr, pkt);
-	if (i2sa != NULL)
-		goto dispatch;
+	if (i2sa == NULL) {
+		i2sa = ikev2_try_new_sa(pkt, l_addr, r_addr);
+		if (i2sa == NULL)
+			return;
+	}
+
+	local_spi = I2SA_LOCAL_SPI(i2sa);
+	pkt->pkt_sa = i2sa;
+	if (worker_dispatch(EVT_PACKET, pkt, local_spi % nworkers))
+		return;
+
+	SPILOG(info, log, "worker queue full; discarding packet",
+	    r_addr, l_addr, local_spi, remote_spi);
+	ikev2_pkt_free(pkt);
+}
+
+/*
+ * Determine if this pkt is an request for a new IKE SA.  If so, create
+ * a larval IKE SA and return it, otherwise discard the packet.
+ */
+static ikev2_sa_t *
+ikev2_try_new_sa(pkt_t *restrict pkt,
+    const struct sockaddr_storage *restrict l_addr,
+    const struct sockaddr_storage *restrict r_addr)
+{
+	ikev2_sa_t *i2sa = NULL;
+	uint64_t local_spi = INBOUND_LOCAL_SPI(&pkt->pkt_header);
+	uint64_t remote_spi = INBOUND_REMOTE_SPI(&pkt->pkt_header);
 
 	if (local_spi != 0) {
 		/*
@@ -84,18 +114,12 @@ ikev2_dispatch(pkt_t *pkt, const struct sockaddr_storage *restrict l_addr,
 		SPILOG(debug, log, "cannot find existing IKE SA with "
 		    "matching local SPI value; discarding",
 		    r_addr, l_addr, local_spi, remote_spi);
-
-		ikev2_pkt_free(pkt);
-		return;
-	}
-
-	if (remote_spi == 0) {
-		/*
-		 * XXX: this might require special processing.
-		 * Discard for now.
-		 */
 		goto discard;
 	}
+
+	/* XXX: This might require special processing.  Discard for now. */
+	if (remote_spi == 0)
+		goto discard;
 
 	/*
 	 * If the local SPI == 0, this can only be an IKE SA INIT
@@ -120,7 +144,7 @@ ikev2_dispatch(pkt_t *pkt, const struct sockaddr_storage *restrict l_addr,
 	 * IKE_EXCH_IKE_SA_INIT exchange.
 	 */
 	if (!(pkt->pkt_header.flags & IKEV2_FLAG_INITIATOR)) {
-		SPILOG(debug, log, "cannot find existing SA", r_addr, l_addr,
+		SPILOG(debug, log, "Cannot find existing SA", r_addr, l_addr,
 		    local_spi, remote_spi);
 		goto discard;
 	}
@@ -135,25 +159,17 @@ ikev2_dispatch(pkt_t *pkt, const struct sockaddr_storage *restrict l_addr,
 		    l_addr, local_spi, remote_spi);
 		goto discard;
 	}
-	local_spi = I2SA_LOCAL_SPI(i2sa);
 
-dispatch:
-	/* Regardless of how we get here, i2sa is refheld, pass to pkt */
-	pkt->pkt_sa = i2sa;
-	if (worker_dispatch(EVT_PACKET, pkt, local_spi % nworkers))
-		return;
-
-	SPILOG(info, log, "worker queue full; discarding packet",
-	    r_addr, l_addr, local_spi, remote_spi);
+	return (i2sa);
 
 discard:
 	ikev2_pkt_free(pkt);
+	return (NULL);
 }
 
 /*
  * Sends a packet out.  If pkt is an error reply, is_error should be
  * set so that it is not saved for possible retransmission.
- *
  */
 boolean_t
 ikev2_send(pkt_t *pkt, boolean_t is_error)
@@ -163,60 +179,74 @@ ikev2_send(pkt_t *pkt, boolean_t is_error)
 	int s = -1;
 	boolean_t initiator = !!(pkt->pkt_header.flags & IKEV2_FLAG_INITIATOR);
 
-	if (initiator) {
-		/*
-		 * We should not send out a new exchange while still waiting
-		 * on a response from a previous request
-		 */
-		ASSERT3P(sa->last_sent, ==, NULL);
-		pkt->pkt_header.msgid = i2sa->outmsgid;
-	}
-
 	if (!ikev2_pkt_done(pkt)) {
 		I2SA_REFRELE(i2sa);
 		ikev2_pkt_free(pkt);
 		return (B_FALSE);
 	}
 
+	/*
+	 * We should not send out a new exchange while still waiting
+	 * on a response from a previous request
+	 */
+	if (initiator)
+		VERIFY3P(i2sa->last_sent, ==, NULL);
+
 	s = select_socket(i2sa, NULL);
 	len = sendfromto(s, pkt_start(pkt), pkt_len(pkt), &i2sa->laddr,
 	    &i2sa->raddr);
-	if (len == -1 && pkt != i2sa->init_i && pkt != i2sa->init_r) {
-		/*
-		 * If it failed, should we still save it and let
-		 * ikev2_retransmit attempt?  For now, no.
-		 *
-		 * Note: sendfromto() should have logged any relevant errors
-		 */
-		I2SA_REFRELE(i2sa);
-		ikev2_pkt_free(pkt);
+	if (len == -1) {
+		if (pkt != i2sa->init_i && pkt != i2sa->init_r) {
+			/*
+			 * If the send failed, should we still save it and let
+			 * ikev2_retransmit attempt?  For now, no.
+			 *
+			 * Note: sendfromto() should have logged any relevant
+			 * errors
+			 */
+			I2SA_REFRELE(i2sa);
+			ikev2_pkt_free(pkt);
+		}
 		return (B_FALSE);
 	}
 
-	PTH(pthread_mutex_lock(&i2sa->lock));
-	if (initiator) {
-		/* XXX: bump msgid & save for error messages? */
-
-		i2sa->outmsgid++;
-		i2sa->last_sent = pkt;
-
-		if (!is_error) {
-			config_t *cfg = config_get();
-			VERIFY(schedule_timeout(TE_TRANSMIT, ikev2_retransmit,
-			    pkt, cfg->cfg_retry_init));
-			CONFIG_REFRELE(cfg);
-		}
-	} else {
-		if (pkt->pkt_header.exch_type != IKEV2_EXCH_IKE_SA_INIT ||
-		    pkt->pkt_raw[1] != 0) {
-			i2sa->last_resp_sent = pkt;
-		}
-	}
-	PTH(pthread_mutex_unlock(&i2sa->lock));
-
+	/*
+	 * For error messages, don't expect a response, so also don't try
+	 * to retransmit
+	 */
 	if (is_error) {
-		I2SA_REFRELE(i2sa);
 		ikev2_pkt_free(pkt);
+		return (B_TRUE);
+	}
+
+	if (initiator) {
+		config_t *cfg = config_get();
+		hrtime_t retry = cfg->cfg_retry_init;
+
+		CONFIG_REFRELE(cfg);
+
+		PTH(pthread_mutex_lock(&i2sa->lock));
+		i2sa->last_sent = pkt;
+		PTH(pthread_mutex_unlock(&i2sa->lock));
+
+		(void) schedule_timeout(TE_TRANSMIT, ikev2_retransmit, i2sa,
+		    retry);
+		return (B_TRUE);
+	}
+
+	/*
+	 * Normally, we save the last repsonse packet we've sent in order to
+	 * re-send the last response in case the remote system retransmits
+	 * the last exchange it initiated.  However for IKE_SA_INIT exchanges,
+	 * responses of the form HDR(A,0) are not saved, as these should be
+	 * either a request for cookies, a new DH group, or a failed exchange
+	 * (no proposal chosen).
+	 */
+	if (pkt->pkt_header.exch_type != IKEV2_EXCH_IKE_SA_INIT ||
+	    pkt->pkt_raw[1] != 0) {
+		PTH(pthread_mutex_lock(&i2sa->lock));
+		i2sa->last_resp_sent = pkt;
+		PTH(pthread_mutex_unlock(&i2sa->lock));
 	}
 
 	return (B_TRUE);
@@ -228,8 +258,8 @@ ikev2_send(pkt_t *pkt, boolean_t is_error)
 static void
 ikev2_retransmit(te_event_t event, void *data)
 {
-	pkt_t *pkt = data;
-	ikev2_sa_t *sa = pkt->pkt_sa;
+	ikev2_sa_t *sa = data;
+	pkt_t *pkt = sa->last_sent;
 	hrtime_t retry = 0;
 	ssize_t len;
 
@@ -259,7 +289,7 @@ ikev2_retransmit(te_event_t event, void *data)
 	    &sa->laddr, &sa->raddr);
 	/* XXX: sendfromto() will log if it fails, do anything else? */
 
-	VERIFY(schedule_timeout(TE_TRANSMIT, ikev2_retransmit, pkt, retry));
+	VERIFY(schedule_timeout(TE_TRANSMIT, ikev2_retransmit, sa, retry));
 }
 
 /*
@@ -284,6 +314,7 @@ ikev2_discard_pkt(pkt_t *pkt)
 		if (msgid != sa->outmsgid) {
 			/*
 			 * Not a response to our last message.
+			 *
 			 * XXX: Send INVALID_MESSAGE_ID notification in
 			 * certain circumstances.  Drop for now.
 			 */
@@ -298,15 +329,17 @@ ikev2_discard_pkt(pkt_t *pkt)
 		 * Corner case: this isn't the actual response in the
 		 * IKE_SA_INIT exchange, but a request to either use
 		 * cookies or a different DH group.  In that case we don't
-		 * want to treat it like a response (ending the exchange).
+		 * want to treat it like a response (ending the exchange
+		 * and resetting sa->last_sent).
 		 */
 		if (pkt->pkt_header.exch_type != IKEV2_EXCH_IKE_SA_INIT ||
 		    pkt->pkt_header.responder_spi != 0)
 			sa->last_sent = NULL;
 
-		/* Keep the initial packet for duration of IKE SA */
+		/* Keep IKE_SA_INIT packets until we've authed or time out */
 		if (last != sa->init_i && last != sa->init_r)
 			ikev2_pkt_free(last);
+
 		discard = B_FALSE;
 		goto done;
 	}
@@ -357,10 +390,7 @@ ikev2_inbound(pkt_t *pkt)
 
 	switch (pkt->pkt_header.exch_type) {
 	case IKEV2_EXCH_IKE_SA_INIT:
-		if (pkt->pkt_header.flags & IKEV2_FLAG_INITIATOR)
-			ikev2_sa_init_inbound_init(pkt);
-		else
-			ikev2_sa_init_inbound_resp(pkt);
+		ikev2_sa_init_inbound(pkt);
 		break;
 	case IKEV2_EXCH_IKE_AUTH:
 	case IKEV2_EXCH_CREATE_CHILD_SA:

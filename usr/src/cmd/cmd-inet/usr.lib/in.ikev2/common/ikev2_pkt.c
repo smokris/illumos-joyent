@@ -46,18 +46,25 @@
 pkt_t *
 ikev2_pkt_new_initiator(ikev2_sa_t *i2sa, ikev2_exch_t exch_type)
 {
-	pkt_t *pkt;
-	uint32_t msgid = i2sa->outmsgid;
+	pkt_t *pkt = NULL;
+	uint32_t msgid = 0;
 
-	if (exch_type == IKEV2_EXCH_IKE_SA_INIT)
-		msgid = 0;
+	PTH(pthread_mutex_lock(&i2sa->lock));
+	if (exch_type != IKEV2_EXCH_IKE_SA_INIT)
+		msgid = i2sa->outmsgid++;
 
 	pkt = pkt_out_alloc(I2SA_LOCAL_SPI(i2sa),
 	    I2SA_REMOTE_SPI(i2sa),
 	    IKEV2_VERSION,
 	    exch_type, msgid);
-	if (pkt == NULL)
+
+	if (pkt == NULL) {
+		i2sa->outmsgid--;
+		PTH(pthread_mutex_unlock(&i2sa->lock));
 		return (NULL);
+	}
+
+	PTH(pthread_mutex_unlock(&i2sa->lock));
 
 	pkt->pkt_header.flags = IKEV2_FLAG_INITIATOR;
 	pkt->pkt_sa = i2sa;

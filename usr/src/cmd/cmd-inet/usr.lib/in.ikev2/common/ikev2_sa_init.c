@@ -34,6 +34,9 @@
 #include "prf.h"
 #include "dh.h"
 
+static void ikev2_sa_init_inbound_init(pkt_t *);
+static void ikev2_sa_init_inbound_resp(pkt_t *);
+
 static boolean_t find_config(pkt_t *, sockaddr_u_t, sockaddr_u_t);
 static boolean_t add_nat(pkt_t *);
 static boolean_t check_nats(pkt_t *);
@@ -43,10 +46,19 @@ static boolean_t add_cookie(pkt_t *restrict, void *restrict, size_t len);
 static boolean_t ikev2_sa_keygen(ikev2_sa_result_t *restrict, pkt_t *restrict,
     pkt_t *restrict);
 
+void
+ikev2_sa_init_inbound(pkt_t *pkt)
+{
+	if (pkt->pkt_header.flags & IKEV2_FLAG_INITIATOR)
+		ikev2_sa_init_inbound_init(pkt);
+	else
+		ikev2_sa_init_inbound_resp(pkt);
+}
+
 /*
  * New inbound IKE_SA_INIT exchange, we are the responder.
  */
-void
+static void
 ikev2_sa_init_inbound_init(pkt_t *pkt)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
@@ -214,7 +226,7 @@ redo_init(pkt_t *pkt)
 /*
  * We initiated the IKE_SA_INIT exchange, this is the remote response
  */
-void
+static void
 ikev2_sa_init_inbound_resp(pkt_t *pkt)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
