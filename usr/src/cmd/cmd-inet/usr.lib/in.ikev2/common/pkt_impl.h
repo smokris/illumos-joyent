@@ -45,7 +45,7 @@ boolean_t pkt_add_nindex(pkt_t *, uint64_t, uint32_t, uint8_t, uint16_t,
     uint8_t *, size_t);
 
 pkt_t *pkt_in_alloc(uint8_t *restrict, size_t, struct bunyan_logger *restrict);
-pkt_t *pkt_out_alloc(uint64_t, uint64_t, uint8_t, uint8_t, uint32_t);
+pkt_t *pkt_out_alloc(uint64_t, uint64_t, uint8_t, uint8_t, uint32_t, uint8_t);
 void pkt_free(pkt_t *);
 
 boolean_t pkt_add_payload(pkt_t *, uint8_t, uint8_t, uint16_t);

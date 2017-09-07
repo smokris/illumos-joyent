@@ -80,45 +80,56 @@ typedef enum keyword_e {
 	KW_MAX
 } keyword_t;
 
+#define	KWF_ARG		(1 << 0)	/* keyword has argument */
+#define	KWF_MINUS	(1 << 1)	/* minus is a separator for arg */
+#define	KWF_MULTI	(1 << 2)	/* keyword can appear multiple times */
+
+#define	KW_HAS_ARG(k)	(!!(keyword_tab[(k)].kw_flags & KWF_ARG))
+#define	KW_IS_MULTI(k)	(!!(keyword_tab[(k)].kw_flags & KWF_MULTI))
+#define	KW_USE_MINUS(k)	(!!(keyword_tab[(k)].kw_flags & KWF_MINUS))
+
 static struct {
 	const char	*kw_str;
-	boolean_t	kw_has_arg;
-	boolean_t	kw_minus;
+	uint_t		kw_flags;
 } keyword_tab[] = {
-	{ "", B_FALSE },
-	{ "cert_root", B_TRUE, B_FALSE },
-	{ "cert_trust", B_TRUE, B_FALSE },
-	{ "expire_timer", B_TRUE, B_FALSE },
-	{ "ignore_crls", B_FALSE },
-	{ "ldap_server", B_TRUE, B_FALSE },
-	{ "pkcs11_path", B_TRUE, B_FALSE },
-	{ "retry_limit", B_TRUE, B_FALSE },
-	{ "retry_timer_init", B_TRUE, B_FALSE },
-	{ "retry_timer_max", B_TRUE, B_FALSE },
-	{ "proxy", B_TRUE, B_FALSE },
-	{ "socks", B_TRUE, B_FALSE },
-	{ "use_http", B_FALSE },
-	{ "p1_lifetime_secs", B_TRUE, B_FALSE },
-	{ "p1_nonce_len", B_TRUE, B_FALSE },
-	{ "p2_lifetime_secs", B_TRUE, B_FALSE },
-	{ "p2_softlife_secs", B_TRUE, B_FALSE },
-	{ "p2_idletime_secs", B_TRUE, B_FALSE },
-	{ "p2_lifetime_kb", B_TRUE, B_FALSE },
-	{ "p2_softlife_kb", B_TRUE, B_FALSE },
-	{ "p2_nonce_len", B_TRUE, B_FALSE },
-	{ "local_id_type", B_TRUE, B_FALSE },
-	{ "p1_xform", B_FALSE },
-	{ "auth_method", B_TRUE, B_FALSE },
-	{ "oakley_group", B_TRUE, B_FALSE },
-	{ "auth_alg", B_TRUE, B_FALSE },
-	{ "encr_alg", B_TRUE, B_FALSE },
-	{ "label", B_TRUE, B_FALSE },
-	{ "local_addr", B_TRUE, B_TRUE },
-	{ "remote_addr", B_TRUE, B_TRUE },
-	{ "p2_pfs", B_TRUE, B_FALSE },
-	{ "local_id", B_TRUE, B_FALSE },
-	{ "remote_id", B_TRUE, B_FALSE },
-	{ "immediate", B_FALSE, B_FALSE },
+	{ "",			0 },
+	{ "cert_root",		KWF_ARG|KWF_MULTI },
+	{ "cert_trust",		KWF_ARG|KWF_MULTI },
+	{ "expire_timer",	KWF_ARG },
+	{ "ignore_crls",	0 },
+	{ "ldap_server",	KWF_ARG|KWF_MULTI },
+	{ "pkcs11_path",	KWF_ARG|KWF_MULTI },
+	{ "retry_limit",	KWF_ARG },
+	{ "retry_timer_init",	KWF_ARG },
+	{ "retry_timer_max",	KWF_ARG },
+	{ "proxy",		KWF_ARG },
+	{ "socks",		KWF_ARG },
+	{ "use_http",		0 },
+	{ "p1_lifetime_secs",	KWF_ARG },
+	{ "p1_nonce_len",	KWF_ARG },
+	{ "p2_lifetime_secs",	KWF_ARG },
+	{ "p2_softlife_secs",	KWF_ARG },
+	{ "p2_idletime_secs",	KWF_ARG },
+	{ "p2_lifetime_kb",	KWF_ARG },
+	{ "p2_softlife_kb",	KWF_ARG },
+	{ "p2_nonce_len",	KWF_ARG },
+	{ "local_id_type",	KWF_ARG },
+	{ "p1_xform",		0 },
+	{ "auth_method",	KWF_ARG },
+	{ "oakley_group",	KWF_ARG },
+	{ "auth_alg",		KWF_ARG },
+	{ "encr_alg",		KWF_ARG },
+	{ "label",		KWF_ARG },
+	{ "local_addr",		KWF_ARG|KWF_MINUS|KWF_MULTI },
+	{ "remote_addr",	KWF_ARG|KWF_MINUS|KWF_MULTI },
+	{ "p2_pfs",		KWF_ARG },
+	/*
+	 * XXX: The manpage implies local_id can appear multiple times, but
+	 * only the first one is used.  This may just be poor phrasing.
+	 */
+	{ "local_id",		KWF_ARG },
+	{ "remote_id",		KWF_ARG },
+	{ "immediate",		0 },
 };
 
 static struct {
@@ -209,22 +220,24 @@ typedef struct input_cursor {
 } input_cursor_t;
 
 static void add_str(char ***restrict, size_t *restrict, const char *restrict);
+static void add_addr(config_addr_t **restrict, size_t *restrict,
+    const config_addr_t *restrict);
 static void add_xf(config_rule_t *restrict, config_xf_t *restrict);
 static void add_rule(config_t *restrict, config_rule_t *restrict);
 
 static token_t *tok_new(const char *, const char *, const char *, size_t,
     size_t);
 static void tok_free(token_t *);
-static void tok_log(token_t *restrict, bunyan_logger_t *restrict,
+static void tok_log(const token_t *restrict, bunyan_logger_t *restrict,
     bunyan_level_t, const char *restrict, const char *restrict);
-static void tok_error(token_t *restrict, bunyan_logger_t *restrict,
+static void tok_error(const token_t *restrict, bunyan_logger_t *restrict,
     const char *restrict, const char *restrict);
 static void tok_invalid(token_t *restrict, bunyan_logger_t *restrict,
     keyword_t);
 
 static boolean_t parse_rule(input_cursor_t *restrict, const token_t *restrict,
     config_rule_t **restrict);
-static boolean_t parse_address(input_cursor_t *restrict,
+static boolean_t parse_address(input_cursor_t *restrict, token_t *restrict,
     config_addr_t *restrict);
 
 static boolean_t parse_xform(input_cursor_t *restrict, config_xf_t **restrict);
@@ -308,6 +321,12 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 	cfg = calloc(1, sizeof (*cfg));
 	VERIFY3P(cfg, !=, NULL);
 
+	/* Set defaults */
+	cfg->cfg_expire_timer = SEC2NSEC(300);
+	cfg->cfg_retry_init = MSEC2NSEC(500);
+	cfg->cfg_retry_max = SEC2NSEC(30);
+	cfg->cfg_retry_limit = 5;
+
 	input_cursor_init(&ic, in, blog);
 	while ((t = input_token(&ic, B_TRUE)) != NULL) {
 		keyword_t kw;
@@ -334,8 +353,8 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 		VERIFY3S(kw, !=, KW_NONE);
 		VERIFY3S(kw, !=, KW_MAX);
 
-		if (keyword_tab[kw].kw_has_arg) {
-			targ = input_token(&ic, keyword_tab[kw].kw_minus);
+		if (KW_HAS_ARG(kw)) {
+			targ = input_token(&ic, KW_USE_MINUS(kw));
 			if (targ == NULL) {
 				tok_error(t, blog,
 				    "Parameter is missing argument",
@@ -551,44 +570,44 @@ fail:
 	input_cursor_fini(&ic);
 	input_free(in);
 	cfg_free(cfg);
-	bunyan_trace(log, "process_config() exit", BUNYAN_T_END);
+	cfg = NULL;
+
+	if (!check_only)
+		exit(1);
 }
 
 static boolean_t
 parse_xform(input_cursor_t *restrict ic, config_xf_t **restrict xfp)
 {
 	config_xf_t *xf = NULL;
-	token_t *t = NULL, *targ = NULL;
+	token_t *start_t = NULL, *t = NULL, *targ = NULL;
 	uint64_t val = 0;
 	const char *start = NULL, *end = NULL;
-	boolean_t seen_authalg = B_FALSE;
-	boolean_t seen_encralg = B_FALSE;
-	boolean_t seen_dh = B_FALSE;
-	boolean_t seen_authmethod = B_FALSE;
-	boolean_t seen_lifetime_secs = B_FALSE;
-	boolean_t seen_nonce_len = B_FALSE;
+	size_t kwcount[KW_MAX] = { 0 };
+	boolean_t ok = B_TRUE;
 
 	xf = calloc(1, sizeof (*xf));
 	VERIFY3P(xf, !=, NULL);
 
-	if ((t = input_token(ic, B_FALSE)) == NULL) {
+	if ((start_t = input_token(ic, B_FALSE)) == NULL) {
 		bunyan_error(ic->ic_log, "Unexpected end of input processing "
 		    "transform", BUNYAN_T_END);
 		goto fail;
 	}
 
-	if (strcmp(t->t_str, "{") != 0) {
+	if (strcmp(start_t->t_str, "{") != 0) {
 		bunyan_error(ic->ic_log, "Expected '{' after p1_xform",
-		    BUNYAN_T_STRING, "string", t->t_str,
+		    BUNYAN_T_STRING, "string", start_t->t_str,
 		    BUNYAN_T_END);
 		goto fail;
 	}
 
-	start = t->t_linep + t->t_col;
+	start = start_t->t_linep + start_t->t_col;
 
 	/*CONSTCOND*/
 	while (1) {
-		if ((t = input_token(ic, B_FALSE)) == NULL) {
+		t = input_token(ic, B_FALSE);
+		if (t == NULL) {
 			bunyan_error(ic->ic_log,
 			    "Unexpected end of input processing transform",
 			    BUNYAN_T_END);
@@ -597,36 +616,40 @@ parse_xform(input_cursor_t *restrict ic, config_xf_t **restrict xfp)
 		if (strcmp(t->t_str, "}") == 0)
 			break;
 
-		/* All of the keywords require an argument */
-		if ((targ = input_token(ic, B_FALSE)) == NULL) {
-			tok_error(t, ic->ic_log,
-			    "Missing argument to parameter", "parameter");
-			goto fail;
-		}
-
 		keyword_t kw = KW_NONE;
-
 		if (!parse_kw(t->t_str, &kw)) {
 			tok_error(t, ic->ic_log,
 			    "Unknown configuration parameter", "parameter");
 			goto fail;
 		}
 
+		if (kwcount[kw] > 0 && !KW_IS_MULTI(kw)) {
+			tok_error(t, ic->ic_log,
+			    "Parameter can only appear once in a transform",
+			    "parameter");
+			goto fail;
+		}
+
+		if (KW_HAS_ARG(kw)) {
+			targ = input_token(ic, KW_USE_MINUS(kw));
+			if (targ == NULL) {
+				tok_error(t, ic->ic_log,
+				    "Parameter is missing an argument",
+				    "parameter");
+				goto fail;
+			}
+		}
+
 		switch (kw) {
 		case KW_AUTH_METHOD:
-			if (seen_authmethod)
-				goto duplicate;
 			if (!parse_auth(targ->t_str, &xf->xf_authtype)) {
 				tok_error(targ, ic->ic_log,
 				    "Unknown authentication method",
 				    "authmethod");
 				goto fail;
 			}
-			seen_authmethod = B_TRUE;
 			break;
 		case KW_OAKLEY_GROUP:
-			if (seen_dh)
-				goto duplicate;
 			if (!parse_int(targ->t_str, &val)) {
 				tok_error(targ, ic->ic_log,
 				    "Unknown oakley (DH) group",
@@ -634,47 +657,35 @@ parse_xform(input_cursor_t *restrict ic, config_xf_t **restrict xfp)
 				goto fail;
 			}
 			/* XXX: Should have a way to validate the value */
-			seen_dh = B_TRUE;
 			xf->xf_dh = (ikev2_dh_t)val;
 			break;
 		case KW_AUTH_ALG:
-			if (seen_authalg)
-				goto duplicate;
 			if (!parse_authalg(targ->t_str, &xf->xf_auth)) {
 				tok_error(targ, ic->ic_log,
 				    "Unknown authentication algorithm",
 				    "algorithm");
 				goto fail;
 			}
-			seen_authalg = B_TRUE;
 			break;
 		case KW_ENCR_ALG:
-			if (seen_encralg)
-				goto duplicate;
 			if (!parse_encralg(targ->t_str, &xf->xf_encr)) {
 				tok_error(targ, ic->ic_log,
 				    "Unknown encryption algorithm",
 				    "algorithm");
 				goto fail;
 			}
-			seen_encralg = B_TRUE;
 			if (!parse_encrbits(ic, xf))
 				goto fail;
 			break;
 		case KW_P1_LIFETIME_SECS:
-			if (seen_lifetime_secs)
-				goto duplicate;
 			if (!parse_int(targ->t_str, &val)) {
 				tok_error(targ, ic->ic_log, "Invalid value",
 				    "value");
 				goto fail;
 			}
 			xf->xf_lifetime_secs = (uint32_t)val;
-			seen_lifetime_secs = B_TRUE;
 			break;
 		case KW_P1_NONCE_LEN:
-			if (seen_nonce_len)
-				goto duplicate;
 			if (!parse_int(targ->t_str, &val)) {
 				tok_error(targ, ic->ic_log, "Invalid value",
 				    "value");
@@ -682,7 +693,6 @@ parse_xform(input_cursor_t *restrict ic, config_xf_t **restrict xfp)
 			}
 			/* XXX: validate length */
 			xf->xf_nonce_len = (uint32_t)val;
-			seen_nonce_len = B_TRUE;
 			break;
 		default:
 			bunyan_error(ic->ic_log, "Parameter keyword not "
@@ -692,10 +702,23 @@ parse_xform(input_cursor_t *restrict ic, config_xf_t **restrict xfp)
 			goto fail;
 		}
 
+		kwcount[kw]++;
+
 		tok_free(t);
 		tok_free(targ);
 		t = NULL;
 		targ = NULL;
+	}
+
+	if (kwcount[KW_ENCR_ALG] == 0) {
+		tok_error(start_t, ic->ic_log,
+		    "Transform missing encryption algorithm", NULL);
+		ok = B_FALSE;
+	}
+	if (kwcount[KW_AUTH_ALG] == 0) {
+		tok_error(start_t, ic->ic_log,
+		    "Transform missing authentication algorithm", NULL);
+		ok = B_FALSE;
 	}
 
 	end = t->t_linep + t->t_col;
@@ -705,16 +728,14 @@ parse_xform(input_cursor_t *restrict ic, config_xf_t **restrict xfp)
 	VERIFY3P(xf->xf_str, !=, NULL);
 	(void) strlcpy(xf->xf_str, start, val);
 
+	tok_free(start_t);
 	tok_free(t);
 	tok_free(targ);
 	*xfp = xf;
 	return (B_TRUE);
 
-duplicate:
-	tok_error(t, ic->ic_log, "Duplicate configuration parameter",
-	    "parameter");
-
 fail:
+	tok_free(start_t);
 	tok_free(t);
 	tok_free(targ);
 	free(xf);
@@ -831,17 +852,8 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 	config_rule_t *rule = NULL;
 	config_xf_t *xf = NULL;
 	config_addr_t addr = { 0 };
-	boolean_t seen_label = B_FALSE;
-	boolean_t seen_local_addr = B_FALSE;
-	boolean_t seen_remote_addr = B_FALSE;
-	boolean_t seen_local_id_type = B_FALSE;
-	boolean_t seen_local_id = B_FALSE;
-	boolean_t seen_remote_id = B_FALSE;
-	boolean_t seen_p2_lifetime_secs = B_FALSE;
-	boolean_t seen_p2_pfs = B_FALSE;
-	boolean_t seen_p1_xform = B_FALSE;
-	boolean_t has_non_preshared = B_FALSE;
-	boolean_t seen_immediate = B_FALSE;
+	size_t kwcount[KW_MAX] = { 0 };
+	boolean_t ok = B_TRUE;
 
 	*rulep = NULL;
 
@@ -861,13 +873,8 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 			goto fail;
 		}
 
-		switch (kw) {
-		case KW_LOCAL_ADDR:
-		case KW_REMOTE_ADDR:
-		case KW_P1_XFORM:
-			break;
-		default:
-			targ = input_token(ic, B_FALSE);
+		if (KW_HAS_ARG(kw)) {
+			targ = input_token(ic, KW_USE_MINUS(kw));
 			if (targ == NULL) {
 				bunyan_error(ic->ic_log, "Input truncated "
 				    "while reading rule", BUNYAN_T_END);
@@ -875,18 +882,20 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 			}
 		}
 
+		if (kwcount[kw] > 0 && !KW_IS_MULTI(kw)) {
+			tok_log(t, ic->ic_log, BUNYAN_L_ERROR,
+	    		    "Configuration parameter can only appear once in a "
+			    "transform definition", "parameter");
+			goto fail;
+		}
+
 		switch (kw) {
 		case KW_LABEL:
-			if (seen_label)
-				goto duplicate;
 			rule->rule_label = strdup(targ->t_str);
 			if (rule->rule_label == NULL)
 				goto fail;
-			seen_label = B_TRUE;
 			break;
 		case KW_P2_PFS:
-			if (seen_p2_pfs)
-				goto duplicate;
 			if (!parse_p2_pfs(targ->t_str, &rule->rule_p2_dh)) {
 				tok_invalid(targ, ic->ic_log, KW_P2_PFS);
 				goto fail;
@@ -897,60 +906,42 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 				goto fail;
 
 			add_xf(rule, xf);
-			if (xf->xf_authtype != IKEV2_AUTH_SHARED_KEY_MIC)
-				has_non_preshared = B_TRUE;
-			seen_p1_xform = B_TRUE;
 			xf = NULL;
 			break;
 		case KW_LOCAL_ADDR:
 			(void) memset(&addr, 0, sizeof (addr));
-			if (!parse_address(ic, &addr))
+			if (!parse_address(ic, targ, &addr))
 				goto fail;
-			seen_local_addr = B_TRUE;
+			add_addr(&rule->rule_local_addr,
+			    &rule->rule_nlocal_addr, &addr);
 			break;
 		case KW_REMOTE_ADDR:
 			(void) memset(&addr, 0, sizeof (addr));
-			if (!parse_address(ic, &addr))
+			if (!parse_address(ic, targ, &addr))
 				goto fail;
-			seen_remote_addr = B_TRUE;
+			add_addr(&rule->rule_remote_addr,
+			    &rule->rule_nremote_addr, &addr);
 			break;
 		case KW_LOCAL_ID:
-			/*
-			 * According to the man page, only one ID is used
-			 * per rule, but instead of erroring, it just uses
-			 * the first one.
-			 */
-			if (seen_local_id)
-				break;
 			rule->rule_local_id = strdup(targ->t_str);
 			if (rule->rule_local_id == NULL)
 				goto fail;
-			seen_local_id = B_TRUE;
 			break;
 		case KW_REMOTE_ID:
 			/* XXX: allow multiple remote ids */
-			/* See KW_LOCAL_ID above */
-			if (seen_remote_id)
-				break;
 			rule->rule_remote_id = strdup(targ->t_str);
 			if (rule->rule_remote_id == NULL)
 				goto fail;
-			seen_remote_id = B_TRUE;
 			break;
 		case KW_LOCAL_ID_TYPE:
-			if (seen_local_id_type)
-				goto duplicate;
 			if (!parse_p1_id(targ->t_str,
 			    &rule->rule_local_id_type)) {
 				tok_log(t, ic->ic_log, BUNYAN_L_ERROR,
 				    "Unable to parse local_id_type", "value");
 				goto fail;
 			}
-			seen_local_id_type = B_TRUE;
 			break;
 		case KW_IMMEDIATE:
-			if (seen_immediate)
-				goto duplicate;
 			rule->rule_immediate = B_TRUE;
 			break;
 		default:
@@ -959,6 +950,8 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 			    "parameter");
 			goto fail;
 		}
+
+		kwcount[(kw)]++;
 
 		tok_free(t);
 		tok_free(targ);
@@ -973,28 +966,42 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 	}
 
 	/* Try to show as many errors as we can */
-	if (!seen_label)
-		tok_error(t, ic->ic_log, "Rule is missing a required label",
+	if (kwcount[KW_LABEL] == 0) {
+		tok_error(start, ic->ic_log, "Rule is missing a required label",
 		    NULL);
-	if (!seen_local_addr)
-		tok_error(t, ic->ic_log,
+		ok = B_FALSE;
+	}
+	if (kwcount[KW_LOCAL_ADDR] == 0) {
+		tok_error(start, ic->ic_log,
 		    "Rule is missing a required local address", NULL);
-	if (!seen_remote_addr)
-		tok_error(t, ic->ic_log,
+		ok = B_FALSE;
+	}
+	if (kwcount[KW_REMOTE_ADDR] == 0) {
+		tok_error(start, ic->ic_log,
 		    "Rule is missing a required remote address", NULL);
+		ok = B_FALSE;
+	}
+	if (kwcount[KW_P1_XFORM] > 1) {
+		ikev2_auth_type_t authtype = rule->rule_xf[0]->xf_authtype;
 
-	if (!seen_label || !seen_local_addr || !seen_remote_addr)
+		for (size_t i = 1; rule->rule_xf[i] != NULL; i++) {
+			if (rule->rule_xf[i]->xf_authtype == authtype)
+				continue;
+			tok_error(start, ic->ic_log,
+			    "All transforms in rule must use the same "
+			    "authentication type", NULL);
+			ok = B_FALSE;
+			break;
+		}
+	}
+
+	if (!ok)
 		goto fail;
 
 	tok_free(t);
 	tok_free(targ);
 	*rulep = rule;
 	return (B_TRUE);
-
-duplicate:
-	tok_log(t, ic->ic_log, BUNYAN_L_ERROR,
-	    "Configuration parameter can only appear once in a transform "
-	    "definition", "parameter");
 
 fail:
 	tok_free(t);
@@ -1004,16 +1011,15 @@ fail:
 }
 
 static boolean_t
-parse_address(input_cursor_t *restrict ic, config_addr_t *restrict addrp)
+parse_address(input_cursor_t *restrict ic, token_t *restrict taddr,
+    config_addr_t *restrict addrp)
 {
 	const token_t *tpeek = NULL;
 	token_t *t = NULL;
 	boolean_t ip6 = B_FALSE;
 	boolean_t ok = B_FALSE;
 
-	t = input_token(ic, B_TRUE);
-	if (t == NULL)
-		goto truncated;
+	t = taddr;
 
 	if (!parse_ip(t->t_str, &addrp->cfa_startu.cfa_ip4)) {
 		if (!parse_ip6(t->t_str, &addrp->cfa_startu.cfa_ip6)) {
@@ -1023,7 +1029,6 @@ parse_address(input_cursor_t *restrict ic, config_addr_t *restrict addrp)
 		}
 		ip6 = B_TRUE;
 	}
-	tok_free(t);
 
 	tpeek = input_peek(ic, B_TRUE);
 	if (strcmp(tpeek->t_str, "-") == 0) {
@@ -1041,7 +1046,7 @@ parse_address(input_cursor_t *restrict ic, config_addr_t *restrict addrp)
 		    parse_ip(t->t_str, &addrp->cfa_endu.cfa_ip4);
 		if (!ok) {
 			tok_log(t, ic->ic_log, BUNYAN_L_ERROR,
-			    "Unable to parse address", "address");
+			    "Unable to parse address range", "address");
 		}
 		tok_free(t);
 		return (ok);
@@ -1139,6 +1144,7 @@ parse_kw(const char *restrict str, keyword_t *restrict kwp)
 	for (keyword_t kw = KW_NONE; kw < KW_MAX; kw++) {
 		if (strcmp(keyword_tab[kw].kw_str, str) == 0) {
 			*kwp = kw;
+			VERIFY3S(*kwp, <, KW_MAX);
 			return (B_TRUE);
 		}
 	}
@@ -1245,7 +1251,7 @@ cfg_auth_id_str(config_auth_id_t id)
 #undef	STR
 
 static void
-tok_log(token_t *restrict t, bunyan_logger_t *restrict blog,
+tok_log(const token_t *restrict t, bunyan_logger_t *restrict blog,
     bunyan_level_t level, const char *msg, const char *strname)
 {
 	char *linecpy = NULL;
@@ -1261,24 +1267,18 @@ tok_log(token_t *restrict t, bunyan_logger_t *restrict blog,
 	VERIFY3P(linecpy, !=, NULL);
 	(void) strlcpy(linecpy, t->t_linep, len);
 
-	if (strname != NULL) {
-		getlog(level)(blog, msg, BUNYAN_T_STRING, strname, t->t_str,
-		    BUNYAN_T_STRING, "line", linecpy,
-		    BUNYAN_T_UINT32, "lineno", t->t_line,
-		    BUNYAN_T_UINT32, "col", t->t_col,
-		    BUNYAN_T_END);
-	} else {
-		getlog(level)(blog, msg,
-		    BUNYAN_T_STRING, "line", linecpy,
-		    BUNYAN_T_UINT32, "lineno", t->t_line,
-		    BUNYAN_T_UINT32, "col", t->t_col,
-		    BUNYAN_T_END);
-	}
+	getlog(level)(blog, msg,
+	    BUNYAN_T_STRING, "line", linecpy,
+	    BUNYAN_T_UINT32, "lineno", t->t_line + 1,
+	    BUNYAN_T_UINT32, "col", t->t_col + 1,
+	    (strname != NULL) ? BUNYAN_T_STRING : BUNYAN_T_END,
+	    strname, t->t_str, BUNYAN_T_END);
+
 	free(linecpy);
 }
 
 static void
-tok_error(token_t *restrict t, bunyan_logger_t *restrict b,
+tok_error(const token_t *restrict t, bunyan_logger_t *restrict b,
     const char *restrict msg, const char *restrict tname)
 {
 	tok_log(t, b, BUNYAN_L_ERROR, msg, tname);
@@ -1605,6 +1605,26 @@ add_rule(config_t *restrict cfg, config_rule_t *restrict rule)
 	rule->rule_config = cfg;
 	cfg->cfg_rules[nrules++] = rule;
 	cfg->cfg_rules[nrules] = NULL;
+}
+
+static void
+add_addr(config_addr_t **restrict addrs, size_t *restrict naddrs,
+    const config_addr_t *restrict src)
+{
+	config_addr_t *newaddrs = NULL;
+	size_t newlen = *naddrs + 1;
+	size_t newamt = newlen * sizeof (config_addr_t);
+
+	VERIFY3U(newamt, >=, sizeof (config_addr_t));
+	VERIFY3U(newamt, >, newlen);
+
+	newaddrs = realloc(*addrs, newamt);
+	VERIFY3P(newaddrs, !=, NULL);
+
+	(void) memcpy(&newaddrs[*naddrs], src, sizeof (*src));
+
+	*addrs = newaddrs;
+	*naddrs += 1;
 }
 
 /* Is the given character a token separator? */

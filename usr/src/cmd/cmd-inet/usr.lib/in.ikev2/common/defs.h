@@ -201,9 +201,9 @@ ss_bunyan(const struct sockaddr_storage *ss)
 	BUNYAN_T_STRING, "func", __func__,		\
 	BUNYAN_T_STRING, "file", __FILE__,		\
 	BUNYAN_T_INT32, "line", __LINE__,		\
-	ss_bunyan(_src), "src", ss_addr(_src),		\
+	ss_bunyan(_src), "srcaddr", ss_addr(_src),	\
 	BUNYAN_T_UINT32, "srcport", ss_port(_src),	\
-	ss_bunyan(_dest), "dest", ss_addr(_dest),	\
+	ss_bunyan(_dest), "destaddr", ss_addr(_dest),	\
 	BUNYAN_T_UINT32, "destport", ss_port(_dest),	\
 	## __VA_ARGS__,					\
 	BUNYAN_T_END)

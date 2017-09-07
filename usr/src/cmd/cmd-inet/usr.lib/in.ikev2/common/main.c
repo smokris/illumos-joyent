@@ -26,12 +26,14 @@
 #include <sys/debug.h>
 #include <locale.h>
 #include <ucontext.h>
-#include "pkcs11.h"
+#include "config.h"
 #include "defs.h"
+#include "defs.h"
+#include "ikev2_sa.h"
+#include "inbound.h"
+#include "pkcs11.h"
 #include "timer.h"
 #include "worker.h"
-#include "config.h"
-#include "ikev2_sa.h"
 
 extern void pkt_init(void);
 extern void pkt_fini(void);
@@ -134,20 +136,20 @@ main(int argc, char **argv)
 	pkcs11_init();
 	pkt_init();
 	ike_timer_init();
-	pfkey_init();
+	ikev2_sa_init();
 
 	/* XXX: make these configurable */
 	worker_init(8, 8);
-
-	do_immediate();
+	pfkey_init();
+	inbound_init();
 	main_loop();
 
 	pkt_fini();
 	pkcs11_fini();
-
 	return (0);
 }
 
+/* Temp function to fire off IKE_SA_INIT exchanges */
 static void
 do_immediate(void)
 {
@@ -182,8 +184,14 @@ do_immediate(void)
 		sa = ikev2_sa_alloc(B_TRUE, NULL, &laddr, &raddr);
 		VERIFY3P(sa, !=, NULL);
 
+		bunyan_trace(log, "Dispatching",
+		    BUNYAN_T_STRING, "rule", rule->rule_label,
+		    BUNYAN_T_END);
+
 		worker_dispatch(EVT_START, sa, I2SA_LOCAL_SPI(sa) % nworkers);
 	}
+
+	CONFIG_REFRELE(cfg);
 }
 
 static void
@@ -193,6 +201,9 @@ main_loop(void)
 	int rc;
 
 	(void) bunyan_trace(log, "starting main loop", BUNYAN_T_END);
+
+	worker_resume();
+	do_immediate();
 
 	/*CONSTCOND*/
 	while (!done) {

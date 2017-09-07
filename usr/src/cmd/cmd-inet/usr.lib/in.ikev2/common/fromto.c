@@ -63,7 +63,7 @@
 /* cstyle doesn't deal with ## __VA_ARGS__ well */
 #define	SOCKLOG(level, log, msg, sock, from, to, ...)	\
 	NETLOG(level, log, msg, from, to,		\
-	BUNYAN_T_INT32, "socket", (int32_t)(sock),	\
+	BUNYAN_T_INT32, "sockfd", (int32_t)(sock),	\
 	## __VA_ARGS__,					\
 	BUNYAN_T_END)
 /* END CSTYLED */

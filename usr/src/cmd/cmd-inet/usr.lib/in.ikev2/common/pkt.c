@@ -45,7 +45,7 @@ static int pkt_reset(void *);
 
 pkt_t *
 pkt_out_alloc(uint64_t i_spi, uint64_t r_spi, uint8_t version,
-    uint8_t exch_type, uint32_t msgid)
+    uint8_t exch_type, uint32_t msgid, uint8_t flags)
 {
 	pkt_t *pkt = umem_cache_alloc(pkt_cache, UMEM_DEFAULT);
 
@@ -57,6 +57,7 @@ pkt_out_alloc(uint64_t i_spi, uint64_t r_spi, uint8_t version,
 	pkt->pkt_header.version = version;
 	pkt->pkt_header.exch_type = exch_type;
 	pkt->pkt_header.msgid = msgid;
+	pkt->pkt_header.flags = flags;
 
 	pkt_hdr_hton((ike_header_t *)pkt->pkt_raw, &pkt->pkt_header);
 	pkt_adv_ptr(pkt, sizeof (ike_header_t));

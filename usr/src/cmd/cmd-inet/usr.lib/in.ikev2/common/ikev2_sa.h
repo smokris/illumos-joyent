@@ -38,8 +38,7 @@
 #include <security/cryptoki.h>
 #include <atomic.h>
 #include <pthread.h>
-#include <libuutil.h>
-
+#include <sys/list.h>
 #include "ikev2.h"
 #include "defs.h"
 
@@ -61,6 +60,10 @@ typedef struct i2sa_bucket i2sa_bucket_t;
 
 struct config_rule_s;
 
+typedef enum i2sa_hash_e {
+	I2SA_LSPI	= 0,
+	I2SA_RHASH	= 1,
+} i2sa_hash_t;
 #define	I2SA_NUM_HASH	2	/* The number of IKEv2 SA hashes we have */
 
 #define	I2SA_SALT_LEN	(32)	/* Maximum size of salt, may be smaller */
@@ -77,14 +80,9 @@ struct config_rule_s;
  * Because of the distinct sets of lookup keys, it requires two linkages.
  */
 struct ikev2_sa_s {
-	/*
-	 * Fields that should not be zeroed out between trips before
-	 * returning to the umem_cache should go at the top of this struct.
-	 */
 	pthread_mutex_t lock;
 
-	uu_list_node_t	lspi_node;
-	uu_list_node_t	rhash_node;
+	list_node_t	node[I2SA_NUM_HASH];
 
 	bunyan_logger_t	*i2sa_log;
 
@@ -177,7 +175,7 @@ struct ikev2_child_sa {
 	    (i2sa)->init_i)
 
 #define	I2SA_IS_NAT(i2sa) \
-	(!!((i2sa)->flags && (I2SA_NAT_LOCAL|I2SA_NAT_REMOTE)))
+	(!!((i2sa)->flags & (I2SA_NAT_LOCAL|I2SA_NAT_REMOTE)))
 
 #define	I2SA_REFHOLD(i2sa) \
 	atomic_inc_32(&(i2sa)->refcnt)
@@ -187,19 +185,22 @@ struct ikev2_child_sa {
 	(void) ((atomic_dec_32_nv(&(i2sa)->refcnt) != 0) || \
 	    (ikev2_sa_free(i2sa), 0))
 
-extern ikev2_sa_t *ikev2_sa_get(uint64_t, uint64_t,
+extern size_t ikev2_sa_buckets;		/* Number of HASH buckets */
+
+ikev2_sa_t *ikev2_sa_get(uint64_t, uint64_t,
     const struct sockaddr_storage *restrict,
     const struct sockaddr_storage *restrict,
     const struct pkt_s *restrict);
-extern ikev2_sa_t *ikev2_sa_alloc(boolean_t, struct pkt_s *restrict,
+ikev2_sa_t *ikev2_sa_alloc(boolean_t, struct pkt_s *restrict,
     const struct sockaddr_storage *restrict,
     const struct sockaddr_storage *restrict);
 
-extern void	ikev2_sa_free(ikev2_sa_t *);
-extern void	ikev2_sa_condemn(ikev2_sa_t *);
+void	ikev2_sa_set_rspi(ikev2_sa_t *i2sa, uint64_t r_spi);
+void	ikev2_sa_free(ikev2_sa_t *);
+void	ikev2_sa_condemn(ikev2_sa_t *);
 
-extern void	ikev2_sa_flush(void);
-extern void	ikev2_sa_set_hashsize(uint_t);
+void	ikev2_sa_flush(void);
+void	ikev2_sa_set_hashsize(uint_t);
 
 #ifdef  __cplusplus
 }

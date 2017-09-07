@@ -18,6 +18,7 @@
 #include <security/cryptoki.h>
 #include <bunyan.h>
 #include "dh.h"
+#include "ikev2_enum.h"
 #include "pkcs11.h"
 
 typedef struct {
@@ -348,8 +349,13 @@ dh_genpair(ikev2_dh_t group, CK_OBJECT_HANDLE_PTR restrict pub,
 	CK_RV rc;
 
 	dh = dh_get_group(group);
-	if (dh == NULL)
-		return (CKR_ATTRIBUTE_VALUE_INVALID);
+	if (dh == NULL) {
+		bunyan_error(l, "Invalid DH group",
+		    BUNYAN_T_STRING, "dhgrp", ikev2_dh_str(group),
+		    BUNYAN_T_INT32, "val", (int32_t)group,
+		    BUNYAN_T_END);
+		return (B_FALSE);
+	}
 
 	template[0].type = CKA_PRIME;
 	template[0].pValue = dh->prime;
@@ -363,7 +369,13 @@ dh_genpair(ikev2_dh_t group, CK_OBJECT_HANDLE_PTR restrict pub,
 	if (rc != CKR_OK) {
 		PKCS11ERR(error, l, "C_GenerateKeyPair", rc);
 		return (B_FALSE);
+	} else {
+		bunyan_trace(l, "Created DH keypair",
+		    BUNYAN_T_UINT64, "pub_handle", (uint64_t)*pub,
+		    BUNYAN_T_UINT64, "priv_handle", (uint64_t)*priv,
+		    BUNYAN_T_END);
 	}
+
 	return (B_TRUE);
 }
 

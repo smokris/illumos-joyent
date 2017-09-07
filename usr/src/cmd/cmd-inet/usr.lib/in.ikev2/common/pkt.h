@@ -207,7 +207,7 @@ put64(pkt_t *pkt, uint64_t val)
 
 #define	PKT_APPEND_STRUCT(_pkt, _struct)				\
 do {									\
-	VERIFY3U(pkt_write_left(_pkt), <=, sizeof (_struct));		\
+	VERIFY3U(pkt_write_left(_pkt), >=, sizeof (_struct));		\
 	(void) memcpy((_pkt)->pkt_ptr, &(_struct), sizeof (_struct));	\
 	pkt_adv_ptr(_pkt, sizeof (_struct));				\
 /*CONSTCOND*/								\
@@ -217,7 +217,7 @@ do {									\
 do {							\
 	if ((_len) == 0)				\
 		break;					\
-	VERIFY3U(pkt_write_left(_pkt), <=, (_len));	\
+	VERIFY3U(pkt_write_left(_pkt), >=, (_len));	\
 	(void) memcpy((_pkt)->pkt_ptr, (_ptr), (_len));	\
 	pkt_adv_ptr(_pkt, (_len));			\
 /*CONSTCOND*/						\

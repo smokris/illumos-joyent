@@ -266,11 +266,14 @@ tevent_log(bunyan_logger_t *restrict l, bunyan_level_t level,
     const char *restrict msg, const tevent_t *restrict te)
 {
 	char buf[128] = { 0 };
+	hrtime_t now = gethrtime();
+	uint64_t when = NSEC2MSEC(te->te_time - now);
 
 	(void) addrtosymstr(te->te_fn, buf, sizeof (buf));
 	getlog(level)(l, msg,
 	    BUNYAN_T_STRING, "event", te_str(te->te_type),
 	    BUNYAN_T_UINT32, "event num", (uint32_t)te->te_type,
+	    BUNYAN_T_UINT64, "ms", when,
 	    BUNYAN_T_POINTER, "fn", te->te_fn,
 	    BUNYAN_T_STRING, "fnname", buf,
 	    BUNYAN_T_POINTER, "arg", te->te_arg,

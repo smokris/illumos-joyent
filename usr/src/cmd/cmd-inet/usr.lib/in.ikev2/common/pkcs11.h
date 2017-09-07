@@ -42,7 +42,10 @@ extern "C" {
 
 #define	PKCS11ERR(_lvl, _log, _p11f, _rv, ...)				\
 	(void) bunyan_##_lvl((_log), "PKCS#11 call failed",		\
-	BUNYAN_T_STRING, "func", _p11f,					\
+	BUNYAN_T_STRING, "file", __FILE__,				\
+	BUNYAN_T_UINT32, "line", (uint32_t)__LINE__,			\
+	BUNYAN_T_STRING, "func", __func__,				\
+	BUNYAN_T_STRING, "p11func", _p11f,				\
 	BUNYAN_T_UINT64, "errnum", (uint64_t)(_rv),			\
 	BUNYAN_T_STRING, "err", pkcs11_strerror(_rv),			\
 	## __VA_ARGS__,							\
@@ -61,17 +64,17 @@ typedef struct encr_data_s {
 	CK_MECHANISM_TYPE	ed_p11id;
 	const char		*ed_name;
 	encr_modes_t		ed_mode;
-	size_t			ed_keymin;
-	size_t			ed_keymax;
-	size_t			ed_keyincr;
+	size_t			ed_keymin;	/* bits */
+	size_t			ed_keymax;	/* bits */
+	size_t			ed_keyincr;	/* bits */
 	size_t			ed_keydefault;
 	size_t			ed_blocklen;
 	size_t			ed_ivlen;
 	size_t			ed_icvlen;	/* For combined modes */
 	size_t			ed_saltlen;	/* For combined modes */
 } encr_data_t;
-#define	ENCR_KEYLEN_REQ(e)	((e)->ed_keydefault == 0)
-#define	ENCR_KEYLEN_ALLOWED(e)	(!((e)->ed_keymin == (e)->ed_keymax))
+#define	ENCR_KEYLEN_REQ(_e)	((_e)->ed_keydefault == 0)
+#define	ENCR_KEYLEN_ALLOWED(_e)	(!((_e)->ed_keymin == (_e)->ed_keymax))
 
 typedef struct auth_data_s {
 	CK_MECHANISM_TYPE	ad_p11id;

@@ -90,6 +90,11 @@ static const char *worker_cmd_str(worker_cmd_t);
 static const char *worker_evt_str(worker_evt_t);
 static void worker_pkt_inbound(pkt_t *);
 
+/*
+ * Create a pool of worker threads with the given queue depth.
+ * Workers are left suspended under the assumption they will be
+ * resumed once main_loop() starts.
+ */
 void
 worker_init(size_t n_workers, size_t queue_sz)
 {
@@ -127,6 +132,23 @@ worker_init(size_t n_workers, size_t queue_sz)
 		worker_t *w = workers[i];
 		PTH(pthread_create(&w->w_tid, NULL, worker, w));
 	}
+
+	/*
+ 	 * Worker threads start off suspended, so we can wait until they've
+ 	 * all been created and are ready to start processing requests before
+ 	 * we return.
+ 	 */
+	bunyan_debug(log, "Waiting for workers to become ready", BUNYAN_T_END);
+
+	PTH(pthread_mutex_lock(&suspend_lock));
+
+	while (nsuspended < nworkers)
+		PTH(pthread_cond_wait(&suspend_cv, &suspend_lock));
+	bunyan_debug(log, "All workers ready; proceeding",
+	    BUNYAN_T_UINT32, "nsuspended", (uint32_t)nsuspended,
+	    BUNYAN_T_END);
+
+	PTH(pthread_mutex_unlock(&suspend_lock));
 }
 
 static worker_t *
@@ -145,6 +167,7 @@ worker_init_one(size_t len)
 	if (bunyan_child(log, &w->w_log, BUNYAN_T_END) != 0)
 		return (NULL);
 
+	w->w_queue.wq_cmd = WC_SUSPEND;
 	PTH(pthread_mutex_init(&w->w_queue.wq_lock, NULL));
 	PTH(pthread_cond_init(&w->w_queue.wq_cv, NULL));
 
@@ -180,6 +203,7 @@ worker_suspend(void)
 	for (size_t i = 0; i < nworkers; i++) {
 		worker_t *w = workers[i];
 		worker_queue_t *wq = &w->w_queue;
+
 		PTH(pthread_mutex_lock(&wq->wq_lock));
 		w->w_queue.wq_cmd = WC_SUSPEND;
 		PTH(pthread_cond_signal(&wq->wq_cv));
@@ -194,17 +218,25 @@ worker_suspend(void)
 }
 
 static void
-worker_do_suspend(worker_queue_t *wq)
+worker_do_suspend(worker_t *w)
 {
+	worker_queue_t *wq = &w->w_queue;
+
+	ASSERT(MUTEX_HELD(&wq->wq_lock));
+	PTH(pthread_mutex_unlock(&wq->wq_lock));
+
 	PTH(pthread_mutex_lock(&suspend_lock));
-	if (++nsuspended == nworkers)
+	if (++nsuspended == nworkers) {
+		bunyan_trace(w->w_log, "Last one in, signaling", BUNYAN_T_END);
 		PTH(pthread_cond_signal(&suspend_cv));
+	}
 	PTH(pthread_mutex_unlock(&suspend_lock));
 
 	PTH(pthread_mutex_lock(&wq->wq_lock));
 	while (wq->wq_cmd == WC_SUSPEND)
 		PTH(pthread_cond_wait(&wq->wq_cv, &wq->wq_lock));
 
+	bunyan_debug(w->w_log, "Worker resuming", BUNYAN_T_END);
 	/* leave wq->wq_lock locked */
 }
 
@@ -215,12 +247,19 @@ worker_resume(void)
 	for (size_t i = 0; i < nworkers; i++) {
 		worker_t *w = workers[i];
 		worker_queue_t *wq = &w->w_queue;
+
+		bunyan_trace(log, "Waking up worker",
+		    BUNYAN_T_UINT32, "worker", (uint32_t)i,
+		    BUNYAN_T_END);
+
 		PTH(pthread_mutex_lock(&wq->wq_lock));
 		wq->wq_cmd = WC_NONE;
 		PTH(pthread_mutex_unlock(&wq->wq_lock));
 		PTH(pthread_cond_broadcast(&wq->wq_cv));
 	}
 	PTH(pthread_rwlock_unlock(&worker_lock));
+
+	bunyan_trace(log, "Finished resuming workers", BUNYAN_T_END);
 }
 
 boolean_t
@@ -277,6 +316,9 @@ worker(void *arg)
 
 	PTH(pthread_mutex_lock(&wq->wq_lock));
 
+	bunyan_debug(w->w_log, "Suspending worker", BUNYAN_T_END);
+	worker_do_suspend(w);
+
 	/*CONSTCOND*/
 	while (1) {
 		process_timer(&ts, w->w_log);
@@ -300,7 +342,9 @@ worker(void *arg)
 		case WC_NONE:
 			break;
 		case WC_SUSPEND:
-			worker_do_suspend(wq);
+			bunyan_debug(w->w_log, "Suspending worker",
+			    BUNYAN_T_END);
+			worker_do_suspend(w);
 			ASSERT(MUTEX_HELD(&wq->wq_lock));
 			continue;			
 		case WC_QUIT:

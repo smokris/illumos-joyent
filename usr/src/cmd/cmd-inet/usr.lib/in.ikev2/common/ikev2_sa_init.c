@@ -73,6 +73,10 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 	VERIFY(!(sa->flags & I2SA_INITIATOR));
 	VERIFY3P(ke_i, !=, NULL);
 
+	bunyan_info(sa->i2sa_log,
+	    "Starting new IKE_SA_INIT exchange as responder",
+	    BUNYAN_T_END);
+
 	if (!find_config(pkt, laddr, raddr))
 		goto fail;
 	if (!check_nats(pkt))
@@ -246,6 +250,8 @@ ikev2_sa_init_inbound_resp(pkt_t *pkt)
 	if (redo_init(pkt))
 		return;
 
+	ikev2_sa_set_rspi(sa, INBOUND_REMOTE_SPI(&pkt->pkt_header));
+
 	if (!check_nats(pkt))
 		goto fail;
 	check_vendor(pkt);
@@ -289,9 +295,15 @@ ikev2_sa_init_outbound(ikev2_sa_t *restrict i2sa, uint8_t *restrict cookie,
 	sockaddr_u_t laddr = { .sau_ss = &i2sa->laddr };
 	sockaddr_u_t raddr = { .sau_ss = &i2sa->raddr };
 
+	if (cookie != NULL) {
+		bunyan_info(i2sa->i2sa_log,
+		    "Starting new IKE_SA_INIT exchange as initiator",
+		    BUNYAN_T_END);
+	}
+
 	VERIFY(i2sa->flags & I2SA_INITIATOR);
 
-	pkt = ikev2_pkt_new_initiator(i2sa, IKEV2_EXCH_IKE_SA_INIT);
+	pkt = ikev2_pkt_new_exchange(i2sa, IKEV2_EXCH_IKE_SA_INIT);
 
 	if (!find_config(pkt, laddr, raddr))
 		goto fail;
@@ -306,12 +318,24 @@ ikev2_sa_init_outbound(ikev2_sa_t *restrict i2sa, uint8_t *restrict cookie,
 	pkcs11_destroy_obj("dh_pubkey", &i2sa->dh_pubkey, i2sa->i2sa_log);
 	pkcs11_destroy_obj("dh_privkey", &i2sa->dh_privkey, i2sa->i2sa_log);
 
+	/* Start with the first DH group in the first rule */
+	if (dh == IKEV2_DH_NONE)
+		dh = i2sa->i2sa_rule->rule_xf[0]->xf_dh;
+
 	if (!dh_genpair(dh, &i2sa->dh_pubkey, &i2sa->dh_privkey,
 	    i2sa->i2sa_log))
 		goto fail;
 
 	if (!ikev2_add_ke(pkt, dh, i2sa->dh_pubkey))
 		goto fail;
+
+	/*
+	 * XXX: This is half the largest keysize of all the PRF functions
+	 * we support.
+	 */
+	if (noncelen == 0)
+		noncelen = 32;
+
 	if (!ikev2_add_nonce(pkt, nonce, noncelen))
 		goto fail;
 	if (!add_nat(pkt))

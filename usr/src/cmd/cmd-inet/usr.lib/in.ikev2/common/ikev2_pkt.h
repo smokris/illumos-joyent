@@ -40,7 +40,7 @@ struct bunyan_logger;
 
 pkt_t *ikev2_pkt_new_inbound(uint8_t *restrict, size_t,
     struct bunyan_logger *restrict);
-pkt_t *ikev2_pkt_new_initiator(struct ikev2_sa_s *, ikev2_exch_t);
+pkt_t *ikev2_pkt_new_exchange(struct ikev2_sa_s *, ikev2_exch_t);
 pkt_t *ikev2_pkt_new_response(const pkt_t *);
 void ikev2_pkt_free(pkt_t *);
 
@@ -103,6 +103,7 @@ boolean_t ikev2_walk_xfattrs(uint8_t *restrict, size_t, ikev2_xfattr_cb_t,
 void ikev2_pkt_log(pkt_t *restrict, bunyan_logger_t *restrict, const char *,
     bunyan_level_t);
 
+char *ikev2_pkt_desc(pkt_t *);
 ikev2_dh_t ikev2_get_dhgrp(pkt_t *);
 size_t ikev2_spilen(ikev2_spi_proto_t);
 

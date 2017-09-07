@@ -42,21 +42,25 @@
 #define	PKT_IS_V2(p) \
 	(IKE_GET_MAJORV((p)->header.version) == IKE_GET_MAJORV(IKEV2_VERSION))
 
-/* Allocate an outbound IKEv2 pkt for an initiator of the given exchange type */
+/* Allocate an outbound IKEv2 pkt for a new exchange */
 pkt_t *
-ikev2_pkt_new_initiator(ikev2_sa_t *i2sa, ikev2_exch_t exch_type)
+ikev2_pkt_new_exchange(ikev2_sa_t *i2sa, ikev2_exch_t exch_type)
 {
 	pkt_t *pkt = NULL;
 	uint32_t msgid = 0;
+	uint8_t flags = 0;
 
 	PTH(pthread_mutex_lock(&i2sa->lock));
 	if (exch_type != IKEV2_EXCH_IKE_SA_INIT)
 		msgid = i2sa->outmsgid++;
 
+	if (i2sa->flags & I2SA_INITIATOR)
+		flags |= IKEV2_FLAG_INITIATOR;
+
 	pkt = pkt_out_alloc(I2SA_LOCAL_SPI(i2sa),
 	    I2SA_REMOTE_SPI(i2sa),
 	    IKEV2_VERSION,
-	    exch_type, msgid);
+	    exch_type, msgid, flags);
 
 	if (pkt == NULL) {
 		i2sa->outmsgid--;
@@ -77,20 +81,23 @@ pkt_t *
 ikev2_pkt_new_response(const pkt_t *init)
 {
 	pkt_t *pkt;
+	uint8_t flags = IKEV2_FLAG_RESPONSE;
 
 	ASSERT(PKT_IS_V2(init));
+
+	if (init->pkt_sa->flags & I2SA_INITIATOR)
+		flags |= IKEV2_FLAG_INITIATOR;
 
 	pkt = pkt_out_alloc(init->pkt_header.initiator_spi,
 	    init->pkt_header.responder_spi,
 	    IKEV2_VERSION,
 	    init->pkt_header.exch_type,
-	    init->pkt_header.msgid);
+	    init->pkt_header.msgid, flags);
 	if (pkt == NULL)
 		return (NULL);
 
 	pkt->pkt_sa = init->pkt_sa;
 	I2SA_REFHOLD(pkt->pkt_sa);
-	pkt->pkt_header.flags = IKEV2_FLAG_RESPONSE;
 	return (pkt);
 }
 
@@ -705,8 +712,12 @@ ikev2_walk_xfattrs(uint8_t *restrict start, size_t len, ikev2_xfattr_cb_t cb,
 void
 ikev2_pkt_free(pkt_t *pkt)
 {
+	if (pkt == NULL)
+		return;
+
 	if (pkt->pkt_sa != NULL)
 		I2SA_REFRELE(pkt->pkt_sa);
+
 	pkt_free(pkt);
 }
 
@@ -767,65 +778,29 @@ boolean_t
 ikev2_add_xf_encr(pkt_sa_state_t *pss, ikev2_xf_encr_t encr, uint16_t minbits,
     uint16_t maxbits)
 {
+	encr_data_t *ed = &encr_data[encr];
 	uint16_t incr = 0;
 	boolean_t ok = B_TRUE;
 
-	switch (encr) {
-	case IKEV2_ENCR_NONE:
-	case IKEV2_ENCR_NULL:
+	if (encr == IKEV2_ENCR_NONE || encr == IKEV2_ENCR_NULL) {
 		INVALID("encr");
 		/*NOTREACHED*/
 		return (B_FALSE);
+	}
 
-	/* XXX: need to confirm this */
-	case IKEV2_ENCR_NULL_AES_GMAC:
-		return (B_TRUE);
-
-	/* ones that should never include a key size */
-	case IKEV2_ENCR_DES_IV64:
-	case IKEV2_ENCR_DES:
-	case IKEV2_ENCR_3DES:
-	case IKEV2_ENCR_IDEA:
-	case IKEV2_ENCR_3IDEA:
-	case IKEV2_ENCR_DES_IV32:
+	if (!ENCR_KEYLEN_ALLOWED(ed)) {
 		VERIFY3U(minbits, ==, 0);
 		VERIFY3U(maxbits, ==, 0);
 		return (ikev2_add_xform(pss, IKEV2_XF_ENCR, encr));
-
-	/* optional key size */
-	case IKEV2_ENCR_RC4:
-	case IKEV2_ENCR_RC5:
-	case IKEV2_ENCR_BLOWFISH:
-	case IKEV2_ENCR_CAST:
-		if (minbits == 0 && maxbits == 0)
-			return (ikev2_add_xform(pss, IKEV2_XF_ENCR, encr));
-		incr = 1;
-		break;
-
-	case IKEV2_ENCR_AES_CBC:
-	case IKEV2_ENCR_AES_CTR:
-	case IKEV2_ENCR_AES_CCM_8:
-	case IKEV2_ENCR_AES_CCM_12:
-	case IKEV2_ENCR_AES_CCM_16:
-	case IKEV2_ENCR_AES_GCM_8:
-	case IKEV2_ENCR_AES_GCM_12:
-	case IKEV2_ENCR_AES_GCM_16:
-	case IKEV2_ENCR_XTS_AES:
-		incr = 64;
-		break;
-
-	case IKEV2_ENCR_CAMELLIA_CBC:
-	case IKEV2_ENCR_CAMELLIA_CTR:
-	case IKEV2_ENCR_CAMELLIA_CCM_8:
-	case IKEV2_ENCR_CAMELLIA_CCM_12:
-	case IKEV2_ENCR_CAMELLIA_CCM_16:
-		VERIFY3U(minbits, >=, 128);
-		VERIFY3U(maxbits, <=, 256);
-		incr = 64;
-		break;
 	}
 
-	if (incr == 1) {
+	if (minbits == 0 && maxbits == 0 && !ENCR_KEYLEN_REQ(ed))
+		return (ikev2_add_xform(pss, IKEV2_XF_ENCR, encr));
+
+	VERIFY3U(minbits, >=, ed->ed_keymin);
+	VERIFY3U(maxbits, <=, ed->ed_keymax);
+
+	if (ed->ed_keyincr == 1) {
 		/*
 		 * For encryption methods that allow arbitrary key sizes,
 		 * instead of adding a transform with every key length
@@ -842,7 +817,7 @@ ikev2_add_xf_encr(pkt_sa_state_t *pss, ikev2_xf_encr_t encr, uint16_t minbits,
 		return (ok);
 	}
 
-	for (size_t bits = minbits; bits <= maxbits; bits += incr) {
+	for (size_t bits = minbits; bits <= maxbits; bits += ed->ed_keyincr) {
 		ok &= ikev2_add_xform(pss, IKEV2_XF_ENCR, encr);
 		ok &= ikev2_add_xf_attr(pss, IKEV2_XF_ATTR_KEYLEN, bits);
 	}
@@ -857,14 +832,19 @@ ikev2_add_ke(pkt_t *restrict pkt, ikev2_dh_t group, CK_OBJECT_HANDLE key)
 	ikev2_ke_t		ke = { 0 };
 	CK_SESSION_HANDLE	h = p11h();
 	CK_ULONG		keylen = 0;
-	CK_ATTRIBUTE		template;
+	CK_ATTRIBUTE		template = {
+		.type = CKA_VALUE,
+		.pValue = NULL_PTR,
+		.ulValueLen = 0
+	};
 	CK_RV			rc = CKR_OK;
 
-	rc = C_GetObjectSize(h, key, &keylen);
+	rc = C_GetAttributeValue(h, key, &template, 1);
 	if (rc != CKR_OK) {
-		PKCS11ERR(error, l, "C_GetObjectSize", rc);
+		PKCS11ERR(error, l, "C_GetAttributeValue", rc);
 		return (B_FALSE);
 	}
+	keylen = template.ulValueLen;
 
 	if (!ikev2_add_payload(pkt, IKEV2_PAYLOAD_KE, B_FALSE,
 	    sizeof (ke) + keylen)) {
@@ -1537,17 +1517,18 @@ ikev2_pkt_done(pkt_t *pkt)
 	if (pkt->pkt_done)
 		return (B_TRUE);
 
+	if (pkt->pkt_header.exch_type == IKEV2_EXCH_IKE_SA_INIT) {
+		VERIFY3P(pkt->pkt_encr_pay, ==, NULL);
+		pkt->pkt_done = B_TRUE;
+		return (B_TRUE);
+	}
+
 	ikev2_sa_t *sa = pkt->pkt_sa;
 	CK_ULONG datalen = (CK_ULONG)(pkt->pkt_ptr - pkt->pkt_encr_pay->pp_ptr);
 	CK_ULONG icvlen = ikev2_auth_icv_size(sa->encr, sa->auth);
 	CK_ULONG blocklen = encr_data[sa->encr].ed_blocklen;
 	boolean_t ok = B_TRUE;
 	uint8_t padlen = 0;
-
-	if (pkt->pkt_header.exch_type == IKEV2_EXCH_IKE_SA_INIT) {
-		VERIFY3P(pkt->pkt_encr_pay, ==, NULL);
-		goto done;
-	}
 
 	VERIFY3P(pkt->pkt_encr_pay, !=, NULL);
 
@@ -1622,17 +1603,31 @@ ikev2_pkt_desc(pkt_t *pkt)
 		const char *paystr =
 		    ikev2_pay_short_str((ikev2_pay_type_t)pay->pp_type);
 
+		if (i > 0)
+			(void) strlcat(s, ", ", len);
+
 		(void) strlcat(s, paystr, len);
 		if (pay->pp_type == IKEV2_PAYLOAD_NOTIFY) {
 			pkt_notify_t *n = pkt_notify(pkt, j++);
 			const char *nstr =
 			    ikev2_notify_str((ikev2_notify_type_t)n->pn_type);
 
-			(void) strlcat(s, "(", len);
-			(void) strlcat(s, nstr, len);
-			(void) strlcat(s, ")", len);
+			/*
+			 * Notify type is 16-bits, so (XXXXX) (7 chars) is
+			 * the largest it can be (and is < than "UNKNOWN"),
+			 * so no worries about truncation.
+			 */
+			if (strcmp(nstr, "UNKNOWN") == 0) {
+				char buf[8] = { 0 };
+				(void) snprintf(buf, sizeof (buf), "(%hhu)",
+				    (uint16_t)n->pn_type);
+				(void) strlcat(s, buf, len);
+			} else {
+				(void) strlcat(s, "(", len);
+				(void) strlcat(s, nstr, len);
+				(void) strlcat(s, ")", len);
+			}
 		}
-		(void) strlcat(s, ", ", len);
 	}
 
 	return (s);

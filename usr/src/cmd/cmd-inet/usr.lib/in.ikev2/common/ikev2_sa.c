@@ -31,18 +31,19 @@
  * Manipulation and storage of IKEv2 Security Associations (SAs).
  */
 #include <umem.h>
-#include <pthread.h>
 #include <errno.h>
-#include <strings.h>
-#include <locale.h>
-#include <stddef.h>
-#include <sys/types.h>
-#include <sys/sysmacros.h>
-#include <sys/debug.h>
-#include <limits.h>
-#include <note.h>
 #include <ipsec_util.h>
-#include <libuutil.h>
+#include <limits.h>
+#include <locale.h>
+#include <note.h>
+#include <pthread.h>
+#include <stddef.h>
+#include <strings.h>
+#include <sys/debug.h>
+#include <sys/list.h>
+#include <sys/sysmacros.h>
+#include <sys/types.h>
+#include <umem.h>
 #include "config.h"
 #include "defs.h"
 #include "ikev2_cookie.h"
@@ -54,48 +55,34 @@
 #include "timer.h"
 #include "worker.h"
 
-/* Our hashes */
-enum {
-	LSPI,
-	RHASH
-};
-
 struct i2sa_bucket {
 	pthread_mutex_t		lock;	/* bucket lock */
-	uu_list_t		*chain;	/* hash chain of ikev2_sa_t's */
+	list_t			chain;	/* hash chain of ikev2_sa_t's */
 };
 
-typedef struct i2sa_cmp_arg {
-	sockaddr_u_t		laddr;
-	sockaddr_u_t		raddr;
-	const pkt_t		*init_pkt;
-	uint64_t		lspi;
-	uint64_t		rspi;
-	int			hash;
-} i2sa_cmp_arg_t;
+typedef struct i2sa_cmp_s {
+	const struct sockaddr_storage	*ic_laddr;
+	const struct sockaddr_storage	*ic_raddr;
+	const pkt_t			*ic_init_pkt;
+	uint64_t			ic_l_spi;
+	uint64_t			ic_r_spi;
+} i2sa_cmp_t;
 
-static const struct {
-	const char	*name;
-	offset_t	offset;
-} pool_names[] = {
-	{ "ikev2_lspi_chain", offsetof(ikev2_sa_t, lspi_node) },
-	{ "ikev2_rhash_chain", offsetof(ikev2_sa_t, rhash_node) }
-};
+size_t ikev2_sa_buckets = 16;
 
 static volatile uint_t	half_open;	/* # of larval/half open IKEv2 SAs */
 static uint_t		num_buckets;	/* Use same value for all hashes */
 static uint32_t		remote_noise;	/* random noise for rhash */
 static i2sa_bucket_t	*hash[I2SA_NUM_HASH];
-static uu_list_pool_t	*list_pool[I2SA_NUM_HASH];
 static umem_cache_t	*i2sa_cache;
 
-#define	I2SA_KEY_LADDR		"laddr"
-#define	I2SA_KEY_LPORT		"lport"
-#define	I2SA_KEY_RADDR		"raddr"
-#define	I2SA_KEY_RPORT		"rport"
-#define	I2SA_KEY_LSPI		"lspi"
-#define	I2SA_KEY_RSPI		"rspi"
-#define	I2SA_KEY_INITIATOR	"initiator"
+#define	I2SA_KEY_LADDR		"local_addr"
+#define	I2SA_KEY_LPORT		"local_port"
+#define	I2SA_KEY_RADDR		"remote_addr"
+#define	I2SA_KEY_RPORT		"remote_port"
+#define	I2SA_KEY_LSPI		"local_spi"
+#define	I2SA_KEY_RSPI		"remote_spi"
+#define	I2SA_KEY_INITIATOR	"sa_initiator"
 
 #define	IKEV2_SA_HASH_SPI(spi) \
     P2PHASE_TYPED((spi), num_buckets, uint64_t)
@@ -105,11 +92,12 @@ static umem_cache_t	*i2sa_cache;
 
 static void	i2sa_init(ikev2_sa_t *);
 static uint32_t	i2sa_rhash(const struct sockaddr_storage *, uint64_t);
+static int i2sa_compare(const ikev2_sa_t *, const i2sa_cmp_t *);
 
 static ikev2_sa_t *i2sa_verify(ikev2_sa_t *restrict, uint64_t,
     const struct sockaddr_storage *restrict,
     const struct sockaddr_storage *restrict);
-static boolean_t i2sa_add_to_hash(int, ikev2_sa_t *);
+static boolean_t i2sa_add_to_hash(i2sa_hash_t, ikev2_sa_t *);
 
 static void i2sa_unlink(ikev2_sa_t *);
 static void i2sa_expire_cb(te_event_t, void *data);
@@ -132,31 +120,45 @@ ikev2_sa_get(uint64_t l_spi, uint64_t r_spi,
     const struct sockaddr_storage *restrict r_addr,
     const pkt_t *restrict init_pkt)
 {
-	i2sa_bucket_t *bucket;
-	ikev2_sa_t *sa;
-	i2sa_cmp_arg_t arg = { 0 };
-
-	arg.lspi = l_spi;
-	arg.rspi = r_spi;
-	arg.init_pkt = init_pkt;
-	arg.laddr.sau_ss = (struct sockaddr_storage *)l_addr;
-	arg.raddr.sau_ss = (struct sockaddr_storage *)r_addr;
+	i2sa_bucket_t *bucket = NULL;
+	ikev2_sa_t *sa = NULL, *node = NULL;
+	i2sa_cmp_t cmp = {
+		.ic_l_spi = l_spi,
+		.ic_r_spi = r_spi,
+		.ic_init_pkt = init_pkt,
+		.ic_laddr = l_addr,
+		.ic_raddr = r_addr
+	};
 
 	if (l_spi != 0) {
 		/*
 		 * We assign the local SPIs, so if there is one, we should
 		 * only need that to find it.
 		 */
-		bucket = hash[LSPI] + IKEV2_SA_HASH_SPI(l_spi);
-		arg.hash = LSPI;
+		bucket = hash[I2SA_LSPI] + IKEV2_SA_HASH_SPI(l_spi);
 	} else {
 		/* Otherwise gotta use the other stuff */
-		bucket = hash[RHASH] + IKEV2_SA_RHASH(r_addr, r_spi);
-		arg.hash = RHASH;
+		bucket = hash[I2SA_RHASH] + IKEV2_SA_RHASH(r_addr, r_spi);
 	}
 
 	PTH(pthread_mutex_lock(&bucket->lock));
-	sa = (ikev2_sa_t *)uu_list_find(bucket->chain, NULL, &arg, NULL);
+	for (node = list_head(&bucket->chain);
+	    node != NULL;
+	    node = list_next(&bucket->chain, node)) {
+		int rc = i2sa_compare(node, &cmp);
+
+		if (rc < 0)
+			continue;
+
+		if (rc == 0)
+			sa = node;
+		/*
+ 		 * The list is sorted, so if we reach a node > than what
+ 		 * we're looking for, it's not there.
+ 		 */
+		break;
+	}
+
 	if (sa != NULL)
 		I2SA_REFHOLD(sa);
 	PTH(pthread_mutex_unlock(&bucket->lock));
@@ -193,6 +195,12 @@ ikev2_sa_alloc(boolean_t initiator,
 {
 	ikev2_sa_t	*i2sa = NULL;
 
+	bunyan_trace(log, "Attempting to create new larval IKE SA",
+	    BUNYAN_T_BOOLEAN, I2SA_KEY_INITIATOR, initiator,
+	    ss_bunyan(laddr), I2SA_KEY_LADDR, ss_addr(laddr),
+	    ss_bunyan(raddr), I2SA_KEY_RADDR, ss_addr(raddr),
+	    BUNYAN_T_END);
+
 	if ((i2sa = umem_cache_alloc(i2sa_cache, UMEM_DEFAULT)) == NULL)
 		return (NULL);
 
@@ -212,13 +220,21 @@ ikev2_sa_alloc(boolean_t initiator,
 	(void) memcpy(&i2sa->laddr, laddr, sizeof (i2sa->laddr));
 	(void) memcpy(&i2sa->raddr, raddr, sizeof (i2sa->raddr));
 
-	/* Get a random number for the local SPI that's currently unusued */
+	/*
+	 * Generate a random local SPI and try to add it.  Almost always this
+	 * will succeed on the first attempt.  However if on the rare occasion
+	 * we generate a duplicate, just retry until we pick a value that's
+	 * not in use.
+	 */
 	while (1) {
 		/*CONSTCOND*/
-		uint64_t spi;
+		uint64_t spi = random_low_64();;
 
-		/* 0 is never valid, exteremely unlikely, but easy to handle */
-		if ((spi = random_low_64()) == 0)
+		/*
+ 		 * Incredibly unlikely we'll ever randomly generate 0, but
+ 		 * if we do, just try again.
+ 		 */
+		if (spi == 0)
 			continue;
 
 		if (initiator)
@@ -226,8 +242,8 @@ ikev2_sa_alloc(boolean_t initiator,
 		else
 			i2sa->r_spi = spi;
 
-		if (i2sa_add_to_hash(LSPI, i2sa)) {
-			ASSERT(i2sa->refcnt == 1);
+		if (i2sa_add_to_hash(I2SA_LSPI, i2sa)) {
+			VERIFY3U(i2sa->refcnt, ==, 1);
 
 			/* XXX: refhold i2sa in init_pkt */
 			if (initiator)
@@ -245,12 +261,16 @@ ikev2_sa_alloc(boolean_t initiator,
 
 	if (!i2sa_key_add_addr(i2sa, I2SA_KEY_LADDR, I2SA_KEY_LPORT, laddr) ||
 	    !i2sa_key_add_addr(i2sa, I2SA_KEY_RADDR, I2SA_KEY_RPORT, raddr) ||
-	    bunyan_key_add(i2sa->i2sa_log,
-	    BUNYAN_T_UINT64, I2SA_KEY_LSPI, I2SA_LOCAL_SPI(i2sa),
-	    BUNYAN_T_UINT64, I2SA_KEY_RSPI, I2SA_REMOTE_SPI(i2sa),
-	    BUNYAN_T_BOOLEAN, I2SA_KEY_INITIATOR,
-	    (i2sa->flags & I2SA_INITIATOR) ? B_TRUE : B_FALSE,
+	    bunyan_key_add(i2sa->i2sa_log, BUNYAN_T_BOOLEAN,
+	    I2SA_KEY_INITIATOR, !!(i2sa->flags & I2SA_INITIATOR),
 	    BUNYAN_T_END) != 0)
+		goto fail;
+
+	char buf[19];	/* 0x + 64bit hex value + NUL */
+
+	(void) snprintf(buf, sizeof (buf), "0x%016llX", I2SA_LOCAL_SPI(i2sa));
+	if (bunyan_key_add(i2sa->i2sa_log,
+	    BUNYAN_T_STRING, I2SA_KEY_LSPI, buf, BUNYAN_T_END) != 0)
 		goto fail;
 
 	/*
@@ -269,9 +289,7 @@ ikev2_sa_alloc(boolean_t initiator,
 		    BUNYAN_T_END);
 
 		/* remove from hashes */
-		PTH(pthread_mutex_lock(&i2sa->lock));
 		i2sa_unlink(i2sa);
-		PTH(pthread_mutex_unlock(&i2sa->lock));
 
 		/* should be free'd once these references are released */
 		ASSERT(i2sa->refcnt == 2);
@@ -279,11 +297,19 @@ ikev2_sa_alloc(boolean_t initiator,
 		goto fail;
 	}
 
+	PTH(pthread_mutex_unlock(&i2sa->lock));
+	bunyan_debug(i2sa->i2sa_log, "New larval IKE SA created", BUNYAN_T_END);
 	return (i2sa);
 
 fail:
-	ASSERT(i2sa->refcnt == 1);
-	I2SA_REFRELE(i2sa);
+	I2SA_REFHOLD(i2sa);
+	PTH(pthread_mutex_unlock(&i2sa->lock));
+	i2sa_unlink(i2sa);
+
+	while (i2sa->refcnt > 0)
+		I2SA_REFRELE(i2sa);
+
+	bunyan_debug(log, "Larval IKE SA creation failed", BUNYAN_T_END);
 	return (NULL);
 }
 
@@ -400,28 +426,29 @@ ikev2_sa_set_hashsize(uint_t numbuckets)
 {
 	i2sa_bucket_t *old[I2SA_NUM_HASH];
 	int i, hashtbl;
-	boolean_t startup;
+	boolean_t startup = B_FALSE;
 
 	for (i = 0; i < I2SA_NUM_HASH; i++)
 		old[i] = hash[i];
 
-	if (old[LSPI] == NULL)
-		startup = B_TRUE;
-	else
+	if (old[0] != NULL) {
 		startup = B_FALSE;
-
-	if (!startup)
 		worker_suspend();
+	}
 
 	/* Round up to a power of two if not already */
 	if (!ISP2(numbuckets)) {
-		ASSERT(sizeof (numbuckets) == 4);
 		--numbuckets;
 		for (i = 1; i <= 16; i++)
 			numbuckets |= (numbuckets >> i);
 		++numbuckets;
 	}
 	VERIFY(ISP2(numbuckets));
+
+	bunyan_debug(log, "Creating IKE SA hash buckets",
+	    BUNYAN_T_UINT32, "numbuckets", (uint32_t)numbuckets,
+	    BUNYAN_T_BOOLEAN, "startup", startup,
+	    BUNYAN_T_END);
 
 	for (i = 0; i < I2SA_NUM_HASH; i++)
 		hash[i] = NULL;
@@ -433,19 +460,12 @@ ikev2_sa_set_hashsize(uint_t numbuckets)
 			goto nomem;
 	}
 
-	uint32_t flags = UU_LIST_SORTED;
-
-#ifdef DEBUG
-	flags |= UU_LIST_DEBUG;
-#endif
-
 	for (hashtbl = 0; hashtbl < I2SA_NUM_HASH; hashtbl++) {
+		size_t offset = offsetof(ikev2_sa_t, node);
 		for (i = 0; i < numbuckets; i++) {
-			hash[hashtbl][i].chain =
-			    uu_list_create(list_pool[hashtbl], NULL, flags);
-			if (hash[hashtbl][i].chain == NULL)
-				goto nomem;
-
+			list_create(&hash[hashtbl][i].chain,
+			    sizeof (ikev2_sa_t),
+			    offset + i * sizeof (list_node_t));
 			PTH(pthread_mutex_init(&hash[hashtbl][i].lock, NULL));
 		}
 	}
@@ -470,27 +490,20 @@ ikev2_sa_set_hashsize(uint_t numbuckets)
 	 */
 	while (--i >= 0) {
 		for (hashtbl = 0; hashtbl < I2SA_NUM_HASH; hashtbl++) {
-			uu_list_t *list;
+			list_t *list, *oldlist;
 			ikev2_sa_t *i2sa;
-			void *cookie;
 
-			cookie = NULL;
-			list = hash[hashtbl][i].chain;
-			for (i2sa = uu_list_teardown(list, &cookie);
-			    i2sa != NULL;
-			    i2sa = uu_list_teardown(list, &cookie)) {
-				/*
-				 * i2sa_add_to_hash() will create a new
-				 * ref, so we cannot transfer the ref from
-				 * the old hash into the new one, but must
-				 * release it instead.
-				 */
+			list = &hash[hashtbl][i].chain;
+			oldlist = &old[hashtbl][i].chain;
+
+			while ((i2sa = list_remove_head(oldlist)) != NULL) {
 				VERIFY(i2sa_add_to_hash(hashtbl, i2sa));
+				/* Remove ref from old list */
 				I2SA_REFRELE(i2sa);
 			}
-
+			
 			PTH(pthread_mutex_destroy(&old[hashtbl][i].lock));
-			uu_list_destroy(old[hashtbl][i].chain);
+			VERIFY(list_is_empty(oldlist));
 		}
 	}
 
@@ -514,10 +527,9 @@ nomem:
 	for (hashtbl = 0; hashtbl < I2SA_NUM_HASH; hashtbl++) {
 		if (hash[hashtbl] == NULL)
 			continue;
-		for (i = 0; i < numbuckets; i++) {
-			if (hash[hashtbl][i].chain != NULL)
-				uu_list_destroy(hash[hashtbl][i].chain);
-		}
+		for (i = 0; i < numbuckets; i++)
+			VERIFY(list_is_empty(&hash[hashtbl][i].chain));
+
 		free(hash[hashtbl]);
 		hash[hashtbl] = old[hashtbl];
 	}
@@ -532,10 +544,10 @@ void
 ikev2_sa_set_rspi(ikev2_sa_t *i2sa, uint64_t r_spi)
 {
 	/* better not be set already */
-	ASSERT(i2sa->r_spi == 0);
+	VERIFY3U(i2sa->r_spi, ==, 0);
 
 	/* never a valid SPI value */
-	ASSERT(r_spi != 0);
+	VERIFY3U(r_spi, !=, 0);
 
 	/*
 	 * A bit confusing at times, but if we are the initiator of the
@@ -548,26 +560,31 @@ ikev2_sa_set_rspi(ikev2_sa_t *i2sa, uint64_t r_spi)
 	else
 		i2sa->i_spi = r_spi;
 
-	VERIFY(i2sa_add_to_hash(RHASH, i2sa));
+	VERIFY(i2sa_add_to_hash(I2SA_RHASH, i2sa));
+	char buf[19];	/* 0x + 64bit hex value + NUL */
+
+	(void) snprintf(buf, sizeof (buf), "0x%016llX", I2SA_LOCAL_SPI(i2sa));
+	(void) bunyan_key_add(i2sa->i2sa_log,
+	    BUNYAN_T_STRING, I2SA_KEY_RSPI, buf, BUNYAN_T_END);
 }
 
 static i2sa_bucket_t *
-i2sa_get_bucket(int hashtbl, ikev2_sa_t *i2sa)
+i2sa_get_bucket(i2sa_hash_t hashtype, ikev2_sa_t *i2sa)
 {
-	i2sa_bucket_t *bucket;
+	i2sa_bucket_t *bucket = hash[hashtype];
+	size_t n = 0;
 
-	VERIFY3S(hashtbl, <, I2SA_NUM_HASH);
-
-	bucket = hash[hashtbl];
-	switch (hashtbl) {
-	case LSPI:
-		bucket += IKEV2_SA_HASH_SPI(I2SA_LOCAL_SPI(i2sa));
+	switch (hashtype) {
+	case I2SA_LSPI:
+		n = IKEV2_SA_HASH_SPI(I2SA_LOCAL_SPI(i2sa));
 		break;
-	case RHASH:
-		bucket += IKEV2_SA_RHASH(&i2sa->raddr, I2SA_REMOTE_SPI(i2sa));
+	case I2SA_RHASH:
+		n = IKEV2_SA_RHASH(&i2sa->raddr, I2SA_REMOTE_SPI(i2sa));
 		break;
 	}
-	return (bucket);
+	VERIFY3U(n, <, num_buckets);
+
+	return (bucket + n);
 }
 
 
@@ -580,30 +597,40 @@ i2sa_get_bucket(int hashtbl, ikev2_sa_t *i2sa)
  *
  */
 static boolean_t
-i2sa_add_to_hash(int hashtbl, ikev2_sa_t *i2sa)
+i2sa_add_to_hash(i2sa_hash_t hashtbl, ikev2_sa_t *i2sa)
 {
 	i2sa_bucket_t	*bucket;
-	void		*node;
-	i2sa_cmp_arg_t	arg = { 0 };
-	uu_list_index_t idx;
-
-	VERIFY3S(hashtbl, <, I2SA_NUM_HASH);
+	ikev2_sa_t	*node = NULL;
+	int		rc = 1;
 
 	bucket = i2sa_get_bucket(hashtbl, i2sa);
+
 	PTH(pthread_mutex_lock(&bucket->lock));
 
-	arg.hash = hashtbl;
+	for (node = list_head(&bucket->chain);
+	    node != NULL;
+	    node = list_next(&bucket->chain, node)) {
+		i2sa_cmp_t cmp = {
+			.ic_laddr = &node->laddr,
+			.ic_raddr = &node->raddr,
+			.ic_init_pkt = I2SA_REMOTE_INIT(node),
+			.ic_l_spi = I2SA_LOCAL_SPI(node),
+			.ic_r_spi = I2SA_REMOTE_SPI(node)
+		};
 
-	/* Set idx to where the SA should be inserted */
-	node = uu_list_find(bucket->chain, i2sa, &arg, &idx);
-	if (node != NULL) {
+		rc = i2sa_compare(i2sa, &cmp);
+		if (rc >= 0)
+			break;
+	}
+
+	if (rc == 0) {
 		/*
 		 * Found a match, should only happen while choosing
 		 * a local SPI value and we happen to pick one already
 		 * in use.
 		 */
 
-		VERIFY(node != i2sa);
+		VERIFY3P(node, !=, i2sa);
 
 		/*
 		 * XXX: Should we do anything different for an rhash
@@ -615,7 +642,7 @@ i2sa_add_to_hash(int hashtbl, ikev2_sa_t *i2sa)
 
 	I2SA_REFHOLD(i2sa);	/* ref for chain */
 	i2sa->bucket[hashtbl] = bucket;
-	uu_list_insert(bucket->chain, i2sa, idx);
+	list_insert_before(&bucket->chain, node, i2sa);
 	PTH(pthread_mutex_unlock(&bucket->lock));
 
 	return (B_TRUE);
@@ -671,19 +698,18 @@ bad_match:
 }
 
 static void
-i2sa_hash_remove(int hashtbl, ikev2_sa_t *i2sa)
+i2sa_hash_remove(size_t hashtbl, ikev2_sa_t *i2sa)
 {
 	i2sa_bucket_t *bucket;
 
-	VERIFY3S(hashtbl, <, I2SA_NUM_HASH);
-	ASSERT(MUTEX_HELD(i2sa));
+	VERIFY3U(hashtbl, <, I2SA_NUM_HASH);
 
-	/* We shouldn't be holding the lock if this is the last reference */
-	ASSERT(i2sa->refcnt > 1);
+	if (!list_link_active(&i2sa->node[hashtbl]))
+		return;
 
 	bucket = i2sa_get_bucket(hashtbl, i2sa);
 	PTH(pthread_mutex_lock(&bucket->lock));
-	uu_list_remove(bucket->chain, i2sa);
+	list_remove(&bucket->chain, i2sa);
 	i2sa->bucket[hashtbl] = NULL;
 	PTH(pthread_mutex_unlock(&bucket->lock));
 	I2SA_REFRELE(i2sa);
@@ -692,8 +718,7 @@ i2sa_hash_remove(int hashtbl, ikev2_sa_t *i2sa)
 static void
 i2sa_unlink(ikev2_sa_t *i2sa)
 {
-	ASSERT(MUTEX_HELD(i2sa));
-	for (int i = 0; i < I2SA_NUM_HASH; i++)
+	for (size_t i = 0; i < I2SA_NUM_HASH; i++)
 		i2sa_hash_remove(i, i2sa);
 }
 
@@ -761,18 +786,15 @@ i2sa_ctor(void *buf, void *dummy, int flags)
 {
 	_NOTE(ARGUNUSUED(dummy, flags))
 
-	ikev2_sa_t *i2sa = (ikev2_sa_t *)&buf;
+	ikev2_sa_t *i2sa = buf;
 
 	(void) memset(i2sa, 0, sizeof (*i2sa));
+	i2sa->msgwin = 1;
 
 	PTH(pthread_mutex_init(&i2sa->lock, NULL));
-	for (size_t i = 0; i < ARRAY_SIZE(pool_names); i++) {
-		uu_list_node_init(buf,
-		    (uu_list_node_t *)((uint8_t *)buf + pool_names[i].offset),
-		    list_pool[i]);
-	}
+	for (size_t i = 0; i < I2SA_NUM_HASH; i++)
+		list_link_init(&i2sa->node[i]);
 
-	i2sa->msgwin = 1;
 	return (0);
 }
 
@@ -784,11 +806,6 @@ i2sa_dtor(void *buf, void *dummy)
 	ikev2_sa_t *i2sa = (ikev2_sa_t *)buf;
 
 	PTH(pthread_mutex_destroy(&i2sa->lock));
-	for (size_t i = 0; i < I2SA_NUM_HASH; i++) {
-		uu_list_node_fini(buf,
-		    (uu_list_node_t *)((uint8_t *)buf + pool_names[i].offset),
-		    list_pool[i]);
-	}
 }
 
 static int
@@ -838,77 +855,40 @@ sockaddr_compare(const struct sockaddr_storage *restrict l,
 	return (0);
 }
 
-/*
- * This is called by uu_list_find() to find an IKEv2 SA.  Since our
- * uu_lists are sorted, it is also used to find the insertion spot
- * in a hash chain.  When finding an IKEv2 SA, rarg will be NULL and
- * arg will have the information to compare.  When finding an insertion
- * spot, rarg will be the IKEv2 SA to insert to determine its location.
- */
 static int
-i2sa_compare(const void *larg, const void *rarg, void *arg)
+i2sa_compare(const ikev2_sa_t *sa, const i2sa_cmp_t *cmp)
 {
-	const ikev2_sa_t *l = (const ikev2_sa_t *)larg;
-	const ikev2_sa_t *r = (const ikev2_sa_t *)rarg;
-	i2sa_cmp_arg_t *carg = (i2sa_cmp_arg_t *)arg;
-	const uint8_t *lbuf, *rbuf;
-	uint64_t spi;
-	size_t lsz, rsz;
-	int cmp;
-
-	if (carg->hash == LSPI) {
-		ASSERT(MUTEX_HELD(&l->bucket[LSPI]->lock));
-		if (r != NULL) {
-			ASSERT(l->bucket[LSPI] == r->bucket[LSPI]);
-			spi = I2SA_LOCAL_SPI(r);
-		} else {
-			spi = carg->lspi;
-		}
-
-		ASSERT(spi != 0);
-
+	if (cmp->ic_l_spi != 0) {
 		/*
 		 * Since we assign the local SPI, we enforce that
 		 * they are globally unique
 		 */
-		if (I2SA_LOCAL_SPI(l) > spi)
+		if (I2SA_LOCAL_SPI(sa) > cmp->ic_l_spi)
 			return (1);
-		if (I2SA_LOCAL_SPI(l) < spi)
+		if (I2SA_LOCAL_SPI(sa) < cmp->ic_l_spi)
 			return (-1);
 		return (0);
 	}
 
-	ASSERT(carg->hash == RHASH);
-	ASSERT(MUTEX_HELD(l->bucket_lock_rhash));
+	VERIFY3U(cmp->ic_r_spi, !=, 0);
 
-	i2sa_cmp_arg_t cmpdata = { 0 };
-	if (r != NULL) {
-		ASSERT3U(l->bucket_lock_rhash, ==, r->bucket_lock_rhash);
-		cmpdata.hash = RHASH;
-		cmpdata.rspi = I2SA_REMOTE_SPI(r);
-		cmpdata.raddr.sau_ss = (struct sockaddr_storage *)&r->raddr;
-		cmpdata.laddr.sau_ss = (struct sockaddr_storage *)&r->laddr;
-		cmpdata.init_pkt = I2SA_REMOTE_INIT(r);
-		carg = &cmpdata;
-	}
-
-	if (I2SA_REMOTE_SPI(l) > carg->rspi)
+	if (I2SA_REMOTE_SPI(sa) > cmp->ic_r_spi)
 		return (1);
-	if (I2SA_REMOTE_SPI(l) < carg->rspi)
+	if (I2SA_REMOTE_SPI(sa) < cmp->ic_r_spi)
 		return (-1);
 
 	/* More likely to be different, so check these first */
-	cmp = sockaddr_compare(&l->raddr, carg->raddr.sau_ss);
-	if (cmp > 0)
+	int rc = sockaddr_compare(&sa->raddr, cmp->ic_raddr);
+	if (rc > 0)
 		return (1);
-	if (cmp < 0)
+	if (rc < 0)
 		return (-1);
 
 	/* A multihomed system might have different local addresses */
-	cmp = sockaddr_compare(&l->laddr, carg->laddr.sau_ss);
-	if (cmp > 0)
+	rc = sockaddr_compare(&sa->laddr, cmp->ic_laddr);
+	if (rc > 0)
 		return (1);
-	if (cmp < 0)
+	if (rc < 0)
 		return (-1);
 
 	/*
@@ -918,13 +898,14 @@ i2sa_compare(const void *larg, const void *rarg, void *arg)
 	 * an issue for half-opened remotely initiated SAs, as this is the
 	 * only time the local SPI is not yet known.
 	 */
-	cmp = memcmp(I2SA_REMOTE_INIT(l)->pkt_raw, carg->init_pkt->pkt_raw,
-	    MIN(pkt_len(I2SA_REMOTE_INIT(l)), pkt_len(carg->init_pkt)));
-	if (cmp != 0)
-		return ((cmp < 0) ? -1 : 1);
-	if (pkt_len(I2SA_REMOTE_INIT(l)) < pkt_len(carg->init_pkt))
+	rc = memcmp(I2SA_REMOTE_INIT(sa)->pkt_raw,
+	    cmp->ic_init_pkt->pkt_raw,
+	    MIN(pkt_len(I2SA_REMOTE_INIT(sa)), pkt_len(cmp->ic_init_pkt)));
+	if (rc != 0)
+		return ((rc < 0) ? -1 : 1);
+	if (pkt_len(I2SA_REMOTE_INIT(sa)) < pkt_len(cmp->ic_init_pkt))
 		return (-1);
-	if (pkt_len(I2SA_REMOTE_INIT(l)) > pkt_len(carg->init_pkt))
+	if (pkt_len(I2SA_REMOTE_INIT(sa)) > pkt_len(cmp->ic_init_pkt))
 		return (1);
 
 	return (0);
@@ -962,31 +943,16 @@ i2sa_key_add_addr(ikev2_sa_t *i2sa, const char *addr_key, const char *port_key,
 void
 ikev2_sa_init(void)
 {
-	uint32_t flag = UU_LIST_SORTED;
-
 	if ((i2sa_cache = umem_cache_create("IKEv2 SAs", sizeof (ikev2_sa_t),
 	    0, i2sa_ctor, i2sa_dtor, NULL, NULL, NULL, 0)) == NULL)
 		err(EXIT_FAILURE, "Unable to allocate IKEv2 SA cache");
 
-#ifdef DEBUG
-	flag |= UU_LIST_POOL_DEBUG;
-#endif
-
-	for (int i = 0; i < ARRAY_SIZE(pool_names); i++) {
-		list_pool[i] = uu_list_pool_create(pool_names[i].name,
-		    sizeof (ikev2_sa_t), pool_names[i].offset, i2sa_compare,
-		    flag);
-
-		if (list_pool[i] != NULL)
-			err(EXIT_FAILURE,
-			    "Unable to allocate IKEv2 SA hash chains");
-	}
+	/* XXX: Change to tunable */
+	ikev2_sa_set_hashsize(ikev2_sa_buckets);
 }
 
 void
 ikev2_sa_fini(void)
 {
 	umem_cache_destroy(i2sa_cache);
-	for (int i = 0; i < I2SA_NUM_HASH; i++)
-		uu_list_pool_destroy(list_pool[i]);
 }

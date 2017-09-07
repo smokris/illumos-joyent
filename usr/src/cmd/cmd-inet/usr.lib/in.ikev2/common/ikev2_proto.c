@@ -49,7 +49,7 @@
 	## __VA_ARGS__)
 
 static void ikev2_retransmit(te_event_t, void *);
-static int select_socket(const ikev2_sa_t *, const struct sockaddr_storage *);
+static int select_socket(const ikev2_sa_t *);
 
 static ikev2_sa_t *ikev2_try_new_sa(pkt_t *restrict,
     const struct sockaddr_storage *restrict,
@@ -76,6 +76,7 @@ ikev2_dispatch(pkt_t *pkt, const struct sockaddr_storage *restrict l_addr,
 
 	local_spi = I2SA_LOCAL_SPI(i2sa);
 	pkt->pkt_sa = i2sa;
+
 	if (worker_dispatch(EVT_PACKET, pkt, local_spi % nworkers))
 		return;
 
@@ -177,7 +178,7 @@ ikev2_send(pkt_t *pkt, boolean_t is_error)
 	ikev2_sa_t *i2sa = pkt->pkt_sa;
 	ssize_t len = 0;
 	int s = -1;
-	boolean_t initiator = !!(pkt->pkt_header.flags & IKEV2_FLAG_INITIATOR);
+	boolean_t resp = !!(pkt->pkt_header.flags & IKEV2_FLAG_RESPONSE);
 
 	if (!ikev2_pkt_done(pkt)) {
 		I2SA_REFRELE(i2sa);
@@ -189,10 +190,18 @@ ikev2_send(pkt_t *pkt, boolean_t is_error)
 	 * We should not send out a new exchange while still waiting
 	 * on a response from a previous request
 	 */
-	if (initiator)
+	if (!resp)
 		VERIFY3P(i2sa->last_sent, ==, NULL);
 
-	s = select_socket(i2sa, NULL);
+	char *str = ikev2_pkt_desc(pkt);
+	bunyan_debug(i2sa->i2sa_log, "Sending packet",
+	    BUNYAN_T_STRING, "pktdesc", str,
+	    BUNYAN_T_BOOLEAN, "response", resp,
+	    BUNYAN_T_END);
+	free(str);
+	str = NULL;
+
+	s = select_socket(i2sa);
 	len = sendfromto(s, pkt_start(pkt), pkt_len(pkt), &i2sa->laddr,
 	    &i2sa->raddr);
 	if (len == -1) {
@@ -219,7 +228,7 @@ ikev2_send(pkt_t *pkt, boolean_t is_error)
 		return (B_TRUE);
 	}
 
-	if (initiator) {
+	if (!resp) {
 		config_t *cfg = config_get();
 		hrtime_t retry = cfg->cfg_retry_init;
 
@@ -285,7 +294,16 @@ ikev2_retransmit(te_event_t event, void *data)
 	PTH(pthread_mutex_unlock(&sa->lock));
 	CONFIG_REFRELE(cfg);
 
-	len = sendfromto(select_socket(sa, NULL), pkt_start(pkt), pkt_len(pkt),
+	char *str = ikev2_pkt_desc(pkt);
+	bunyan_debug(sa->i2sa_log, "Sending packet",
+	    BUNYAN_T_STRING, "pktdesc", str,
+	    BUNYAN_T_BOOLEAN, "response",
+	    pkt->pkt_header.flags & IKEV2_FLAG_RESPONSE,
+	    BUNYAN_T_END);
+	free(str);
+	str = NULL;
+
+	len = sendfromto(select_socket(sa), pkt_start(pkt), pkt_len(pkt),
 	    &sa->laddr, &sa->raddr);
 	/* XXX: sendfromto() will log if it fails, do anything else? */
 
@@ -355,7 +373,7 @@ ikev2_discard_pkt(pkt_t *pkt)
 			goto done;
 		}
 
-		len = sendfromto(select_socket(sa, NULL), pkt_start(resp),
+		len = sendfromto(select_socket(sa), pkt_start(resp),
 		    pkt_len(pkt), &sa->laddr, &sa->raddr);
 		goto done;
 	}
@@ -388,6 +406,15 @@ ikev2_inbound(pkt_t *pkt)
 	if (ikev2_discard_pkt(pkt))
 		return;
 
+	char *str = ikev2_pkt_desc(pkt);
+	bunyan_debug(pkt->pkt_sa->i2sa_log, "Received packet",
+	    BUNYAN_T_BOOLEAN, "initiator",
+		(boolean_t)(pkt->pkt_header.flags & IKEV2_FLAG_INITIATOR),
+	    BUNYAN_T_STRING, "pktdesc", str,
+	    BUNYAN_T_END);
+	free(str);
+	str = NULL;
+
 	switch (pkt->pkt_header.exch_type) {
 	case IKEV2_EXCH_IKE_SA_INIT:
 		ikev2_sa_init_inbound(pkt);
@@ -410,16 +437,11 @@ ikev2_inbound(pkt_t *pkt)
 }
 
 static int
-select_socket(const ikev2_sa_t *i2sa, const struct sockaddr_storage *local)
+select_socket(const ikev2_sa_t *i2sa)
 {
-	ASSERT((i2sa != NULL && local == NULL) ||
-	    (i2sa == NULL && local != NULL));
-
-	if (i2sa != NULL)
-		local = &i2sa->laddr;
-	if (local->ss_family == AF_INET6)
+	if (i2sa->laddr.ss_family == AF_INET6)
 		return (ikesock6);
-	if (i2sa != NULL && I2SA_IS_NAT(i2sa))
+	if (I2SA_IS_NAT(i2sa))
 		return (nattsock);
 	return (ikesock4);
 }

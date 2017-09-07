@@ -183,6 +183,9 @@ add_rule_xform(pkt_sa_state_t *restrict pss, const config_xf_t *restrict xf)
 	encr_modes_t mode = encr_data[xf->xf_encr].ed_mode;
 	boolean_t ok = B_TRUE;
 
+	ok &= ikev2_add_xf_encr(pss, xf->xf_encr, xf->xf_minbits,
+	    xf->xf_maxbits);
+
 	/*
 	 * For all currently known combined mode ciphers, we can omit an
 	 * integrity transform
