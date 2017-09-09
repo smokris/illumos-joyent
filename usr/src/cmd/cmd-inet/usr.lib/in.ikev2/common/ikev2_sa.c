@@ -49,6 +49,7 @@
 #include "ikev2_cookie.h"
 #include "ikev2_pkt.h"
 #include "ikev2_sa.h"
+#include "ilist.h"
 #include "pkcs11.h"
 #include "pkt.h"
 #include "random.h"
@@ -56,8 +57,8 @@
 #include "worker.h"
 
 struct i2sa_bucket {
-	pthread_mutex_t		lock;	/* bucket lock */
-	list_t			chain;	/* hash chain of ikev2_sa_t's */
+	mutex_t		lock;	/* bucket lock */
+	ilist_t		chain;	/* hash chain of ikev2_sa_t's */
 };
 
 typedef struct i2sa_cmp_s {
@@ -141,10 +142,10 @@ ikev2_sa_get(uint64_t l_spi, uint64_t r_spi,
 		bucket = hash[I2SA_RHASH] + IKEV2_SA_RHASH(r_addr, r_spi);
 	}
 
-	PTH(pthread_mutex_lock(&bucket->lock));
-	for (node = list_head(&bucket->chain);
+	mutex_enter(&bucket->lock);
+	for (node = ilist_head(&bucket->chain);
 	    node != NULL;
-	    node = list_next(&bucket->chain, node)) {
+	    node = ilist_next(&bucket->chain, node)) {
 		int rc = i2sa_compare(node, &cmp);
 
 		if (rc < 0)
@@ -161,7 +162,7 @@ ikev2_sa_get(uint64_t l_spi, uint64_t r_spi,
 
 	if (sa != NULL)
 		I2SA_REFHOLD(sa);
-	PTH(pthread_mutex_unlock(&bucket->lock));
+	mutex_exit(&bucket->lock);
 
 	return (i2sa_verify(sa, r_spi, l_addr, r_addr));
 }
@@ -204,11 +205,6 @@ ikev2_sa_alloc(boolean_t initiator,
 	if ((i2sa = umem_cache_alloc(i2sa_cache, UMEM_DEFAULT)) == NULL)
 		return (NULL);
 
-	if ((bunyan_child(log, &i2sa->i2sa_log, BUNYAN_T_END) != 0)) {
-		umem_cache_free(i2sa_cache, i2sa);
-		return (NULL);
-	}
-
 	/* Keep anyone else out while we initialize */
 	PTH(pthread_mutex_lock(&i2sa->lock));
 
@@ -228,7 +224,7 @@ ikev2_sa_alloc(boolean_t initiator,
 	 */
 	while (1) {
 		/*CONSTCOND*/
-		uint64_t spi = random_low_64();;
+		uint64_t spi = random_low_64();
 
 		/*
  		 * Incredibly unlikely we'll ever randomly generate 0, but
@@ -245,7 +241,6 @@ ikev2_sa_alloc(boolean_t initiator,
 		if (i2sa_add_to_hash(I2SA_LSPI, i2sa)) {
 			VERIFY3U(i2sa->refcnt, ==, 1);
 
-			/* XXX: refhold i2sa in init_pkt */
 			if (initiator)
 				i2sa->init_i = init_pkt;
 			else
@@ -259,50 +254,70 @@ ikev2_sa_alloc(boolean_t initiator,
 
 	inc_half_open();
 
-	if (!i2sa_key_add_addr(i2sa, I2SA_KEY_LADDR, I2SA_KEY_LPORT, laddr) ||
-	    !i2sa_key_add_addr(i2sa, I2SA_KEY_RADDR, I2SA_KEY_RPORT, raddr) ||
-	    bunyan_key_add(i2sa->i2sa_log, BUNYAN_T_BOOLEAN,
-	    I2SA_KEY_INITIATOR, !!(i2sa->flags & I2SA_INITIATOR),
-	    BUNYAN_T_END) != 0)
-		goto fail;
-
-	char buf[19];	/* 0x + 64bit hex value + NUL */
-
+	/* 0x + 64bit hex value + NUL */
+	char buf[19] = { 0 };
 	(void) snprintf(buf, sizeof (buf), "0x%016llX", I2SA_LOCAL_SPI(i2sa));
-	if (bunyan_key_add(i2sa->i2sa_log,
-	    BUNYAN_T_STRING, I2SA_KEY_LSPI, buf, BUNYAN_T_END) != 0)
+
+/* XXX: Remove once OS-6341 is fixed */
+#ifdef BUNYAN_FIXED
+	if (bunyan_child(log, &i2sa->i2sa_log,
+	    BUNYAN_T_STRING, I2SA_KEY_LSPI, buf,
+	    ss_bunyan(laddr), I2SA_KEY_LADDR, ss_addr(laddr),
+	    BUNYAN_T_UINT32, I2SA_KEY_LPORT, ss_port(laddr),
+	    ss_bunyan(raddr), I2SA_KEY_RADDR, ss_addr(raddr),
+	    BUNYAN_T_UINT32, I2SA_KEY_RPORT, ss_port(raddr),
+	    BUNYAN_T_BOOLEAN, I2SA_KEY_INITIATOR, initiator,
+	    BUNYAN_T_END) != 0) {
+		bunyan_error(log, "Cannot create IKE SA logger",
+		    BUNYAN_T_END);
 		goto fail;
+	}
+#else
+	if (bunyan_child(log, &i2sa->i2sa_log, BUNYAN_T_END) != 0)
+		errx(EXIT_FAILURE, "bunyan_child() failed");
+
+	if (bunyan_key_add(i2sa->i2sa_log,
+	    BUNYAN_T_STRING, I2SA_KEY_LSPI, buf,
+	    ss_bunyan(laddr), I2SA_KEY_LADDR, ss_addr(laddr),
+	    BUNYAN_T_UINT32, I2SA_KEY_LPORT, ss_port(laddr),
+	    ss_bunyan(raddr), I2SA_KEY_RADDR, ss_addr(raddr),
+	    BUNYAN_T_UINT32, I2SA_KEY_RPORT, ss_port(raddr),
+	    BUNYAN_T_BOOLEAN, I2SA_KEY_INITIATOR, initiator,
+	    BUNYAN_T_END) != 0) {
+		errx(EXIT_FAILURE, "bunyan_add_key failed");
+	}
+#endif
 
 	/*
-	 * Start SA expiration timer.
+	 * Start SA expiration timer.  We cannot call schedule_timeout()
+	 * from there because we are almost certaintly not running in one
+	 * of the worker threads -- the local SPI cannot be known until
+	 * we exit.  The answer is to have the correct worker schedule it
+	 * for us.
+	 *
 	 * XXX: Should this be reset after we've successfully authenticated?
+	 * My hunch is no, and should only be cleared once the AUTH exchange
+	 * has successfully completed.
 	 */
-
-	config_t *cfg = config_get();
-	hrtime_t expire = cfg->cfg_expire_timer;
-	CONFIG_REFRELE(cfg);
-	cfg = NULL;
-
-	I2SA_REFHOLD(i2sa);	/* for the timer */
-	if (!schedule_timeout(TE_P1_SA_EXPIRE, i2sa_expire_cb, i2sa, expire)) {
-		bunyan_warn(i2sa->i2sa_log, "aborting larval IKEv2 SA creation",
+	I2SA_REFHOLD(i2sa);
+	if (!worker_dispatch(WMSG_START_P1_TIMER, i2sa,
+	    I2SA_LOCAL_SPI(i2sa) % nworkers)) {
+		(void) bunyan_error(i2sa->i2sa_log,
+		    "Cannot dispatch WMSG_START_P1_TIMER event; aborting",
 		    BUNYAN_T_END);
-
-		/* remove from hashes */
-		i2sa_unlink(i2sa);
-
-		/* should be free'd once these references are released */
-		ASSERT(i2sa->refcnt == 2);
-		I2SA_REFRELE(i2sa); /* timer */
 		goto fail;
 	}
 
 	PTH(pthread_mutex_unlock(&i2sa->lock));
-	bunyan_debug(i2sa->i2sa_log, "New larval IKE SA created", BUNYAN_T_END);
+
+	(void) bunyan_debug(log, "New larval IKE SA created",
+	    BUNYAN_T_POINTER, "ikev2sa", i2sa,
+	    BUNYAN_T_UINT64, "local_spi", I2SA_LOCAL_SPI(i2sa),
+	    BUNYAN_T_END);
+
 	return (i2sa);
 
 fail:
-	I2SA_REFHOLD(i2sa);
 	PTH(pthread_mutex_unlock(&i2sa->lock));
 	i2sa_unlink(i2sa);
 
@@ -313,6 +328,26 @@ fail:
 	return (NULL);
 }
 
+void
+ikev2_sa_start_timer(ikev2_sa_t *i2sa)
+{
+	config_t *cfg = config_get();
+	hrtime_t expire = cfg->cfg_expire_timer;
+
+	CONFIG_REFRELE(cfg);
+	cfg = NULL;
+
+	/* Pass i2sa reference to timer */
+	if (schedule_timeout(TE_P1_SA_EXPIRE, i2sa_expire_cb, i2sa, expire,
+	    i2sa->i2sa_log))
+		return;
+
+	bunyan_error(i2sa->i2sa_log, "Unable to schedule larval IKE SA timeout",
+	    BUNYAN_T_END);
+
+	ikev2_sa_condemn(i2sa);
+	I2SA_REFRELE(i2sa);
+}
 /*
  * Invoked when an SA has expired.  REF from timer is passed to this
  * function.
@@ -322,7 +357,7 @@ i2sa_expire_cb(te_event_t evt, void *data)
 {
 	NOTE(ARGUNUSED(evt))
 
-	ikev2_sa_t *i2sa = (ikev2_sa_t *)data;
+	ikev2_sa_t *i2sa = data;
 
 	bunyan_info(i2sa->i2sa_log, "Larval IKE SA timeout; deleting",
 	    BUNYAN_T_END);
@@ -344,7 +379,11 @@ ikev2_sa_condemn(ikev2_sa_t *i2sa)
 	size_t num = 0;
 	I2SA_REFHOLD(i2sa);
 
+	fprintf(stderr, "refcnt: %" PRIu32 "\n", i2sa->refcnt);
+
 	i2sa_unlink(i2sa);
+
+	fprintf(stderr, "refcnt: %" PRIu32 "\n", i2sa->refcnt);
 
 	PTH(pthread_mutex_lock(&i2sa->lock));
 	i2sa->flags |= I2SA_CONDEMNED;
@@ -355,12 +394,20 @@ ikev2_sa_condemn(ikev2_sa_t *i2sa)
 	if (cancel_timeout(TE_P1_SA_EXPIRE, i2sa, i2sa->i2sa_log) > 0)
 		I2SA_REFRELE(i2sa);
 
+	fprintf(stderr, "refcnt: %" PRIu32 "\n", i2sa->refcnt);
+
 	/*
  	* Since packets keep a reference to the SA they are associated with,
  	* we must free them here so that their references go away
  	*/
-	ikev2_pkt_free(i2sa->init_i);
-	ikev2_pkt_free(i2sa->init_r);
+	if (i2sa->init_i != i2sa->last_resp_sent &&
+	    i2sa->init_i != i2sa->last_sent)
+		ikev2_pkt_free(i2sa->init_i);
+
+	if (i2sa->init_r != i2sa->last_resp_sent &&
+	    i2sa->init_r != i2sa->last_sent)
+		ikev2_pkt_free(i2sa->init_r);
+
 	ikev2_pkt_free(i2sa->last_resp_sent);
 	ikev2_pkt_free(i2sa->last_sent);
 	ikev2_pkt_free(i2sa->last_recvd);
@@ -371,6 +418,8 @@ ikev2_sa_condemn(ikev2_sa_t *i2sa)
 	i2sa->last_recvd = NULL;
 
 	PTH(pthread_mutex_unlock(&i2sa->lock));
+
+	fprintf(stderr, "refcnt: %" PRIu32 "\n", i2sa->refcnt);
 
 	I2SA_REFRELE(i2sa);
 	/* XXX: should we do anything else here? */
@@ -422,9 +471,10 @@ ikev2_sa_free(ikev2_sa_t *i2sa)
 }
 
 void
-ikev2_sa_set_hashsize(uint_t numbuckets)
+ikev2_sa_set_hashsize(uint_t newamt)
 {
 	i2sa_bucket_t *old[I2SA_NUM_HASH];
+	size_t nold = num_buckets;
 	int i, hashtbl;
 	boolean_t startup = B_FALSE;
 
@@ -437,16 +487,16 @@ ikev2_sa_set_hashsize(uint_t numbuckets)
 	}
 
 	/* Round up to a power of two if not already */
-	if (!ISP2(numbuckets)) {
-		--numbuckets;
+	if (!ISP2(newamt)) {
+		--newamt;
 		for (i = 1; i <= 16; i++)
-			numbuckets |= (numbuckets >> i);
-		++numbuckets;
+			newamt |= (newamt >> i);
+		++newamt;
 	}
-	VERIFY(ISP2(numbuckets));
+	VERIFY(ISP2(newamt));
 
 	bunyan_debug(log, "Creating IKE SA hash buckets",
-	    BUNYAN_T_UINT32, "numbuckets", (uint32_t)numbuckets,
+	    BUNYAN_T_UINT32, "numbuckets", (uint32_t)newamt,
 	    BUNYAN_T_BOOLEAN, "startup", startup,
 	    BUNYAN_T_END);
 
@@ -455,18 +505,30 @@ ikev2_sa_set_hashsize(uint_t numbuckets)
 
 	/* Allocate new buckets */
 	for (i = 0; i < I2SA_NUM_HASH; i++) {
-		hash[i] = calloc(numbuckets, sizeof (i2sa_bucket_t));
+		size_t amt = newamt * sizeof (i2sa_bucket_t);
+		VERIFY3U(amt, >, sizeof (i2sa_bucket_t));
+		VERIFY3U(amt, >=, newamt);
+
+		hash[i] = umem_zalloc(amt, UMEM_DEFAULT);
 		if (hash[i] == NULL)
 			goto nomem;
-	}
 
-	for (hashtbl = 0; hashtbl < I2SA_NUM_HASH; hashtbl++) {
-		size_t offset = offsetof(ikev2_sa_t, node);
-		for (i = 0; i < numbuckets; i++) {
-			list_create(&hash[hashtbl][i].chain,
-			    sizeof (ikev2_sa_t),
-			    offset + i * sizeof (list_node_t));
-			PTH(pthread_mutex_init(&hash[hashtbl][i].lock, NULL));
+		size_t offset = 0;
+
+		switch (i) {
+		case I2SA_LSPI:
+			offset = offsetof(ikev2_sa_t, i2sa_lspi_node);
+			break;
+		case I2SA_RHASH:
+			offset = offsetof(ikev2_sa_t, i2sa_rspi_node);
+			break;
+		}
+
+		for (size_t j = 0; j < newamt; j++) {
+			i2sa_bucket_t *b = &hash[i][j];
+
+			ilist_create(&b->chain, sizeof (ikev2_sa_t), offset);
+			PTH(mutex_init(&b->lock, LOCK_ERRORCHECK, NULL));
 		}
 	}
 
@@ -476,7 +538,7 @@ ikev2_sa_set_hashsize(uint_t numbuckets)
 	i = num_buckets;
 
 	/* Set this so the hash functions work on the new buckets */
-	num_buckets = numbuckets;
+	num_buckets = newamt;
 
 	if (startup)
 		return;
@@ -490,25 +552,25 @@ ikev2_sa_set_hashsize(uint_t numbuckets)
 	 */
 	while (--i >= 0) {
 		for (hashtbl = 0; hashtbl < I2SA_NUM_HASH; hashtbl++) {
-			list_t *list, *oldlist;
+			ilist_t *list, *oldlist;
 			ikev2_sa_t *i2sa;
 
 			list = &hash[hashtbl][i].chain;
 			oldlist = &old[hashtbl][i].chain;
 
-			while ((i2sa = list_remove_head(oldlist)) != NULL) {
+			while ((i2sa = ilist_remove_head(oldlist)) != NULL) {
 				VERIFY(i2sa_add_to_hash(hashtbl, i2sa));
 				/* Remove ref from old list */
 				I2SA_REFRELE(i2sa);
 			}
 			
-			PTH(pthread_mutex_destroy(&old[hashtbl][i].lock));
-			VERIFY(list_is_empty(oldlist));
+			PTH(mutex_destroy(&old[hashtbl][i].lock));
+			VERIFY(ilist_is_empty(oldlist));
 		}
 	}
 
 	for (hashtbl = 0; hashtbl < I2SA_NUM_HASH; hashtbl++)
-		free(old[hashtbl]);
+		umem_free(old[hashtbl], sizeof (i2sa_bucket_t) * nold);
 
 	worker_resume();
 	return;
@@ -527,10 +589,10 @@ nomem:
 	for (hashtbl = 0; hashtbl < I2SA_NUM_HASH; hashtbl++) {
 		if (hash[hashtbl] == NULL)
 			continue;
-		for (i = 0; i < numbuckets; i++)
-			VERIFY(list_is_empty(&hash[hashtbl][i].chain));
+		for (i = 0; i < newamt; i++)
+			VERIFY(ilist_is_empty(&hash[hashtbl][i].chain));
 
-		free(hash[hashtbl]);
+		umem_free(hash[hashtbl], newamt * sizeof (i2sa_bucket_t));
 		hash[hashtbl] = old[hashtbl];
 	}
 
@@ -563,7 +625,7 @@ ikev2_sa_set_rspi(ikev2_sa_t *i2sa, uint64_t r_spi)
 	VERIFY(i2sa_add_to_hash(I2SA_RHASH, i2sa));
 	char buf[19];	/* 0x + 64bit hex value + NUL */
 
-	(void) snprintf(buf, sizeof (buf), "0x%016llX", I2SA_LOCAL_SPI(i2sa));
+	(void) snprintf(buf, sizeof (buf), "0x%016llX", I2SA_REMOTE_SPI(i2sa));
 	(void) bunyan_key_add(i2sa->i2sa_log,
 	    BUNYAN_T_STRING, I2SA_KEY_RSPI, buf, BUNYAN_T_END);
 }
@@ -605,11 +667,11 @@ i2sa_add_to_hash(i2sa_hash_t hashtbl, ikev2_sa_t *i2sa)
 
 	bucket = i2sa_get_bucket(hashtbl, i2sa);
 
-	PTH(pthread_mutex_lock(&bucket->lock));
+	mutex_enter(&bucket->lock);
 
-	for (node = list_head(&bucket->chain);
+	for (node = ilist_head(&bucket->chain);
 	    node != NULL;
-	    node = list_next(&bucket->chain, node)) {
+	    node = ilist_next(&bucket->chain, node)) {
 		i2sa_cmp_t cmp = {
 			.ic_laddr = &node->laddr,
 			.ic_raddr = &node->raddr,
@@ -636,14 +698,14 @@ i2sa_add_to_hash(i2sa_hash_t hashtbl, ikev2_sa_t *i2sa)
 		 * XXX: Should we do anything different for an rhash
 		 * match?
 		 */
-		PTH(pthread_mutex_unlock(&bucket->lock));
+		mutex_exit(&bucket->lock);
 		return (B_FALSE);
 	}
 
 	I2SA_REFHOLD(i2sa);	/* ref for chain */
 	i2sa->bucket[hashtbl] = bucket;
-	list_insert_before(&bucket->chain, node, i2sa);
-	PTH(pthread_mutex_unlock(&bucket->lock));
+	ilist_insert_before(&bucket->chain, node, i2sa);
+	mutex_exit(&bucket->lock);
 
 	return (B_TRUE);
 }
@@ -704,14 +766,24 @@ i2sa_hash_remove(size_t hashtbl, ikev2_sa_t *i2sa)
 
 	VERIFY3U(hashtbl, <, I2SA_NUM_HASH);
 
-	if (!list_link_active(&i2sa->node[hashtbl]))
-		return;
+	switch (hashtbl) {
+	case I2SA_LSPI:
+		if (!list_link_active(&i2sa->i2sa_lspi_node))
+			return;
+		break;
+	case I2SA_RHASH:
+		if (!list_link_active(&i2sa->i2sa_rspi_node))
+			return;
+		break;
+	}
 
-	bucket = i2sa_get_bucket(hashtbl, i2sa);
-	PTH(pthread_mutex_lock(&bucket->lock));
-	list_remove(&bucket->chain, i2sa);
+	bucket = i2sa->bucket[hashtbl];
+
+	mutex_enter(&bucket->lock);
+	ilist_remove(&bucket->chain, i2sa);
 	i2sa->bucket[hashtbl] = NULL;
-	PTH(pthread_mutex_unlock(&bucket->lock));
+	mutex_exit(&bucket->lock);
+
 	I2SA_REFRELE(i2sa);
 }
 
@@ -792,8 +864,9 @@ i2sa_ctor(void *buf, void *dummy, int flags)
 	i2sa->msgwin = 1;
 
 	PTH(pthread_mutex_init(&i2sa->lock, NULL));
-	for (size_t i = 0; i < I2SA_NUM_HASH; i++)
-		list_link_init(&i2sa->node[i]);
+	list_link_init(&i2sa->i2sa_wnode);
+	list_link_init(&i2sa->i2sa_lspi_node);
+	list_link_init(&i2sa->i2sa_rspi_node);
 
 	return (0);
 }

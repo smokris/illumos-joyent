@@ -13,19 +13,18 @@
  * Copyright 2017 Joyent, Inc.
  */
 
-#include <pthread.h>
+#include <bunyan.h>
 #include <errno.h>
 #include <err.h>
-#include <signal.h>
-#include <port.h>
-#include <bunyan.h>
-#include <string.h>
-#include <stdlib.h>
+#include <locale.h>
 #include <libgen.h>
+#include <port.h>
+#include <signal.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/types.h>
 #include <sys/debug.h>
-#include <locale.h>
-#include <ucontext.h>
+#include <thread.h>
 #include "config.h"
 #include "defs.h"
 #include "defs.h"
@@ -47,9 +46,6 @@ static void do_signal(int);
 static void main_loop(void);
 
 static void do_immediate(void);
-
-static const char *port_source_str(ushort_t);
-static const char *event_str(event_t);
 
 static boolean_t done;
 static pthread_t signal_tid;
@@ -140,8 +136,8 @@ main(int argc, char **argv)
 
 	/* XXX: make these configurable */
 	worker_init(8, 8);
+	inbound_init(2);
 	pfkey_init();
-	inbound_init();
 	main_loop();
 
 	pkt_fini();
@@ -170,13 +166,13 @@ do_immediate(void)
 		VERIFY3S(rule->rule_remote_addr[0].cfa_type, ==, CFG_ADDR_IPV4);
 
 		sl.sau_sin->sin_family = AF_INET;
-		sl.sau_sin->sin_port = 500;
+		sl.sau_sin->sin_port = htons(500);
 		(void) memcpy(&sl.sau_sin->sin_addr,
 		    &rule->rule_local_addr[0].cfa_startu.cfa_ip4,
 		    sizeof (in_addr_t));
 
 		sr.sau_sin->sin_family = AF_INET;
-		sr.sau_sin->sin_port = 500;
+		sr.sau_sin->sin_port = htons(500);
 		(void) memcpy(&sr.sau_sin->sin_addr,
 		    &rule->rule_remote_addr[0].cfa_startu.cfa_ip4,
 		    sizeof (in_addr_t));
@@ -184,11 +180,11 @@ do_immediate(void)
 		sa = ikev2_sa_alloc(B_TRUE, NULL, &laddr, &raddr);
 		VERIFY3P(sa, !=, NULL);
 
-		bunyan_trace(log, "Dispatching",
+		bunyan_trace(sa->i2sa_log, "Dispatching larval SA to worker",
 		    BUNYAN_T_STRING, "rule", rule->rule_label,
 		    BUNYAN_T_END);
 
-		worker_dispatch(EVT_START, sa, I2SA_LOCAL_SPI(sa) % nworkers);
+		worker_dispatch(WMSG_START, sa, I2SA_LOCAL_SPI(sa) % nworkers);
 	}
 
 	CONFIG_REFRELE(cfg);
@@ -202,7 +198,6 @@ main_loop(void)
 
 	(void) bunyan_trace(log, "starting main loop", BUNYAN_T_END);
 
-	worker_resume();
 	do_immediate();
 
 	/*CONSTCOND*/
@@ -228,32 +223,10 @@ main_loop(void)
 			event(pe.portev_events, pe.portev_user);
 			break;
 
-		case PORT_SOURCE_FD: {
-			char buf[128] = { 0 };
-			(void) addrtosymstr(pe.portev_user, buf, sizeof (buf));
-
-			(void) bunyan_trace(log, "received event",
-			    BUNYAN_T_STRING, "source",
-			    port_source_str(pe.portev_source),
-			    BUNYAN_T_UINT32, "source val",
-			    (uint32_t)pe.portev_events,
-			    BUNYAN_T_INT32, "fd", (int32_t)pe.portev_object,
-			    BUNYAN_T_STRING, "cb", buf,
-			    BUNYAN_T_POINTER, "cbval", pe.portev_user,
-			    BUNYAN_T_END);
-
-			void (*fn)(int) = (void (*)(int))pe.portev_user;
-			int fd = (int)pe.portev_object;
-			fn(fd);
-			break;
-		}
-
 		case PORT_SOURCE_ALERT:
 			(void) bunyan_trace(log, "received event",
 			    BUNYAN_T_STRING, "source",
 			    port_source_str(pe.portev_source),
-			    BUNYAN_T_UINT32, "source val",
-			    (uint32_t)pe.portev_events,
 			    BUNYAN_T_END);
 			break;
 
@@ -280,13 +253,6 @@ event(event_t evt, void *arg)
 void
 reload(void)
 {
-}
-
-void
-schedule_socket(int fd, void (*cb)(int, void *))
-{
-	if (port_associate(port, PORT_SOURCE_FD, fd, POLLIN, cb) < 0)
-		STDERR(error, log, "port_associate() failed");
 }
 
 static void
@@ -353,74 +319,24 @@ signal_init(void)
 {
 	pthread_attr_t attr;
 	sigset_t nset;
+	int rc;
 
-	bunyan_trace(log, "signal_init() enter", BUNYAN_T_END);
+	bunyan_trace(log, "Creating signal handling thread", BUNYAN_T_END);
 
 	/* block all signals in main thread */
 	(void) sigfillset(&nset);
-	(void) pthread_sigmask(SIG_SETMASK, &nset, NULL);
+	PTH(thr_sigsetmask(SIG_SETMASK, &nset, NULL));
 
-	PTH(pthread_attr_init(&attr));
-	PTH(pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED));
-	PTH(pthread_create(&signal_tid, &attr, signal_thread, NULL));
-	PTH(pthread_attr_destroy(&attr));
-
-	bunyan_trace(log, "signal_init() exit", BUNYAN_T_END);
-}
-
-static const char *
-port_source_str(ushort_t src)
-{
-#define	STR(x) case x: return (#x)
-
-	switch (src) {
-	STR(PORT_SOURCE_AIO);
-	STR(PORT_SOURCE_FD);
-	STR(PORT_SOURCE_MQ);
-	STR(PORT_SOURCE_TIMER);
-	STR(PORT_SOURCE_USER);
-	STR(PORT_SOURCE_ALERT);
-	STR(PORT_SOURCE_FILE);
-	default:
-		return ("UNKNOWN");
-	}
-#undef STR
-}
-
-static const char *
-event_str(event_t evt)
-{
-#define	STR(x) case x: return (#x)
-
-	switch (evt) {
-	STR(EVENT_NONE);
-	STR(EVENT_SIGNAL);
-	default:
-		return ("UNKNOWN");
+	rc = thr_create(NULL, 0, signal_thread, NULL, THR_DETACHED,
+	    &signal_tid);
+	if (rc != 0) {
+		bunyan_fatal(log, "Signal handling thread creation failed",
+		    BUNYAN_T_STRING, "errmsg", strerror(rc),
+		    BUNYAN_T_INT32, "errno", (int32_t)rc,
+		    BUNYAN_T_STRING, "file", __FILE__,
+		    BUNYAN_T_INT32, "line", (int32_t)__LINE__,
+		    BUNYAN_T_STRING, "func", __func__,
+		    BUNYAN_T_END);
+		exit(EXIT_FAILURE);
 	}
 }
-
-bunyan_logfn_t
-getlog(bunyan_level_t level)
-{
-	switch (level) {
-	case BUNYAN_L_TRACE:
-		return (bunyan_trace);
-	case BUNYAN_L_DEBUG:
-		return (bunyan_debug);
-	case BUNYAN_L_INFO:
-		return (bunyan_info);
-	case BUNYAN_L_WARN:
-		return (bunyan_warn);
-	case BUNYAN_L_ERROR:
-		return (bunyan_error);
-	case BUNYAN_L_FATAL:
-		return (bunyan_fatal);
-        }
-
-	return (NULL);
-}
-
-extern uint32_t ss_port(const struct sockaddr_storage *);
-extern const void *ss_addr(const struct sockaddr_storage *);
-extern int ss_bunyan(const struct sockaddr_storage *);

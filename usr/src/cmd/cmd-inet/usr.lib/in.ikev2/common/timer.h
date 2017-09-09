@@ -34,7 +34,6 @@
 #ifndef _TIMER_H
 #define	_TIMER_H
 
-#include <bunyan.h>
 #include <sys/types.h>
 
 #ifdef  __cplusplus
@@ -50,13 +49,17 @@ typedef enum {
 
 typedef void (*tevent_cb_fn)(te_event_t, void *);
 
-extern void		process_timer(timespec_t *, bunyan_logger_t *);
-extern size_t		cancel_timeout(te_event_t, void *, bunyan_logger_t *);
+struct bunyan_logger;
+struct worker_s;
+
+extern void		process_timer(timespec_t **);
+extern size_t		cancel_timeout(te_event_t, void *,
+    struct bunyan_logger *);
 extern boolean_t	schedule_timeout(te_event_t, tevent_cb_fn, void *,
-    hrtime_t);
+    hrtime_t, struct bunyan_logger *);
 
 extern void ike_timer_init(void);
-extern void ike_timer_thread_init(void);
+extern void ike_timer_worker_init(struct worker_s *);
 
 #ifdef  __cplusplus
 }

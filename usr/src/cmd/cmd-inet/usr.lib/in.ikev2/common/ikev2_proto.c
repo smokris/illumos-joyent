@@ -77,7 +77,7 @@ ikev2_dispatch(pkt_t *pkt, const struct sockaddr_storage *restrict l_addr,
 	local_spi = I2SA_LOCAL_SPI(i2sa);
 	pkt->pkt_sa = i2sa;
 
-	if (worker_dispatch(EVT_PACKET, pkt, local_spi % nworkers))
+	if (worker_dispatch(WMSG_PACKET, pkt, local_spi % nworkers))
 		return;
 
 	SPILOG(info, log, "worker queue full; discarding packet",
@@ -175,13 +175,14 @@ discard:
 boolean_t
 ikev2_send(pkt_t *pkt, boolean_t is_error)
 {
+	VERIFY(IS_WORKER);
+
 	ikev2_sa_t *i2sa = pkt->pkt_sa;
 	ssize_t len = 0;
 	int s = -1;
 	boolean_t resp = !!(pkt->pkt_header.flags & IKEV2_FLAG_RESPONSE);
 
 	if (!ikev2_pkt_done(pkt)) {
-		I2SA_REFRELE(i2sa);
 		ikev2_pkt_free(pkt);
 		return (B_FALSE);
 	}
@@ -197,6 +198,7 @@ ikev2_send(pkt_t *pkt, boolean_t is_error)
 	bunyan_debug(i2sa->i2sa_log, "Sending packet",
 	    BUNYAN_T_STRING, "pktdesc", str,
 	    BUNYAN_T_BOOLEAN, "response", resp,
+	    BUNYAN_T_UINT32, "nxmit", (uint32_t)pkt->pkt_xmit,
 	    BUNYAN_T_END);
 	free(str);
 	str = NULL;
@@ -213,7 +215,6 @@ ikev2_send(pkt_t *pkt, boolean_t is_error)
 			 * Note: sendfromto() should have logged any relevant
 			 * errors
 			 */
-			I2SA_REFRELE(i2sa);
 			ikev2_pkt_free(pkt);
 		}
 		return (B_FALSE);
@@ -239,7 +240,7 @@ ikev2_send(pkt_t *pkt, boolean_t is_error)
 		PTH(pthread_mutex_unlock(&i2sa->lock));
 
 		(void) schedule_timeout(TE_TRANSMIT, ikev2_retransmit, i2sa,
-		    retry);
+		    retry, i2sa->i2sa_log);
 		return (B_TRUE);
 	}
 
@@ -267,9 +268,12 @@ ikev2_send(pkt_t *pkt, boolean_t is_error)
 static void
 ikev2_retransmit(te_event_t event, void *data)
 {
+	VERIFY(IS_WORKER);
+
 	ikev2_sa_t *sa = data;
 	pkt_t *pkt = sa->last_sent;
-	hrtime_t retry = 0;
+	hrtime_t retry = 0, retry_init = 0, retry_max = 0;
+	size_t limit = 0;
 	ssize_t len;
 
 	PTH(pthread_mutex_lock(&sa->lock));
@@ -281,24 +285,32 @@ ikev2_retransmit(te_event_t event, void *data)
 		ikev2_pkt_free(pkt);
 		return;
 	}
+	PTH(pthread_mutex_unlock(&sa->lock));
 
 	config_t *cfg = config_get();
-	retry = cfg->cfg_retry_init * (1ULL << ++pkt->pkt_xmit);
-	if (retry > cfg->cfg_retry_max || pkt->pkt_xmit > cfg->cfg_retry_max) {
-		PTH(pthread_mutex_unlock(&sa->lock));
+	retry_init = cfg->cfg_retry_init;
+	retry_max = cfg->cfg_retry_max;
+	limit = cfg->cfg_retry_limit;
+	CONFIG_REFRELE(cfg);
+	cfg = NULL;
+
+	retry = retry_init * (1ULL << ++pkt->pkt_xmit);
+	if (retry > retry_max)
+		retry = retry_max;
+	if (pkt->pkt_xmit > limit) {
+		bunyan_info(sa->i2sa_log,
+		    "Transmit timeout on packet; deleting IKE SA",
+		    BUNYAN_T_END);
 		ikev2_sa_condemn(sa);
-		ikev2_pkt_free(pkt);
-		CONFIG_REFRELE(cfg);
 		return;
 	}
-	PTH(pthread_mutex_unlock(&sa->lock));
-	CONFIG_REFRELE(cfg);
 
 	char *str = ikev2_pkt_desc(pkt);
 	bunyan_debug(sa->i2sa_log, "Sending packet",
 	    BUNYAN_T_STRING, "pktdesc", str,
 	    BUNYAN_T_BOOLEAN, "response",
 	    pkt->pkt_header.flags & IKEV2_FLAG_RESPONSE,
+	    BUNYAN_T_UINT32, "nxmit", (uint32_t)pkt->pkt_xmit,
 	    BUNYAN_T_END);
 	free(str);
 	str = NULL;
@@ -307,7 +319,8 @@ ikev2_retransmit(te_event_t event, void *data)
 	    &sa->laddr, &sa->raddr);
 	/* XXX: sendfromto() will log if it fails, do anything else? */
 
-	VERIFY(schedule_timeout(TE_TRANSMIT, ikev2_retransmit, sa, retry));
+	VERIFY(schedule_timeout(TE_TRANSMIT, ikev2_retransmit, sa, retry,
+	    sa->i2sa_log));
 }
 
 /*

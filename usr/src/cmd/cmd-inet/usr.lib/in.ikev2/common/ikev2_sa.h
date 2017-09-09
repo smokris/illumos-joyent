@@ -30,17 +30,16 @@
 #ifndef _IKEV2_SA_H
 #define	_IKEV2_SA_H
 
+#include <atomic.h>
+#include <security/cryptoki.h>
+#include <sys/list.h>
 #include <sys/types.h>
 #include <sys/socket.h>
-#include <assert.h>
-#include <synch.h>
 #include <stddef.h>
-#include <security/cryptoki.h>
-#include <atomic.h>
+#include <synch.h>
 #include <pthread.h>
-#include <sys/list.h>
-#include "ikev2.h"
 #include "defs.h"
+#include "ikev2.h"
 
 #ifdef  __cplusplus
 extern "C" {
@@ -81,8 +80,9 @@ typedef enum i2sa_hash_e {
  */
 struct ikev2_sa_s {
 	pthread_mutex_t lock;
-
-	list_node_t	node[I2SA_NUM_HASH];
+	list_node_t	i2sa_wnode;
+	list_node_t	i2sa_lspi_node;
+	list_node_t	i2sa_rspi_node;
 
 	bunyan_logger_t	*i2sa_log;
 
@@ -195,7 +195,8 @@ ikev2_sa_t *ikev2_sa_alloc(boolean_t, struct pkt_s *restrict,
     const struct sockaddr_storage *restrict,
     const struct sockaddr_storage *restrict);
 
-void	ikev2_sa_set_rspi(ikev2_sa_t *i2sa, uint64_t r_spi);
+void	ikev2_sa_start_timer(ikev2_sa_t *);
+void	ikev2_sa_set_rspi(ikev2_sa_t *, uint64_t);
 void	ikev2_sa_free(ikev2_sa_t *);
 void	ikev2_sa_condemn(ikev2_sa_t *);
 

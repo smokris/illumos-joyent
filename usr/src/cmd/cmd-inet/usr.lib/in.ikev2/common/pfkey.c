@@ -47,6 +47,7 @@
 #include "ikev2.h"
 #include "ikev2_pkt.h"
 #include "ikev2_sa.h"
+#include "inbound.h"
 #include "pkcs11.h"
 
 struct pfreq;
@@ -237,10 +238,8 @@ extract_exts(sadb_msg_t *samsg, parsedmsg_t *pmsg, int numexts, ...)
 }
 
 static void
-pfkey_inbound(int s, void *arg)
+pfkey_inbound(int s)
 {
-	_NOTE(ARGUNUSED(arg))
-
 	sadb_msg_t *samsg;
 	ssize_t rc;
 	int length;

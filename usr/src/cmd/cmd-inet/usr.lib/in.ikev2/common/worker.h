@@ -16,18 +16,57 @@
 #ifndef _WORKER_H
 #define	_WORKER_H
 
+#include <bunyan.h>
+#include <thread.h>
+#include <security/cryptoki.h>
 #include <stddef.h>
+#include <synch.h>
+#include "ilist.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-typedef enum worker_evt {
-	EVT_NONE,
-	EVT_PACKET,
-	EVT_PFKEY,
-	EVT_START	/* Temp. for testing */
-} worker_evt_t;
+typedef enum worker_msg_e {
+	WMSG_NONE,
+	WMSG_PACKET,
+	WMSG_PFKEY,
+	WMSG_START,		/* Temp. for testing */
+	WMSG_START_P1_TIMER,
+} worker_msg_t;
+
+typedef enum worker_cmd_e {
+	WC_NONE,
+	WC_SUSPEND,
+	WC_QUIT
+} worker_cmd_t;
+
+typedef struct worker_item_s {
+	worker_msg_t	wi_msgtype;
+	void		*wi_data;
+} worker_item_t;
+
+typedef struct worker_queue_s {
+	mutex_t		wq_lock;
+	cond_t		wq_cv;
+	worker_cmd_t	wq_cmd;
+	worker_item_t	*wq_items;
+	size_t		wq_start;
+	size_t		wq_end;
+} worker_queue_t;
+
+typedef struct worker_s {
+	thread_t		w_tid;
+	bunyan_logger_t		*w_log;
+	worker_queue_t		w_queue;
+	ilist_t			w_timers;
+	ilist_t			w_sas;
+	boolean_t		w_done;
+	CK_SESSION_HANDLE	w_p11;
+} worker_t;
+
+extern __thread worker_t *worker;
+#define	IS_WORKER	(worker != NULL)
 
 extern size_t nworkers;
 
@@ -37,7 +76,7 @@ void worker_resume(void);
 boolean_t worker_add(void);
 void worker_del(void);
 void worker_stop(void);
-boolean_t worker_dispatch(worker_evt_t, void *, size_t);
+boolean_t worker_dispatch(worker_msg_t, void *, size_t);
 
 #ifdef __cplusplus
 }

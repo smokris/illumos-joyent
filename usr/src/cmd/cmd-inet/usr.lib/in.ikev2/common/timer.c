@@ -31,18 +31,18 @@
 #include <ipsec_util.h>
 #include <locale.h>
 #include <note.h>
-#include <port.h>
 #include <pthread.h>
 #include <stddef.h>
 #include <string.h>
 #include <sys/debug.h>
-#include <sys/list.h>
 #include <sys/types.h>
 #include <ucontext.h>
 #include <umem.h>
 
 #include "defs.h"
+#include "ilist.h"
 #include "timer.h"
+#include "worker.h"
 
 struct tevent_s;
 
@@ -55,18 +55,11 @@ typedef struct tevent_s {
 	void			*te_arg;
 } tevent_t;
 
-typedef struct tlist_s {
-	list_t		tl_list;
-	size_t		tl_size;
-} tlist_t;
-
-static pthread_key_t	timer_key = PTHREAD_ONCE_KEY_NP;
 static umem_cache_t	*evt_cache;
 
 static int te_compare(const void *, const void *, void *);
 
 static tevent_t *tevent_alloc(te_event_t, hrtime_t, tevent_cb_fn, void *);
-static void timer_fini(void *);
 static void tevent_free(tevent_t *);
 static int evt_ctor(void *, void *, int);
 static const char *te_str(te_event_t);
@@ -84,107 +77,98 @@ ike_timer_init(void)
 	if (evt_cache == NULL)
 		errx(EXIT_FAILURE, "Unable to allocate memory for timer event "
 		    "entries");
-
-	PTH(pthread_key_create_once_np(&timer_key, timer_fini));
-}
-
-static inline tlist_t *
-timer_list(void)
-{
-	tlist_t *list = pthread_getspecific(timer_key);
-
-	if (list == NULL) {
-		list = umem_zalloc(sizeof (*list), UMEM_DEFAULT);
-		if (list == NULL)
-			err(EXIT_FAILURE, "umem_alloc() failed");
-
-		list_create(&list->tl_list, sizeof (tevent_t),
-		    offsetof (tevent_t, te_node));
-	}
-
-	return (list);
 }
 
 void
-process_timer(timespec_t *next_time, bunyan_logger_t *tlog)
+ike_timer_worker_init(worker_t *w)
 {
-	tlist_t		*list = timer_list();
+	ilist_create(&w->w_timers, sizeof (tevent_t),
+	    offsetof(tevent_t, te_node));
+}
+
+void
+ike_timer_worker_fini(void)
+{
+	VERIFY(IS_WORKER);
+	ilist_destroy(&worker->w_timers);
+}
+
+void
+process_timer(timespec_t **tsp)
+{
+	VERIFY(IS_WORKER);
+
+	ilist_t		*events = &worker->w_timers;
 	tevent_t	*te = NULL;
 	hrtime_t	now = gethrtime();
 	hrtime_t	delta = 0;
 	size_t		dispcount = 0;
 
-	(void) bunyan_trace(tlog, "Checking for timeout events",
+	(void) bunyan_trace(worker->w_log, "Checking for timeout events",
 	    BUNYAN_T_END);
 
-	te = list_head(&list->tl_list);
+	/*
+	 * Only look at events that expired when we started. It is
+	 * possible more events may be ready by the time we finish.
+	 * If that happens, they will be processed the next time
+	 * we are called so that other things can proceed in the
+	 * current thread.
+	 *
+	 * This list is sorted in ascending time, so we can stop
+	 * either when it's empty or we see an event later scheduled
+	 * later than 'now'.
+	 */
+	while ((te = ilist_head(events)) != NULL && te->te_time < now) {
+		(void) ilist_remove_head(events);
 
-	while (te != NULL) {
-		/*
-		 * Only look at events that expired when we started. It is
-		 * possible more events may be ready by the time we finish.
-		 * If that happens, they will be processed the next time
-		 * we are called so that other things can proceed in the
-		 * current thread.
-		 */
-		if (te->te_time > now)
-			break;
-
-		tevent_t *tnext = list_next(&list->tl_list, te);
-
-		tevent_log(tlog, BUNYAN_L_DEBUG, "Dispatching timer event", te);
+		tevent_log(worker->w_log, BUNYAN_L_TRACE,
+		    "Dispatching timer event", te);
 		te->te_fn(te->te_type, te->te_arg);
+		dispcount++;
 
-		list_remove(&list->tl_list, te);
-		list->tl_size--;
 		tevent_free(te);
-
-		te = tnext;
 	}
 
 	if (te != NULL) {
-		/*
- 		* If some stuff is ready after we've finished, just set an
- 		* arbitrarirly small delay so the calling worker doesn't
- 		* block as if the list is empty (delta == 0).
- 		*/
-		if ((delta = te->te_time - now) < 0)
-			delta = 1000;
+		timespec_t ts = { 0 };
+
+		if ((delta = te->te_time - gethrtime()) < 0)
+			delta = 0;
+
+		(*tsp)->tv_sec = NSEC2SEC(delta);
+		(*tsp)->tv_nsec = delta % NANOSEC;
+	} else {
+		*tsp = NULL;
 	}
 
-	next_time->tv_sec = NSEC2SEC(delta);
-	next_time->tv_nsec = delta % (hrtime_t)NANOSEC;
-
-	(void) bunyan_debug(tlog, "Finished dispatching events",
+	(void) bunyan_trace(worker->w_log, "Finished dispatching events",
 	    BUNYAN_T_UINT32, "dispcount", (uint32_t)dispcount,
-	    BUNYAN_T_UINT32, "numqueued", (uint32_t)list->tl_size,
+	    BUNYAN_T_UINT32, "numqueued", (uint32_t)ilist_size(events),
 	    BUNYAN_T_UINT64, "next_evt_ms", NSEC2MSEC(delta),
 	    BUNYAN_T_END);
-
 }
 
 size_t
-cancel_timeout(te_event_t type, void *restrict arg,
-    bunyan_logger_t *restrict tlog)
+cancel_timeout(te_event_t type, void *restrict arg, bunyan_logger_t *l)
 {
-	tlist_t *list = timer_list();
-	tevent_t *te = list_head(&list->tl_list);
+	VERIFY(IS_WORKER);
+
+	ilist_t *events = &worker->w_timers;
+	tevent_t *te = ilist_head(events);
 	size_t count = 0;
 
-	(void) bunyan_trace(tlog, "Cancelling timeouts",
+	(void) bunyan_trace(l, "Cancelling timeouts",
 	    BUNYAN_T_STRING, "event", te_str(type),
 	    BUNYAN_T_POINTER, "arg", arg, BUNYAN_T_END);
 
 	while (te != NULL) {
-		tevent_t *tnext = list_next(&list->tl_list, te);
+		tevent_t *tnext = ilist_next(events, te);
 
 		if ((te->te_arg == arg || arg == NULL) &&
 		    (te->te_type == type || te->te_type == TE_ANY)) {
-			tevent_log(tlog, BUNYAN_L_DEBUG, "Cancelled timeout",
-			    te);
+			tevent_log(l, BUNYAN_L_DEBUG, "Cancelled timeout", te);
 
-			list_remove(&list->tl_list, te);
-			list->tl_size--;
+			ilist_remove(events, te);
 			count++;
 			tevent_free(te);
 		}
@@ -196,33 +180,25 @@ cancel_timeout(te_event_t type, void *restrict arg,
 }
 
 boolean_t
-schedule_timeout(te_event_t type, tevent_cb_fn fn, void *arg, hrtime_t val)
+schedule_timeout(te_event_t type, tevent_cb_fn fn, void *arg, hrtime_t val,
+    bunyan_logger_t *l)
 {
-	tlist_t *list = timer_list();
+	VERIFY(IS_WORKER);
+
+	ilist_t *events = &worker->w_timers;
 	tevent_t *te = tevent_alloc(type, val, fn, arg);
-	tevent_t *tnode = list_head(&list->tl_list);
+	tevent_t *tnode = ilist_head(events);
 
 	VERIFY3S(type, !=, TE_ANY);
 
 	if (te == NULL)
 		return (B_FALSE);
 
-	if (tnode == NULL) {
-		list_insert_head(&list->tl_list, te);
-		goto done;
-	}
+	while (tnode != NULL && tnode->te_time < te->te_time)
+		tnode = ilist_next(events, tnode);
 
-	while (tnode->te_time < te->te_time)
-		tnode = list_next(&list->tl_list, tnode);
-
-	if (tnode != NULL)
-		list_insert_before(&list->tl_list, tnode, te);
-	else
-		list_insert_tail(&list->tl_list, te);
-
-done:
-	tevent_log(log, BUNYAN_L_DEBUG, "Created new timeout", te);
-	list->tl_size++;
+	ilist_insert_before(events, tnode, te);
+	tevent_log(l, BUNYAN_L_TRACE, "Created new timeout", te);
 	return (B_TRUE);
 }
 
@@ -243,15 +219,6 @@ tevent_alloc(te_event_t type, hrtime_t dur, tevent_cb_fn fn, void *arg)
 }
 
 static void
-timer_fini(void *arg)
-{
-	tlist_t *list = arg;
-
-	(void) cancel_timeout(TE_ANY, NULL, log);
-	umem_free(list, sizeof (*list));	
-}
-
-static void
 tevent_free(tevent_t *te)
 {
 	if (te == NULL)
@@ -265,17 +232,16 @@ static void
 tevent_log(bunyan_logger_t *restrict l, bunyan_level_t level,
     const char *restrict msg, const tevent_t *restrict te)
 {
-	char buf[128] = { 0 };
 	hrtime_t now = gethrtime();
 	uint64_t when = NSEC2MSEC(te->te_time - now);
 
-	(void) addrtosymstr(te->te_fn, buf, sizeof (buf));
-	getlog(level)(l, msg,
+	/* XXX: Get the function name, would dladdr(3C) be better? */
+	(void) getlog(level)(l, msg,
 	    BUNYAN_T_STRING, "event", te_str(te->te_type),
 	    BUNYAN_T_UINT32, "event num", (uint32_t)te->te_type,
 	    BUNYAN_T_UINT64, "ms", when,
 	    BUNYAN_T_POINTER, "fn", te->te_fn,
-	    BUNYAN_T_STRING, "fnname", buf,
+	    BUNYAN_T_STRING, "fnname", symstr(te->te_fn),
 	    BUNYAN_T_POINTER, "arg", te->te_arg,
 	    BUNYAN_T_END);
 }
@@ -283,7 +249,7 @@ tevent_log(bunyan_logger_t *restrict l, bunyan_level_t level,
 static int
 evt_ctor(void *buf, void *cb, int flags)
 {
-	tevent_t *te = (tevent_t *)buf;
+	tevent_t *te = buf;
 
 	(void) memset(te, 0, sizeof (*te));
 	list_link_init(&te->te_node);

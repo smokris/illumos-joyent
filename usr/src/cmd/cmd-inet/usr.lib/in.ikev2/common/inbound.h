@@ -10,20 +10,24 @@
  */
 
 /*
- * Copyright 2015 Jason King.  All rights reserved.
- * Use is subject to license terms.
+ * Copyright 2015 Jason King.
+ * Copyright (c) 2017, Joyent, Inc.
  */
 
 #ifndef _INBOUND_H
 #define	_INBOUND_H
+
+#include <inttypes.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 extern int ikesock4, ikesock6, nattsock;
+extern size_t ninbound;
 
-void inbound_init(void);
+void inbound_init(size_t);
+void schedule_socket(int, void (*)(int));
 
 #ifdef __cplusplus
 }

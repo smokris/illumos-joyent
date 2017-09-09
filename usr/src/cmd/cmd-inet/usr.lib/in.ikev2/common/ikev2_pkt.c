@@ -132,21 +132,6 @@ ikev2_pkt_new_inbound(uint8_t *restrict buf, size_t buflen,
 
 	ASSERT(IKE_GET_MAJORV(hdr->version) == IKE_GET_MAJORV(IKEV2_VERSION));
 
-	/*
-	 * Make sure either the initiator or response flag is set, but
-	 * not both.
-	 */
-	uint8_t flags = hdr->flags & (IKEV2_FLAG_INITIATOR|IKEV2_FLAG_RESPONSE);
-	if ((flags ^ (IKEV2_FLAG_INITIATOR|IKEV2_FLAG_RESPONSE)) == 0) {
-		char flagstr[5] = { 0 };	/* 0xXX + NUL */
-
-		(void) snprintf(flagstr, sizeof (flagstr), "0x%hhx", flags);
-		bunyan_info(l, "Invalid flags value in IKE header",
-		    BUNYAN_T_STRING, "flags", flagstr,
-		    BUNYAN_T_END);
-		return (NULL);
-	}
-
 	/* pkt_in_alloc() will log any errors messages */
 	if ((pkt = pkt_in_alloc(buf, buflen, l)) == NULL)
 		return (NULL);
@@ -291,8 +276,6 @@ discard:
 
 static boolean_t check_sa_payload(uint8_t *restrict, size_t, boolean_t,
     bunyan_logger_t *restrict l);
-static boolean_t check_notify_payload(struct validate_data *restrict,
-    uint8_t *restrict, size_t, bunyan_logger_t *restrict l);
 
 /*
  * Cache the payload offsets and do some minimal checking.
@@ -366,10 +349,6 @@ check_payload(uint8_t paytype, uint8_t resv, uint8_t *restrict buf,
 	arg->payload_count[paytype - IKEV2_PAYLOAD_MIN]++;
 
 	switch (paytype) {
-	case IKEV2_PAYLOAD_NOTIFY:
-		if (!check_notify_payload(arg, buf, buflen, log))
-			return (PKT_WALK_ERROR);
-		break;
 	case IKEV2_PAYLOAD_SA:
 		if (!check_sa_payload(buf, buflen, !arg->initiator, log))
 			return (PKT_WALK_ERROR);
@@ -377,34 +356,6 @@ check_payload(uint8_t paytype, uint8_t resv, uint8_t *restrict buf,
 	}
 
 	return (PKT_WALK_OK);
-}
-
-static boolean_t
-check_notify_payload(struct validate_data *restrict arg, uint8_t *restrict buf,
-    size_t buflen, bunyan_logger_t *restrict l)
-{
-	pkt_notify_t *ntfyp = pkt_notify(arg->pkt, arg->notify_count++);
-	ikev2_notify_t ntfy = { 0 };
-	size_t len = sizeof (ntfy);
-
-	if (buflen < len) {
-		bunyan_info(l, "Notify data is truncated", BUNYAN_T_END);
-		return (B_FALSE);
-	}
-
-	(void) memcpy(&ntfy, buf, sizeof (ntfy));
-	len += ntfy.n_spisize;
-	if (buflen < len) {
-		bunyan_info(l, "SPI size overflows notify payload",
-		    BUNYAN_T_UINT32, "spisize", (uint32_t)ntfy.n_spisize,
-		    BUNYAN_T_END);
-		return (B_FALSE);
-	}
-
-	ntfyp->pn_ptr = buf;
-	ntfyp->pn_type = ntohs(ntfy.n_type);
-	ntfyp->pn_len = buflen;
-	return (B_TRUE);
 }
 
 struct sa_payload_data {

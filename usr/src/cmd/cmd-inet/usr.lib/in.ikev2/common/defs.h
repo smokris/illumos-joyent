@@ -121,19 +121,26 @@ typedef struct algindex {
  */
 #define	SA_FULL_EQ(sa1, sa2) (SA_ADDR_EQ(sa1, sa2) && SA_PORT_EQ(sa1, sa2))
 
+#define	NOMEM assfail("Out of memory", __FILE__, __LINE__)
 #define	INVALID(var) assfail("Invalid value of " # var, __FILE__, __LINE__)
+
+#ifndef ARRAY_SIZE
 #define	ARRAY_SIZE(x) (sizeof (x) / sizeof (x[0]))
+#endif
 
 /*
- * Simple wrapper for pthread calls that should never fail under
+ * Simple wrapper for thread calls that should never fail under
  * normal conditions.
  */
-#define	PTH(fn) do {							\
-	int __pthread_rc = fn;						\
-	if (__pthread_rc < 0)						\
+#define	PTH(fn) 							\
+do {									\
+	int _rc = fn;							\
+	if (_rc != 0)							\
 		assfail(#fn " call failed", __FILE__, __LINE__);	\
-_NOTE(CONSTCOND) } while (0)
+	_NOTE(CONSTCOND)						\
+} while (0)
 
+/* cstyle cannot handle ## __VA_ARGS */
 /* BEGIN CSTYLED */
 #define	STDERR(_lvl, _log, _msg, ...)			\
 	(void) bunyan_##_lvl((_log), (_msg),		\
@@ -153,9 +160,9 @@ ss_port(const struct sockaddr_storage *ss)
 	sau.sau_ss = (struct sockaddr_storage *)ss;
 	switch (ss->ss_family) {
 	case AF_INET:
-		return ((uint32_t)sau.sau_sin->sin_port);
+		return ((uint32_t)ntohs(sau.sau_sin->sin_port));
 	case AF_INET6:
-		return ((uint32_t)sau.sau_sin6->sin6_port);
+		return ((uint32_t)ntohs(sau.sau_sin6->sin6_port));
 	default:
 		INVALID("ss->ss_family");
 		/*NOTREACHED*/
@@ -218,10 +225,13 @@ extern char *my_fmri;
 extern bunyan_logger_t *log;
 extern int port;
 
-void schedule_socket(int, void(*)(int, void *));
-
 typedef int (*bunyan_logfn_t)(bunyan_logger_t *, const char *, ...);
 bunyan_logfn_t getlog(bunyan_level_t);
+
+const char *afstr(sa_family_t);
+const char *symstr(void *);
+const char *event_str(event_t);
+const char *port_source_str(ushort_t);
 
 #ifdef  __cplusplus
 }

@@ -48,6 +48,7 @@ OBJS =	config.o	\
 	pkt.o		\
 	random.o	\
 	timer.o		\
+	util.o		\
 	worker.o
 	
 SRCS = $(OBJS:%.o=../common/%.c)

@@ -295,7 +295,7 @@ ikev2_sa_init_outbound(ikev2_sa_t *restrict i2sa, uint8_t *restrict cookie,
 	sockaddr_u_t laddr = { .sau_ss = &i2sa->laddr };
 	sockaddr_u_t raddr = { .sau_ss = &i2sa->raddr };
 
-	if (cookie != NULL) {
+	if (nonce == NULL) {
 		bunyan_info(i2sa->i2sa_log,
 		    "Starting new IKE_SA_INIT exchange as initiator",
 		    BUNYAN_T_END);
