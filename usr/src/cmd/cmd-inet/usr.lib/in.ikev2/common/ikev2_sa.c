@@ -133,12 +133,12 @@ ikev2_sa_get(uint64_t l_spi, uint64_t r_spi,
 
 	if (l_spi != 0) {
 		/*
-		 * We assign the local SPIs, so if there is one, we should
-		 * only need that to find it.
+		 * We assign the local SPIs, so if it is set (!= 0), that
+		 * should be sufficient to find the IKE SA.
 		 */
 		bucket = hash[I2SA_LSPI] + IKEV2_SA_HASH_SPI(l_spi);
 	} else {
-		/* Otherwise gotta use the other stuff */
+		/* Otherwise need to look at the other parameters */
 		bucket = hash[I2SA_RHASH] + IKEV2_SA_RHASH(r_addr, r_spi);
 	}
 
@@ -187,6 +187,10 @@ ikev2_sa_get(uint64_t l_spi, uint64_t r_spi,
  * On successful create, the larval IKEv2 SA is returned.
  * On failure, NULL is returned.  Caller maintains responsibility for
  * init_pkt in this instance.
+ *
+ * XXX: We could probably refactor this so that the presence of the initiator
+ * packet indicates the request was remotely initiated -- when we initiate,
+ * we create the IKE SA then the IKE_SA_INIT initiator packet.
  */
 ikev2_sa_t *
 ikev2_sa_alloc(boolean_t initiator,
@@ -379,11 +383,7 @@ ikev2_sa_condemn(ikev2_sa_t *i2sa)
 	size_t num = 0;
 	I2SA_REFHOLD(i2sa);
 
-	fprintf(stderr, "refcnt: %" PRIu32 "\n", i2sa->refcnt);
-
 	i2sa_unlink(i2sa);
-
-	fprintf(stderr, "refcnt: %" PRIu32 "\n", i2sa->refcnt);
 
 	PTH(pthread_mutex_lock(&i2sa->lock));
 	i2sa->flags |= I2SA_CONDEMNED;
@@ -393,8 +393,6 @@ ikev2_sa_condemn(ikev2_sa_t *i2sa)
 
 	if (cancel_timeout(TE_P1_SA_EXPIRE, i2sa, i2sa->i2sa_log) > 0)
 		I2SA_REFRELE(i2sa);
-
-	fprintf(stderr, "refcnt: %" PRIu32 "\n", i2sa->refcnt);
 
 	/*
  	* Since packets keep a reference to the SA they are associated with,
@@ -418,8 +416,6 @@ ikev2_sa_condemn(ikev2_sa_t *i2sa)
 	i2sa->last_recvd = NULL;
 
 	PTH(pthread_mutex_unlock(&i2sa->lock));
-
-	fprintf(stderr, "refcnt: %" PRIu32 "\n", i2sa->refcnt);
 
 	I2SA_REFRELE(i2sa);
 	/* XXX: should we do anything else here? */

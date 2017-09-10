@@ -27,11 +27,13 @@
  * Copyright (c) 2017, Joyent, Inc
  */
 
+#include <string.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include "defs.h"
 #include "config.h"
 #include "ikev2_cookie.h"
+#include "ikev2_enum.h"
 #include "ikev2_sa.h"
 #include "ikev2_pkt.h"
 #include "worker.h"
@@ -48,7 +50,7 @@
 	BUNYAN_T_UINT64, "remote_spi", (_rspi),				\
 	## __VA_ARGS__)
 
-static void ikev2_retransmit(te_event_t, void *);
+static void ikev2_retransmit_cb(te_event_t, void *);
 static int select_socket(const ikev2_sa_t *);
 
 static ikev2_sa_t *ikev2_try_new_sa(pkt_t *restrict,
@@ -69,6 +71,34 @@ ikev2_dispatch(pkt_t *pkt, const struct sockaddr_storage *restrict l_addr,
 
 	i2sa = ikev2_sa_get(local_spi, remote_spi, l_addr, r_addr, pkt);
 	if (i2sa == NULL) {
+		if (local_spi != 0) {
+			/*
+			 * If the local SPI is set, we should be able to find it
+			 * in our hash.  This may be a packet destined for a
+			 * condemned or recently deleted IKE SA.
+			 *
+			 * RFC7296 2.21.4 we may send an INVALID_IKE_SPI
+			 * notification if we wish, but it is suggested the
+			 * responses be rate limited.
+			 *
+			 * For now, discard.
+			 */
+			SPILOG(debug, log, "cannot find existing IKE SA with "
+			    "matching local SPI value; discarding",
+			    r_addr, l_addr, local_spi, remote_spi);
+			ikev2_pkt_free(pkt);
+			return;
+		}
+
+		/*
+		 * XXX: This might require special processing.
+		 * Discard for now.
+		 */
+		if (remote_spi == 0) {
+			ikev2_pkt_free(pkt);
+			return;
+		}
+
 		i2sa = ikev2_try_new_sa(pkt, l_addr, r_addr);
 		if (i2sa == NULL)
 			return;
@@ -95,75 +125,78 @@ ikev2_try_new_sa(pkt_t *restrict pkt,
     const struct sockaddr_storage *restrict r_addr)
 {
 	ikev2_sa_t *i2sa = NULL;
-	uint64_t local_spi = INBOUND_LOCAL_SPI(&pkt->pkt_header);
-	uint64_t remote_spi = INBOUND_REMOTE_SPI(&pkt->pkt_header);
+	const char *errmsg = NULL;
 
-	if (local_spi != 0) {
-		/*
-		 * If the local SPI is set, we should be able to find it
-		 * in our hash.  This may be a packet destined for a
-		 * condemned or recently deleted IKE SA.
-		 *
-		 * XXX: Should we respond with a notificaiton?
-		 *
-		 * RFC7296 2.21.4 we may send an INVALID_IKE_SPI
-		 * notification if we wish, but is suggested responses are
-		 * rate limited.
-		 *
-		 * For now, discard.
-		 */
-		SPILOG(debug, log, "cannot find existing IKE SA with "
-		    "matching local SPI value; discarding",
-		    r_addr, l_addr, local_spi, remote_spi);
-		goto discard;
-	}
-
-	/* XXX: This might require special processing.  Discard for now. */
-	if (remote_spi == 0)
-		goto discard;
+	/* ikev2_dispatch() should guarantee this */
+	VERIFY3U(INBOUND_LOCAL_SPI(&pkt->pkt_header), ==, 0);
 
 	/*
-	 * If the local SPI == 0, this can only be an IKE SA INIT
-	 * exchange.  For all such exchanges, the msgid is always 0,
-	 * regardless of the the number of actual messages sent during
-	 * the exchange (RFC5996 2.2).
+	 * RFC7296 2.2 - The only exchange where our SPI is zero is when
+	 * the remote peer has started an IKE_SA_INIT exchange.  All others
+	 * must have both SPIs set (non-zero).
 	 */
-	if (pkt->pkt_header.exch_type != IKEV2_EXCH_IKE_SA_INIT ||
-	    pkt->pkt_header.msgid != 0) {
-		SPILOG(debug, log, "received non IKE_SA_INIT message with "
-		    "0 local spi; discarding", r_addr, l_addr, local_spi,
-		    remote_spi,
-		    BUNYAN_T_UINT32, "exch_type",
-		    (uint32_t)pkt->pkt_header.exch_type,
-		    BUNYAN_T_UINT32, "msgid", pkt->pkt_header.msgid);
+	if (pkt->pkt_header.exch_type != IKEV2_EXCH_IKE_SA_INIT) {
+		errmsg = "Received a non-IKE_SA_INIT message with a local "
+		    "SPI of 0; discarding";
 		goto discard;
 	}
 
 	/*
-	 * If there isn't an existing IKEv2 SA, the only
-	 * valid inbound packet is a request to start an
-	 * IKE_EXCH_IKE_SA_INIT exchange.
+	 * RFC7296 2.2 -- IKE_SA_INIT exchanges always have msgids == 0
 	 */
-	if (!(pkt->pkt_header.flags & IKEV2_FLAG_INITIATOR)) {
-		SPILOG(debug, log, "Cannot find existing SA", r_addr, l_addr,
-		    local_spi, remote_spi);
+	if (pkt->pkt_header.msgid != 0) {
+		errmsg = "Received an IKE_SA_INIT message with a non-zero "
+		    "message id; discarding";
 		goto discard;
 	}
 
-	if (!ikev2_cookie_check(pkt, l_addr, r_addr))
+	/*
+	 * It also means it must be the initiator and not a response
+	 */
+	if ((pkt->pkt_header.flags & IKEV2_FLAG_INITIATOR) !=
+	    pkt->pkt_header.flags) {
+		errmsg = "Invalid flags on packet; discarding";
 		goto discard;
+	}
+
+	/*
+	 * XXX: Since cookies are enabled in high traffic situations,
+	 * might we want to silently discard these?
+	 */
+	if (!ikev2_cookie_check(pkt, l_addr, r_addr)) {
+		errmsg = "Cookies missing or failed check; discarding";
+		goto discard;
+	}
 
 	/* otherwise create a larval SA */
 	i2sa = ikev2_sa_alloc(B_FALSE, pkt, l_addr, r_addr);
 	if (i2sa == NULL) {
-		SPILOG(warn, log, "could not create IKEv2 SA", r_addr,
-		    l_addr, local_spi, remote_spi);
+		errmsg = "Could not create larval IKEv2 SA; discarding";
 		goto discard;
 	}
 
 	return (i2sa);
 
 discard:
+	if (errmsg != NULL) {
+		uint64_t local_spi = INBOUND_LOCAL_SPI(&pkt->pkt_header);
+		uint64_t remote_spi = INBOUND_REMOTE_SPI(&pkt->pkt_header);
+		char exchmsg[4] = { 0 };
+		const char *exchp = NULL;
+
+		exchp = ikev2_exch_str(pkt->pkt_header.exch_type);
+		if (strcmp(exchp, "UNKNOWN") == 0) {
+			(void) snprintf(exchmsg, sizeof (exchmsg), "%hhu",
+			    pkt->pkt_header.exch_type);
+			exchp = exchmsg;
+		}
+
+		SPILOG(debug, log, errmsg, r_addr, l_addr,
+		    local_spi, remote_spi,
+		    BUNYAN_T_STRING, "exch_type", exchp,
+		    BUNYAN_T_UINT32, "msgid", pkt->pkt_header.msgid);
+	}
+
 	ikev2_pkt_free(pkt);
 	return (NULL);
 }
@@ -239,7 +272,7 @@ ikev2_send(pkt_t *pkt, boolean_t is_error)
 		i2sa->last_sent = pkt;
 		PTH(pthread_mutex_unlock(&i2sa->lock));
 
-		(void) schedule_timeout(TE_TRANSMIT, ikev2_retransmit, i2sa,
+		(void) schedule_timeout(TE_TRANSMIT, ikev2_retransmit_cb, i2sa,
 		    retry, i2sa->i2sa_log);
 		return (B_TRUE);
 	}
@@ -266,7 +299,7 @@ ikev2_send(pkt_t *pkt, boolean_t is_error)
  * Retransmit callback
  */
 static void
-ikev2_retransmit(te_event_t event, void *data)
+ikev2_retransmit_cb(te_event_t event, void *data)
 {
 	VERIFY(IS_WORKER);
 
@@ -319,17 +352,18 @@ ikev2_retransmit(te_event_t event, void *data)
 	    &sa->laddr, &sa->raddr);
 	/* XXX: sendfromto() will log if it fails, do anything else? */
 
-	VERIFY(schedule_timeout(TE_TRANSMIT, ikev2_retransmit, sa, retry,
+	VERIFY(schedule_timeout(TE_TRANSMIT, ikev2_retransmit_cb, sa, retry,
 	    sa->i2sa_log));
 }
 
 /*
- * Determine if the packet should be discarded, or retransmit our last
- * packet if appropriate
+ * Determine if packet is a retransmit, if so, retransmit our last
+ * response and discard.  Otherwise return B_FALSE and continue processing.
+ *
  * XXX better function name?
  */
 static boolean_t
-ikev2_discard_pkt(pkt_t *pkt)
+ikev2_retransmit_check(pkt_t *pkt)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
 	uint32_t msgid = pkt->pkt_header.msgid;
@@ -353,7 +387,7 @@ ikev2_discard_pkt(pkt_t *pkt)
 		}
 
 		/* A response to our last message */
-		VERIFY3S(cancel_timeout(TE_TRANSMIT, last,
+		VERIFY3S(cancel_timeout(TE_TRANSMIT, sa,
 		    sa->i2sa_log), ==, 1);
 
 		/*
@@ -392,14 +426,21 @@ ikev2_discard_pkt(pkt_t *pkt)
 	}
 
 	if (msgid != sa->inmsgid + 1) {
+		bunyan_info(sa->i2sa_log,
+		    "Message id is out of sequence",
+		    BUNYAN_T_UINT32, "msgid", msgid,
+		    BUNYAN_T_END);
+
 		/*
-		 * XXX: create new informational exchange, send
-		 * INVALID_MESSAGE_ID notification?
+		 * TODO: Create in informational exchange & send
+		 * INVALID_MESSAGE_ID if this is a fully-formed IKE SA
+		 *
+		 * For now, just discard.
 		 */
 		goto done;
 	}
 
-	/* new exchange, free last response and get going */
+	/* New exchange, free last response and get going */
 	ikev2_pkt_free(sa->last_resp_sent);
 	sa->last_resp_sent = NULL;
 	sa->inmsgid++;
@@ -411,14 +452,20 @@ done:
 }
 
 /*
- * Worker inbound function
+ * Worker inbound function -- handle retransmits or do processing for
+ * the given message exchange type;
  */
 void
 ikev2_inbound(pkt_t *pkt)
 {
-	if (ikev2_discard_pkt(pkt))
-		return;
+	VERIFY(IS_WORKER);
 
+	if (ikev2_retransmit_check(pkt)) {
+		ikev2_pkt_free(pkt);
+		return;
+	}
+
+	/* XXX: Might this log msg be better in ikev2_dispatch() instead? */
 	char *str = ikev2_pkt_desc(pkt);
 	bunyan_debug(pkt->pkt_sa->i2sa_log, "Received packet",
 	    BUNYAN_T_BOOLEAN, "initiator",
