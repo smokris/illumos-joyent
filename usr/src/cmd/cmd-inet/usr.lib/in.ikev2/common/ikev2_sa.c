@@ -245,10 +245,7 @@ ikev2_sa_alloc(boolean_t initiator,
 		if (i2sa_add_to_hash(I2SA_LSPI, i2sa)) {
 			VERIFY3U(i2sa->refcnt, ==, 1);
 
-			if (initiator)
-				i2sa->init_i = init_pkt;
-			else
-				i2sa->init_r = init_pkt;
+			i2sa->init_i = init_pkt;
 
 			/* refhold for caller */
 			I2SA_REFHOLD(i2sa);
@@ -293,6 +290,15 @@ ikev2_sa_alloc(boolean_t initiator,
 #endif
 
 	/*
+	 * If we're the initiator, we don't know the remote SPI until after
+	 * the remote peer responds.  However we're we are the responder,
+	 * we know what it is and can set it now.
+	 */
+	if (!initiator)
+		ikev2_sa_set_remote_spi(i2sa,
+		    init_pkt->pkt_header.initiator_spi);
+
+	/*
 	 * Start SA expiration timer.  We cannot call schedule_timeout()
 	 * from there because we are almost certaintly not running in one
 	 * of the worker threads -- the local SPI cannot be known until
@@ -314,9 +320,8 @@ ikev2_sa_alloc(boolean_t initiator,
 
 	PTH(pthread_mutex_unlock(&i2sa->lock));
 
-	(void) bunyan_debug(log, "New larval IKE SA created",
-	    BUNYAN_T_POINTER, "ikev2sa", i2sa,
-	    BUNYAN_T_UINT64, "local_spi", I2SA_LOCAL_SPI(i2sa),
+	(void) bunyan_debug(i2sa->i2sa_log, "New larval IKE SA created",
+	    BUNYAN_T_POINTER, "sa", i2sa,
 	    BUNYAN_T_END);
 
 	return (i2sa);
@@ -599,12 +604,9 @@ nomem:
  * Set the remote SPI of an IKEv2 SA and add to the rhash
  */
 void
-ikev2_sa_set_rspi(ikev2_sa_t *i2sa, uint64_t r_spi)
+ikev2_sa_set_remote_spi(ikev2_sa_t *i2sa, uint64_t r_spi)
 {
-	/* better not be set already */
-	VERIFY3U(i2sa->r_spi, ==, 0);
-
-	/* never a valid SPI value */
+	/* Never a valid SPI value */
 	VERIFY3U(r_spi, !=, 0);
 
 	/*
@@ -613,10 +615,15 @@ ikev2_sa_set_rspi(ikev2_sa_t *i2sa, uint64_t r_spi)
 	 * otherwise we are the responder, so the remote spi is the
 	 * initiator (ikev2_sa_t->i_spi)
 	 */
-	if (i2sa->flags & I2SA_INITIATOR)
+	if (i2sa->flags & I2SA_INITIATOR) {
+		/* Should not be set already */
+		VERIFY3U(i2sa->r_spi, ==, 0);
 		i2sa->r_spi = r_spi;
-	else
+	} else {
+		/* Should not be set already */
+		VERIFY3U(i2sa->i_spi, ==, 0);
 		i2sa->i_spi = r_spi;
+	}
 
 	VERIFY(i2sa_add_to_hash(I2SA_RHASH, i2sa));
 	char buf[19];	/* 0x + 64bit hex value + NUL */
@@ -624,6 +631,8 @@ ikev2_sa_set_rspi(ikev2_sa_t *i2sa, uint64_t r_spi)
 	(void) snprintf(buf, sizeof (buf), "0x%016llX", I2SA_REMOTE_SPI(i2sa));
 	(void) bunyan_key_add(i2sa->i2sa_log,
 	    BUNYAN_T_STRING, I2SA_KEY_RSPI, buf, BUNYAN_T_END);
+
+	(void) bunyan_trace(i2sa->i2sa_log, "Set remote SPI", BUNYAN_T_END);
 }
 
 static i2sa_bucket_t *

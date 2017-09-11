@@ -267,12 +267,13 @@ ikev2_sa_match_rule(config_rule_t *restrict rule, pkt_t *restrict pkt,
 				.rd_rule = rule,
 				.rd_xf = rule->rule_xf[i],
 				.rd_res = result,
+				.rd_prf = prf_supported[j],
 				.rd_match = B_FALSE
 			};
 
 			(void) memset(result, 0, sizeof (*result));
 
-			bunyan_debug(l,
+			bunyan_trace(l,
 			    "Checking rule transform against proposals",
 			    BUNYAN_T_UINT32, "xfnum", (uint32_t)i,
 			    BUNYAN_T_STRING, "xf", rule->rule_xf[i]->xf_str,
@@ -314,12 +315,12 @@ match_rule_prop_cb(ikev2_sa_proposal_t *prop, uint64_t spi, uint8_t *buf,
 {
 	struct rule_data_s *data = cookie;
 
-	bunyan_debug(data->rd_log, "Checking proposal",
+	bunyan_trace(data->rd_log, "Checking proposal",
 	    BUNYAN_T_UINT32, "propnum", (uint32_t)prop->proto_proposalnr,
 	    BUNYAN_T_END);
 
 	if (prop->proto_protoid != IKEV2_PROTO_IKE) {
-		bunyan_debug(data->rd_log, "Proposal is not for IKE",
+		bunyan_trace(data->rd_log, "Proposal is not for IKE",
 		    BUNYAN_T_STRING, "protocol",
 		    ikev2_spi_str(prop->proto_protoid),
 		    BUNYAN_T_END);
@@ -357,6 +358,11 @@ match_rule_xf_cb(ikev2_transform_t *xf, uint8_t *buf, size_t buflen,
 {
 	struct rule_data_s *data = cookie;
 	boolean_t match = B_FALSE;
+
+	(void) bunyan_trace(data->rd_log, "Checking transform",
+		    BUNYAN_T_STRING, "xftype", ikev2_xf_type_str(xf->xf_type),
+		    BUNYAN_T_UINT32, "val", (uint32_t)xf->xf_id,
+		    BUNYAN_T_END);
 
 	switch (xf->xf_type) {
 	case IKEV2_XF_ENCR:
@@ -407,7 +413,7 @@ match_rule_xf_cb(ikev2_transform_t *xf, uint8_t *buf, size_t buflen,
 		break;
 	case IKEV2_XF_ESN:
 		/* Not valid in IKE proposals */
-		bunyan_debug(data->rd_log,
+		(void) bunyan_info(data->rd_log,
 		    "Encountered ESN transform in IKE transform", BUNYAN_T_END);
 		data->rd_skip = B_TRUE;
 		break;
@@ -416,14 +422,20 @@ match_rule_xf_cb(ikev2_transform_t *xf, uint8_t *buf, size_t buflen,
 		 * RFC7296 3.3.6 - An unrecognized transform type means the
 		 * proposal should be ignored.
 		 */
-		bunyan_debug(data->rd_log, "Unknown transform type in proposal",
+		(void) bunyan_info(data->rd_log,
+		    "Unknown transform type in proposal",
 		    BUNYAN_T_UINT32, "xftype", (uint32_t)xf->xf_type,
 		    BUNYAN_T_END);
 		data->rd_skip = B_TRUE;
 	}
 
-	if (match)
+	if (match) {
+		(void) bunyan_trace(data->rd_log, "Partial match",
+		    BUNYAN_T_STRING, "type", ikev2_xf_type_str(xf->xf_type),
+		    BUNYAN_T_UINT32, "val", (uint32_t)xf->xf_id,
+		    BUNYAN_T_END);
 		data->rd_res->sar_match |= (uint32_t)1 << xf->xf_type;
+	}
 
 	return (!data->rd_skip);
 }
@@ -434,7 +446,7 @@ match_rule_attr_cb(ikev2_attribute_t *attr, void *cookie)
 	struct rule_data_s *data = cookie;
 
 	/* Only one attribute type is recognized currently */
-	if (attr->attr_type != IKEV2_XF_ATTR_KEYLEN) {
+	if (IKE_ATTR_GET_TYPE(attr->attr_type) != IKEV2_XF_ATTR_KEYLEN) {
 		data->rd_skip = B_TRUE;
 		return (B_FALSE);
 	}
@@ -479,7 +491,7 @@ ikev2_sa_match_acquire(parsedmsg_t *restrict pmsg, ikev2_dh_t dh,
 
 	VERIFY3P(pay, !=, NULL);
 
-	bunyan_debug(l, "Checking rules against acquire", BUNYAN_T_END);
+	(void) bunyan_debug(l, "Checking rules against acquire", BUNYAN_T_END);
 
 	switch (samsg->sadb_msg_satype) {
 	case SADB_SATYPE_AH:
@@ -510,7 +522,7 @@ ikev2_sa_match_acquire(parsedmsg_t *restrict pmsg, ikev2_dh_t dh,
 		    match_acq_prop_cb, &data, l));
 
 		if (data.ad_match) {
-			bunyan_debug(l, "Found proposal match",
+			(void) bunyan_debug(l, "Found proposal match",
 			    BUNYAN_T_UINT32, "propnum",
 			    (uint32_t)result->sar_propnum,
 			    BUNYAN_T_UINT64, "spi", result->sar_spi,

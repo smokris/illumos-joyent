@@ -223,12 +223,15 @@ prfplus_fini(prfp_t *prfp)
 			explicit_bzero(prfp->prfp_tbuf[i], prfp->prfp_tbuflen);
 			umem_free(prfp->prfp_tbuf[i], prfp->prfp_tbuflen);
 			prfp->prfp_tbuf[i] = NULL;
-			prfp->prfp_tbuflen = 0;
 		}
 	}
+	prfp->prfp_tbuflen = 0;
 
-	explicit_bzero(prfp->prfp_seed, prfp->prfp_seedlen);
-	umem_free(prfp->prfp_seed, prfp->prfp_seedlen);
+	if (prfp->prfp_seed != NULL) {
+		explicit_bzero(prfp->prfp_seed, prfp->prfp_seedlen);
+		umem_free(prfp->prfp_seed, prfp->prfp_seedlen);
+	}
+
 	prfp->prfp_seed = NULL;
 	prfp->prfp_seedlen = 0;
 }

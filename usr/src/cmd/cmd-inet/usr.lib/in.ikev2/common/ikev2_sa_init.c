@@ -168,6 +168,10 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 	return;
 
 fail:
+	(void) bunyan_error(sa->i2sa_log,
+	    "Could not send response in IKE_SA_INIT exchange",
+	    BUNYAN_T_END);
+
 	sa->init_r = NULL;
 	ikev2_sa_condemn(sa);
 	ikev2_pkt_free(pkt);
@@ -250,7 +254,7 @@ ikev2_sa_init_inbound_resp(pkt_t *pkt)
 	if (redo_init(pkt))
 		return;
 
-	ikev2_sa_set_rspi(sa, INBOUND_REMOTE_SPI(&pkt->pkt_header));
+	ikev2_sa_set_remote_spi(sa, INBOUND_REMOTE_SPI(&pkt->pkt_header));
 
 	if (!check_nats(pkt))
 		goto fail;
@@ -368,13 +372,7 @@ find_config(pkt_t *pkt, sockaddr_u_t laddr, sockaddr_u_t raddr)
 	if (sa->i2sa_rule != NULL)
 		goto done;
 
-	sa->i2sa_rule = config_get_rule(&laddr, &raddr);
-
-	if (sa->i2sa_rule->rule_xf[0] == NULL) {
-		bunyan_debug(sa->i2sa_log, "No rules found", BUNYAN_T_END);
-		ikev2_no_proposal_chosen(sa, pkt, IKEV2_PROTO_IKE, 0);
-		return (B_FALSE);
-	}
+	sa->i2sa_rule = config_get_rule(laddr, raddr);
 
 done:
 	if (RULE_IS_DEFAULT(sa->i2sa_rule)) {
@@ -384,6 +382,13 @@ done:
 		    BUNYAN_T_STRING, "label", sa->i2sa_rule->rule_label,
 		    BUNYAN_T_END);
 	}
+
+	if (sa->i2sa_rule->rule_nxf == 0) {
+		bunyan_debug(sa->i2sa_log, "No transforms found", BUNYAN_T_END);
+		ikev2_no_proposal_chosen(sa, pkt, IKEV2_PROTO_IKE, 0);
+		return (B_FALSE);
+	}
+
 	return (B_TRUE);
 }
 

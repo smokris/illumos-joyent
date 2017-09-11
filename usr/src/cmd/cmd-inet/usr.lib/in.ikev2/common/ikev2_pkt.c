@@ -126,16 +126,39 @@ ikev2_pkt_new_inbound(uint8_t *restrict buf, size_t buflen,
 	size_t			i = 0;
 	boolean_t		keep = B_TRUE;
 
+	(void) bunyan_trace(l, "Creating new inbound IKEV2 packet",
+	    BUNYAN_T_END);
+
 	ASSERT(IS_P2ALIGNED(buf, sizeof (uint64_t)));
 
 	hdr = (const ike_header_t *)buf;
 
 	ASSERT(IKE_GET_MAJORV(hdr->version) == IKE_GET_MAJORV(IKEV2_VERSION));
 
+	switch ((ikev2_exch_t)hdr->exch_type) {
+	case IKEV2_EXCH_IKE_SA_INIT:
+	case IKEV2_EXCH_IKE_AUTH:
+	case IKEV2_EXCH_CREATE_CHILD_SA:
+	case IKEV2_EXCH_INFORMATIONAL:
+		break;
+	case IKEV2_EXCH_IKE_SESSION_RESUME:
+	case IKEV2_EXCH_GSA_AUTH:
+	case IKEV2_EXCH_GSA_REGISTRATION:
+	case IKEV2_EXCH_GSA_REKEY:
+	default:
+		(void) bunyan_info(l, "Unknown/unsupported exchange type",
+		    BUNYAN_T_STRING, "exch_type",
+		    ikev2_exch_str(hdr->exch_type), BUNYAN_T_END);
+		return (NULL);
+	}
+
 	/* pkt_in_alloc() will log any errors messages */
 	if ((pkt = pkt_in_alloc(buf, buflen, l)) == NULL)
 		return (NULL);
 
+#if 1
+	return (pkt);
+#else
 	arg.log = l;
 	arg.pkt = pkt;
 	arg.exch_type = hdr->exch_type;
@@ -265,6 +288,10 @@ ikev2_pkt_new_inbound(uint8_t *restrict buf, size_t buflen,
 	if (!keep)
 		goto discard;
 
+	(void) bunyan_trace(l, "Created new IKEV2 packet",
+	    BUNYAN_T_POINTER, "pkt", pkt,
+	    BUNYAN_T_END);
+
 	return (pkt);
 
 discard:
@@ -272,6 +299,8 @@ discard:
 	return (NULL);
 #undef PAYCOUNT
 #undef HAS_NOTIFY
+
+#endif
 }
 
 static boolean_t check_sa_payload(uint8_t *restrict, size_t, boolean_t,

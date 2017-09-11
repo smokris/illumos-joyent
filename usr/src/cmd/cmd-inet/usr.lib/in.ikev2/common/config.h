@@ -148,8 +148,8 @@ extern config_t *config;
 
 void process_config(FILE *, boolean_t, bunyan_logger_t *);
 config_t *config_get(void);
-config_rule_t *config_get_rule(union sockaddr_u_s *restrict,
-    union sockaddr_u_s *restrict);
+config_rule_t *config_get_rule(union sockaddr_u_s,
+    union sockaddr_u_s);
 void cfg_rule_free(config_rule_t *);
 void cfg_free(config_t *);
 

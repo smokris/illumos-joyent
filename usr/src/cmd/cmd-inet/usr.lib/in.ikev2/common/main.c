@@ -39,7 +39,6 @@ extern void pkt_fini(void);
 extern void ikev2_sa_init(void);
 extern void random_init(void);
 extern void pfkey_init(void);
-
 static void signal_init(void);
 static void event(event_t, void *);
 static void do_signal(int);
@@ -60,6 +59,20 @@ usage(const char *name)
 	    "      %s -c [-f cfgfile]\n", name, name);
 	exit(1);
 }
+
+#ifdef	DEBUG
+const char *
+_umem_debug_init(void)
+{
+	return ("default,verbose");
+}
+
+const char *
+_umem_logging_init(void)
+{
+	return ("fail,contents");
+}
+#endif
 
 int
 main(int argc, char **argv)
@@ -124,8 +137,15 @@ main(int argc, char **argv)
 	if (check_cfg)
 		return (0);
 
-	if ((port = port_create()) < 0)
-		STDERR(fatal, log, "port_create() failed");
+	if ((port = port_create()) < 0) {
+		STDERR(fatal, log, "main port_create() failed");
+		exit(EXIT_FAILURE);
+	}
+
+	if ((inbound_port = port_create()) < 0) {
+		STDERR(fatal, log, "inbound port_create() failed");
+		exit(EXIT_FAILURE);
+	}
 
 	signal_init();
 	random_init();
@@ -136,8 +156,8 @@ main(int argc, char **argv)
 
 	/* XXX: make these configurable */
 	worker_init(8, 8);
-	inbound_init(2);
 	pfkey_init();
+	inbound_init(2);
 	main_loop();
 
 	pkt_fini();
@@ -207,29 +227,29 @@ main_loop(void)
 			continue;
 		}
 
+		(void) bunyan_trace(log, "received event",
+		    BUNYAN_T_STRING, "source",
+		    port_source_str(pe.portev_source),
+		    BUNYAN_T_STRING, "event",
+		    event_str(pe.portev_events),
+		    BUNYAN_T_UINT32, "event num",
+		    (int32_t)pe.portev_events,
+		    BUNYAN_T_POINTER, "event arg", pe.portev_user,
+		    BUNYAN_T_END);
+
 		switch (pe.portev_source) {
 		case PORT_SOURCE_USER:
-			(void) bunyan_trace(log, "received event",
-			    BUNYAN_T_STRING, "source",
-			    port_source_str(pe.portev_source),
-			    BUNYAN_T_UINT32, "source val",
-			    (uint32_t)pe.portev_events,
-			    BUNYAN_T_STRING, "event",
-			    event_str(pe.portev_events),
-			    BUNYAN_T_UINT32, "event num",
-			    (int32_t)pe.portev_events,
-			    BUNYAN_T_POINTER, "event arg", pe.portev_user,
-			    BUNYAN_T_END);
 			event(pe.portev_events, pe.portev_user);
 			break;
 
 		case PORT_SOURCE_ALERT:
-			(void) bunyan_trace(log, "received event",
-			    BUNYAN_T_STRING, "source",
-			    port_source_str(pe.portev_source),
-			    BUNYAN_T_END);
 			break;
 
+		case PORT_SOURCE_TIMER: {
+			void (*fn)(void) = (void (*)(void))pe.portev_user;
+			fn();
+			break;
+		}
 		default:
 			INVALID("pe.portev_source");
 		}

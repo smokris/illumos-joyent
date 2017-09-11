@@ -62,14 +62,27 @@ static ikev2_sa_t *ikev2_try_new_sa(pkt_t *restrict,
  * an IKE_SA_INIT exchange) and send packet to worker.
  */
 void
-ikev2_dispatch(pkt_t *pkt, const struct sockaddr_storage *restrict l_addr,
-    const struct sockaddr_storage *restrict r_addr)
+ikev2_dispatch(pkt_t *pkt, const struct sockaddr_storage *restrict src_addr,
+    const struct sockaddr_storage *restrict dest_addr)
 {
 	ikev2_sa_t *i2sa = NULL;
 	uint64_t local_spi = INBOUND_LOCAL_SPI(&pkt->pkt_header);
 	uint64_t remote_spi = INBOUND_REMOTE_SPI(&pkt->pkt_header);
+	char lspi_str[19];
+	char rspi_str[19];
 
-	i2sa = ikev2_sa_get(local_spi, remote_spi, l_addr, r_addr, pkt);
+	(void) snprintf(lspi_str, sizeof (lspi_str), "0x%016" PRIX64,
+	    local_spi);
+	(void) snprintf(rspi_str, sizeof (rspi_str), "0x%016" PRIX64,
+	    remote_spi);
+
+	NETLOG(trace, log, "Looking for IKE SA for packet", src_addr, dest_addr,
+	    BUNYAN_T_STRING, "local_spi", lspi_str,
+	    BUNYAN_T_STRING, "remote_spi", rspi_str,
+	    BUNYAN_T_POINTER, "pkt", pkt,
+	    BUNYAN_T_END);
+
+	i2sa = ikev2_sa_get(local_spi, remote_spi, dest_addr, src_addr, pkt);
 	if (i2sa == NULL) {
 		if (local_spi != 0) {
 			/*
@@ -83,9 +96,12 @@ ikev2_dispatch(pkt_t *pkt, const struct sockaddr_storage *restrict l_addr,
 			 *
 			 * For now, discard.
 			 */
-			SPILOG(debug, log, "cannot find existing IKE SA with "
-			    "matching local SPI value; discarding",
-			    r_addr, l_addr, local_spi, remote_spi);
+			NETLOG(debug, log, "Cannot find IKE SA for packet; "
+			    "discarding", src_addr, dest_addr,
+			    BUNYAN_T_STRING, "local_spi", lspi_str,
+			    BUNYAN_T_STRING, "remote_spi", rspi_str,
+			    BUNYAN_T_POINTER, "pkt", pkt,
+			    BUNYAN_T_END);
 			ikev2_pkt_free(pkt);
 			return;
 		}
@@ -95,11 +111,13 @@ ikev2_dispatch(pkt_t *pkt, const struct sockaddr_storage *restrict l_addr,
 		 * Discard for now.
 		 */
 		if (remote_spi == 0) {
+			SPILOG(debug, log, "Received packet with 0 remote SPI",
+			    src_addr, dest_addr, local_spi, remote_spi);
 			ikev2_pkt_free(pkt);
 			return;
 		}
 
-		i2sa = ikev2_try_new_sa(pkt, l_addr, r_addr);
+		i2sa = ikev2_try_new_sa(pkt, dest_addr, src_addr);
 		if (i2sa == NULL)
 			return;
 	}
@@ -111,7 +129,7 @@ ikev2_dispatch(pkt_t *pkt, const struct sockaddr_storage *restrict l_addr,
 		return;
 
 	SPILOG(info, log, "worker queue full; discarding packet",
-	    r_addr, l_addr, local_spi, remote_spi);
+	    src_addr, dest_addr, local_spi, remote_spi);
 	ikev2_pkt_free(pkt);
 }
 
@@ -460,6 +478,9 @@ ikev2_inbound(pkt_t *pkt)
 {
 	VERIFY(IS_WORKER);
 
+	(void) bunyan_trace(worker->w_log, "Starting IKEV2 inbound processing",
+	    BUNYAN_T_END);
+
 	if (ikev2_retransmit_check(pkt)) {
 		ikev2_pkt_free(pkt);
 		return;
@@ -467,7 +488,7 @@ ikev2_inbound(pkt_t *pkt)
 
 	/* XXX: Might this log msg be better in ikev2_dispatch() instead? */
 	char *str = ikev2_pkt_desc(pkt);
-	bunyan_debug(pkt->pkt_sa->i2sa_log, "Received packet",
+	(void) bunyan_debug(pkt->pkt_sa->i2sa_log, "Received packet",
 	    BUNYAN_T_BOOLEAN, "initiator",
 		(boolean_t)(pkt->pkt_header.flags & IKEV2_FLAG_INITIATOR),
 	    BUNYAN_T_STRING, "pktdesc", str,

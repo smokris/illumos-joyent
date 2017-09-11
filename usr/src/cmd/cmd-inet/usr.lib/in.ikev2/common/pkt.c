@@ -81,22 +81,30 @@ pkt_in_alloc(uint8_t *restrict buf, size_t buflen, bunyan_logger_t *restrict l)
 	VERIFY3U(buflen, <=, MAX_PACKET_SIZE);
 
 	first = hdr->next_payload;
-	buf += sizeof (*hdr);
-	buflen -= sizeof (*hdr);
 
 	if ((pkt = umem_cache_alloc(pkt_cache, UMEM_DEFAULT)) == NULL) {
 		STDERR(error, l, "umem_cache_alloc failed");
 		return (NULL);
 	}
 
-	(void) memcpy(&pkt->pkt_raw, buf, buflen);
+	(void) bunyan_trace(l, "Allocated new pkt_t",
+	    BUNYAN_T_POINTER, "pkt", pkt,
+	    BUNYAN_T_END);
+
+	(void) memcpy(pkt->pkt_raw, buf, buflen);
 	pkt_hdr_ntoh(&pkt->pkt_header, (const ike_header_t *)&pkt->pkt_raw);
 	pkt->pkt_ptr += buflen;
 
-	if (!pkt_index_payloads(pkt, pkt_start(pkt), pkt_len(pkt), first, l)) {
+	if (!pkt_index_payloads(pkt, pkt_start(pkt) + sizeof (ike_header_t),
+	    pkt_len(pkt) - sizeof (ike_header_t), first, l)) {
 		pkt_free(pkt);
 		return (NULL);
 	}
+
+	(void) bunyan_trace(l, "Finished indexing payloads",
+	    BUNYAN_T_POINTER, "pkt", pkt,
+	    BUNYAN_T_UINT32, "num_payloads", pkt->pkt_payload_count,
+	    BUNYAN_T_END);
 
 	return (pkt);
 }
@@ -113,8 +121,14 @@ pkt_index_cb(uint8_t paytype, uint8_t resv, uint8_t *restrict ptr, size_t len,
 	struct index_data *data = cookie;
 	pkt_t *pkt = data->id_pkt;
 	
-	if (!pkt_add_index(pkt, paytype, ptr, len))
+	if (!pkt_add_index(pkt, paytype, ptr, len)) {
+		(void) bunyan_info(data->id_log,
+		    "Could not add index to packet",
+		    BUNYAN_T_POINTER, "pkt", pkt,
+		    BUNYAN_T_END);
 		return (PKT_WALK_ERROR);
+	}
+
 	if (paytype != IKEV1_PAYLOAD_NOTIFY && paytype != IKEV2_PAYLOAD_NOTIFY)
 		return (PKT_WALK_OK);
 
@@ -182,11 +196,18 @@ pkt_index_cb(uint8_t paytype, uint8_t resv, uint8_t *restrict ptr, size_t len,
 	return (PKT_WALK_OK);
 }
 
+/*
+ * Add entries to pkt->pkt_payloads and pkt->pkt_notify.
+ * NOTE: buf points to the ike_payload_t where it should start.  This
+ * allows embedded encrypted IKEv2 payloads to be able to be indexed
+ * after decryption by running this after decryption with the address of the
+ * first embedded encrypted payload.
+ */
 boolean_t
 pkt_index_payloads(pkt_t *pkt, uint8_t *buf, size_t buflen, uint8_t first,
     bunyan_logger_t *restrict l)
 {
-	VERIFY3P(pkt_start(pkt), <, buf);
+	VERIFY3P(pkt_start(pkt), <=, buf);
 	VERIFY3P(pkt->pkt_ptr, >=, buf + buflen);
 
 	struct index_data data = {

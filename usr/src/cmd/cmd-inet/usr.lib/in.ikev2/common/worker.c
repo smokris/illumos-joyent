@@ -145,11 +145,26 @@ worker_init_one(size_t qlen, size_t n)
 		return (NULL);
 	}
 
+/* XXX Remove one OS-6341 is fixed */
+#ifdef BUNYAN_FIXED
 	if (bunyan_child(log, &w->w_log,
 	    BUNYAN_T_UINT32, "worker", (uint32_t)n, BUNYAN_T_END) != 0) {
 		umem_free(w, sizeof (*w));
 		return (NULL);
 	}
+#else
+	if (bunyan_child(log, &w->w_log, BUNYAN_T_END) != 0) {
+		umem_free(w, sizeof (*w));
+		return (NULL);
+	}
+
+	if (bunyan_key_add(w->w_log, BUNYAN_T_UINT32, "worker", (uint32_t)n,
+	    BUNYAN_T_END) != 0) {
+		bunyan_fini(w->w_log);
+		umem_free(w, sizeof (*w));
+		return (NULL);
+	}
+#endif
 
 	w->w_queue.wq_cmd = WC_NONE;
 	VERIFY3S(mutex_init(&w->w_queue.wq_lock, LOCK_ERRORCHECK, NULL), ==, 0);

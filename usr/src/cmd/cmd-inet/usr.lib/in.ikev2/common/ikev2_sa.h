@@ -196,7 +196,7 @@ ikev2_sa_t *ikev2_sa_alloc(boolean_t, struct pkt_s *restrict,
     const struct sockaddr_storage *restrict);
 
 void	ikev2_sa_start_timer(ikev2_sa_t *);
-void	ikev2_sa_set_rspi(ikev2_sa_t *, uint64_t);
+void	ikev2_sa_set_remote_spi(ikev2_sa_t *, uint64_t);
 void	ikev2_sa_free(ikev2_sa_t *);
 void	ikev2_sa_condemn(ikev2_sa_t *);
 

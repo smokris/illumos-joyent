@@ -62,8 +62,7 @@ int ikesock4 = -1;
 int ikesock6 = -1;
 int nattsock = -1;
 size_t ninbound = 0;
-
-static int inbound_port = -1;
+int inbound_port = -1;
 
 static rwlock_t ib_lock = DEFAULTRWLOCK;
 static inbound_t *ibdata;
@@ -82,7 +81,7 @@ inbound_main(void *ibarg)
 	    BUNYAN_T_END);
 
 	while (1) {
-		if (port_get(port, &pe, NULL) < 0) {
+		if (port_get(inbound_port, &pe, NULL) < 0) {
 			STDERR(error, ib->ib_log, "port_get() failed");
 			continue;
 		}
@@ -157,7 +156,7 @@ inbound(int s)
 		pkt = ikev2_pkt_new_inbound(ib->ib_buf, pktlen, ib->ib_log);
 		if (pkt == NULL)
 			return;
-		ikev2_dispatch(pkt, &to, &from);
+		ikev2_dispatch(pkt, &from, &to);
 		return;
 	default:
 		bunyan_info(ib->ib_log, "Unsupported ISAKMP/IKE version",
@@ -170,7 +169,7 @@ inbound(int s)
 void
 schedule_socket(int fd, void (*cb)(int))
 {
-	if (port_associate(port, PORT_SOURCE_FD, fd, POLLIN, cb) < 0) {
+	if (port_associate(inbound_port, PORT_SOURCE_FD, fd, POLLIN, cb) < 0) {
 		STDERR(error, log, "port_associate() failed",
 		    BUNYAN_T_INT32, "fd", (int32_t)fd,
 		    BUNYAN_T_END);
@@ -217,7 +216,10 @@ udp_listener_socket(sa_family_t af, uint16_t port)
 	}
 
 	(void) bunyan_trace(log, "UDP socket created",
-	    BUNYAN_T_INT32, "fd", (int32_t)sock, BUNYAN_T_END);
+	    BUNYAN_T_INT32, "fd", (int32_t)sock,
+	    BUNYAN_T_STRING, "af", afstr(af),
+	    BUNYAN_T_UINT32, "port", (uint32_t)port,
+	    BUNYAN_T_END);
 
 	sau.sau_ss->ss_family = af;
 	/* Exploit that sin_port and sin6_port live at the same offset. */
@@ -275,10 +277,8 @@ udp_listener_socket(sa_family_t af, uint16_t port)
 void
 inbound_init(size_t n)
 {
-	if ((inbound_port = port_create()) == -1) {
-		STDERR(fatal, log, "port_create() failed");
-		exit(EXIT_FAILURE);
-	}
+	/* main() should initialize inbound_port */
+	VERIFY3S(inbound_port, >=, 0);
 
 	ikesock4 = udp_listener_socket(AF_INET, IPPORT_IKE);
 	nattsock = udp_listener_socket(AF_INET, IPPORT_IKE_NATT);
