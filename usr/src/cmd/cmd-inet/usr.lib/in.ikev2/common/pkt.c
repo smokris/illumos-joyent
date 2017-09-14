@@ -838,3 +838,4 @@ extern size_t pkt_write_left(const pkt_t *);
 extern size_t pkt_read_left(const pkt_t *, const uint8_t *);
 extern pkt_payload_t *pkt_payload(pkt_t *, uint16_t);
 extern pkt_notify_t *pkt_notify(pkt_t *, uint16_t);
+extern ike_payload_t *pkt_idx_to_payload(pkt_payload_t *);

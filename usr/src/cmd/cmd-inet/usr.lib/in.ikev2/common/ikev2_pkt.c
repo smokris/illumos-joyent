@@ -38,9 +38,12 @@
 #include "ikev2_enum.h"
 #include "pkcs11.h"
 #include "random.h"
+#include "worker.h"
 
 #define	PKT_IS_V2(p) \
 	(IKE_GET_MAJORV((p)->header.version) == IKE_GET_MAJORV(IKEV2_VERSION))
+
+static boolean_t check_payloads(pkt_t *);
 
 /* Allocate an outbound IKEv2 pkt for a new exchange */
 pkt_t *
@@ -101,19 +104,6 @@ ikev2_pkt_new_response(const pkt_t *init)
 	return (pkt);
 }
 
-struct validate_data {
-	bunyan_logger_t	*log;
-	pkt_t		*pkt;
-	size_t		notify_count;
-	size_t		payload_count[IKEV2_NUM_PAYLOADS];
-	boolean_t	initiator;
-	ikev2_exch_t	exch_type;
-};
-
-static pkt_walk_ret_t check_payload(uint8_t, uint8_t, uint8_t *restrict,
-    size_t, void *restrict);
-static boolean_t check_sa_init_payloads(boolean_t, const size_t *);
-
 /* Allocate a ikev2_pkt_t for an inbound datagram in raw */
 pkt_t *
 ikev2_pkt_new_inbound(uint8_t *restrict buf, size_t buflen,
@@ -122,7 +112,6 @@ ikev2_pkt_new_inbound(uint8_t *restrict buf, size_t buflen,
 	const ike_header_t	*hdr = NULL;
 	pkt_t			*pkt = NULL;
 	size_t			*counts = NULL;
-	struct validate_data	arg = { 0 };
 	size_t			i = 0;
 	boolean_t		keep = B_TRUE;
 
@@ -156,371 +145,12 @@ ikev2_pkt_new_inbound(uint8_t *restrict buf, size_t buflen,
 	if ((pkt = pkt_in_alloc(buf, buflen, l)) == NULL)
 		return (NULL);
 
-#if 1
-	return (pkt);
-#else
-	arg.log = l;
-	arg.pkt = pkt;
-	arg.exch_type = hdr->exch_type;
-	arg.initiator = !!(hdr->flags & IKEV2_FLAG_INITIATOR);
-
-	if (pkt_payload_walk((uint8_t *)(hdr + 1),
-	    buflen - sizeof (ike_header_t), check_payload, hdr->next_payload,
-	    &arg, l) != PKT_WALK_OK)
-		goto discard;
-
-	counts = arg.payload_count;
-
-	ikev2_pkt_log(pkt, l, BUNYAN_L_DEBUG, "Received IKEv2 packet");
-
-#define	PAYCOUNT(totals, paytype) totals[(paytype) - IKEV2_PAYLOAD_MIN]
-
-	switch (arg.exch_type) {
-	case IKEV2_EXCH_IKE_AUTH:
-	case IKEV2_EXCH_CREATE_CHILD_SA:
-	case IKEV2_EXCH_INFORMATIONAL:
-		/* check_payload() already made sure we only have SK payloads */
-		if (PAYCOUNT(counts, IKEV2_PAYLOAD_SK) == 1)
-			return (pkt);
-		bunyan_warn(l, "Encrypted payloads missing from non "
-		    "IKE_SA_INIT exchange", BUNYAN_T_END);
-		goto discard;
-	case IKEV2_EXCH_IKE_SA_INIT:
-		break;
-	case IKEV2_EXCH_IKE_SESSION_RESUME:
-		/* XXX: unsupported, notify? */
-		keep = B_FALSE;
-		break;
-	default:
-		bunyan_info(l, "Unknown exchange",
-		    BUNYAN_T_UINT32, "exch_type", (uint32_t)arg.exch_type,
-		    BUNYAN_T_END);
-		keep = B_FALSE;
-		break;
+	if (!check_payloads(pkt)) {
+		ikev2_pkt_free(pkt);
+		return (NULL);
 	}
-
-	if (!keep)
-		goto discard;
-
-#define	HAS_NOTIFY(totals) (!!(PAYCOUNT(totals, IKEV2_PAYLOAD_NOTIFY) > 0))
-
-	for (i = IKEV2_PAYLOAD_MIN; i <= IKEV2_PAYLOAD_MAX; i++) {
-		size_t count = PAYCOUNT(counts, i);
-
-		switch ((ikev2_pay_type_t)i) {
-		case IKEV2_PAYLOAD_NONE:
-			/* By virtue of loop, this would be an error */
-			INVALID("i");
-			break;
-
-		/* Never allowed in an SA_INIT exchange */
-		case IKEV2_PAYLOAD_IDi:
-		case IKEV2_PAYLOAD_IDr:
-		case IKEV2_PAYLOAD_CERT:
-		case IKEV2_PAYLOAD_AUTH:
-		case IKEV2_PAYLOAD_DELETE:
-		case IKEV2_PAYLOAD_TSi:
-		case IKEV2_PAYLOAD_TSr:
-		case IKEV2_PAYLOAD_SK:
-		case IKEV2_PAYLOAD_CP:
-		case IKEV2_PAYLOAD_EAP:
-		case IKEV2_PAYLOAD_GSPM:
-		case IKEV2_PAYLOAD_IDg:
-		case IKEV2_PAYLOAD_GSA:
-		case IKEV2_PAYLOAD_KD:
-		case IKEV2_PAYLOAD_SKF:
-		case IKEV2_PAYLOAD_PS:	/* Not yet */
-			if (count > 0) {
-				bunyan_info(l, "Disallowed payload present "
-				    "in IKE_SA_INIT exchange",
-				    BUNYAN_T_STRING, "payload",
-				    ikev2_pay_short_str(i), BUNYAN_T_END);
-				keep = B_FALSE;
-			}
-			break;
-
-		/* can appear 0 or more times */
-		case IKEV2_PAYLOAD_NOTIFY:
-		case IKEV2_PAYLOAD_CERTREQ:
-			break;
-
-		case IKEV2_PAYLOAD_VENDOR:
-			if (PAYCOUNT(counts, IKEV2_PAYLOAD_SA) > 0 ||
-			    PAYCOUNT(counts, IKEV2_PAYLOAD_NOTIFY) > 0)
-				break;
-			bunyan_info(l, "Vendor ID payload appears without "
-			    "SA or Notification payload", BUNYAN_T_END);
-			keep = B_FALSE;
-			break;
-		case IKEV2_PAYLOAD_SA:
-			if (count != 1 && !HAS_NOTIFY(counts)) {
-				bunyan_info(l, "Payload missing in "
-				    "non-notification IKE_SA_INIT exchange",
-				    BUNYAN_T_STRING, "missing",
-				    ikev2_pay_short_str(i),
-				    BUNYAN_T_END);
-				keep = B_FALSE;
-			}
-			break;
-
-		case IKEV2_PAYLOAD_KE:
-		case IKEV2_PAYLOAD_NONCE:
-			if (count != 1) {
-				if (!HAS_NOTIFY(counts)) {
-					bunyan_info(l, "Payload missing in "
-					    "non-notification IKE_SA_INIT "
-					    "exchange",
-					    BUNYAN_T_STRING, "missing",
-					    ikev2_pay_short_str(i),
-					    BUNYAN_T_END);
-					keep = B_FALSE;
-				}
-				break;
-			}
-			if (PAYCOUNT(counts, IKEV2_PAYLOAD_SA) != 1) {
-				bunyan_info(l, "Missing SA payload",
-				    BUNYAN_T_END);
-				keep = B_FALSE;
-			}
-			break;
-		}
-	}
-	if (!keep)
-		goto discard;
-
-	(void) bunyan_trace(l, "Created new IKEV2 packet",
-	    BUNYAN_T_POINTER, "pkt", pkt,
-	    BUNYAN_T_END);
 
 	return (pkt);
-
-discard:
-	pkt_free(pkt);
-	return (NULL);
-#undef PAYCOUNT
-#undef HAS_NOTIFY
-
-#endif
-}
-
-static boolean_t check_sa_payload(uint8_t *restrict, size_t, boolean_t,
-    bunyan_logger_t *restrict l);
-
-/*
- * Cache the payload offsets and do some minimal checking.
- * By virtue of walking the payloads, we also validate the payload
- * lengths do not overflow or underflow
- */
-static pkt_walk_ret_t
-check_payload(uint8_t paytype, uint8_t resv, uint8_t *restrict buf,
-    size_t buflen, void *restrict cookie)
-{
-	struct validate_data *arg = (struct validate_data *)cookie;
-	boolean_t critical = !!(resv & IKEV2_CRITICAL_PAYLOAD);
-
-	/* Skip unknown payloads.  We will check the critical bit later */
-	if (paytype < IKEV2_PAYLOAD_MIN || paytype > IKEV2_PAYLOAD_MAX)
-		return (PKT_WALK_OK);
-
-	switch (arg->exch_type) {
-	case IKEV2_EXCH_IKE_AUTH:
-	case IKEV2_EXCH_CREATE_CHILD_SA:
-	case IKEV2_EXCH_INFORMATIONAL:
-		/*
-		 * All payloads in these exchanges should be encrypted
-		 * at this early stage.  RFC 5996 isn't quite clear
-		 * what to do.  There seem to be three possibilities:
-		 *
-		 * 1. Drop the packet with no further action.
-		 * 2. IFF the encrypted payload's integrity check passes,
-		 *    and the packet is an initiator, send an INVALID_SYNTAX
-		 *    notification in response.  Otherwise, drop the packet
-		 * 3. Ignore the unencrypted payloads and only process the
-		 *    payloads that passed the integrity check.
-		 *
-		 * As RFC5996 suggests committing minimal CPU state until
-		 * a valid request is present (to help mitigate DOS attacks),
-		 * option 2 would still commit us to performing potentially
-		 * expensive decryption and authentication calculations.
-		 * Option 3 would require us to track which payloads were
-		 * authenticated and which were not.  Since some payloads
-		 * (e.g. notify) can appear multiple times in a packet
-		 * (requiring some sort of iteration to deal with them),
-		 * this seems potentially complicated and prone to potential
-		 * exploit.  Thus we opt for the simple solution of dropping
-		 * the packet.
-		 *
-		 * NOTE: if we successfully authenticate and decrypt a
-		 * packet for one of these exchanges and the decrypted
-		 * and authenticated payloads have range or value issues,
-		 * we may opt at that point to send an INVALID_SYNTAX
-		 * notification, but not here.
-		 */
-		if (paytype != IKEV2_PAYLOAD_SK) {
-			/* XXX: log message? */
-			return (PKT_WALK_ERROR);
-		}
-		return (PKT_WALK_OK);
-
-	case IKEV2_EXCH_IKE_SA_INIT:
-		break;
-
-	default:
-		/* Unknown exchange, bail */
-		bunyan_info(arg->log, "Discarding packet with unknown exchange",
-		    BUNYAN_T_UINT32, "exch_type", (uint32_t)arg->exch_type,
-		    BUNYAN_T_END);
-		return (PKT_WALK_ERROR);
-	}
-
-	ASSERT3U(exch_type, ==, IKEV2_EXCH_SA_INIT);
-
-	arg->payload_count[paytype - IKEV2_PAYLOAD_MIN]++;
-
-	switch (paytype) {
-	case IKEV2_PAYLOAD_SA:
-		if (!check_sa_payload(buf, buflen, !arg->initiator, log))
-			return (PKT_WALK_ERROR);
-		break;
-	}
-
-	return (PKT_WALK_OK);
-}
-
-struct sa_payload_data {
-	bunyan_logger_t *log;
-	uint32_t lastnum;
-	boolean_t is_response;
-	boolean_t first;
-	boolean_t error;
-};
-
-static boolean_t
-check_xf_cb(ikev2_transform_t *xf, uint8_t *attr, size_t attrlen, void *cookie)
-{
-	struct sa_payload_data *info = cookie;
-	bunyan_logger_t *l = info->log;
-
-	if (xf->xf_reserved != 0) {
-		bunyan_error(l, "Transform reserved field non-zero",
-		    BUNYAN_T_UINT32, "value", (uint32_t)xf->xf_reserved,
-		    BUNYAN_T_END);
-		info->error = B_TRUE;
-		return (B_FALSE);
-	}
-	if (xf->xf_reserved1 != 0) {
-		bunyan_error(l, "Transform reserved1 field non-zero",
-		    BUNYAN_T_UINT32, "value", (uint32_t)xf->xf_reserved1,
-		    BUNYAN_T_END);
-		info->error = B_TRUE;
-		return (B_FALSE);
-	}
-
-	if (attr != NULL && !ikev2_walk_xfattrs(attr, attrlen, NULL, cookie, l))
-		return (B_FALSE);
-
-	return (B_TRUE);
-}
-
-static boolean_t
-check_sa_cb(ikev2_sa_proposal_t *prop, uint64_t spi, uint8_t *data, size_t len,
-    void *cookie)
-{
-	struct sa_payload_data *info = cookie;
-	bunyan_logger_t *l = info->log;
-
-	/*
-	 * When initiating an SA exchange (IKE or CHILD), there are 1+
-	 * proposals numbered sequentially starting with 1.  For an SA payload
-	 * in a response, there should be a single proposal whose number
-	 * matches the chosen proposal number from the SA payload in the
-	 * initiator
-	 */
-	if (info->is_response) {
-		VERIFY(info->first);
-
-		if (prop->proto_more != IKEV2_PROP_LAST) {
-			bunyan_error(l,
-			    "Proposal response has multiple proposals",
-			    BUNYAN_T_END);
-			info->error = B_TRUE;
-			return (B_FALSE);
-		}
-	} else {
-		if (prop->proto_proposalnr != info->lastnum + 1) {
-			bunyan_error(l,
-			    "Proposal number is not one greater than "
-			    "the previous proposal",
-			    BUNYAN_T_UINT32, "propnum",
-			    (uint32_t)prop->proto_proposalnr,
-			    BUNYAN_T_UINT32, "prevprop", info->lastnum,
-			    BUNYAN_T_END);
-			info->error = B_TRUE;
-			return (B_FALSE);
-		}
-	}
-
-	switch (prop->proto_protoid) {
-		case IKEV2_PROTO_NONE:
-		case IKEV2_PROTO_FC_ESP_HEADER:
-		case IKEV2_PROTO_FC_CT_AUTH:
-			/* Ignore these */
-			break;
-		case IKEV2_PROTO_IKE:
-			/* XXX: validate when 0 vs 8? */
-			if (prop->proto_spisize == 0 ||
-			    prop->proto_spisize == sizeof (uint64_t))
-				break;
-
-			bunyan_error(l,
-			    "Invalid proposal SPI length for protocol",
-			    BUNYAN_T_UINT32, "propnum",
-			    (uint32_t)prop->proto_proposalnr,
-			    BUNYAN_T_STRING, "protocol",
-			    ikev2_spi_str(prop->proto_protoid),
-			    BUNYAN_T_UINT32, "spilen",
-			    (uint32_t)prop->proto_spisize, BUNYAN_T_END);
-			return (B_FALSE);
-		case IKEV2_PROTO_AH:
-		case IKEV2_PROTO_ESP:
-			if (prop->proto_spisize == sizeof (uint32_t))
-				break;
-			bunyan_error(l,
-			    "Invalid proposal SPI length for protocol",
-			    BUNYAN_T_UINT32, "propnum",
-			    (uint32_t)prop->proto_proposalnr,
-			    BUNYAN_T_STRING, "protocol",
-			    ikev2_spi_str(prop->proto_protoid),
-			    BUNYAN_T_UINT32, "spilen",
-			    (uint32_t)prop->proto_spisize, BUNYAN_T_END);
-			return (B_FALSE);
-		}
-
-		if (!ikev2_walk_xfs(data, len, check_xf_cb, cookie, l)) {
-			info->error = B_TRUE;
-			return (B_FALSE);
-		}
-
-		info->lastnum = prop->proto_proposalnr;
-		info->first = B_FALSE;
-		return (B_TRUE);
-}
-
-static boolean_t
-check_sa_payload(uint8_t *restrict pay, size_t len, boolean_t is_response,
-    bunyan_logger_t *restrict l)
-{
-	struct sa_payload_data data = {
-		.log = l,
-		.lastnum = 0,
-		.is_response = is_response,
-		.first = B_FALSE,
-		.error = B_FALSE
-	};
-
-	if (!ikev2_walk_proposals(pay, len, check_sa_cb, &data, l))
-		return (B_FALSE);
-	return (data.error);
 }
 
 /*
@@ -1019,7 +649,7 @@ ikev2_add_vendor(pkt_t *restrict pkt, const void *restrict vid, size_t len)
 /*
  * This will need to be adjusted once we have a better idea how we will
  * obtain the traffic selectors to better tailor the interface for adding
- * them to the IKE datagram
+ * them to the IKE datagram.  For now, we'll just leave them out.
  */
 #if 0
 static boolean_t add_ts_common(pkt_t *, boolean_t);
@@ -1545,6 +1175,69 @@ ikev2_pkt_done(pkt_t *pkt)
 
 done:
 	return (ok);
+}
+
+static boolean_t
+check_payloads(pkt_t *pkt)
+{
+	size_t paycount[IKEV2_NUM_PAYLOADS] = { 0 };
+
+#define	PAYCOUNT(type)	paycount[(type) - IKEV2_PAYLOAD_MIN]
+
+	for (size_t i = 0; i < pkt->pkt_payload_count; i++) {
+		pkt_payload_t *idx = pkt_payload(pkt, i);
+		ike_payload_t *pay = pkt_idx_to_payload(idx);
+
+		/* All known payloads should not have the critical bit set */
+		if (pay->pay_reserved & IKEV2_CRITICAL_PAYLOAD) {
+			(void) bunyan_info(log,
+			    "Packet payload has critical bit set",
+			    BUNYAN_T_UINT32, "payload", (uint32_t)idx->pp_type,
+			    BUNYAN_T_END);
+			return (B_FALSE);
+		}
+
+		if (!IKEV2_VALID_PAYLOAD(idx->pp_type)) {
+			(void) bunyan_trace(log,
+			    "Ignoring unknown payload",
+			    BUNYAN_T_UINT32, "payload", (uint32_t)idx->pp_type,
+			    BUNYAN_T_END);
+			continue;
+		}
+
+		PAYCOUNT(idx->pp_type)++;
+	}
+
+	if (pkt->pkt_header.exch_type != IKEV2_EXCH_IKE_SA_INIT) {
+		if (PAYCOUNT(IKEV2_PAYLOAD_SK) == 0) {
+			ikev2_pkt_log(pkt, log, BUNYAN_L_INFO,
+			    "Non IKE_SA_INIT exchange is missing SK payload");
+			return (B_FALSE);
+		}
+
+		/* XXX: Figure out way to ignore unprotected payloads */
+
+		return (B_TRUE);
+	}
+
+	if ((pkt->pkt_header.flags & IKEV2_FLAG_RESPONSE) &&
+	    (pkt->pkt_header.responder_spi == 0)) {
+		if (PAYCOUNT(IKEV2_PAYLOAD_SA) > 0) {
+			ikev2_pkt_log(pkt, log, BUNYAN_L_INFO,
+			    "IKE_SA_INIT error response contains SA payload");
+			return (B_FALSE);
+		}
+
+		/* XXX: Other IKE_SA_INIT error repsonse checks? */
+	}
+
+	/*
+	 * XXX: Possibly add more checks on which payloads are or aren't allowed
+	 * for IKE_SA_INIT
+	 */
+
+	return (B_TRUE);
+#undef PAYCOUNT
 }
 
 /*

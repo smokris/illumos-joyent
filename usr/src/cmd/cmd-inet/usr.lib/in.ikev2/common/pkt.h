@@ -155,6 +155,13 @@ pkt_payload(pkt_t *pkt, uint16_t idx)
 	return (pkt->pkt_payload_extra + (idx - PKT_PAYLOAD_NUM));
 }
 
+inline ike_payload_t *
+pkt_idx_to_payload(pkt_payload_t *idxp)
+{
+	ike_payload_t *pay = (ike_payload_t *)idxp->pp_ptr;
+	return (pay - 1);
+}
+
 inline pkt_notify_t *
 pkt_notify(pkt_t *pkt, uint16_t idx)
 {
