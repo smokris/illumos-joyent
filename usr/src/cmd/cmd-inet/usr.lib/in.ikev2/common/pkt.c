@@ -603,6 +603,8 @@ pkt_hdr_hton(ike_header_t *restrict dest,
 boolean_t
 pkt_done(pkt_t *pkt)
 {
+	pkt->pkt_header.length = pkt_len(pkt);
+	pkt_hdr_hton((ike_header_t *)&pkt->pkt_raw, &pkt->pkt_header);
 	pkt->pkt_done = B_TRUE;
 	return (B_TRUE);
 }

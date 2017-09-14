@@ -102,8 +102,11 @@ prfplus_init(prfp_t *restrict prfp, ikev2_prf_t alg, CK_OBJECT_HANDLE key,
 	prfp->prfp_tbuf[1] = umem_zalloc(prfp->prfp_tbuflen, UMEM_DEFAULT);
 	prfp->prfp_seed = umem_zalloc(prfp->prfp_seedlen, UMEM_DEFAULT);
 	if (prfp->prfp_tbuf[0] == NULL || prfp->prfp_tbuf[1] == NULL ||
-	    prfp->prfp_seed == NULL)
+	    prfp->prfp_seed == NULL) {
+		(void) bunyan_error(l, "Could not allocate memory for PRF+",
+		    BUNYAN_T_END);
 		goto fail;
+	}
 
 	va_start(ap, l);
 	while ((p = va_arg(ap, uint8_t *)) != NULL) {
@@ -142,7 +145,7 @@ prfplus_init(prfp_t *restrict prfp, ikev2_prf_t alg, CK_OBJECT_HANDLE key,
 	    prfp->prfp_tbuf[1], prfp->prfp_tbuflen,		/* output */
 	    prfp->prfp_log,
 	    prfp->prfp_seed, prfp->prfp_seedlen,		/* S */
-	    &prfp->prfp_n, sizeof (prfp->prfp_n), NULL));	/* 0x01 */
+	    &prfp->prfp_n, sizeof (prfp->prfp_n), NULL))	/* 0x01 */
 		goto fail;
 
 	return (B_TRUE);

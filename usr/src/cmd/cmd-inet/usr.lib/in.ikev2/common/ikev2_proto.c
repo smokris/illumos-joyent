@@ -438,6 +438,9 @@ ikev2_retransmit_check(pkt_t *pkt)
 			goto done;
 		}
 
+		ikev2_pkt_log(pkt, sa->i2sa_log, BUNYAN_L_DEBUG,
+		    "Resending last response");
+
 		len = sendfromto(select_socket(sa), pkt_start(resp),
 		    pkt_len(pkt), &sa->laddr, &sa->raddr);
 		goto done;

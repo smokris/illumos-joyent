@@ -100,8 +100,8 @@ boolean_t ikev2_walk_xfs(uint8_t *restrict, size_t, ikev2_xf_cb_t,
 boolean_t ikev2_walk_xfattrs(uint8_t *restrict, size_t, ikev2_xfattr_cb_t,
     void *restrict, bunyan_logger_t *restrict);
 
-void ikev2_pkt_log(pkt_t *restrict, bunyan_logger_t *restrict, const char *,
-    bunyan_level_t);
+void ikev2_pkt_log(pkt_t *restrict, bunyan_logger_t *restrict, bunyan_level_t,
+    const char *);
 
 char *ikev2_pkt_desc(pkt_t *);
 ikev2_dh_t ikev2_get_dhgrp(pkt_t *);

@@ -171,7 +171,7 @@ ikev2_pkt_new_inbound(uint8_t *restrict buf, size_t buflen,
 
 	counts = arg.payload_count;
 
-	ikev2_pkt_log(pkt, l, "Received IKEv2 packet", BUNYAN_L_DEBUG);
+	ikev2_pkt_log(pkt, l, BUNYAN_L_DEBUG, "Received IKEv2 packet");
 
 #define	PAYCOUNT(totals, paytype) totals[(paytype) - IKEV2_PAYLOAD_MIN]
 
@@ -1497,20 +1497,23 @@ ikev2_pkt_done(pkt_t *pkt)
 	if (pkt->pkt_done)
 		return (B_TRUE);
 
+	pkt_payload_t *sk = pkt_get_payload(pkt, IKEV2_PAYLOAD_SK, NULL);
+
 	if (pkt->pkt_header.exch_type == IKEV2_EXCH_IKE_SA_INIT) {
-		VERIFY3P(pkt->pkt_encr_pay, ==, NULL);
-		pkt->pkt_done = B_TRUE;
-		return (B_TRUE);
+		VERIFY3P(sk, ==, NULL);
+		return (pkt_done(pkt));
 	}
 
+	VERIFY3P(sk, !=, NULL);
+
+	ike_payload_t *skpay = ((ike_payload_t *)sk->pp_ptr) - 1;
+	uint8_t *sklen = (uint8_t *)&skpay->pay_length;
 	ikev2_sa_t *sa = pkt->pkt_sa;
 	CK_ULONG datalen = (CK_ULONG)(pkt->pkt_ptr - pkt->pkt_encr_pay->pp_ptr);
 	CK_ULONG icvlen = ikev2_auth_icv_size(sa->encr, sa->auth);
 	CK_ULONG blocklen = encr_data[sa->encr].ed_blocklen;
 	boolean_t ok = B_TRUE;
 	uint8_t padlen = 0;
-
-	VERIFY3P(pkt->pkt_encr_pay, !=, NULL);
 
 	/*
 	 * Per RFC7296 3.14, the sender can choose any value for the padding.
@@ -1537,12 +1540,14 @@ ikev2_pkt_done(pkt_t *pkt)
 	 */
 	pkt_adv_ptr(pkt, icvlen);
 
-	ok = ikev2_pkt_encryptdecrypt(pkt, B_TRUE);
-	ok = ikev2_pkt_signverify(pkt, B_TRUE);
+	BE_OUT16(sklen, (uint16_t)(pkt->pkt_ptr - sk->pp_ptr) +
+	    sizeof (ike_payload_t));
+
+	ok = pkt_done(pkt);
+	ok &= ikev2_pkt_encryptdecrypt(pkt, B_TRUE);
+	ok &= ikev2_pkt_signverify(pkt, B_TRUE);
 
 done:
-	if (ok)
-		pkt->pkt_done = B_TRUE;
 	return (ok);
 }
 
@@ -1615,16 +1620,26 @@ ikev2_pkt_desc(pkt_t *pkt)
 
 void
 ikev2_pkt_log(pkt_t *restrict pkt, bunyan_logger_t *restrict log,
-    const char *msg, bunyan_level_t level)
+    bunyan_level_t level, const char *msg)
 {
 	char *descstr = ikev2_pkt_desc(pkt);
+	char ispi[19];
+	char rspi[19];
+
 	VERIFY3P(descstr, !=, NULL);
+
+	(void) snprintf(ispi, sizeof (ispi), "0x%" PRIX64,
+	    pkt->pkt_header.initiator_spi);
+	(void) snprintf(rspi, sizeof (rspi), "0x%" PRIX64,
+	    pkt->pkt_header.responder_spi);
+
 	getlog(level)(log, msg,
-	    BUNYAN_T_UINT64, "initiator_spi", pkt->pkt_header.initiator_spi,
-	    BUNYAN_T_UINT64, "responder_spi", pkt->pkt_header.responder_spi,
+	    BUNYAN_T_STRING, "initiator_spi", ispi,
+	    BUNYAN_T_UINT64, "responder_spi", rspi,
 	    BUNYAN_T_STRING, "exch_type",
 	    ikev2_exch_str(pkt->pkt_header.exch_type),
 	    BUNYAN_T_UINT32, "msgid", pkt->pkt_header.msgid,
+	    BUNYAN_T_UINT32, "msglen", pkt->pkt_header.length,
 	    BUNYAN_T_STRING, "payloads", descstr,
 	    BUNYAN_T_END);
 	free(descstr);

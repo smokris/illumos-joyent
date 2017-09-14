@@ -130,8 +130,8 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 	 * initating packet, so for this one instance we must set it
 	 * manually since the initiator doesn't yet know our local SPI.
 	 */
-	pkt->pkt_raw[1] = htonll(I2SA_LOCAL_SPI(sa));
-	pkt->pkt_header.responder_spi = I2SA_LOCAL_SPI(sa);
+	resp->pkt_raw[1] = htonll(I2SA_LOCAL_SPI(sa));
+	resp->pkt_header.responder_spi = I2SA_LOCAL_SPI(sa);
 
 	if (!ikev2_sa_add_result(resp, &sa_result))
 		goto fail;
@@ -162,7 +162,6 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 
 	if (!ikev2_sa_keygen(&sa_result, pkt, resp))
 		goto fail;
-
 	if (!ikev2_send(resp, B_FALSE))
 		goto fail;
 	return;
@@ -253,9 +252,6 @@ ikev2_sa_init_inbound_resp(pkt_t *pkt)
 	/* Did we get a request for cookies or a new DH group? */
 	if (redo_init(pkt))
 		return;
-
-	ikev2_sa_set_remote_spi(sa, INBOUND_REMOTE_SPI(&pkt->pkt_header));
-
 	if (!check_nats(pkt))
 		goto fail;
 	check_vendor(pkt);
@@ -277,6 +273,7 @@ ikev2_sa_init_inbound_resp(pkt_t *pkt)
 	if (!ikev2_sa_keygen(&sa_result, sa->init_i, pkt))
 		goto fail;
 
+	ikev2_sa_set_remote_spi(sa, INBOUND_REMOTE_SPI(&pkt->pkt_header));
 	sa->init_r = pkt;
 	return;
 
@@ -738,6 +735,8 @@ create_skeyseed(ikev2_sa_t *restrict sa, CK_OBJECT_HANDLE nonce,
 		goto fail;
 	}
 
+	(void) bunyan_trace(sa->i2sa_log, "Created SKEYSEED", BUNYAN_T_END);
+
 	return (B_TRUE);
 
 fail:
@@ -790,7 +789,6 @@ ikev2_sa_keygen(ikev2_sa_result_t *restrict result, pkt_t *restrict init,
 	    nr->pp_ptr, (size_t)nr->pp_len,
 	    pkt_start(init), sizeof (uint64_t) * 2, NULL))
 		goto fail;
-
 	if (!prf_to_p11key(&prfp, "SK_d", p11prf, prflen, &sa->sk_d))
 		goto fail;
 	if (!prf_to_p11key(&prfp, "SK_ai", p11auth, authlen, &sa->sk_ai))

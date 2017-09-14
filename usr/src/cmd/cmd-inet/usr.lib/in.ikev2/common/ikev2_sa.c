@@ -391,6 +391,9 @@ ikev2_sa_condemn(ikev2_sa_t *i2sa)
 	i2sa_unlink(i2sa);
 
 	PTH(pthread_mutex_lock(&i2sa->lock));
+
+	(void) bunyan_info(i2sa->i2sa_log, "Condemning IKE SA", BUNYAN_T_END);
+
 	i2sa->flags |= I2SA_CONDEMNED;
 
 	if (i2sa->last_sent != NULL)
@@ -723,16 +726,28 @@ i2sa_verify(ikev2_sa_t *restrict i2sa, uint64_t rem_spi,
 	if (i2sa == NULL)
 		return (NULL);
 
-	if (rem_spi != 0 && I2SA_REMOTE_SPI(i2sa) != rem_spi) {
-		bunyan_error(i2sa->i2sa_log,
+	/*
+	 * If we initiate an IKE_SA_INIT request, when we receive a non-error
+	 * (cookie, new DH pair, no proposal chosen) response, our IKE SA
+	 * will not yet have it's remote SPI set as the response will be
+	 * the first time the remote SPI is known to us.  That means, in
+	 * that situation, our remote SPI == 0, but we will be called with
+	 * rem_spi set to the value chosen by the peer.  As such we don't
+	 * want to fail verification when given a remote SPI value and ours
+	 * hasn't been set yet.
+	 */
+	if (I2SA_REMOTE_SPI(i2sa) != 0 && I2SA_REMOTE_SPI(i2sa) != rem_spi) {
+		char spistr[19];
+		(void) snprintf(spistr, sizeof (spistr), "0x%" PRIX64, rem_spi);
+		(void) bunyan_error(i2sa->i2sa_log,
 		    "Found an IKEv2 SA, but remote SPI does not match",
-		    BUNYAN_T_UINT64, "spi", rem_spi,
+		    BUNYAN_T_STRING, "spi", spistr,
 		    BUNYAN_T_END);
 		goto bad_match;
 	}
 
 	if (laddr != NULL && !SA_ADDR_EQ(laddr, &i2sa->laddr)) {
-		bunyan_error(i2sa->i2sa_log,
+		(void) bunyan_error(i2sa->i2sa_log,
 		    "Found an IKEv2 SA, but local address does not match",
 		    ss_bunyan(laddr), "addr", ss_addr(laddr),
 		    BUNYAN_T_END);
@@ -740,7 +755,7 @@ i2sa_verify(ikev2_sa_t *restrict i2sa, uint64_t rem_spi,
 	}
 
 	if (raddr != NULL && !SA_ADDR_EQ(raddr, &i2sa->raddr)) {
-		bunyan_error(i2sa->i2sa_log,
+		(void) bunyan_error(i2sa->i2sa_log,
 		    "Found an IKEv2 SA, but remote address does not match",
 		    ss_bunyan(raddr), "addr", ss_addr(raddr),
 		    BUNYAN_T_END);
@@ -754,7 +769,7 @@ i2sa_verify(ikev2_sa_t *restrict i2sa, uint64_t rem_spi,
 
 	/* XXX KEBE SAYS FILL IN OTHER REALITY CHECKS HERE. */
 
-	bunyan_trace(i2sa->i2sa_log, "IKEv2 SA found",
+	(void) bunyan_trace(i2sa->i2sa_log, "IKEv2 SA found",
 	    BUNYAN_T_STRING, "func", __func__,
 	    BUNYAN_T_END);
 	return (i2sa);

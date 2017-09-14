@@ -346,6 +346,7 @@ match_rule_prop_cb(ikev2_sa_proposal_t *prop, uint64_t spi, uint8_t *buf,
 		return (B_TRUE);
 
 	/* A match.  Stop walk of remaining proposals */
+	data->rd_res->sar_proto = prop->proto_protoid;
 	data->rd_res->sar_spi = spi;
 	data->rd_res->sar_propnum = prop->proto_proposalnr;
 	data->rd_match = B_TRUE;

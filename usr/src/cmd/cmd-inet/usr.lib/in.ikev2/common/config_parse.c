@@ -723,7 +723,11 @@ parse_xform(input_cursor_t *restrict ic, config_xf_t **restrict xfp)
 
 	end = t->t_linep + t->t_col;
 
-	val = (uint64_t)(end - start) + 1;
+	/*
+ 	 * end points to closing '}' of transform, so end - start + 2
+ 	 * includes closing } plus room for NUL
+ 	 */
+	val = (uint64_t)(end - start) + 2;
 	xf->xf_str = calloc(1, val);
 	VERIFY3P(xf->xf_str, !=, NULL);
 	(void) strlcpy(xf->xf_str, start, val);
