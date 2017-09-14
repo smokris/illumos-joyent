@@ -846,7 +846,7 @@ ikev2_add_ke(pkt_t *restrict pkt, ikev2_dh_t group, CK_OBJECT_HANDLE key)
 		PKCS11ERR(error, l, "C_GetAttributeValue", rc);
 		return (B_FALSE);
 	}
-	pkt_adv_ptr(pkt, keylen);
+	pkt->pkt_ptr += keylen;
 
 	return (B_TRUE);
 }
@@ -963,7 +963,7 @@ ikev2_add_nonce(pkt_t *restrict pkt, uint8_t *restrict nonce, size_t len)
 		PKT_APPEND_DATA(pkt, nonce, len);
 	} else {
 		random_high(pkt->pkt_ptr, len);
-		pkt_adv_ptr(pkt, len);
+		pkt->pkt_ptr += len;
 	}
 	return (B_TRUE);
 }
@@ -1152,7 +1152,6 @@ ikev2_add_sk(pkt_t *restrict pkt)
 	if (!ikev2_add_payload(pkt, IKEV2_PAYLOAD_SK, B_FALSE, 0))
 		return (B_FALSE);
 
-	pkt->pkt_encr_pay = pkt_get_payload(pkt, IKEV2_PAYLOAD_SK, NULL);
 	return (add_iv(pkt));
 }
 
@@ -1175,7 +1174,7 @@ add_iv(pkt_t *restrict pkt)
 		 * requirements.
 		 */
 		put32(pkt, pkt->pkt_header.msgid);
-		pkt_adv_ptr(pkt, len - sizeof (pkt->pkt_header.msgid));
+		pkt->pkt_ptr += (len - sizeof (pkt->pkt_header.msgid));
 		return (B_TRUE);
 	case MODE_CTR:
 		/* TODO */
@@ -1241,7 +1240,7 @@ add_iv(pkt_t *restrict pkt)
 
 	(void) memcpy(pkt->pkt_ptr, buf, MIN(len, blocklen));
 	explicit_bzero(buf, blocklen);
-	pkt_adv_ptr(pkt, MIN(len, blocklen));
+	pkt->pkt_ptr += MIN(len, blocklen);
 	return (B_TRUE);
 }
 
@@ -1285,9 +1284,6 @@ ikev2_pkt_encryptdecrypt(pkt_t *pkt, boolean_t encrypt)
 	CK_RV rc = CKR_OK;
 	encr_modes_t mode = encr_data[sa->encr].ed_mode;
 	uint8_t padlen = 0;
-
-	if (encrypt)
-		VERIFY3P(pkt->pkt_encr_pay, ==, sk);
 
 	if (sa->flags & I2SA_INITIATOR) {
 		key = sa->sk_ei;
@@ -1507,11 +1503,11 @@ ikev2_pkt_done(pkt_t *pkt)
 	VERIFY3P(sk, !=, NULL);
 
 	ike_payload_t *skpay = ((ike_payload_t *)sk->pp_ptr) - 1;
-	uint8_t *sklen = (uint8_t *)&skpay->pay_length;
 	ikev2_sa_t *sa = pkt->pkt_sa;
-	CK_ULONG datalen = (CK_ULONG)(pkt->pkt_ptr - pkt->pkt_encr_pay->pp_ptr);
+	CK_ULONG datalen = (CK_ULONG)(pkt->pkt_ptr - sk->pp_ptr);
 	CK_ULONG icvlen = ikev2_auth_icv_size(sa->encr, sa->auth);
 	CK_ULONG blocklen = encr_data[sa->encr].ed_blocklen;
+	uint16_t sklen = sizeof (ike_payload_t);
 	boolean_t ok = B_TRUE;
 	uint8_t padlen = 0;
 
@@ -1531,17 +1527,17 @@ ikev2_pkt_done(pkt_t *pkt)
 
 	for (size_t i = 0; i <= padlen; i++)
 		pkt->pkt_ptr[i] = padlen;
-	pkt_adv_ptr(pkt, padlen);
+	pkt->pkt_ptr += padlen;
 
 	/*
 	 * Skip over the space for the ICV.  This is necessary so that all
 	 * the lengths (packet, payload) are updated with the final values
 	 * prior to encryption and signing.
 	 */
-	pkt_adv_ptr(pkt, icvlen);
+	pkt->pkt_ptr += icvlen;
 
-	BE_OUT16(sklen, (uint16_t)(pkt->pkt_ptr - sk->pp_ptr) +
-	    sizeof (ike_payload_t));
+	sklen += (uint16_t)(pkt->pkt_ptr - sk->pp_ptr);
+	BE_OUT16(&skpay->pay_length, sklen);
 
 	ok = pkt_done(pkt);
 	ok &= ikev2_pkt_encryptdecrypt(pkt, B_TRUE);

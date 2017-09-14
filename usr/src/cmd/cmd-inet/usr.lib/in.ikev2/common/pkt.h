@@ -72,7 +72,7 @@ typedef struct pkt_notify {
 
 #define	MAX_PACKET_SIZE	(8192)	/* largest datagram we accept */
 struct pkt_s {
-				/* NOT refheld */
+				/* refheld */
 	struct ikev2_sa_s	*pkt_sa;
 
 				/* Transmit count */
@@ -101,19 +101,17 @@ struct pkt_s {
 	uint16_t		pkt_notify_count;
 	uint16_t		pkt_notify_alloc;
 
-				/* Set once we've added an encrypted payload */
-	pkt_payload_t		*pkt_encr_pay;
-
 				/* Ready for transmit */
 	boolean_t		pkt_done;
 };
 
+/* Used to help construct SA payloads */
 typedef struct pkt_sa_state {
-	pkt_t		*pss_pkt;
-	uint16_t	*pss_lenp;
-	pkt_payload_t	*pss_pld;
-	ike_prop_t	*pss_prop;
-	ike_xform_t	*pss_xf;
+	pkt_t		*pss_pkt;	/* Packet in question */
+	uint16_t	*pss_lenp;	/* Ptr to SA payload length field */
+	pkt_payload_t	*pss_pld;	/* Ptr to SA payload index */
+	ike_prop_t	*pss_prop;	/* Ptr to current proposal struct */
+	ike_xform_t	*pss_xf;	/* Ptr to current xform struct */
 } pkt_sa_state_t;
 
 inline uint8_t *
@@ -167,49 +165,24 @@ pkt_notify(pkt_t *pkt, uint16_t idx)
 }
 
 inline void
-pkt_adv_ptr(pkt_t *pkt, size_t amt)
-{
-	ike_header_t *hdr = (ike_header_t *)&pkt->pkt_raw;
-
-	/*
-	 * The layout of ike_header_t and pkt->pkt_raw currently guarantees
-	 * this alignment
-	 */
-	ASSERT(I2_P2ALIGNED(&hdr->length, sizeof (uint32_t)));
-
-	pkt->pkt_ptr += amt;
-	pkt->pkt_header.length += amt;
-	hdr->length = htonl(pkt->pkt_header.length);
-
-	/* However no alignment guarantees for this unfortunately */
-	if (pkt->pkt_encr_pay != NULL) {
-		ike_payload_t *ip = ((ike_payload_t *)pkt->pkt_encr_pay) - 1;
-		uint16_t val = BE_IN16(&ip->pay_length) + amt;
-
-		BE_OUT16(&ip->pay_length, val);
-		pkt->pkt_encr_pay->pp_len += amt;
-	}
-}
-
-inline void
 put32(pkt_t *pkt, uint32_t val)
 {
 	BE_OUT32(pkt->pkt_ptr, val);
-	pkt_adv_ptr(pkt, sizeof (uint32_t));
+	pkt->pkt_ptr += sizeof (uint32_t);
 }
 
 inline void
 put64(pkt_t *pkt, uint64_t val)
 {
 	BE_OUT64(pkt->pkt_ptr, val);
-	pkt_adv_ptr(pkt, sizeof (uint64_t));
+	pkt->pkt_ptr += sizeof (uint64_t);
 }
 
 #define	PKT_APPEND_STRUCT(_pkt, _struct)				\
 do {									\
 	VERIFY3U(pkt_write_left(_pkt), >=, sizeof (_struct));		\
 	(void) memcpy((_pkt)->pkt_ptr, &(_struct), sizeof (_struct));	\
-	pkt_adv_ptr(_pkt, sizeof (_struct));				\
+	(_pkt)->pkt_ptr += sizeof (_struct);				\
 /*CONSTCOND*/								\
 } while (0)
 
@@ -219,7 +192,7 @@ do {							\
 		break;					\
 	VERIFY3U(pkt_write_left(_pkt), >=, (_len));	\
 	(void) memcpy((_pkt)->pkt_ptr, (_ptr), (_len));	\
-	pkt_adv_ptr(_pkt, (_len));			\
+	(_pkt)->pkt_ptr += (_len);			\
 /*CONSTCOND*/						\
 } while (0)
 

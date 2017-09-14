@@ -130,7 +130,6 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 	 * initating packet, so for this one instance we must set it
 	 * manually since the initiator doesn't yet know our local SPI.
 	 */
-	resp->pkt_raw[1] = htonll(I2SA_LOCAL_SPI(sa));
 	resp->pkt_header.responder_spi = I2SA_LOCAL_SPI(sa);
 
 	if (!ikev2_sa_add_result(resp, &sa_result))

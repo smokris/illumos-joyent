@@ -59,8 +59,7 @@ pkt_out_alloc(uint64_t i_spi, uint64_t r_spi, uint8_t version,
 	pkt->pkt_header.msgid = msgid;
 	pkt->pkt_header.flags = flags;
 
-	pkt_hdr_hton((ike_header_t *)pkt->pkt_raw, &pkt->pkt_header);
-	pkt_adv_ptr(pkt, sizeof (ike_header_t));
+	pkt->pkt_ptr += sizeof (ike_header_t);
 	return (pkt);
 }
 
@@ -149,7 +148,8 @@ pkt_index_cb(uint8_t paytype, uint8_t resv, uint8_t *restrict ptr, size_t len,
 		 * of the struct.
 		 */
 	 	if (len < sizeof (ikev2_notify_t) + sizeof (uint32_t)) {
-			bunyan_warn(data->id_log, "Notify payload is truncated",
+			(void) bunyan_warn(data->id_log,
+			    "Notify payload is truncated",
 			    BUNYAN_T_END);
 			return (PKT_WALK_ERROR);
 		}
@@ -178,7 +178,7 @@ pkt_index_cb(uint8_t paytype, uint8_t resv, uint8_t *restrict ptr, size_t len,
 			(void) memcpy(&spi, ptr, sizeof (uint64_t));
 			spi = ntohll(spi);
 		} else {
-			bunyan_warn(data->id_log,
+			(void) bunyan_warn(data->id_log,
 			    "Invalid SPI length in notify payload",
 			    BUNYAN_T_UINT32, "spilen", (uint32_t)ntfy.n_spisize,
 			    BUNYAN_T_END);
@@ -379,6 +379,8 @@ pkt_add_prop(pkt_sa_state_t *pss, uint8_t propnum, uint8_t proto, size_t spilen,
 	ike_prop_t	prop = { 0 };
 	uint16_t	val = 0, amt = sizeof (prop) + spilen;
 
+	VERIFY(!pss->pss_pkt->pkt_done);
+
 	if (pkt_write_left(pss->pss_pkt) < amt)
 		return (B_FALSE);
 
@@ -410,6 +412,8 @@ pkt_add_xform(pkt_sa_state_t *pss, uint8_t xftype, uint16_t xfid)
 {
 	ike_xform_t	xf = { 0 };
 	uint16_t	len = 0;
+
+	VERIFY(!pss->pss_pkt->pkt_done);
 
 	if (pkt_write_left(pss->pss_pkt) < sizeof (xf))
 		return (B_FALSE);
@@ -449,6 +453,8 @@ pkt_add_xform_attr_tv(pkt_sa_state_t *pss, uint16_t type, uint16_t val)
 	VERIFY3U(type, <, 0x8000);
 	VERIFY3U(val, <, 0x10000);
 
+	VERIFY(!pss->pss_pkt->pkt_done);
+
 	if (pkt_write_left(pss->pss_pkt) < sizeof (attr))
 		return (B_FALSE);
 
@@ -481,6 +487,8 @@ pkt_add_xform_attr_tlv(pkt_sa_state_t *pss, uint16_t type, const uint8_t *attrp,
 
 	VERIFY3U(type, <, 0x8000);
 	VERIFY3U(attrlen, <, 0x10000);
+
+	VERIFY(!pss->pss_pkt->pkt_done);
 
 	if (pkt_write_left(pss->pss_pkt) < amt)
 		return (B_FALSE);
@@ -558,7 +566,7 @@ pkt_add_cert(pkt_t *restrict pkt, uint8_t paytype, uint8_t encoding,
 		return (B_FALSE);
 
 	pkt->pkt_ptr[0] = encoding;
-	pkt_adv_ptr(pkt, 1);
+	pkt->pkt_ptr += 1;
 	PKT_APPEND_DATA(pkt, data, datalen);
 	return (B_TRUE);
 }
@@ -830,4 +838,3 @@ extern size_t pkt_write_left(const pkt_t *);
 extern size_t pkt_read_left(const pkt_t *, const uint8_t *);
 extern pkt_payload_t *pkt_payload(pkt_t *, uint16_t);
 extern pkt_notify_t *pkt_notify(pkt_t *, uint16_t);
-extern void pkt_adv_ptr(pkt_t *, size_t);
