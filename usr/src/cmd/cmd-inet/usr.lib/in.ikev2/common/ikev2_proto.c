@@ -123,6 +123,11 @@ ikev2_dispatch(pkt_t *pkt, const struct sockaddr_storage *restrict src_addr,
 	}
 
 	local_spi = I2SA_LOCAL_SPI(i2sa);
+
+	/*
+	 * ikev2_sa_get and ikev2_try_new_sa both return refheld ikev2_sa_t's
+	 * that we then give to the inbound packet.
+	 */
 	pkt->pkt_sa = i2sa;
 
 	if (worker_dispatch(WMSG_PACKET, pkt, local_spi % nworkers))
@@ -286,9 +291,9 @@ ikev2_send(pkt_t *pkt, boolean_t is_error)
 
 		CONFIG_REFRELE(cfg);
 
-		PTH(pthread_mutex_lock(&i2sa->lock));
+		VERIFY0(pthread_mutex_lock(&i2sa->lock));
 		i2sa->last_sent = pkt;
-		PTH(pthread_mutex_unlock(&i2sa->lock));
+		VERIFY0(pthread_mutex_unlock(&i2sa->lock));
 
 		(void) schedule_timeout(TE_TRANSMIT, ikev2_retransmit_cb, i2sa,
 		    retry, i2sa->i2sa_log);
@@ -305,9 +310,9 @@ ikev2_send(pkt_t *pkt, boolean_t is_error)
 	 */
 	if (pkt->pkt_header.exch_type != IKEV2_EXCH_IKE_SA_INIT ||
 	    pkt->pkt_raw[1] != 0) {
-		PTH(pthread_mutex_lock(&i2sa->lock));
+		VERIFY0(pthread_mutex_lock(&i2sa->lock));
 		i2sa->last_resp_sent = pkt;
-		PTH(pthread_mutex_unlock(&i2sa->lock));
+		VERIFY0(pthread_mutex_unlock(&i2sa->lock));
 	}
 
 	return (B_TRUE);
@@ -327,16 +332,16 @@ ikev2_retransmit_cb(te_event_t event, void *data)
 	size_t limit = 0;
 	ssize_t len;
 
-	PTH(pthread_mutex_lock(&sa->lock));
+	VERIFY0(pthread_mutex_lock(&sa->lock));
 
 	/* XXX: what about condemned SAs */
 	if (sa->outmsgid > pkt->pkt_header.msgid || sa->last_sent == NULL) {
 		/* already acknowledged */
-		PTH(pthread_mutex_unlock(&sa->lock));
+		VERIFY0(pthread_mutex_unlock(&sa->lock));
 		ikev2_pkt_free(pkt);
 		return;
 	}
-	PTH(pthread_mutex_unlock(&sa->lock));
+	VERIFY0(pthread_mutex_unlock(&sa->lock));
 
 	config_t *cfg = config_get();
 	retry_init = cfg->cfg_retry_init;
@@ -387,7 +392,7 @@ ikev2_retransmit_check(pkt_t *pkt)
 	uint32_t msgid = pkt->pkt_header.msgid;
 	boolean_t discard = B_TRUE;
 
-	PTH(pthread_mutex_lock(&sa->lock));
+	VERIFY0(pthread_mutex_lock(&sa->lock));
 	if (sa->flags & I2SA_CONDEMNED)
 		goto done;
 
@@ -468,7 +473,7 @@ ikev2_retransmit_check(pkt_t *pkt)
 	discard = B_FALSE;
 
 done:
-	PTH(pthread_mutex_unlock(&sa->lock));
+	VERIFY0(pthread_mutex_unlock(&sa->lock));
 	return (discard);
 }
 

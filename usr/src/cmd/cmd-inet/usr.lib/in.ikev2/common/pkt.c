@@ -117,9 +117,9 @@ static pkt_walk_ret_t
 pkt_index_cb(uint8_t paytype, uint8_t resv, uint8_t *restrict ptr, size_t len,
     void *restrict cookie)
 {
-	struct index_data *data = cookie;
+	struct index_data *restrict data = cookie;
 	pkt_t *pkt = data->id_pkt;
-	
+
 	if (!pkt_add_index(pkt, paytype, ptr, len)) {
 		(void) bunyan_info(data->id_log,
 		    "Could not add index to packet",
@@ -154,29 +154,29 @@ pkt_index_cb(uint8_t paytype, uint8_t resv, uint8_t *restrict ptr, size_t len,
 			return (PKT_WALK_ERROR);
 		}
 
-		(void) memcpy(&doi, ptr, sizeof (doi));
-		doi = ntohl(doi);
+		doi = BE_IN32(ptr);
 		ptr += sizeof (uint32_t);
 		len -= sizeof (uint32_t);
 	}
 
 	(void) memcpy(&ntfy, ptr, sizeof (ntfy));
-	ptr -= sizeof (ntfy);
+	ptr += sizeof (ntfy);
 	len -= sizeof (ntfy);
 
-	/* This is a single byte, so don't need to worry about byte order */
 	if (ntfy.n_spisize > 0) {
-		if (len < ntfy.n_spisize)
+		if (len < ntfy.n_spisize) {
+			(void) bunyan_warn(data->id_log,
+			    "Notify payload SPI length overruns payload",
+			    BUNYAN_T_UINT32, "spilen", (uint32_t)ntfy.n_spisize,
+			    BUNYAN_T_UINT32, "len", (uint32_t)len,
+			    BUNYAN_T_END);
 			return (PKT_WALK_ERROR);
+		}
 
 		if (ntfy.n_spisize == sizeof (uint32_t)) {
-			uint32_t val = 0;
-
-			(void) memcpy(&val, ptr, sizeof (uint32_t));
-			spi = ntohl(val);
+			spi = BE_IN32(ptr);
 		} else if (ntfy.n_spisize == sizeof (uint64_t)) {
-			(void) memcpy(&spi, ptr, sizeof (uint64_t));
-			spi = ntohll(spi);
+			spi = BE_IN64(ptr);
 		} else {
 			(void) bunyan_warn(data->id_log,
 			    "Invalid SPI length in notify payload",
@@ -337,7 +337,7 @@ pkt_add_payload(pkt_t *pkt, uint8_t ptype, uint8_t resv, uint16_t len)
 	/* Special case for first payload */
 	if (pkt->pkt_payload_count == 0) {
 		VERIFY3U(pkt_len(pkt), ==, sizeof (ike_header_t));
-		pkt->pkt_header.next_payload = (uint8_t)ptype;
+		pkt->pkt_header.next_payload = ptype;
 		((ike_header_t *)&pkt->pkt_raw)->next_payload = ptype;
 	} else {
 		pkt_payload_t *pp =
@@ -392,9 +392,13 @@ pkt_add_prop(pkt_sa_state_t *pss, uint8_t propnum, uint8_t proto, size_t spilen,
 	prop.prop_len = htons(amt);
 	prop.prop_more = IKE_PROP_NONE;
 	prop.prop_num = propnum;
-	prop.prop_proto = (uint8_t)proto;
+	prop.prop_proto = proto;
 	prop.prop_spilen = spilen;
 	PKT_APPEND_STRUCT(pss->pss_pkt, prop);
+	/*
+	 * We've already checked there's enough room for the SPI with the
+	 * pkt_write_left() check above, so this better succeed.
+	 */
 	VERIFY(pkt_add_spi(pss->pss_pkt, spilen, spi));
 
 	pss->pss_pld->pp_len += amt;
@@ -534,7 +538,6 @@ pkt_add_notify(pkt_t *restrict pkt, uint32_t doi, uint8_t proto,
 
 		n.n1.n_doi = htonl(doi);
 		n.n1.n_protoid = proto;
-		n.n1.n_type = htons(type);
 		n.n1.n_spisize = spilen;
 		n.n1.n_type = htons(type);
 		PKT_APPEND_STRUCT(pkt, n.n1);
@@ -545,7 +548,6 @@ pkt_add_notify(pkt_t *restrict pkt, uint32_t doi, uint8_t proto,
 			return (B_FALSE);
 
 		n.n2.n_protoid = proto;
-		n.n2.n_type = htons(type);
 		n.n2.n_spisize = spilen;
 		n.n2.n_type = htons(type);
 		PKT_APPEND_STRUCT(pkt, n.n2);
@@ -575,6 +577,13 @@ void
 pkt_hdr_ntoh(ike_header_t *restrict dest,
     const ike_header_t *restrict src)
 {
+	/*
+	 * The structures need to be aligned so we can safely dereference
+	 * the fields of ike_header_t.  Since the current uses of this
+	 * are to convert between the raw payload (which itself is
+	 * 64-bit aligned in pkt_t) and the local byteorder copy in
+	 * pkt_t, they _should_ be aligned.
+	 */
 	ASSERT(IS_P2ALIGNED(dest, sizeof (uint64_t)));
 	ASSERT(IS_P2ALIGNED(src, sizeof (uint64_t)));
 	ASSERT3P(src, !=, dest);
@@ -593,6 +602,11 @@ void
 pkt_hdr_hton(ike_header_t *restrict dest,
     const ike_header_t *restrict src)
 {
+	/*
+	 * Similar to pkt_hdr_ntoh, make sure we can safely dereference
+	 * the fields of ike_header_t.  The alignmens in pkt_t should
+	 * guarantee this.
+	 */
 	ASSERT(IS_P2ALIGNED(dest, sizeof (uint64_t)));
 	ASSERT(IS_P2ALIGNED(src, sizeof (uint64_t)));
 	ASSERT3P(src, !=, dest);
@@ -639,6 +653,7 @@ pkt_payload_walk(uint8_t *restrict data, size_t len, pkt_walk_fn_t cb,
 
 		if (len < sizeof (pay)) {
 			bunyan_info(l, "Payload header is truncated",
+			    BUNYAN_T_UINT32, "paylen", (uint32_t)len,
 			    BUNYAN_T_END);
 			return (PKT_WALK_ERROR);
 		}
@@ -699,12 +714,9 @@ pay_to_idx(pkt_t *pkt, pkt_payload_t *pay)
 }
 
 pkt_payload_t *
-pkt_get_payload(pkt_t *pkt, int type, pkt_payload_t *start)
+pkt_get_payload(pkt_t *pkt, uint8_t type, pkt_payload_t *start)
 {
 	size_t idx = pay_to_idx(pkt, start);
-
-	VERIFY3S(type, >=, 0);
-	VERIFY3S(type, <, 0xff);
 
 	if (start != NULL)
 		idx++;
@@ -742,17 +754,14 @@ notify_to_idx(pkt_t *pkt, pkt_notify_t *n)
 }
 
 pkt_notify_t *
-pkt_get_notify(pkt_t *pkt, int type, pkt_notify_t *start)
+pkt_get_notify(pkt_t *pkt, uint16_t type, pkt_notify_t *start)
 {
 	size_t idx = notify_to_idx(pkt, start);
-
-	VERIFY3S(type, >=, 0);
-	VERIFY3S(type, <=, USHRT_MAX);
 
 	if (start != NULL)
 		idx++;
 
-	for (size_t i = idx; i < pkt->pkt_notify_count; i++) {
+	for (uint16_t i = idx; i < pkt->pkt_notify_count; i++) {
 		pkt_notify_t *n = pkt_notify(pkt, i);
 
 		if (n->pn_type == (uint16_t)type)
@@ -830,12 +839,11 @@ pkt_fini(void)
 	umem_cache_destroy(pkt_cache);
 }
 
-extern void put32(pkt_t *, uint32_t);
-extern void put64(pkt_t *, uint64_t);
-extern uint8_t *pkt_start(pkt_t *);
-extern size_t pkt_len(const pkt_t *);
-extern size_t pkt_write_left(const pkt_t *);
-extern size_t pkt_read_left(const pkt_t *, const uint8_t *);
-extern pkt_payload_t *pkt_payload(pkt_t *, uint16_t);
-extern pkt_notify_t *pkt_notify(pkt_t *, uint16_t);
-extern ike_payload_t *pkt_idx_to_payload(pkt_payload_t *);
+extern inline void put32(pkt_t *, uint32_t);
+extern inline void put64(pkt_t *, uint64_t);
+extern inline uint8_t *pkt_start(pkt_t *);
+extern inline size_t pkt_len(const pkt_t *);
+extern inline size_t pkt_write_left(const pkt_t *);
+extern inline pkt_payload_t *pkt_payload(pkt_t *, uint16_t);
+extern inline pkt_notify_t *pkt_notify(pkt_t *, uint16_t);
+extern inline ike_payload_t *pkt_idx_to_payload(pkt_payload_t *);

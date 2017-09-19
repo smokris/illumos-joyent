@@ -601,12 +601,11 @@ static void
 check_vendor(pkt_t *pkt)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
+	pkt_payload_t *pay = NULL;
 
-	for (uint16_t i = 0; i < pkt->pkt_payload_count; i++) {
-		pkt_payload_t *pay = pkt_payload(pkt, i);
-
-		if (pay->pp_type != IKEV2_PAYLOAD_VENDOR)
-			continue;
+	for (pay = pkt_get_payload(pkt, IKEV2_PAYLOAD_VENDOR, NULL);
+	    pay != NULL;
+	    pay = pkt_get_payload(pkt, IKEV2_PAYLOAD_VENDOR, pay)) {
 		if (pay->pp_len != sizeof (VENDOR_STR_ILLUMOS_1))
 			continue;
 

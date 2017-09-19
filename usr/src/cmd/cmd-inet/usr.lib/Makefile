@@ -22,12 +22,13 @@
 #
 # Copyright (c) 1996, 2010, Oracle and/or its affiliates. All rights reserved.
 # Copyright 2014 Garrett D'Amore <garrett@damore.org>
+# Copyright 2018, Joyent, Inc.
 #
 
 SUBDIRS=	bridged ilbd in.chargend in.daytimed \
 		in.discardd in.echod in.mpathd in.ndpd \
 		in.ripngd in.timed inetd mdnsd ncaconfd pppoe \
-		slpd vrrpd wpad
+		slpd vrrpd wpad in.ikev2d
 
 MSGSUBDIRS=	ilbd inetd ncaconfd vrrpd
 

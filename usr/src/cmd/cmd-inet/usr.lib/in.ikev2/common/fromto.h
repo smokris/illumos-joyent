@@ -23,11 +23,11 @@
 extern "C" {
 #endif
 
-ssize_t recvfromto(int, uchar_t *restrict, size_t, int,
+ssize_t recvfromto(int, uint8_t *restrict, size_t, int,
     struct sockaddr_storage *restrict, socklen_t *restrict,
     struct sockaddr_storage *restrict, socklen_t *restrict);
 
-ssize_t sendfromto(int, const uchar_t *restrict, size_t,
+ssize_t sendfromto(int, const uint8_t *restrict, size_t,
     struct sockaddr_storage *restrict, struct sockaddr_storage *restrict);
 
 #ifdef __cplusplus

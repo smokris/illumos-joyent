@@ -84,6 +84,12 @@ typedef struct auth_data_s {
 	size_t			ad_icvlen;
 } auth_data_t;
 
+/*
+ * These are sized off IKEV2_{ENCR,XF_AUTH}_MAX.  Entries are intended to be
+ * directly indexed off the respective encryption or authentication value
+ * (e.g. encr_data[IKEV2_ENCR_AES_CBC] or
+ * auth_data[IKEV2_XF_AUTH_HMAC_SHA2_256_128).
+ */
 extern encr_data_t encr_data[];
 extern auth_data_t auth_data[];
 
@@ -93,6 +99,7 @@ void pkcs11_init(void);
 void pkcs11_fini(void);
 
 CK_SESSION_HANDLE p11h(void);
+CK_SESSION_HANDLE pkcs11_new_session(void);
 void pkcs11_destroy_obj(const char *, CK_OBJECT_HANDLE_PTR, bunyan_logger_t *);
 
 size_t ikev2_auth_icv_size(ikev2_xf_encr_t, ikev2_xf_auth_t);

@@ -27,7 +27,6 @@ extern "C" {
 
 struct bunyan_logger;
 
-size_t dh_keysize(ikev2_dh_t);
 boolean_t dh_genpair(ikev2_dh_t, CK_OBJECT_HANDLE_PTR restrict,
     CK_OBJECT_HANDLE_PTR restrict, struct bunyan_logger *restrict);
 boolean_t dh_derivekey(CK_OBJECT_HANDLE, uint8_t *restrict, size_t,

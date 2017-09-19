@@ -405,14 +405,3 @@ dh_derivekey(CK_OBJECT_HANDLE privkey, uint8_t *restrict pub, size_t len,
 	}
 	return (B_TRUE);
 }
-
-size_t
-dh_keysize(ikev2_dh_t group)
-{
-	dhgroup_t *dhg = dh_get_group(group);
-
-	if (dhg == NULL)
-		return (0);
-
-	return (dhg->bits / 8);
-}

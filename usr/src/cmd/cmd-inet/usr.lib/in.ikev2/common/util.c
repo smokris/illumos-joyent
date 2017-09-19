@@ -26,7 +26,7 @@
 struct strbuf_s {
 	char	symstr[128];
 	char	portstr[6];	/* Size of ushort_t as string + NUL */
-	char	afstr[6];	/* ushort_t */
+	char	afstr[6];	/* Same as portstr */
 	char	evtstr[12];	/* Size of int (enum) + NUL */
 };
 
@@ -67,13 +67,13 @@ getbuf(void)
 {
 	struct strbuf_s *buf = NULL;
 
-	PTH(thr_keycreate_once(&strbuf_key, buf_fini));
-	PTH(thr_getspecific(strbuf_key, (void **)&buf));
+	VERIFY0(thr_keycreate_once(&strbuf_key, buf_fini));
+	VERIFY0(thr_getspecific(strbuf_key, (void **)&buf));
 	if (buf == NULL) {
 		buf = umem_alloc(sizeof (*buf), UMEM_DEFAULT);
 		if (buf == NULL)
 			NOMEM;
-		PTH(thr_setspecific(strbuf_key, buf));
+		VERIFY0(thr_setspecific(strbuf_key, buf));
 	}
 	return (buf);
 }
@@ -147,23 +147,23 @@ port_source_str(ushort_t src)
 #undef STR
 
 /* inline parking lot */
-extern uint32_t ss_port(const struct sockaddr_storage *);
-extern const void *ss_addr(const struct sockaddr_storage *);
-extern int ss_bunyan(const struct sockaddr_storage *);
+extern inline uint32_t ss_port(const struct sockaddr_storage *);
+extern inline const void *ss_addr(const struct sockaddr_storage *);
+extern inline int ss_bunyan(const struct sockaddr_storage *);
 
-extern void ilist_create(ilist_t *, size_t, size_t);
-extern void ilist_destroy(ilist_t *);
-extern void ilist_insert_after(ilist_t *, void *, void *);
-extern void ilist_insert_before(ilist_t *, void *, void *);
-extern void ilist_insert_head(ilist_t *, void *);
-extern void ilist_insert_tail(ilist_t *, void *);
-extern void ilist_remove(ilist_t *, void *);
-extern void *ilist_remove_head(ilist_t *);
-extern void *ilist_remove_tail(ilist_t *);
-extern void *ilist_head(ilist_t *);
-extern void *ilist_tail(ilist_t *);
-extern void *ilist_next(ilist_t *, void *);
-extern void *ilist_prev(ilist_t *, void *);
-extern void ilist_move_tail(ilist_t *, ilist_t *);
-extern int ilist_is_empty(ilist_t *);
-extern size_t ilist_size(ilist_t *);
+extern inline void ilist_create(ilist_t *, size_t, size_t);
+extern inline void ilist_destroy(ilist_t *);
+extern inline void ilist_insert_after(ilist_t *, void *, void *);
+extern inline void ilist_insert_before(ilist_t *, void *, void *);
+extern inline void ilist_insert_head(ilist_t *, void *);
+extern inline void ilist_insert_tail(ilist_t *, void *);
+extern inline void ilist_remove(ilist_t *, void *);
+extern inline void *ilist_remove_head(ilist_t *);
+extern inline void *ilist_remove_tail(ilist_t *);
+extern inline void *ilist_head(ilist_t *);
+extern inline void *ilist_tail(ilist_t *);
+extern inline void *ilist_next(ilist_t *, void *);
+extern inline void *ilist_prev(ilist_t *, void *);
+extern inline void ilist_move_tail(ilist_t *, ilist_t *);
+extern inline int ilist_is_empty(ilist_t *);
+extern inline size_t ilist_size(ilist_t *);

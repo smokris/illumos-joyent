@@ -210,7 +210,7 @@ ikev2_sa_alloc(boolean_t initiator,
 		return (NULL);
 
 	/* Keep anyone else out while we initialize */
-	PTH(pthread_mutex_lock(&i2sa->lock));
+	VERIFY0(pthread_mutex_lock(&i2sa->lock));
 
 	ASSERT((init_pkt == NULL) ||
 	    (init_pkt->hdr.exch_type == IKEV2_EXCHANGE_IKE_SA_INIT));
@@ -257,7 +257,8 @@ ikev2_sa_alloc(boolean_t initiator,
 
 	/* 0x + 64bit hex value + NUL */
 	char buf[19] = { 0 };
-	(void) snprintf(buf, sizeof (buf), "0x%016llX", I2SA_LOCAL_SPI(i2sa));
+	(void) snprintf(buf, sizeof (buf), "0x%016" PRIX64,
+	    I2SA_LOCAL_SPI(i2sa));
 
 /* XXX: Remove once OS-6341 is fixed */
 #ifdef BUNYAN_FIXED
@@ -318,7 +319,7 @@ ikev2_sa_alloc(boolean_t initiator,
 		goto fail;
 	}
 
-	PTH(pthread_mutex_unlock(&i2sa->lock));
+	VERIFY0(pthread_mutex_unlock(&i2sa->lock));
 
 	(void) bunyan_debug(i2sa->i2sa_log, "New larval IKE SA created",
 	    BUNYAN_T_POINTER, "sa", i2sa,
@@ -327,7 +328,7 @@ ikev2_sa_alloc(boolean_t initiator,
 	return (i2sa);
 
 fail:
-	PTH(pthread_mutex_unlock(&i2sa->lock));
+	VERIFY0(pthread_mutex_unlock(&i2sa->lock));
 	i2sa_unlink(i2sa);
 
 	while (i2sa->refcnt > 0)
@@ -390,7 +391,7 @@ ikev2_sa_condemn(ikev2_sa_t *i2sa)
 
 	i2sa_unlink(i2sa);
 
-	PTH(pthread_mutex_lock(&i2sa->lock));
+	VERIFY0(pthread_mutex_lock(&i2sa->lock));
 
 	(void) bunyan_info(i2sa->i2sa_log, "Condemning IKE SA", BUNYAN_T_END);
 
@@ -423,7 +424,7 @@ ikev2_sa_condemn(ikev2_sa_t *i2sa)
 	i2sa->last_sent = NULL;
 	i2sa->last_recvd = NULL;
 
-	PTH(pthread_mutex_unlock(&i2sa->lock));
+	VERIFY0(pthread_mutex_unlock(&i2sa->lock));
 
 	I2SA_REFRELE(i2sa);
 	/* XXX: should we do anything else here? */
@@ -444,7 +445,7 @@ ikev2_sa_free(ikev2_sa_t *i2sa)
 	VERIFY3P(i2sa->last_resp_sent, ==, NULL);
 	VERIFY3P(i2sa->last_sent, ==, NULL);
 	VERIFY3P(i2sa->last_recvd, ==, NULL);
-	
+
 	if (i2sa->i2sa_rule != NULL)
 		CONFIG_REFRELE(i2sa->i2sa_rule->rule_config);
 
@@ -532,7 +533,7 @@ ikev2_sa_set_hashsize(uint_t newamt)
 			i2sa_bucket_t *b = &hash[i][j];
 
 			ilist_create(&b->chain, sizeof (ikev2_sa_t), offset);
-			PTH(mutex_init(&b->lock, LOCK_ERRORCHECK, NULL));
+			VERIFY0(mutex_init(&b->lock, LOCK_ERRORCHECK, NULL));
 		}
 	}
 
@@ -567,8 +568,8 @@ ikev2_sa_set_hashsize(uint_t newamt)
 				/* Remove ref from old list */
 				I2SA_REFRELE(i2sa);
 			}
-			
-			PTH(mutex_destroy(&old[hashtbl][i].lock));
+
+			VERIFY0(mutex_destroy(&old[hashtbl][i].lock));
 			VERIFY(ilist_is_empty(oldlist));
 		}
 	}
@@ -607,31 +608,32 @@ nomem:
  * Set the remote SPI of an IKEv2 SA and add to the rhash
  */
 void
-ikev2_sa_set_remote_spi(ikev2_sa_t *i2sa, uint64_t r_spi)
+ikev2_sa_set_remote_spi(ikev2_sa_t *i2sa, uint64_t remote_spi)
 {
 	/* Never a valid SPI value */
-	VERIFY3U(r_spi, !=, 0);
+	VERIFY3U(remote_spi, !=, 0);
 
 	/*
 	 * A bit confusing at times, but if we are the initiator of the
-	 * SA, the responder (ikev2_sa_t->r_spi) is the remote spi,
+	 * SA, the responder (ikev2_sa_t->remote_spi) is the remote spi,
 	 * otherwise we are the responder, so the remote spi is the
 	 * initiator (ikev2_sa_t->i_spi)
 	 */
 	if (i2sa->flags & I2SA_INITIATOR) {
 		/* Should not be set already */
 		VERIFY3U(i2sa->r_spi, ==, 0);
-		i2sa->r_spi = r_spi;
+		i2sa->r_spi = remote_spi;
 	} else {
 		/* Should not be set already */
 		VERIFY3U(i2sa->i_spi, ==, 0);
-		i2sa->i_spi = r_spi;
+		i2sa->i_spi = remote_spi;
 	}
 
 	VERIFY(i2sa_add_to_hash(I2SA_RHASH, i2sa));
 	char buf[19];	/* 0x + 64bit hex value + NUL */
 
-	(void) snprintf(buf, sizeof (buf), "0x%016llX", I2SA_REMOTE_SPI(i2sa));
+	(void) snprintf(buf, sizeof (buf), "0x%016" PRIX64,
+	    I2SA_REMOTE_SPI(i2sa));
 	(void) bunyan_key_add(i2sa->i2sa_log,
 	    BUNYAN_T_STRING, I2SA_KEY_RSPI, buf, BUNYAN_T_END);
 
@@ -883,7 +885,7 @@ i2sa_ctor(void *buf, void *dummy, int flags)
 	(void) memset(i2sa, 0, sizeof (*i2sa));
 	i2sa->msgwin = 1;
 
-	PTH(pthread_mutex_init(&i2sa->lock, NULL));
+	VERIFY0(pthread_mutex_init(&i2sa->lock, NULL));
 	list_link_init(&i2sa->i2sa_wnode);
 	list_link_init(&i2sa->i2sa_lspi_node);
 	list_link_init(&i2sa->i2sa_rspi_node);
@@ -898,7 +900,7 @@ i2sa_dtor(void *buf, void *dummy)
 
 	ikev2_sa_t *i2sa = (ikev2_sa_t *)buf;
 
-	PTH(pthread_mutex_destroy(&i2sa->lock));
+	VERIFY0(pthread_mutex_destroy(&i2sa->lock));
 }
 
 static int

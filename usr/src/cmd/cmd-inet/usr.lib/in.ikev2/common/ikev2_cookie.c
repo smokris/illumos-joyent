@@ -38,10 +38,56 @@
 size_t ikev2_cookie_threshold = 128;
 
 /*
+ * For cookies, we follow the guidance in RFC7296 2.6 and generate cookies
+ * such that:
+ *
+ *	Cookie = <VersionIDofSecret> | Hash(Ni | IPi | SPIi | <secret>)
+ *
+ * where <secret> is a random value of length COOKE_SECRET_LEN bytes,
+ * hash is the hash algorithm designated by COOKIE_MECH (currently CKM_SHA_1),
+ * and <VersionIDofSecret> is a monotonically increasing 8-bit unsigned
+ * value that corresponds to a given value of <secret>.  Note that the remote
+ * peer treats the cookie value as opaque and should not attempt to divine
+ * any structure in the value -- it is merely meant as a reasonably hard to
+ * predict value the remote peer must include in an IKE_SA_INIT exchange
+ * (when we request it) to prevent a remote peer from being able to generate
+ * large amounts of larval (half-open) IKE SAs.
+ *
+ * Whenever cookies are enabled, we arm cookie_timer to fire every
+ * COOKIE_SECRET_LIFETIME seconds to trigger the generation of a new secret
+ * and increment of the version.  When the cookie_timer fires, it generates
+ * an event on the event port used by the main thread which calls
+ * cookie_update_secret() to create the new secret and increment the version
+ * number.
+ *
+ * This rotation is done to minimize the ability of a remote attacker from
+ * being able to determine the value of secret.  When we generate a new
+ * secret, we do retain the previous version and allow the old secret to
+ * be used for up to COOKIE_GRACE seconds after a new cookie is created.  This
+ * should minimize excessive IKE_SA_INIT exchanges if they happen to occur
+ * right before a new secret is generated, while hopefully having a minimal
+ * impact on the effectiveness of the cookies themselves.
+ *
  * The cookie secrets are not used in any way in deriving keying material
- * and only serves to make our cookie value reasonable unpredictable.
- * As such, we don't need to worry about values lingering around in memory
- * memory.
+ * and only serve to make the prediction of the cookie value by a remote
+ * attacker relatively expensive.  As such, we are not concerned about old
+ * secret values lingering around in memory after they expire.
+ *
+ * While it is possible the version value could wrap around (being only 8-bits),
+ * this is also not a concern as we generally only are concerned if the returned
+ * cookie value has the same version as ours, or for COOKIE_GRACE seconds after
+ * a new secret is generated, if the returned cookie version is the previous
+ * version.  With the currently defined values, if cookies are continuously
+ * enabled, it will take approximately 4.25 hours to wrap around.  In the worst
+ * (and largely absurd) case, if a remote peer send back a cookie derived using
+ * an 4.25 hour old secret that was derived using the same version (having
+ * wrapped-around), the cookie check will merely fail and the remote peer will
+ * need to resend its IKE_SA_INIT request with a current cookie.  This does
+ * mean that we impose a maximum latency of
+ * COOKIE_SECRET_LIFETIME + COOKIE_GRACE (currently 65) seconds on packets,
+ * regardless of configured IKE timeouts.  Since we currently do not currently
+ * have networks that span beyond Earth, this seems like a reasonable limitation
+ * for the time being.
  */
 static struct secret_s {
 	uint8_t s_val[COOKIE_SECRET_LEN];
@@ -61,7 +107,7 @@ static void cookie_update_secret(void);
 void
 ikev2_cookie_enable(void)
 {
-	PTH(pthread_rwlock_wrlock(&lock));
+	VERIFY0(pthread_rwlock_wrlock(&lock));
 	if (enabled)
 		goto done;
 
@@ -83,20 +129,20 @@ ikev2_cookie_enable(void)
 	cookie_update_secret();
 
 done:
-	PTH(pthread_rwlock_unlock(&lock));	
+	VERIFY0(pthread_rwlock_unlock(&lock));
 }
 
 void
 ikev2_cookie_disable(void)
 {
 	struct itimerspec it = { 0 };
-	PTH(pthread_rwlock_wrlock(&lock));
+	VERIFY0(pthread_rwlock_wrlock(&lock));
 	enabled = B_FALSE;
 	if (timer_settime(cookie_timer, 0, &it, NULL) != 0) {
 		STDERR(fatal, log, "timer_settime() failed");
 		exit(EXIT_FAILURE);
 	}
-	PTH(pthread_rwlock_wrlock(&lock));
+	VERIFY0(pthread_rwlock_wrlock(&lock));
 }
 
 static boolean_t
@@ -217,7 +263,7 @@ ikev2_cookie_check(pkt_t *restrict pkt,
 	pkt_payload_t *nonce = pkt_get_payload(pkt, IKEV2_PAYLOAD_NONCE, NULL);
 	boolean_t ok = B_TRUE;
 
-	PTH(pthread_rwlock_rdlock(&lock));
+	VERIFY0(pthread_rwlock_rdlock(&lock));
 	if (!enabled)
 		goto done;
 
@@ -242,7 +288,7 @@ ikev2_cookie_check(pkt_t *restrict pkt,
 	    pkt->pkt_raw[0], cookie->pn_ptr, cookie->pn_len);
 
 done:
-	PTH(pthread_rwlock_unlock(&lock));
+	VERIFY0(pthread_rwlock_unlock(&lock));
 	return (ok);
 }
 
@@ -251,14 +297,14 @@ cookie_update_secret(void)
 {
 	struct itimerspec it = { 0 };
 
-	PTH(pthread_rwlock_wrlock(&lock));
+	VERIFY0(pthread_rwlock_wrlock(&lock));
 
 	if (SECRET_BIRTH(version) != 0)
 		version++;
 	random_low(SECRET(version), COOKIE_SECRET_LEN);
 	SECRET_BIRTH(version) = gethrtime();
 
-	PTH(pthread_rwlock_unlock(&lock));
+	VERIFY0(pthread_rwlock_unlock(&lock));
 
 	it.it_value.tv_sec = NSEC2SEC(COOKIE_SECRET_LIFETIME);
 	it.it_value.tv_nsec = COOKIE_SECRET_LIFETIME % NANOSEC;
@@ -277,7 +323,7 @@ ikev2_cookie_init(void)
 
 	pn.portnfy_port = port;
 	pn.portnfy_user = cookie_update_secret;
-	se.sigev_notify = SIGEV_PORT;  
+	se.sigev_notify = SIGEV_PORT;
 	se.sigev_value.sival_ptr = &pn;
 
 	if (timer_create(CLOCK_REALTIME, &se, &cookie_timer) != 0) {

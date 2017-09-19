@@ -27,30 +27,88 @@
  * Copyright (c) 2017, Joyent, Inc.
  */
 
-#include <syslog.h>
-#include <assert.h>
-#include <string.h>
+#include <errno.h>
 #include <ipsec_util.h>
 #include <locale.h>
-#include <security/cryptoki.h>
-#include <pthread.h>
-#include <sys/debug.h>
 #include <note.h>
+#include <security/cryptoki.h>
 #include <stdarg.h>
-#include "pkcs11.h"
+#include <string.h>
+#include <synch.h>
+#include <syslog.h>
+#include <sys/debug.h>
 #include "defs.h"
+#include "pkcs11.h"
+#include "worker.h"
 
 /*
- * per usr/src/lib/pkcs11/libpkcs11/common/metaGlobal.h, the metaslot
+ * This largely handles PKCS#11 session handles as well as providing information
+ * and mapping from PKCS#11 mechanisms to their IKE equivalents.
+ *
+ * PKCS#11 session handles are somewhat quirky.  The documentation isn't
+ * explicit, but strongly implies that a given session handle
+ * (CK_SESSION_HANDLE) can only perform one crypto operation at a time.  As
+ * such, we create a PKCS#11 session handle for each worker thread (in fact
+ * worker.c`worker_init_one() guarantees that each worker thread has it's own
+ * session handle at worker thread creation.  PKCS#11 states (in the
+ * PKCS#11 Usage Guide) that all objects created on a given token are visible
+ * to any other session handles within the same process.  It also states that
+ * the PKCS#11 library is responsible for doing any necessary locking when
+ * a PKCS#11 object is manipulated.
+ *
+ * One quirk of how PKCS#11 handles session, is that when a session handle
+ * is destroyed, any non-presistent objects created by that session handle
+ * are destroyed (though as stated above, the PKCS#11 library takes care
+ * so that if one session is using an object in a PKCS#11 operation while
+ * another session tries to the same object while it's in use, the destruction
+ * will not intefere with the in-progress operation in the other session).
+ * Because the PKCS#11 objects in.ikev2d creates are associated with an
+ * IKE SA, the lifetime of the objects is tied to the lifetime of the IKE SA
+ * and not necessairly that of the worker thread.  As such, any session
+ * handles that are created need to be retained for the lifetime of the
+ * in.ikev2d process.  To accomplish this, we maintain a 'free list' of
+ * session handles.  Any worker threads that exit will have their
+ * session handles placed on the free list, and any requests for a new
+ * session handle will first try to grab a session handle from the
+ * free list before attempting to create a new session.
+ *
+ * If in the future, we wish to allow the use of multiple tokens, this
+ * will likely need to be reworked a bit.  Our pkcs11_softtoken allows
+ * effectively unlimited sessions (bounded by memory), but a hardware
+ * token may have a limit on the number of sessions that can be created,
+ * which might require a more complicated method of managing PKCS#11
+ * session handles.
+ */
+
+/*
+ * Per usr/src/lib/pkcs11/libpkcs11/common/metaGlobal.h, the metaslot
  * is always slot 0
  */
 #define	METASLOT_ID	(0)
 
+/*
+ * Unfortunately, the PKCS#11 header files don't define constants for the
+ * string fields in the CK_SLOT_INFO and CK_TOKEN_INFO structures, so
+ * we define them here based on their definitions in <security/pkcs11t.h>
+ */
+
+/* Sizes of CK_SLOT_INFO string fields + NUL */
+#define	PKCS11_MANUF_LEN	(33)
+#define	PKCS11_DESC_LEN		(65)
+
+/* Sizes of CK_TOKEN_INFO string fields + NUL */
+#define	PKCS11_LABEL_LEN	(33)
+#define	PKCS11_MODEL_LEN	(17)
+#define	PKCS11_SERIAL_LEN	(17)
+#define	PKCS11_UTCTIME_LEN	(17)
+
+/* pkcs11_init() sets this during startup and is never altered afterwards */
 CK_INFO			pkcs11_info = { 0 };
-static pthread_key_t	pkcs11_key = PTHREAD_ONCE_KEY_NP;
-static CK_SESSION_HANDLE	*handles;
-static size_t			nhandles;
-static size_t			handlesz;
+
+static mutex_t			pkcs11_handle_lock;
+static CK_SESSION_HANDLE	*pkcs11_handles;
+static size_t			pkcs11_nhandles;
+static size_t			pkcs11_handlesz;
 
 #define	PKCS11_FUNC		"func"
 #define	PKCS11_RC		"errnum"
@@ -98,7 +156,7 @@ encr_data_t encr_data[IKEV2_ENCR_MAX + 1] = {
 	{ 0, "CAMELLIA_CCM_16", MODE_CCM, 128, 256, 64, 0, 16, 16, 16, 3 },
 };
 
-auth_data_t auth_data[] = {
+auth_data_t auth_data[IKEV2_XF_AUTH_MAX + 1] = {
 	{ 0, "NONE", 0, 0, 0 },
 	{ CKM_MD5_HMAC, "HMAC_MD5_96", 16, 16, 12 },
 	{ CKM_SHA_1_HMAC, "HMAC_SHA1_96", 20, 20, 12 },
@@ -140,33 +198,34 @@ pkcs11_init(void)
 		NULL_PTR		/* reserved */
 	};
 
-	PTH(pthread_key_create_once_np(&pkcs11_key, pkcs11_free));
+	VERIFY0(mutex_init(&pkcs11_handle_lock, USYNC_THREAD|LOCK_ERRORCHECK,
+	    NULL));
 
 	if ((rv = C_Initialize(&args)) != CKR_OK) {
 		PKCS11ERR(fatal, log, "C_Initialize", rv);
-		exit(1);
+		exit(EXIT_FAILURE);
 	}
 
 	if ((rv = C_GetInfo(&pkcs11_info)) != CKR_OK) {
 		PKCS11ERR(fatal, log, "C_Info", rv);
-		exit(1);
+		exit(EXIT_FAILURE);
 	}
 
 	if ((rv = C_GetSlotList(CK_FALSE, NULL, &nslot)) != CKR_OK) {
 		PKCS11ERR(fatal, log, "C_GetSlotList", rv);
-		exit(1);
+		exit(EXIT_FAILURE);
 	}
 
 	CK_SLOT_ID slots[nslot];
 
 	if ((rv = C_GetSlotList(CK_FALSE, slots, &nslot)) != CKR_OK) {
 		PKCS11ERR(fatal, log, "C_GetSlotList", rv);
-		exit(1);
+		exit(EXIT_FAILURE);
 	}
 
 	{
-		char manf[33];
-		char libdesc[33];
+		char manf[PKCS11_MANUF_LEN];
+		char libdesc[PKCS11_DESC_LEN];
 
 		fmtstr(manf, sizeof (manf), pkcs11_info.manufacturerID,
 		    sizeof (pkcs11_info.manufacturerID));
@@ -199,7 +258,7 @@ static void
 log_slotinfo(CK_SLOT_ID slot)
 {
 	CK_SLOT_INFO info = { 0 };
-	char manuf[33]; /* sizeof info.manufacturerID NUL */
+	char manuf[PKCS11_MANUF_LEN];
 	CK_RV rv;
 
 	rv = C_GetSlotInfo(slot, &info);
@@ -209,7 +268,7 @@ log_slotinfo(CK_SLOT_ID slot)
 	}
 
 	{
-		char desc[65];	/* sizeof info.description + NUL */
+		char desc[PKCS11_DESC_LEN];
 		fmtstr(desc, sizeof (desc), info.slotDescription,
 		    sizeof (info.slotDescription));
 		fmtstr(manuf, sizeof (manuf), info.manufacturerID,
@@ -244,10 +303,10 @@ log_slotinfo(CK_SLOT_ID slot)
 	if (rv != CKR_OK)
 		PKCS11ERR(error, log, "C_GetTokenInfo", rv);
 
-	char label[33];		/* sizeof tinfo.label + NUL */
-	char model[17];		/* sizeof tinfo.model + NUL */
-	char serial[17];	/* sizeof tinfo.serialNumber + NUL */
-	char utctime[17];	/* sizeof tinfo.utsTime + NUL */
+	char label[PKCS11_LABEL_LEN];
+	char model[PKCS11_MODEL_LEN];
+	char serial[PKCS11_SERIAL_LEN];
+	char utctime[PKCS11_UTCTIME_LEN];
 
 	fmtstr(manuf, sizeof (manuf), tinfo.manufacturerID,
 	    sizeof (tinfo.manufacturerID));
@@ -297,15 +356,15 @@ pkcs11_fini(void)
 {
 	CK_RV rv;
 
-	for (size_t i = 0; i < nhandles; i++) {
-		rv = C_CloseSession(handles[i]);
+	for (size_t i = 0; i < pkcs11_nhandles; i++) {
+		rv = C_CloseSession(pkcs11_handles[i]);
 		if (rv != CKR_OK)
 			PKCS11ERR(error, log, "C_CloseSession", rv);
 	}
-	free(handles);
-	handles = NULL;
-	nhandles = 0;
-	handlesz = 0;
+	free(pkcs11_handles);
+	pkcs11_handles = NULL;
+	pkcs11_nhandles = 0;
+	pkcs11_handlesz = 0;
 
 	rv = C_Finalize(NULL_PTR);
 	if (rv != CKR_OK)
@@ -315,6 +374,11 @@ pkcs11_fini(void)
 size_t
 ikev2_auth_icv_size(ikev2_xf_encr_t encr, ikev2_xf_auth_t auth)
 {
+	VERIFY3S(encr, >=, IKEV2_ENCR_NONE);
+	VERIFY3S(encr, <=, IKEV2_ENCR_MAX);
+	VERIFY3S(auth, >=, IKEV2_XF_AUTH_NONE);
+	VERIFY3S(auth, <=, IKEV2_XF_AUTH_MAX);
+
 	if (encr_data[encr].ed_icvlen != 0)
 		return (encr_data[encr].ed_icvlen);
 	return (auth_data[auth].ad_icvlen);
@@ -351,8 +415,8 @@ pkcs11_callback_handler(CK_SESSION_HANDLE session, CK_NOTIFICATION surrender,
 }
 
 #define	CHUNK_SZ (8)
-static void
-pkcs11_free(void *arg)
+void
+pkcs11_session_free(void *arg)
 {
 	CK_SESSION_HANDLE h = (CK_SESSION_HANDLE)arg;
 
@@ -369,49 +433,57 @@ pkcs11_free(void *arg)
 	 * 'handles', things are likely messed up enough we'll probably
 	 * end up restarting things anyway.
 	 */
-	if (nhandles + 1 > handlesz) {
+	mutex_enter(&pkcs11_handle_lock);
+	if (pkcs11_nhandles + 1 > pkcs11_handlesz) {
 		CK_SESSION_HANDLE *nh = NULL;
-		size_t newamt = handlesz + 8;
-		size_t newsz = newamt * sizeof (CK_SESSION_HANDLE);
+		size_t newamt = pkcs11_handlesz + CHUNK_SZ;
 
-		if (newsz < newamt || newsz < sizeof (CK_SESSION_HANDLE))
+		nh = reallocarray(pkcs11_handles, newamt,
+		    sizeof (CK_SESSION_HANDLE));
+		if (nh == NULL) {
+			STDERR(error, log,
+			    "reallocarray failed; PKCS#11 session handles"
+			    "will leak");
+			mutex_exit(&pkcs11_handle_lock);
 			return;
+		}
 
-		nh = realloc(handles, newsz);
-		if (nh == NULL)
-			return;
-
-		handles = nh;
-		handlesz = newamt;
+		pkcs11_handles = nh;
+		pkcs11_handlesz = newamt;
 	}
 
-	handles[nhandles++] = h;
+	pkcs11_handles[pkcs11_nhandles++] = h;
+	mutex_exit(&pkcs11_handle_lock);
 }
 
 CK_SESSION_HANDLE
 p11h(void)
 {
-	CK_SESSION_HANDLE h =
-	    (CK_SESSION_HANDLE)pthread_getspecific(pkcs11_key);
+	return (worker->w_p11);
+}
+
+CK_SESSION_HANDLE
+pkcs11_new_session(void)
+{
+	CK_SESSION_HANDLE h;
 	CK_RV ret;
 
-	if (h != CK_INVALID_HANDLE)
+	mutex_enter(&pkcs11_handle_lock);
+	if (pkcs11_nhandles > 0) {
+		h = pkcs11_handles[--pkcs11_nhandles];
+		mutex_exit(&pkcs11_handle_lock);
 		return (h);
-
-	if (nhandles > 0) {
-		h = handles[--nhandles];
-		goto done;
 	}
+	mutex_exit(&pkcs11_handle_lock);
 
 	ret = C_OpenSession(METASLOT_ID, CKF_SERIAL_SESSION, NULL,
 	    pkcs11_callback_handler, &h);
+
 	if (ret != CKR_OK) {
 		PKCS11ERR(error, log, "C_OpenSession", ret);
 		return (CK_INVALID_HANDLE);
 	}
 
-done:
-	PTH(pthread_setspecific(pkcs11_key, (void *)h));
 	return (h);
 }
 

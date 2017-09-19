@@ -101,9 +101,9 @@ random_low(void *buf, size_t nbytes)
 	}
 }
 
-extern uint32_t random_high_32(void);
-extern uint16_t random_high_16(void);
-extern uint8_t random_high_8(void);
-extern uint32_t random_low_32(void);
-extern uint16_t random_low_16(void);
-extern uint8_t random_low_8(void);
+extern inline uint32_t random_high_32(void);
+extern inline uint16_t random_high_16(void);
+extern inline uint8_t random_high_8(void);
+extern inline uint32_t random_low_32(void);
+extern inline uint16_t random_low_16(void);
+extern inline uint8_t random_low_8(void);

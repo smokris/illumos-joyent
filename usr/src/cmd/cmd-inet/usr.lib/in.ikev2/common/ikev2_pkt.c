@@ -53,7 +53,7 @@ ikev2_pkt_new_exchange(ikev2_sa_t *i2sa, ikev2_exch_t exch_type)
 	uint32_t msgid = 0;
 	uint8_t flags = 0;
 
-	PTH(pthread_mutex_lock(&i2sa->lock));
+	VERIFY0(pthread_mutex_lock(&i2sa->lock));
 	if (exch_type != IKEV2_EXCH_IKE_SA_INIT)
 		msgid = i2sa->outmsgid++;
 
@@ -67,11 +67,11 @@ ikev2_pkt_new_exchange(ikev2_sa_t *i2sa, ikev2_exch_t exch_type)
 
 	if (pkt == NULL) {
 		i2sa->outmsgid--;
-		PTH(pthread_mutex_unlock(&i2sa->lock));
+		VERIFY0(pthread_mutex_unlock(&i2sa->lock));
 		return (NULL);
 	}
 
-	PTH(pthread_mutex_unlock(&i2sa->lock));
+	VERIFY0(pthread_mutex_unlock(&i2sa->lock));
 
 	pkt->pkt_header.flags = IKEV2_FLAG_INITIATOR;
 	pkt->pkt_sa = i2sa;
@@ -951,7 +951,7 @@ ikev2_pkt_encryptdecrypt(pkt_t *pkt, boolean_t encrypt)
 			return (B_FALSE);
 		}
 	}
- 
+
 	mech.mechanism = encr_data[sa->encr].ed_p11id;
 	switch (mode) {
 	case MODE_NONE:

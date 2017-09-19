@@ -58,6 +58,15 @@ typedef struct pkt_payload {
 	uint16_t	pp_len;		/* Excludes payload header */
 	uint8_t		pp_type;
 } pkt_payload_t;
+/*
+ * All of the documented exchanges in RFC7296 use less than 16 payloads
+ * in any given packet of an exchange.  However certain payloads (CERT,
+ * CERTREQ, N, and V) can appear an arbitrary number of times in a packet.
+ * Typically this would be if a large number of certificates are being
+ * sent or requested in an exchange.  The value of 16 was chosen so
+ * that most of the time, we won't need to use pkt_payload_extra to
+ * hold additional indicies, and is a nice power of two.
+ */
 #define	PKT_PAYLOAD_NUM	(16)	/* usually don't need more than this */
 
 typedef struct pkt_notify {
@@ -68,9 +77,25 @@ typedef struct pkt_notify {
 	uint8_t		pn_proto;
 	uint64_t	pn_spi;
 } pkt_notify_t;
+/*
+ * Similar to PKT_PAYLOAD_NUM, we choose a power of two that should be
+ * larger than the typical number of notification payloads that would
+ * appear in a packet of any given exchange.
+ */
 #define	PKT_NOTIFY_NUM	(8)
 
-#define	MAX_PACKET_SIZE	(8192)	/* largest datagram we accept */
+/*
+ * RFC7296 Section 2 states that an implementation MUST accept
+ * payloads up to 1280 octects long, and SHOULD be able to send,
+ * receive, and support messages up to 3000 octets long.  We elect to
+ * round this up to the next power of two (8192).  Similar to the
+ * rational for the sizing of pkt_t.pkt_payloads and pkt_t.pkt_notify,
+ * unless a large number of certificates or certificate requests are included
+ * this should be more than enough, especially if the recommendation in RFC7296
+ * of using "Hash and URL" formats for the CERT and CERTREQ payloads is
+ * followed (instead of including the certificates and/or certificate chains).
+ */
+#define	MAX_PACKET_SIZE	(8192)
 struct pkt_s {
 				/* refheld */
 	struct ikev2_sa_s	*pkt_sa;
@@ -126,30 +151,22 @@ pkt_len(const pkt_t *pkt)
 	const uint8_t *start = (const uint8_t *)&pkt->pkt_raw;
 	size_t len = (size_t)(pkt->pkt_ptr - start);
 
-	ASSERT3P(pkt->pkt_ptr, >=, start);
-	ASSERT3U(len, <=, MAX_PACKET_SIZE);
+	VERIFY3P(pkt->pkt_ptr, >=, start);
+	VERIFY3U(len, <=, MAX_PACKET_SIZE);
 	return ((size_t)(pkt->pkt_ptr - start));
 }
 
 inline size_t
 pkt_write_left(const pkt_t *pkt)
 {
+	size_t len = pkt_len(pkt);
 	return (MAX_PACKET_SIZE - pkt_len(pkt));
-}
-
-inline size_t
-pkt_read_left(const pkt_t *pkt, const uint8_t *ptr)
-{
-	const uint8_t *start = (const uint8_t *)&pkt->pkt_raw;
-	ASSERT3P(ptr, >=, start);
-	ASSERT3P(ptr, <=, pkt->pkt_ptr);
-	return ((size_t)(pkt->pkt_ptr - ptr));
 }
 
 inline pkt_payload_t *
 pkt_payload(pkt_t *pkt, uint16_t idx)
 {
-	ASSERT3U(idx, <, pkt->pkt_payload_count);
+	VERIFY3U(idx, <, pkt->pkt_payload_count);
 	if (idx < PKT_PAYLOAD_NUM)
 		return (&pkt->pkt_payloads[idx]);
 	return (pkt->pkt_payload_extra + (idx - PKT_PAYLOAD_NUM));
@@ -158,6 +175,15 @@ pkt_payload(pkt_t *pkt, uint16_t idx)
 inline ike_payload_t *
 pkt_idx_to_payload(pkt_payload_t *idxp)
 {
+	VERIFY3P(idxp->pp_ptr, !=, NULL);
+
+	/*
+	 * This _always_ points to the first byte after the ISAKMP/IKEV2
+	 * payload header (empty payloads will have pp_len set to 0.
+	 * ike_payload_t is defined as having byte alignment, so
+	 * we can always backup up from pp_ptr to get to the payload
+	 * header.
+	 */
 	ike_payload_t *pay = (ike_payload_t *)idxp->pp_ptr;
 	return (pay - 1);
 }
@@ -165,7 +191,7 @@ pkt_idx_to_payload(pkt_payload_t *idxp)
 inline pkt_notify_t *
 pkt_notify(pkt_t *pkt, uint16_t idx)
 {
-	ASSERT3U(idx, <, pkt->pkt_notify_count);
+	VERIFY3U(idx, <, pkt->pkt_notify_count);
 	if (idx < PKT_NOTIFY_NUM)
 		return (&pkt->pkt_notify[idx]);
 	return (pkt->pkt_notify_extra + (idx - PKT_NOTIFY_NUM));
@@ -211,8 +237,8 @@ void pkt_init(void);
 void pkt_fini(void);
 void pkt_free(pkt_t *);
 
-pkt_payload_t *pkt_get_payload(pkt_t *, int, pkt_payload_t *);
-pkt_notify_t *pkt_get_notify(pkt_t *, int, pkt_notify_t *);
+pkt_payload_t *pkt_get_payload(pkt_t *, uint8_t, pkt_payload_t *);
+pkt_notify_t *pkt_get_notify(pkt_t *, uint16_t, pkt_notify_t *);
 
 #ifdef __cplusplus
 }

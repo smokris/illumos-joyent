@@ -10,21 +10,25 @@
  */
 
 /*
- * Copyright 2017 Joyent, Inc.
+ * Copyright (c) 2017, Joyent, Inc.
  */
 
 #include <bunyan.h>
 #include <errno.h>
 #include <err.h>
+#include <fcntl.h>
 #include <locale.h>
 #include <libgen.h>
+#include <netinet/in.h>
 #include <port.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/debug.h>
 #include <thread.h>
+#include <unistd.h>
 #include "config.h"
 #include "defs.h"
 #include "defs.h"
@@ -71,6 +75,12 @@ const char *
 _umem_logging_init(void)
 {
 	return ("fail,contents");
+}
+#else
+const char *
+_umem_debug_init(void)
+{
+	return ("guards");
 }
 #endif
 
@@ -137,6 +147,37 @@ main(int argc, char **argv)
 	if (check_cfg)
 		return (0);
 
+	if (!debug_mode) {
+		/* Explicitly handle closing of fds below */
+		if (daemon(0, 1) != 0) {
+			STDERR(fatal, log, "Could not run as daemon");
+			exit(EXIT_FAILURE);
+		}
+
+		/*
+		 * This assumes that STDERR_FILENO > STDOUT_FILENO &&
+		 * STDERR_FILENO > STDIN_FILENO.  Since this has been the
+		 * case for over 40 years, this seems a safe assumption.
+		 */
+		closefrom(STDERR_FILENO + 1);
+
+		int fd = open("/dev/null", O_RDONLY);
+
+		if (fd < 0) {
+			STDERR(fatal, log,
+			    "Could not open /dev/null for stdin");
+			exit(EXIT_FAILURE);
+		}
+
+		if (dup2(fd, STDIN_FILENO) < 0) {
+			STDERR(fatal, log,
+			    "dup2 failed for stdin");
+			exit(EXIT_FAILURE);
+		}
+
+		(void) close(fd);
+	}
+
 	if ((port = port_create()) < 0) {
 		STDERR(fatal, log, "main port_create() failed");
 		exit(EXIT_FAILURE);
@@ -186,13 +227,13 @@ do_immediate(void)
 		VERIFY3S(rule->rule_remote_addr[0].cfa_type, ==, CFG_ADDR_IPV4);
 
 		sl.sau_sin->sin_family = AF_INET;
-		sl.sau_sin->sin_port = htons(500);
+		sl.sau_sin->sin_port = htons(IPPORT_IKE);
 		(void) memcpy(&sl.sau_sin->sin_addr,
 		    &rule->rule_local_addr[0].cfa_startu.cfa_ip4,
 		    sizeof (in_addr_t));
 
 		sr.sau_sin->sin_family = AF_INET;
-		sr.sau_sin->sin_port = htons(500);
+		sr.sau_sin->sin_port = htons(IPPORT_IKE);
 		(void) memcpy(&sr.sau_sin->sin_addr,
 		    &rule->rule_remote_addr[0].cfa_startu.cfa_ip4,
 		    sizeof (in_addr_t));
@@ -345,7 +386,7 @@ signal_init(void)
 
 	/* block all signals in main thread */
 	(void) sigfillset(&nset);
-	PTH(thr_sigsetmask(SIG_SETMASK, &nset, NULL));
+	VERIFY0(thr_sigsetmask(SIG_SETMASK, &nset, NULL));
 
 	rc = thr_create(NULL, 0, signal_thread, NULL, THR_DETACHED,
 	    &signal_tid);

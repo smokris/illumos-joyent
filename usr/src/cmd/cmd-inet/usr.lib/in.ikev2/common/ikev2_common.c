@@ -194,7 +194,7 @@ add_rule_xform(pkt_sa_state_t *restrict pss, const config_xf_t *restrict xf)
 		ok &= ikev2_add_xform(pss, IKEV2_XF_AUTH, xf->xf_auth);
 	ok &= ikev2_add_xform(pss, IKEV2_XF_DH, xf->xf_dh);
 
-	for (size_t i = 0; i < ARRAY_SIZE(prf_supported); i++)
+	for (size_t i = 0; ok && i < ARRAY_SIZE(prf_supported); i++)
 		ok &= ikev2_add_xform(pss, IKEV2_XF_PRF, prf_supported[i]);
 
 	return (ok);

@@ -128,18 +128,6 @@ typedef struct algindex {
 #define	ARRAY_SIZE(x) (sizeof (x) / sizeof (x[0]))
 #endif
 
-/*
- * Simple wrapper for thread calls that should never fail under
- * normal conditions.
- */
-#define	PTH(fn) 							\
-do {									\
-	int _rc = fn;							\
-	if (_rc != 0)							\
-		assfail(#fn " call failed", __FILE__, __LINE__);	\
-	_NOTE(CONSTCOND)						\
-} while (0)
-
 /* cstyle cannot handle ## __VA_ARGS */
 /* BEGIN CSTYLED */
 #define	STDERR(_lvl, _log, _msg, ...)			\
@@ -166,7 +154,7 @@ ss_port(const struct sockaddr_storage *ss)
 	default:
 		INVALID("ss->ss_family");
 		/*NOTREACHED*/
-		return (NULL);
+		return (0);
 	}
 }
 

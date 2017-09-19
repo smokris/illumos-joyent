@@ -22,6 +22,12 @@ extern "C" {
 
 #include <inttypes.h>
 
+/*
+ * We always grab at least 64-bit of random data (high or low entropy),
+ * when smaller amounts are needed, we include small inline functions
+ * as wrappers around random_{low,high}_64 that chop off the required number
+ * of bytes.
+ */
 extern void random_init(void);
 extern void random_high(void *, size_t);
 extern void random_low(void *, size_t);

@@ -363,9 +363,9 @@ pfkey_send_msg(sadb_msg_t *msg, pfreq_cb_t *cb, void *data)
 	msg->sadb_msg_seq = req->pr_msgid;
 	msg->sadb_msg_pid = getpid();
 
-	PTH(pthread_mutex_lock(&pfreq_lock));
+	VERIFY0(pthread_mutex_lock(&pfreq_lock));
 	list_insert_tail(&pfreq_list, req);
-	PTH(pthread_mutex_unlock(&pfreq_lock));
+	VERIFY0(pthread_mutex_unlock(&pfreq_lock));
 
 	n = write(pfkey, msg, msg->sadb_msg_len);
 	if (n != msg->sadb_msg_len) {
@@ -377,9 +377,9 @@ pfkey_send_msg(sadb_msg_t *msg, pfreq_cb_t *cb, void *data)
 			    BUNYAN_T_END);
 		}
 
-		PTH(pthread_mutex_lock(&pfreq_lock));
+		VERIFY0(pthread_mutex_lock(&pfreq_lock));
 		list_remove(&pfreq_list, req);
-		PTH(pthread_mutex_unlock(&pfreq_lock));
+		VERIFY0(pthread_mutex_unlock(&pfreq_lock));
 
 		pfreq_free(req);
 		return (B_FALSE);
@@ -419,7 +419,7 @@ handle_reply(sadb_msg_t *reply)
 {
 	pfreq_t *req = NULL;
 
-	PTH(pthread_mutex_lock(&pfreq_lock));
+	VERIFY0(pthread_mutex_lock(&pfreq_lock));
 
 	req = list_head(&pfreq_list);
 	while (req != NULL && req->pr_msgid != reply->sadb_msg_seq)
@@ -427,7 +427,7 @@ handle_reply(sadb_msg_t *reply)
 
 	if (req != NULL)
 		list_remove(&pfreq_list, req);
-	PTH(pthread_mutex_unlock(&pfreq_lock));
+	VERIFY0(pthread_mutex_unlock(&pfreq_lock));
 
 	if (req == NULL) {
 		sadb_log(pflog, BUNYAN_L_INFO,

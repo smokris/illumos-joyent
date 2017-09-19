@@ -113,7 +113,7 @@ worker_init(size_t n_workers, size_t queue_sz)
 
 		rc = thr_create(NULL, 0, worker_main, w, 0, &w->w_tid);
 		if (rc != 0) {
-			bunyan_fatal(log, "Cannot create worker thread",
+			(void) bunyan_fatal(log, "Cannot create worker thread",
 			    BUNYAN_T_STRING, "errmsg", strerror(rc),
 			    BUNYAN_T_INT32, "errno", (int32_t)rc,
 			    BUNYAN_T_STRING, "file", __FILE__,
@@ -124,7 +124,7 @@ worker_init(size_t n_workers, size_t queue_sz)
 		}
 	}
 
-	bunyan_trace(log, "Worker threads created",
+	(void) bunyan_trace(log, "Worker threads created",
 	    BUNYAN_T_UINT32, "numworkers", (uint32_t)nworkers,
 	    BUNYAN_T_END);
 }
@@ -145,36 +145,29 @@ worker_init_one(size_t qlen, size_t n)
 		return (NULL);
 	}
 
-/* XXX Remove one OS-6341 is fixed */
-#ifdef BUNYAN_FIXED
 	if (bunyan_child(log, &w->w_log,
 	    BUNYAN_T_UINT32, "worker", (uint32_t)n, BUNYAN_T_END) != 0) {
 		umem_free(w, sizeof (*w));
 		return (NULL);
 	}
-#else
-	if (bunyan_child(log, &w->w_log, BUNYAN_T_END) != 0) {
-		umem_free(w, sizeof (*w));
-		return (NULL);
-	}
 
-	if (bunyan_key_add(w->w_log, BUNYAN_T_UINT32, "worker", (uint32_t)n,
-	    BUNYAN_T_END) != 0) {
-		bunyan_fini(w->w_log);
-		umem_free(w, sizeof (*w));
-		return (NULL);
-	}
-#endif
+	if ((w->w_p11 = pkcs11_new_session()) == CK_INVALID_HANDLE)
+		goto fail;
 
 	w->w_queue.wq_cmd = WC_NONE;
-	VERIFY3S(mutex_init(&w->w_queue.wq_lock, LOCK_ERRORCHECK, NULL), ==, 0);
-	VERIFY3S(cond_init(&w->w_queue.wq_cv, NULL, NULL), ==, 0);
+	VERIFY0(mutex_init(&w->w_queue.wq_lock, LOCK_ERRORCHECK, NULL));
+	VERIFY0(cond_init(&w->w_queue.wq_cv, NULL, NULL));
 
 	ike_timer_worker_init(w);
 
 	ilist_create(&w->w_sas, sizeof (ikev2_sa_t),
 	    offsetof(ikev2_sa_t, i2sa_wnode));
 	return (w);
+
+fail:
+	bunyan_fini(w->w_log);
+	umem_free(w, sizeof (*w));
+	return (NULL);
 }
 
 static void
@@ -210,7 +203,7 @@ worker_send_cmd(size_t n, worker_cmd_t cmd)
 	}
 
 	w->w_queue.wq_cmd = cmd;
-	PTH(cond_signal(&wq->wq_cv));
+	VERIFY0(cond_signal(&wq->wq_cv));
 	mutex_exit(&wq->wq_lock);
 
 	return (B_TRUE);
@@ -219,21 +212,21 @@ worker_send_cmd(size_t n, worker_cmd_t cmd)
 void
 worker_suspend(void)
 {
-	PTH(rw_wrlock(&worker_lock));
+	VERIFY0(rw_wrlock(&worker_lock));
 	for (size_t i = 0; i < nworkers; i++) {
 		worker_t *w = workers[i];
 		worker_queue_t *wq = &w->w_queue;
 
 		mutex_enter(&wq->wq_lock);
 		w->w_queue.wq_cmd = WC_SUSPEND;
-		PTH(cond_signal(&wq->wq_cv));
+		VERIFY0(cond_signal(&wq->wq_cv));
 		mutex_exit(&wq->wq_lock);
 	}
-	PTH(rw_unlock(&worker_lock));
+	VERIFY0(rw_unlock(&worker_lock));
 
 	mutex_enter(&suspend_lock);
 	while (nsuspended != nworkers)
-		PTH(cond_wait(&suspend_cv, &suspend_lock));
+		VERIFY0(cond_wait(&suspend_cv, &suspend_lock));
 	mutex_exit(&suspend_lock);
 }
 
@@ -248,13 +241,13 @@ worker_do_suspend(worker_t *w)
 	mutex_enter(&suspend_lock);
 	if (++nsuspended == nworkers) {
 		bunyan_trace(w->w_log, "Last one in, signaling", BUNYAN_T_END);
-		PTH(cond_signal(&suspend_cv));
+		VERIFY0(cond_signal(&suspend_cv));
 	}
 	mutex_exit(&suspend_lock);
 
 	mutex_enter(&wq->wq_lock);
 	while (wq->wq_cmd == WC_SUSPEND)
-		PTH(cond_wait(&wq->wq_cv, &wq->wq_lock));
+		VERIFY0(cond_wait(&wq->wq_cv, &wq->wq_lock));
 
 	bunyan_debug(w->w_log, "Worker resuming", BUNYAN_T_END);
 	/* leave wq->wq_lock locked */
@@ -263,7 +256,7 @@ worker_do_suspend(worker_t *w)
 void
 worker_resume(void)
 {
-	PTH(rw_wrlock(&worker_lock));
+	VERIFY0(rw_wrlock(&worker_lock));
 	for (size_t i = 0; i < nworkers; i++) {
 		worker_t *w = workers[i];
 		worker_queue_t *wq = &w->w_queue;
@@ -275,9 +268,9 @@ worker_resume(void)
 		mutex_enter(&wq->wq_lock);
 		wq->wq_cmd = WC_NONE;
 		mutex_exit(&wq->wq_lock);
-		PTH(cond_broadcast(&wq->wq_cv));
+		VERIFY0(cond_broadcast(&wq->wq_cv));
 	}
-	PTH(rw_unlock(&worker_lock));
+	VERIFY0(rw_unlock(&worker_lock));
 
 	bunyan_trace(log, "Finished resuming workers", BUNYAN_T_END);
 }
@@ -289,7 +282,7 @@ worker_dispatch(worker_msg_t msg, void *data, size_t n)
 	worker_queue_t *wq = NULL;
 	worker_item_t *wi = NULL;
 
-	PTH(rw_rdlock(&worker_lock));
+	VERIFY0(rw_rdlock(&worker_lock));
 	VERIFY3U(n, <, nworkers);
 	w = workers[n];
 	wq = &w->w_queue;
@@ -297,7 +290,7 @@ worker_dispatch(worker_msg_t msg, void *data, size_t n)
 
 	if (WQ_FULL(wq)) {
 		mutex_exit(&wq->wq_lock);
-		PTH(rw_unlock(&worker_lock));
+		VERIFY0(rw_unlock(&worker_lock));
 
 		(void) bunyan_debug(log, "dispatch failed (queue full)",
 		    BUNYAN_T_UINT32, "worker", (uint32_t)n,
@@ -312,9 +305,9 @@ worker_dispatch(worker_msg_t msg, void *data, size_t n)
 	wi->wi_data = data;
 	wq->wq_end %= queuelen;
 
-	PTH(cond_signal(&wq->wq_cv));
+	VERIFY0(cond_signal(&wq->wq_cv));
 	mutex_exit(&wq->wq_lock);
-	PTH(rw_unlock(&worker_lock));
+	VERIFY0(rw_unlock(&worker_lock));
 
 	(void) bunyan_debug(w->w_log, "Dispatching message to worker",
 	    BUNYAN_T_UINT32, "worker", (uint32_t)n,
@@ -424,7 +417,7 @@ worker_main(void *arg)
 	}
 
 	w->w_done;
-	PTH(cond_signal(&wq->wq_cv));
+	VERIFY0(cond_signal(&wq->wq_cv));
 	mutex_exit(&wq->wq_lock);
 	return (w);
 }
@@ -493,14 +486,14 @@ worker_add(void)
 		return (B_FALSE);
 	}
 
-	PTH(rw_wrlock(&worker_lock));
+	VERIFY0(rw_wrlock(&worker_lock));
 	workers = new_workers;
 	workers_alloc = new_workers_alloc;
 
 	VERIFY3U(workers_alloc, >, nworkers);
 	workers[nworkers++] = w;
 
-	PTH(rw_unlock(&worker_lock));
+	VERIFY0(rw_unlock(&worker_lock));
 
 	(void) bunyan_debug(w->w_log, "Worker created", BUNYAN_T_END);
 	thr_continue(w->w_tid);

@@ -30,10 +30,10 @@ config_get(void)
 {
 	config_t *cfg = NULL;
 
-	PTH(pthread_rwlock_rdlock(&cfg_lock));
+	VERIFY0(pthread_rwlock_rdlock(&cfg_lock));
 	cfg = config;
 	CONFIG_REFHOLD(cfg);
-	PTH(pthread_rwlock_unlock(&cfg_lock));
+	VERIFY0(pthread_rwlock_unlock(&cfg_lock));
 	return (cfg);
 }
 
@@ -96,7 +96,7 @@ cfg_addr_match(const sockaddr_u_t l, const config_addr_t *restrict r)
 	case CFG_ADDR_IPV4:
 		if (l.sau_ss->ss_family != AF_INET)
 			return (B_FALSE);
-		if (l.sau_sin->sin_addr.s_addr != r->cfa_startu.cfa_ip4)
+		if (l.sau_sin->sin_addr.s_addr != r->cfa_start4)
 			return (B_FALSE);
 		return (B_TRUE);
 	case CFG_ADDR_IPV4_PREFIX:
@@ -106,28 +106,28 @@ cfg_addr_match(const sockaddr_u_t l, const config_addr_t *restrict r)
 		mask = (0xffffffff << (32 - r->cfa_endu.cfa_num)) &
 		    0xffffffff;
 		if ((l.sau_sin->sin_addr.s_addr & mask) ==
-		    (r->cfa_startu.cfa_ip4 &mask))
+		    (r->cfa_start4 & mask))
 			return (B_TRUE);
 		return (B_FALSE);
 	case CFG_ADDR_IPV4_RANGE:
 		if (l.sau_ss->ss_family != AF_INET)
 			return (B_FALSE);
-		if (l.sau_sin->sin_addr.s_addr >= r->cfa_startu.cfa_ip4 &&
-		    l.sau_sin->sin_addr.s_addr <= r->cfa_endu.cfa_ip4)
+		if (l.sau_sin->sin_addr.s_addr >= r->cfa_start4 &&
+		    l.sau_sin->sin_addr.s_addr <= r->cfa_end4)
 			return (B_TRUE);
 		return (B_FALSE);
 	case CFG_ADDR_IPV6:
 		if (l.sau_ss->ss_family != AF_INET6)
 			return (B_FALSE);
 		if (IN6_ARE_ADDR_EQUAL(&l.sau_sin6->sin6_addr,
-		    &r->cfa_startu.cfa_ip6))
+		    &r->cfa_start6))
 			return (B_TRUE);
 		return (B_FALSE);
 	case CFG_ADDR_IPV6_PREFIX:
 		if (l.sau_ss->ss_family != AF_INET6)
 			return (B_FALSE);
 		if (IN6_ARE_PREFIXEDADDR_EQUAL(&l.sau_sin6->sin6_addr,
-		    &r->cfa_startu.cfa_ip6, r->cfa_endu.cfa_num))
+		    &r->cfa_start6, r->cfa_endu.cfa_num))
 			return (B_TRUE);
 		return (B_FALSE);
 	case CFG_ADDR_IPV6_RANGE:
@@ -135,9 +135,9 @@ cfg_addr_match(const sockaddr_u_t l, const config_addr_t *restrict r)
 			return (B_FALSE);
 		for (size_t i = 0; i < 16; i++) {
 			if ((l.sau_sin6->sin6_addr.s6_addr[i] <
-			    r->cfa_startu.cfa_ip6.s6_addr[i]) ||
+			    r->cfa_start6.s6_addr[i]) ||
 			    (l.sau_sin6->sin6_addr.s6_addr[i] >
-			    r->cfa_endu.cfa_ip6.s6_addr[i]))
+			    r->cfa_end6.s6_addr[i]))
 				return (B_FALSE);
 		}
 		return (B_TRUE);
@@ -158,6 +158,12 @@ cfg_rule_free(config_rule_t *rule)
 		}
 	}
 
+	if (rule->rule_remote_id != NULL) {
+		for (size_t i = 0; rule->rule_remote_id[i] != NULL; i++)
+			free(rule->rule_remote_id[i]);
+		free(rule->rule_remote_id);
+	}
+
 	free(rule->rule_xf);
 	free(rule->rule_local_addr);
 	free(rule->rule_remote_addr);
@@ -174,7 +180,7 @@ cfg_free(config_t *cfg)
 	size_t i;
 
 	VERIFY3U(cfg->cfg_refcnt, ==, 0);
-	
+
 	for (i = 0;
 	    cfg->cfg_cert_root != NULL && cfg->cfg_cert_root[i] != NULL;
 	    i++)

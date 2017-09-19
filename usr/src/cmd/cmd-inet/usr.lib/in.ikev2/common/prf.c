@@ -24,11 +24,43 @@
 #include "prf.h"
 #include "pkcs11.h"
 
+/*
+ * This implements the pseudo-random function (PRF) as well as the streaming
+ * variant (prf+ or 'prfp plus') as described in RFC7296 2.13.  Briefly,
+ * the nonces from both the initiator and responder as well as the shared
+ * DH or ECC key from the IKE_SA_INIT are fed through the PRF function to
+ * generate a seed value.   The prfp+ function starts with this seed value
+ * and iteratively uses the previous values to generate new blocks of keying
+ * material.  For child SAs (either AH, ESP, or an IKE SA rekey), some
+ * additional inputs are mixed in.  RFC7206 secions 2.13 and 2.17 go into
+ * the complete details of what inputs are used when.
+ *
+ * As both the PRF and prfp+ functions use multiple disparate inputs that
+ * are concatented together to form the inputs to the functions, both prf()
+ * and prfplus_init() take a variable number of arguments which should be a
+ * sequence of uint8_t *, size_t pairs of parameters with a terminating NULL
+ * value.  The prf() and prfplus_init() functions will then take care of
+ * concatenating the inputs as required (generally the PCKS#11 C_*Update()
+ * functions do all the dirty work here for us).
+ *
+ * This is run per IKE SA, so a given prfp_t instance should never be shared
+ * between ikev2_sa_ts, and the caller must handle any synchronization of
+ * potentially simultaneous prf* calls with the same prfp_t.  Since the
+ * lifetime of any given prfp_t is currently always just the lifetime of the
+ * calling function, this shouldn't make things difficult.
+ */
+
+/*
+ * RFC7296 2.13 -- The prfp+ is only specified for 255 iterations of the
+ * underlying PRF function.
+ */
+#define	PRFP_ITER_MAX	(255)
 static boolean_t prfplus_update(prfp_t *);
 
 /*
  * Run the given PRF algorithm for the given key and seed and place
- * result into out.
+ * result into out.  The seed is passed as a sequence of uint8_t *, size_t
+ * pairs terminated by a final NULL
  */
 boolean_t
 prf(ikev2_prf_t alg, CK_OBJECT_HANDLE key, uint8_t *restrict out, size_t outlen,
@@ -175,7 +207,7 @@ prfplus(prfp_t *restrict prfp, uint8_t *restrict out, size_t outlen)
 			tlen = prfp->prfp_tbuflen - prfp->prfp_pos;
 		}
 
-		amt = MIN(outlen, tlen);
+		amt = MIN(outlen - n, tlen);
 		(void) memcpy(out + n, t + prfp->prfp_pos, amt);
 		prfp->prfp_pos += amt;
 		n += amt;
@@ -195,7 +227,7 @@ prfplus_update(prfp_t *prfp)
 	/* The sequence (T##) starts with 1 */
 	VERIFY3U(prfp->prfp_n, >, 0);
 
-	if (prfp->prfp_n == 0xff) {
+	if (prfp->prfp_n == PRFP_ITER_MAX) {
 		bunyan_error(prfp->prfp_log,
 		    "prf+ iteration count reached max (0xff)", BUNYAN_T_END);
 		return (B_FALSE);
@@ -221,7 +253,7 @@ prfplus_fini(prfp_t *prfp)
 	if (prfp == NULL)
 		return;
 
-	for (size_t i = 0; i < 2; i++) {
+	for (size_t i = 0; i < PRFP_NUM_TBUF; i++) {
 		if (prfp->prfp_tbuf[i] != NULL) {
 			explicit_bzero(prfp->prfp_tbuf[i], prfp->prfp_tbuflen);
 			umem_free(prfp->prfp_tbuf[i], prfp->prfp_tbuflen);
@@ -264,9 +296,10 @@ prf_to_p11key(prfp_t *restrict prfp, const char *restrict name, int alg,
 	 * XXX: Might it be worth setting the object label attribute to 'name'
 	 * for diagnostic purposes?
 	 */
-	if (rc != CKR_OK)
+	if (rc != CKR_OK) {
 		PKCS11ERR(error, prfp->prfp_log, "SUNW_C_KeyToObject", rc,
 		    BUNYAN_T_STRING, "objname", name);
+	}
 
 	return ((rc == CKR_OK) ? B_TRUE : B_FALSE);
 }

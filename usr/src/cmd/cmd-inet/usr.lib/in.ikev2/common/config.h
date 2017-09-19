@@ -62,6 +62,10 @@ typedef struct config_addr_s {
 		in6_addr_t	cfa_ip6;
 		uint8_t		cfa_num;
 	} cfa_endu;
+#define	cfa_start4	cfa_startu.cfa_ip4
+#define	cfa_start6	cfa_startu.cfa_ip6
+#define	cfa_end4	cfa_endu.cfa_ip4
+#define	cfa_end6	cfa_endu.cfa_ip6
 } config_addr_t;
 
 typedef struct config_id_s {
@@ -103,7 +107,8 @@ typedef struct config_rule_s {
 	size_t			rule_nxf;
 	ikev2_dh_t		rule_p2_dh;
 	char			*rule_local_id;
-	char			*rule_remote_id;
+	char			**rule_remote_id;
+	size_t			rule_remote_id_alloc;
 	boolean_t		rule_immediate;
 } config_rule_t;
 

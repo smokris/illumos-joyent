@@ -27,11 +27,12 @@ extern "C" {
 
 struct bunyan_logger;
 
+#define	PRFP_NUM_TBUF	(2)
 typedef struct prfp_s {
 	struct bunyan_logger	*prfp_log;
 	CK_OBJECT_HANDLE	prfp_key;
 	ikev2_prf_t		prfp_alg;
-	uint8_t			*prfp_tbuf[2];
+	uint8_t			*prfp_tbuf[PRFP_NUM_TBUF];
 	size_t			prfp_tbuflen;
 	uint8_t			*prfp_seed;
 	size_t			prfp_seedlen;

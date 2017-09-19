@@ -128,7 +128,7 @@ static struct {
 	 * only the first one is used.  This may just be poor phrasing.
 	 */
 	{ "local_id",		KWF_ARG },
-	{ "remote_id",		KWF_ARG },
+	{ "remote_id",		KWF_ARG|KWF_MULTI },
 	{ "immediate",		0 },
 };
 
@@ -554,10 +554,10 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 
 		cfg->cfg_refcnt = 1;
 
-		PTH(pthread_rwlock_wrlock(&cfg_lock));
+		VERIFY0(pthread_rwlock_wrlock(&cfg_lock));
 		old = config;
 		config = cfg;
-		PTH(pthread_rwlock_unlock(&cfg_lock));
+		VERIFY0(pthread_rwlock_unlock(&cfg_lock));
 		if (old != NULL)
 			CONFIG_REFRELE(old);
 	}
@@ -932,10 +932,8 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 				goto fail;
 			break;
 		case KW_REMOTE_ID:
-			/* XXX: allow multiple remote ids */
-			rule->rule_remote_id = strdup(targ->t_str);
-			if (rule->rule_remote_id == NULL)
-				goto fail;
+			add_str(&rule->rule_remote_id,
+			    &rule->rule_remote_id_alloc, targ->t_str);
 			break;
 		case KW_LOCAL_ID_TYPE:
 			if (!parse_p1_id(targ->t_str,
@@ -1025,8 +1023,8 @@ parse_address(input_cursor_t *restrict ic, token_t *restrict taddr,
 
 	t = taddr;
 
-	if (!parse_ip(t->t_str, &addrp->cfa_startu.cfa_ip4)) {
-		if (!parse_ip6(t->t_str, &addrp->cfa_startu.cfa_ip6)) {
+	if (!parse_ip(t->t_str, &addrp->cfa_start4)) {
+		if (!parse_ip6(t->t_str, &addrp->cfa_start6)) {
 			tok_log(t, ic->ic_log, BUNYAN_L_ERROR,
 			    "Unable to parse address", "address");
 			return (B_FALSE);
@@ -1046,8 +1044,8 @@ parse_address(input_cursor_t *restrict ic, token_t *restrict taddr,
 		if (t == NULL)
 			goto truncated;
 
-		ok = ip6 ? parse_ip6(t->t_str, &addrp->cfa_endu.cfa_ip6) :
-		    parse_ip(t->t_str, &addrp->cfa_endu.cfa_ip4);
+		ok = ip6 ? parse_ip6(t->t_str, &addrp->cfa_end6) :
+		    parse_ip(t->t_str, &addrp->cfa_end4);
 		if (!ok) {
 			tok_log(t, ic->ic_log, BUNYAN_L_ERROR,
 			    "Unable to parse address range", "address");

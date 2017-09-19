@@ -99,6 +99,15 @@ struct ikev2_sa_s {
 	struct sockaddr_storage laddr;  /* Local address & port. */
 	struct sockaddr_storage raddr;  /* Remote address & port. */
 
+				/*
+				 * What IKEv2 daemon are we talking to.
+				 * Currently it is just used to determine if
+				 * we can validate padding in SK payloads.
+				 * If there are any additional custom behaviors
+				 * we want to support in the future, this
+				 * will probably need to evolve into
+				 * feature flags or such.
+				 */
 	vendor_t		vendor;
 
 	/* Current number of outstanding messages prior to outmsgid. */

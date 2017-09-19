@@ -218,6 +218,7 @@ typedef enum ikev2_xf_auth_e {
 	IKEV2_XF_AUTH_HMAC_SHA2_384_192 	= 13,	/* RFC4868 */
 	IKEV2_XF_AUTH_HMAC_SHA2_512_256 	= 14	/* RFC4868 */
 } ikev2_xf_auth_t;
+#define	IKEV2_XF_AUTH_MAX	IKEV2_XF_AUTH_HMAC_SHA2_512_256
 
 typedef enum ikev2_dh {
 	IKEV2_DH_NONE			= 0,	/* No DH */

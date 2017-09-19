@@ -2,7 +2,7 @@
  * Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
  *
- * Copyright 2017 Joyent, Inc.
+ * Copyright (c) 2017, Joyent, Inc.
  */
 
 /* Portions of the following are... */
@@ -39,11 +39,6 @@
  * These functions provide an easy way to receive a packet with FULL address
  * information, and send one using precise addresses.
  */
-#ifdef lint
-/* We use X/Open style sockets */
-#define	_XOPEN_SOURCE 600
-#endif
-
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/int_fmtio.h>
@@ -73,21 +68,22 @@
  * setsockopt()s (e.g. IP_SEC_OPT(NEVER)) have already performed on socket.
  */
 ssize_t
-recvfromto(int s, uint8_t *buf, size_t buflen, int flags,
-    struct sockaddr_storage *from, socklen_t *fromlen,
-    struct sockaddr_storage *to, socklen_t *tolen)
+recvfromto(int s, uint8_t *restrict buf, size_t buflen, int flags,
+    struct sockaddr_storage *restrict from, socklen_t *restrict fromlen,
+    struct sockaddr_storage *restrict to, socklen_t *restrict tolen)
 {
-	int otolen;
+	socklen_t otolen;
 	ssize_t len;
 	socklen_t sslen;
 	struct sockaddr_storage ss;
 	struct msghdr m;
-	struct iovec iov[2] = { 0 };
+	struct iovec iov[1] = { 0 };
 	uint32_t cmsgbuf[64] = { 0 };
 	struct cmsghdr *cm = (struct cmsghdr *)cmsgbuf;
 	struct in6_pktinfo *pi;
 	struct sockaddr_in6 *sin6;
 	struct sockaddr_in *sin;
+	boolean_t toset = _B_FALSE;
 
 	sslen = sizeof (ss);
 	if (getsockname(s, (struct sockaddr *)&ss, &sslen) < 0) {
@@ -139,7 +135,7 @@ recvfromto(int s, uint8_t *buf, size_t buflen, int flags,
 	for (cm = (struct cmsghdr *)CMSG_FIRSTHDR(&m);
 	    m.msg_controllen != 0 && cm;
 	    cm = (struct cmsghdr *)CMSG_NXTHDR(&m, cm)) {
-		if (ss.ss_family == AF_INET6 &&
+		if (!toset && ss.ss_family == AF_INET6 &&
 		    cm->cmsg_level == IPPROTO_IPV6 &&
 		    cm->cmsg_type == IPV6_PKTINFO &&
 		    otolen >= sizeof (*sin6)) {
@@ -157,13 +153,14 @@ recvfromto(int s, uint8_t *buf, size_t buflen, int flags,
 				sin6->sin6_scope_id = 0;
 			sin6->sin6_port =
 			    ((struct sockaddr_in6 *)&ss)->sin6_port;
-			otolen = -1;	/* "to" already set */
+			toset = _B_TRUE;
 			continue;
 		}
 
-		if (ss.ss_family == AF_INET && cm->cmsg_level == IPPROTO_IP &&
+		if (!toset &&
+		    ss.ss_family == AF_INET && cm->cmsg_level == IPPROTO_IP &&
 		    cm->cmsg_type == IP_RECVDSTADDR &&
-		    otolen >= (int)sizeof (struct sockaddr_in)) {
+		    otolen >= sizeof (struct sockaddr_in)) {
 			*tolen = sizeof (*sin);
 			sin = (struct sockaddr_in *)to;
 			(void) memset(sin, 0, sizeof (*sin));
@@ -171,7 +168,7 @@ recvfromto(int s, uint8_t *buf, size_t buflen, int flags,
 			(void) memcpy(&sin->sin_addr, CMSG_DATA(cm),
 			    sizeof (sin->sin_addr));
 			sin->sin_port = ((struct sockaddr_in *)&ss)->sin_port;
-			otolen = -1;	/* "to" already set */
+			toset = _B_TRUE;
 			continue;
 		}
 	}
@@ -184,12 +181,13 @@ recvfromto(int s, uint8_t *buf, size_t buflen, int flags,
 
 /* send packet, with fixing src/dst address pair. */
 ssize_t
-sendfromto(int s, const uint8_t *buf, size_t buflen,
-    struct sockaddr_storage *src, struct sockaddr_storage *dst)
+sendfromto(int s, const uint8_t *restrict buf, size_t buflen,
+    struct sockaddr_storage *restrict src,
+    struct sockaddr_storage *restrict dst)
 {
 	uint32_t cmsgbuf[64] = { 0 };
 	struct msghdr m = { 0 };
-	struct iovec iov[2];
+	struct iovec iov[1];
 	struct cmsghdr *cm = (struct cmsghdr *)&cmsgbuf;
 	struct in6_pktinfo *pi6;
 	struct in_pktinfo *pi;
@@ -266,10 +264,11 @@ sendfromto(int s, const uint8_t *buf, size_t buflen,
 	}
 
 	n = sendmsg(s, &m, 0);
-	if (n < 0)
+	if (n < 0) {
 		SOCKLOG(error, log, "sendmsg() failed", s, src, dst,
 		    BUNYAN_T_STRING, "err", strerror(errno),
 		    BUNYAN_T_UINT32, "errno", (int32_t)errno);
+	}
 
 	return (n);
 }

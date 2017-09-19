@@ -50,12 +50,11 @@ OBJS =	config.o	\
 	timer.o		\
 	util.o		\
 	worker.o
-	
+
 SRCS = $(OBJS:%.o=../common/%.c)
 
 include $(SRC)/cmd/Makefile.cmd
 include $(SRC)/cmd/Makefile.ctf
-#include ../../Makefile.lib
 
 CPPFLAGS += -D__EXTENSIONS__
 CPPFLAGS += -DHAVE_POSIX_STYLE_SOCKET_PROTOTYPES -D_POSIX_PTHREAD_SEMANTICS
