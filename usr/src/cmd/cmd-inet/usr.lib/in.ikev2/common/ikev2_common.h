@@ -57,8 +57,8 @@ boolean_t ikev2_sa_match_rule(struct config_rule_s *restrict,
 boolean_t ikev2_sa_match_acquire(struct parsedmsg_s *restrict, ikev2_dh_t,
     struct pkt_s *restrict, ikev2_sa_result_t *restrict);
 
-void ikev2_no_proposal_chosen(struct ikev2_sa_s *restrict,
-    const struct pkt_s *restrict, ikev2_spi_proto_t, uint64_t);
+void ikev2_no_proposal_chosen(const struct pkt_s *restrict,
+    ikev2_spi_proto_t, uint64_t);
 void ikev2_invalid_ke(const struct pkt_s *, ikev2_spi_proto_t, uint64_t,
     ikev2_dh_t);
 

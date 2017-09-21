@@ -30,6 +30,7 @@
 #ifndef _PKT_H
 #define	_PKT_H
 
+#include <note.h>
 #include <stddef.h>
 #include <sys/types.h>
 #include "ike.h"
@@ -162,7 +163,6 @@ pkt_len(const pkt_t *pkt)
 inline size_t
 pkt_write_left(const pkt_t *pkt)
 {
-	size_t len = pkt_len(pkt);
 	return (MAX_PACKET_SIZE - pkt_len(pkt));
 }
 
@@ -219,8 +219,7 @@ do {									\
 	VERIFY3U(pkt_write_left(_pkt), >=, sizeof (_struct));		\
 	(void) memcpy((_pkt)->pkt_ptr, &(_struct), sizeof (_struct));	\
 	(_pkt)->pkt_ptr += sizeof (_struct);				\
-/*CONSTCOND*/								\
-} while (0)
+NOTE(CONSTCOND) } while (0)
 
 #define	PKT_APPEND_DATA(_pkt, _ptr, _len)		\
 do {							\
@@ -229,11 +228,7 @@ do {							\
 	VERIFY3U(pkt_write_left(_pkt), >=, (_len));	\
 	(void) memcpy((_pkt)->pkt_ptr, (_ptr), (_len));	\
 	(_pkt)->pkt_ptr += (_len);			\
-/*CONSTCOND*/						\
-} while (0)
-
-void pkt_hdr_ntoh(ike_header_t *restrict, const ike_header_t *restrict);
-void pkt_hdr_hton(ike_header_t *restrict, const ike_header_t *restrict);
+NOTE(CONSTCOND) } while (0)
 
 boolean_t pkt_done(pkt_t *);
 void pkt_init(void);

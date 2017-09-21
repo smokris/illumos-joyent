@@ -122,17 +122,17 @@ main(int argc, char **argv)
 		(void) fprintf(stderr, "-d and -c options cannot both be "
 		    "set\n");
 		usage(argv[0]);
-		return (1);
+		return (EXIT_FAILURE);
 	}
 
 	if ((rc = bunyan_init(basename(argv[0]), &log)) < 0)
-		errx(EXIT_FAILURE, "bunyan_init() failed: %s", strerror(errno));
+		errx(EXIT_FAILURE, "bunyan_init() failed: %s", strerror(rc));
 
 	/* hard coded just during development */
 	if ((rc = bunyan_stream_add(log, "stdout", BUNYAN_L_TRACE,
 	    bunyan_stream_fd, (void *)STDOUT_FILENO)) < 0)
 		errx(EXIT_FAILURE, "bunyan_stream_add() failed: %s",
-		    strerror(errno));
+		    strerror(rc));
 
 	if ((f = fopen(cfgfile, "rF")) == NULL) {
 		STDERR(fatal, log, "cannot open config file",
@@ -145,7 +145,7 @@ main(int argc, char **argv)
 	(void) fclose(f);
 
 	if (check_cfg)
-		return (0);
+		return (EXIT_SUCCESS);
 
 	if (!debug_mode) {
 		/* Explicitly handle closing of fds below */
@@ -256,7 +256,6 @@ static void
 main_loop(void)
 {
 	port_event_t pe;
-	int rc;
 
 	(void) bunyan_trace(log, "starting main loop", BUNYAN_T_END);
 
@@ -346,7 +345,7 @@ signal_thread(void *arg)
 {
 	char sigbuf[SIG2STR_MAX + 3]; /* add room for 'SIG' */
 	sigset_t sigset;
-	int signo, ret;
+	int signo;
 
 	bunyan_trace(log, "signal thread awaiting signals", BUNYAN_T_END);
 
@@ -379,7 +378,6 @@ signal_thread(void *arg)
 static void
 signal_init(void)
 {
-	pthread_attr_t attr;
 	sigset_t nset;
 	int rc;
 

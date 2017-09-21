@@ -57,8 +57,6 @@ typedef struct tevent_s {
 
 static umem_cache_t	*evt_cache;
 
-static int te_compare(const void *, const void *, void *);
-
 static tevent_t *tevent_alloc(te_event_t, hrtime_t, tevent_cb_fn, void *);
 static void tevent_free(tevent_t *);
 static int evt_ctor(void *, void *, int);
@@ -130,8 +128,6 @@ process_timer(timespec_t **tsp)
 	}
 
 	if (te != NULL) {
-		timespec_t ts = { 0 };
-
 		if ((delta = te->te_time - gethrtime()) < 0)
 			delta = 0;
 
@@ -247,7 +243,7 @@ tevent_log(bunyan_logger_t *restrict l, bunyan_level_t level,
 	    BUNYAN_T_UINT32, "event num", (uint32_t)te->te_type,
 	    BUNYAN_T_INT64, "ms", when,
 	    BUNYAN_T_POINTER, "fn", te->te_fn,
-	    BUNYAN_T_STRING, "fnname", symstr(te->te_fn),
+	    BUNYAN_T_STRING, "fnname", symstr((void *)te->te_fn),
 	    BUNYAN_T_POINTER, "arg", te->te_arg,
 	    BUNYAN_T_END);
 }
@@ -255,6 +251,7 @@ tevent_log(bunyan_logger_t *restrict l, bunyan_level_t level,
 static int
 evt_ctor(void *buf, void *cb, int flags)
 {
+	NOTE(ARGUNUSED(cb, flags))
 	tevent_t *te = buf;
 
 	(void) memset(te, 0, sizeof (*te));

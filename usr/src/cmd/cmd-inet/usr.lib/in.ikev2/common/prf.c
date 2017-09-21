@@ -292,6 +292,10 @@ prf_to_p11key(prfp_t *restrict prfp, const char *restrict name, int alg,
     size_t len, CK_OBJECT_HANDLE_PTR restrict objp)
 {
 	CK_RV rc = CKR_OK;
+	/*
+	 * The largest key length we currently support is 256 bits (32 bytes),
+	 * so that is the largest possible value of len
+	 */
 	uint8_t buf[len];
 
 	if (len == 0)

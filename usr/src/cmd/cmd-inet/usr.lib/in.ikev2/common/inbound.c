@@ -73,13 +73,13 @@ static void *
 inbound_main(void *ibarg)
 {
 	port_event_t pe;
-	int rc;
 
 	ib = ibarg;
 
 	(void) bunyan_trace(ib->ib_log, "Inbound main loop starting",
 	    BUNYAN_T_END);
 
+	NOTE(CONSTCOND)
 	while (1) {
 		if (port_get(inbound_port, &pe, NULL) < 0) {
 			STDERR(fatal, ib->ib_log, "port_get() failed");
@@ -174,7 +174,8 @@ inbound(int s)
 void
 schedule_socket(int fd, void (*cb)(int))
 {
-	if (port_associate(inbound_port, PORT_SOURCE_FD, fd, POLLIN, cb) < 0) {
+	if (port_associate(inbound_port, PORT_SOURCE_FD, fd, POLLIN,
+	    (void *)cb) < 0) {
 		STDERR(error, log, "port_associate() failed",
 		    BUNYAN_T_INT32, "fd", (int32_t)fd,
 		    BUNYAN_T_END);

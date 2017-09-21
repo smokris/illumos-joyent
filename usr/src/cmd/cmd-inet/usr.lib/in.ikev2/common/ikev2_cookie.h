@@ -31,7 +31,6 @@ struct pkt_s;
 void ikev2_cookie_enable(void);
 void ikev2_cookie_disable(void);
 boolean_t ikev2_cookie_check(struct pkt_s *restrict,
-    const struct sockaddr_storage *restrict,
     const struct sockaddr_storage *restrict);
 
 #ifdef __cplusplus

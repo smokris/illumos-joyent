@@ -162,7 +162,7 @@ worker_free(worker_t *w)
 	free(w->w_queue.wq_items);
 	if (w->w_log != NULL)
 		bunyan_fini(w->w_log);
-	pkcs11_session_free(w->w_p11);	
+	pkcs11_session_free(w->w_p11);
 	mutex_destroy(&w->w_queue.wq_lock);
 	cond_destroy(&w->w_queue.wq_cv);
 	ilist_destroy(&w->w_timers);
@@ -299,8 +299,7 @@ worker_main(void *arg)
 
 	mutex_enter(&wq->wq_lock);
 
-	/*CONSTCOND*/
-	while (1) {
+	while (!done) {
 		timespec_t *pts = &ts;
 		int rc = 0;
 
@@ -385,7 +384,6 @@ worker_main(void *arg)
 		}
 	}
 
-	w->w_done;
 	VERIFY0(cond_signal(&wq->wq_cv));
 	mutex_exit(&wq->wq_lock);
 	return (w);
@@ -413,7 +411,6 @@ worker_add(void)
 	worker_t **new_workers = NULL;
 	worker_t *w = NULL;
 	size_t new_workers_alloc = 0;
-	size_t len = 0, qlen = 0;
 	int rc = 0;
 
 	(void) bunyan_trace(log, "Creating new worker", BUNYAN_T_END);

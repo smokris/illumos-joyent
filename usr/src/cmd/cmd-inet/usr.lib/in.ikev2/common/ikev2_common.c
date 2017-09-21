@@ -46,7 +46,6 @@ ikev2_sa_from_acquire(pkt_t *restrict pkt, parsedmsg_t *restrict pmsg,
     uint32_t spi, ikev2_dh_t dh)
 {
 	sadb_msg_t *samsg = pmsg->pmsg_samsg;
-	sadb_sa_t *sa;
 	sadb_prop_t *prop;
 	sadb_comb_t *comb;
 	boolean_t ok;
@@ -550,6 +549,7 @@ static boolean_t
 match_acq_prop_cb(ikev2_sa_proposal_t *prop, uint64_t spi, uint8_t *buf,
     size_t buflen, void *cookie)
 {
+	NOTE(ARGUNUSED(spi))
 	struct acquire_data_s *data = cookie;
 
 	if (prop->proto_protoid != data->ad_spitype) {
@@ -673,7 +673,7 @@ match_acq_attr_cb(ikev2_attribute_t *attr, void *cookie)
 }
 
 void
-ikev2_no_proposal_chosen(ikev2_sa_t *restrict i2sa, const pkt_t *restrict src,
+ikev2_no_proposal_chosen(const pkt_t *restrict src,
     ikev2_spi_proto_t proto, uint64_t spi)
 {
 	pkt_t *resp = ikev2_pkt_new_response(src);

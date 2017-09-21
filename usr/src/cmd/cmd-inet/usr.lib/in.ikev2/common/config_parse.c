@@ -723,6 +723,9 @@ parse_xform(input_cursor_t *restrict ic, config_xf_t **restrict xfp)
 
 	end = t->t_linep + t->t_col;
 
+	if (!ok)
+		goto fail;
+
 	/*
  	 * end points to closing '}' of transform, so end - start + 2
  	 * includes closing } plus room for NUL

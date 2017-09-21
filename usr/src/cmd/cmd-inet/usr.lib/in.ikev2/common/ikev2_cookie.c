@@ -17,6 +17,7 @@
 #include <netinet/in.h>
 #include <signal.h>
 #include <string.h>
+#include <synch.h>
 #include <sys/debug.h>
 #include <sys/time.h>
 #include <time.h>
@@ -28,6 +29,7 @@
 #include "ikev2_proto.h"
 #include "pkcs11.h"
 #include "random.h"
+#include "worker.h"
 
 #define	COOKIE_MECH		CKM_SHA_1
 #define	COOKIE_SECRET_LEN	(64)
@@ -92,33 +94,34 @@ size_t ikev2_cookie_threshold = 128;
 static struct secret_s {
 	uint8_t s_val[COOKIE_SECRET_LEN];
 	hrtime_t s_birth;
-} secret[2];
-#define	SECRET(v) secret[(v) & 0x1].s_val
-#define	SECRET_BIRTH(v) secret[(v) & 0x1].s_birth
+} i2c_secret[2];
+#define	SECRET(v) i2c_secret[(v) & 0x1].s_val
+#define	SECRET_BIRTH(v) i2c_secret[(v) & 0x1].s_birth
 #define	SECRET_AGE(v) (gethrtime() - SECRET_BIRTH(v))
 
-static pthread_rwlock_t lock = PTHREAD_RWLOCK_INITIALIZER;
-static uint8_t version;
-static boolean_t enabled;
-static timer_t cookie_timer;
+static rwlock_t i2c_lock = DEFAULTRWLOCK;
+static volatile uint8_t i2c_version;
+static boolean_t i2c_enabled;
+static timer_t i2c_timer;
 
 static void cookie_update_secret(void);
 
 void
 ikev2_cookie_enable(void)
 {
-	VERIFY0(pthread_rwlock_wrlock(&lock));
-	if (enabled)
+	VERIFY0(rw_wrlock(&i2c_lock));
+	if (i2c_enabled)
 		goto done;
 
-	if (SECRET_AGE(version) < COOKIE_SECRET_LIFETIME) {
+	if (SECRET_AGE(i2c_version) < COOKIE_SECRET_LIFETIME) {
 		struct itimerspec it = { 0 };
-		hrtime_t exp = SECRET_BIRTH(version) + COOKIE_SECRET_LIFETIME;
+		hrtime_t exp = SECRET_BIRTH(i2c_version) +
+		    COOKIE_SECRET_LIFETIME;
 
 		it.it_value.tv_sec = NSEC2SEC(exp);
 		it.it_value.tv_nsec = exp % NANOSEC;
 
-		if (timer_settime(cookie_timer, TIMER_ABSTIME, &it,
+		if (timer_settime(i2c_timer, TIMER_ABSTIME, &it,
 		    NULL) != 0) {
 			STDERR(fatal, log, "timer_settime() failed");
 			exit(EXIT_FAILURE);
@@ -129,20 +132,20 @@ ikev2_cookie_enable(void)
 	cookie_update_secret();
 
 done:
-	VERIFY0(pthread_rwlock_unlock(&lock));
+	VERIFY0(rw_unlock(&i2c_lock));
 }
 
 void
 ikev2_cookie_disable(void)
 {
 	struct itimerspec it = { 0 };
-	VERIFY0(pthread_rwlock_wrlock(&lock));
-	enabled = B_FALSE;
-	if (timer_settime(cookie_timer, 0, &it, NULL) != 0) {
+	VERIFY0(rw_wrlock(&i2c_lock));
+	i2c_enabled = B_FALSE;
+	if (timer_settime(i2c_timer, 0, &it, NULL) != 0) {
 		STDERR(fatal, log, "timer_settime() failed");
 		exit(EXIT_FAILURE);
 	}
-	VERIFY0(pthread_rwlock_wrlock(&lock));
+	VERIFY0(rw_unlock(&i2c_lock));
 }
 
 static boolean_t
@@ -150,6 +153,8 @@ cookie_calc(uint8_t v, uint8_t *restrict nonce, size_t noncelen,
     const struct sockaddr_storage *restrict ip, uint64_t spi,
     uint8_t *out, CK_ULONG outlen)
 {
+	VERIFY(IS_WORKER);
+
 	CK_SESSION_HANDLE h = p11h();
 	CK_MECHANISM mech = { COOKIE_MECH, NULL_PTR, 0 };
 	CK_ULONG iplen = 0;
@@ -207,7 +212,6 @@ done:
 
 static void
 send_cookie(pkt_t *restrict pkt,
-    const struct sockaddr_storage *restrict laddr,
     const struct sockaddr_storage *restrict raddr)
 {
 	pkt_payload_t *nonce = pkt_get_payload(pkt, IKEV2_PAYLOAD_NONCE, NULL);
@@ -217,8 +221,8 @@ send_cookie(pkt_t *restrict pkt,
 	if (resp == NULL || nonce == NULL)
 		return;
 
-	buf[0] = version;
-	if (!cookie_calc(version, nonce->pp_ptr, nonce->pp_len, raddr,
+	buf[0] = i2c_version;
+	if (!cookie_calc(i2c_version, nonce->pp_ptr, nonce->pp_len, raddr,
 	    pkt->pkt_raw[0], buf + 1, sizeof (buf) - 1)) {
 		ikev2_pkt_free(resp);
 		return;
@@ -256,20 +260,19 @@ cookie_compare(uint8_t *restrict nonce, size_t noncelen,
  */
 boolean_t
 ikev2_cookie_check(pkt_t *restrict pkt,
-    const struct sockaddr_storage *restrict laddr,
     const struct sockaddr_storage *restrict raddr)
 {
 	pkt_notify_t *cookie = pkt_get_notify(pkt, IKEV2_N_COOKIE, NULL);
 	pkt_payload_t *nonce = pkt_get_payload(pkt, IKEV2_PAYLOAD_NONCE, NULL);
 	boolean_t ok = B_TRUE;
 
-	VERIFY0(pthread_rwlock_rdlock(&lock));
-	if (!enabled)
+	VERIFY0(rw_rdlock(&i2c_lock));
+	if (!i2c_enabled)
 		goto done;
 
 	if (cookie == NULL) {
 		ok = B_FALSE;
-		send_cookie(pkt, laddr, raddr);
+		send_cookie(pkt, raddr);
 		goto done;
 	}
 
@@ -278,8 +281,9 @@ ikev2_cookie_check(pkt_t *restrict pkt,
 		goto done;
 	}
 
-	if (cookie->pn_ptr[0] != version && (cookie->pn_ptr[0] != version - 1 ||
-	    SECRET_AGE(version - 1) > COOKIE_GRACE)) {
+	if (cookie->pn_ptr[0] != i2c_version &&
+	    (cookie->pn_ptr[0] != i2c_version - 1 ||
+	    SECRET_AGE(i2c_version - 1) > COOKIE_GRACE)) {
 		ok = B_FALSE;
 		goto done;
 	}
@@ -288,7 +292,7 @@ ikev2_cookie_check(pkt_t *restrict pkt,
 	    pkt->pkt_raw[0], cookie->pn_ptr, cookie->pn_len);
 
 done:
-	VERIFY0(pthread_rwlock_unlock(&lock));
+	VERIFY0(rw_unlock(&i2c_lock));
 	return (ok);
 }
 
@@ -297,19 +301,19 @@ cookie_update_secret(void)
 {
 	struct itimerspec it = { 0 };
 
-	VERIFY0(pthread_rwlock_wrlock(&lock));
+	VERIFY0(rw_wrlock(&i2c_lock));
 
-	if (SECRET_BIRTH(version) != 0)
-		version++;
-	random_low(SECRET(version), COOKIE_SECRET_LEN);
-	SECRET_BIRTH(version) = gethrtime();
+	if (SECRET_BIRTH(i2c_version) != 0)
+		i2c_version++;
+	random_low(SECRET(i2c_version), COOKIE_SECRET_LEN);
+	SECRET_BIRTH(i2c_version) = gethrtime();
 
-	VERIFY0(pthread_rwlock_unlock(&lock));
+	VERIFY0(rw_unlock(&i2c_lock));
 
 	it.it_value.tv_sec = NSEC2SEC(COOKIE_SECRET_LIFETIME);
 	it.it_value.tv_nsec = COOKIE_SECRET_LIFETIME % NANOSEC;
 	it.it_interval = it.it_value;
-	if (timer_settime(cookie_timer, 0, &it, NULL) != 0) {
+	if (timer_settime(i2c_timer, 0, &it, NULL) != 0) {
 		STDERR(fatal, log, "timer_settime() failed");
 		exit(EXIT_FAILURE);
 	}
@@ -322,11 +326,11 @@ ikev2_cookie_init(void)
 	port_notify_t pn;
 
 	pn.portnfy_port = port;
-	pn.portnfy_user = cookie_update_secret;
+	pn.portnfy_user = (void *)cookie_update_secret;
 	se.sigev_notify = SIGEV_PORT;
 	se.sigev_value.sival_ptr = &pn;
 
-	if (timer_create(CLOCK_REALTIME, &se, &cookie_timer) != 0) {
+	if (timer_create(CLOCK_REALTIME, &se, &i2c_timer) != 0) {
 		STDERR(fatal, log, "timer_create() failed");
 		exit(EXIT_FAILURE);
 	}

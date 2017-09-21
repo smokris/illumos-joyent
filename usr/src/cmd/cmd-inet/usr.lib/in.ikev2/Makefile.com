@@ -27,37 +27,47 @@
 
 PROG = in.ikev2d
 
-OBJS =	config.o	\
-	config_parse.o	\
-	dh.o		\
-	fromto.o	\
-	ikev2_common.o	\
-	ikev2_cookie.o	\
-	ikev2_enum.o	\
-	ikev2_pkt.o	\
-	ikev2_proto.o	\
-	ikev2_sa.o	\
-	ikev2_sa_init.o	\
-	inbound.o	\
-	list.o		\
-	main.o		\
-	pfkey.o		\
-	preshared.o	\
-	prf.o		\
-	pkcs11.o	\
-	pkt.o		\
-	random.o	\
-	timer.o		\
-	util.o		\
-	worker.o
+CMD_OBJS =	config.o	\
+		config_parse.o	\
+		dh.o		\
+		fromto.o	\
+		ikev2_common.o	\
+		ikev2_cookie.o	\
+		ikev2_enum.o	\
+		ikev2_pkt.o	\
+		ikev2_proto.o	\
+		ikev2_sa.o	\
+		ikev2_sa_init.o	\
+		inbound.o	\
+		main.o		\
+		pfkey.o		\
+		preshared.o	\
+		prf.o		\
+		pkcs11.o	\
+		pkt.o		\
+		random.o	\
+		timer.o		\
+		util.o		\
+		worker.o
 
-SRCS = $(OBJS:%.o=../common/%.c)
+COM_OBJS = list.o
+COMDIR = $(SRC)/common/list
+SRCDIR = ../common
+
+OBJS = $(CMD_OBJS) $(COM_OBJS)
+SRCS =	$(CMD_OBJS:%.o=$(SRCDIR)/%.c) \
+	$(COM_OBJS:%.o=$(COMDIR)/%.c)
 
 include $(SRC)/cmd/Makefile.cmd
 include $(SRC)/cmd/Makefile.ctf
 
 CPPFLAGS += -D__EXTENSIONS__
 CPPFLAGS += -D_POSIX_PTHREAD_SEMANTICS
+
+LINTFLAGS += $(C99LMODE) -erroff=E_STATIC_UNUSED
+LINTFLAGS64 += $(C99LMODE) -erroff=E_STATIC_UNUSED
+
+LINTFLAGS += -errfmt=macro
 
 # Use X/Open sockets for fromto.c
 fromto.o := CPPFLAGS += -D_XOPEN_SOURCE=600
@@ -96,7 +106,7 @@ lint: lint_SRCS
 	$(COMPILE.c) $<
 	$(POST_PROCESS_O)
 
-%.o: $(SRC)/common/list/%.c
+%.o: $(COMDIR)/%.c
 	$(COMPILE.c) $<
 	$(POST_PROCESS_O)
 

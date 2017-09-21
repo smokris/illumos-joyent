@@ -54,6 +54,11 @@
 #include "fromto.h"
 #include "ike.h"
 
+#ifdef lint
+#define	_B_FALSE B_FALSE
+#define	_B_TRUE B_TRUE
+#endif
+
 /* BEGIN CSTYLED */
 /* cstyle doesn't deal with ## __VA_ARGS__ well */
 #define	SOCKLOG(level, log, msg, sock, from, to, ...)	\
@@ -97,7 +102,7 @@ recvfromto(int s, uint8_t *restrict buf, size_t buflen, int flags,
 
 	m.msg_name = (caddr_t)from;
 	m.msg_namelen = *fromlen;
-	iov[0].iov_base = buf;
+	iov[0].iov_base = (caddr_t)buf;
 	iov[0].iov_len = buflen;
 	m.msg_iov = iov;
 	m.msg_iovlen = 1;
@@ -242,8 +247,7 @@ sendfromto(int s, const uint8_t *restrict buf, size_t buflen,
 		/* LINTED */
 		pi6 = (struct in6_pktinfo *)CMSG_DATA(cm);
 		pi6->ipi6_addr = src6->sin6_addr;
-		if (IN6_IS_ADDR_LINKLOCAL(&src6->sin6_addr) ||
-		    IN6_IS_ADDR_MULTICAST(&src6->sin6_addr)) {
+		if (IN6_IS_ADDR_LINKLOCAL(&src6->sin6_addr)) {
 			pi6->ipi6_ifindex = src6->sin6_scope_id;
 		} else {
 			pi6->ipi6_ifindex = 0;

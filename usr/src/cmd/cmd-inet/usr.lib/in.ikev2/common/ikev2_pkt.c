@@ -819,6 +819,12 @@ ikev2_add_sk(pkt_t *restrict pkt)
 	return (add_iv(pkt));
 }
 
+/*
+ * Add the IV to the packet.  It should be noted that the packet
+ * buffer is always zero-filled to start, and we never shift data around
+ * in the packet buffer, so anywhere we skip over a section and fill in later,
+ * any untouched bytes will be zero.
+ */
 static boolean_t
 add_iv(pkt_t *restrict pkt)
 {
@@ -860,11 +866,11 @@ add_iv(pkt_t *restrict pkt)
 	CK_SESSION_HANDLE h = p11h();
 	CK_MECHANISM mech;
 	CK_OBJECT_HANDLE key;
-	CK_ULONG blocklen = 0;
+	CK_ULONG blocklen = encr_data[sa->encr].ed_blocklen;
 	CK_RV rc = CKR_OK;
 	uint32_t msgid = ntohl(pkt_header(pkt)->msgid);
 
-	if (pkt->pkt_sa->flags & I2SA_INITIATOR)
+	if (sa->flags & I2SA_INITIATOR)
 		key = sa->sk_ei;
 	else
 		key = sa->sk_er;
@@ -874,13 +880,11 @@ add_iv(pkt_t *restrict pkt)
 		mech.mechanism = CKM_AES_ECB;
 		mech.pParameter = NULL_PTR;
 		mech.ulParameterLen = 0;
-		blocklen = 16;
 		break;
 	case IKEV2_ENCR_CAMELLIA_CBC:
 		mech.mechanism = CKM_CAMELLIA_ECB;
 		mech.pParameter = NULL_PTR;
 		mech.ulParameterLen = 0;
-		blocklen = 16;
 		break;
 	default:
 		INVALID("encr");
@@ -1168,7 +1172,7 @@ ikev2_pkt_done(pkt_t *pkt)
 
 	VERIFY3P(sk, !=, NULL);
 
-	ike_payload_t *skpay = ((ike_payload_t *)sk->pp_ptr) - 1;
+	ike_payload_t *skpay = pkt_idx_to_payload(sk);
 	ikev2_sa_t *sa = pkt->pkt_sa;
 	CK_ULONG datalen = (CK_ULONG)(pkt->pkt_ptr - sk->pp_ptr);
 	CK_ULONG icvlen = ikev2_auth_icv_size(sa->encr, sa->auth);
@@ -1191,9 +1195,14 @@ ikev2_pkt_done(pkt_t *pkt)
 		goto done;
 	}
 
+	/*
+	 * Since we are writing out pad length as the padding value, and
+	 * the pad length field is immediately after the padding, we
+	 * can just write padlen + 1 bytes of data whose value is padlen
+	 */
 	for (size_t i = 0; i <= padlen; i++)
 		pkt->pkt_ptr[i] = padlen;
-	pkt->pkt_ptr += padlen;
+	pkt->pkt_ptr += padlen + 1;
 
 	/*
 	 * Skip over the space for the ICV.  This is necessary so that all
@@ -1413,8 +1422,7 @@ ikev2_get_dhgrp(pkt_t *pkt)
 		return (IKEV2_DH_NONE);
 
 	VERIFY3U(ke->pp_len, >, sizeof (val));
-	(void) memcpy(&val, ke->pp_ptr, sizeof (val));
-	return ((ikev2_dh_t)ntohs(val));
+	return (BE_IN16(ke->pp_ptr));
 }
 
 size_t

@@ -23,6 +23,7 @@
 #include <ipsec_util.h>
 #include <locale.h>
 #include <netinet/in.h>
+#include <note.h>
 #include <security/cryptoki.h>
 #include <errno.h>
 #include <sys/socket.h>
@@ -113,10 +114,12 @@ struct index_data {
 	bunyan_logger_t	*id_log;
 };
 
-static pkt_walk_ret_t
+static boolean_t
 pkt_index_cb(uint8_t paytype, uint8_t resv, uint8_t *restrict ptr, size_t len,
     void *restrict cookie)
 {
+	NOTE(ARGUNUSED(resv))
+
 	struct index_data *restrict data = cookie;
 	pkt_t *pkt = data->id_pkt;
 
@@ -125,11 +128,11 @@ pkt_index_cb(uint8_t paytype, uint8_t resv, uint8_t *restrict ptr, size_t len,
 		    "Could not add index to packet",
 		    BUNYAN_T_POINTER, "pkt", pkt,
 		    BUNYAN_T_END);
-		return (PKT_WALK_ERROR);
+		return (B_FALSE);
 	}
 
 	if (paytype != IKEV1_PAYLOAD_NOTIFY && paytype != IKEV2_PAYLOAD_NOTIFY)
-		return (PKT_WALK_OK);
+		return (B_TRUE);
 
 	ikev2_notify_t ntfy = { 0 };
 	uint64_t spi = 0;
@@ -138,7 +141,7 @@ pkt_index_cb(uint8_t paytype, uint8_t resv, uint8_t *restrict ptr, size_t len,
 	if (len < sizeof (ikev2_notify_t)) {
 		bunyan_warn(data->id_log, "Notify payload is truncated",
 		    BUNYAN_T_END);
-		return (PKT_WALK_ERROR);
+		return (B_FALSE);
 	}
 
 	if (pkt_header(pkt)->version == IKEV1_VERSION) {
@@ -151,7 +154,7 @@ pkt_index_cb(uint8_t paytype, uint8_t resv, uint8_t *restrict ptr, size_t len,
 			(void) bunyan_warn(data->id_log,
 			    "Notify payload is truncated",
 			    BUNYAN_T_END);
-			return (PKT_WALK_ERROR);
+			return (B_FALSE);
 		}
 
 		doi = BE_IN32(ptr);
@@ -170,7 +173,7 @@ pkt_index_cb(uint8_t paytype, uint8_t resv, uint8_t *restrict ptr, size_t len,
 			    BUNYAN_T_UINT32, "spilen", (uint32_t)ntfy.n_spisize,
 			    BUNYAN_T_UINT32, "len", (uint32_t)len,
 			    BUNYAN_T_END);
-			return (PKT_WALK_ERROR);
+			return (B_FALSE);
 		}
 
 		/* This advances ptr for us */
@@ -179,7 +182,7 @@ pkt_index_cb(uint8_t paytype, uint8_t resv, uint8_t *restrict ptr, size_t len,
 			    "Invalid SPI length in notify payload",
 			    BUNYAN_T_UINT32, "spilen", (uint32_t)ntfy.n_spisize,
 			    BUNYAN_T_END);
-			return (PKT_WALK_ERROR);
+			return (B_FALSE);
 		}
 
 		len -= ntfy.n_spisize;
@@ -187,9 +190,9 @@ pkt_index_cb(uint8_t paytype, uint8_t resv, uint8_t *restrict ptr, size_t len,
 
 	if (!pkt_add_nindex(pkt, spi, doi, ntfy.n_protoid, ntohs(ntfy.n_type),
 	    ptr, len))
-		return (PKT_WALK_ERROR);
+		return (B_FALSE);
 
-	return (PKT_WALK_OK);
+	return (B_TRUE);
 }
 
 /*
@@ -211,10 +214,7 @@ pkt_index_payloads(pkt_t *pkt, uint8_t *buf, size_t buflen, uint8_t first,
 		.id_log = l
 	};
 
-	if (pkt_payload_walk(buf, buflen, pkt_index_cb, first,
-	    &data, l) != PKT_WALK_OK)
-		return (B_FALSE);
-	return (B_TRUE);
+	return (pkt_payload_walk(buf, buflen, pkt_index_cb, first, &data, l));
 }
 
 #define	PKT_CHUNK_SZ	(8)
@@ -223,6 +223,8 @@ pkt_add_index(pkt_t *pkt, uint8_t type, uint8_t *buf, uint16_t buflen)
 {
 	pkt_payload_t *pay = NULL;
 	ssize_t idx = pkt->pkt_payload_count - PKT_PAYLOAD_NUM;
+
+	VERIFY(!pkt->pkt_done);
 
 	if (pkt->pkt_payload_count < PKT_PAYLOAD_NUM) {
 		VERIFY3S(idx, <, 0);
@@ -274,6 +276,8 @@ pkt_add_nindex(pkt_t *pkt, uint64_t spi, uint32_t doi, uint8_t proto,
 	pkt_notify_t *n = NULL;
 	ssize_t idx = pkt->pkt_notify_count - PKT_NOTIFY_NUM;
 
+	VERIFY(!pkt->pkt_done);
+
 	if (pkt->pkt_notify_count < PKT_NOTIFY_NUM) {
 		VERIFY3S(idx, <, 0);
 		n = &pkt->pkt_notify[pkt->pkt_notify_count];
@@ -321,7 +325,7 @@ pkt_add_payload(pkt_t *pkt, uint8_t ptype, uint8_t resv, size_t len)
 {
 	VERIFY(!pkt->pkt_done);
 
-	if (len > UINT16_MAX)
+	if (len + sizeof (ike_payload_t) > UINT16_MAX)
 		return (B_FALSE);
 	if (pkt_write_left(pkt) < len + sizeof (ike_payload_t))
 		return (B_FALSE);
@@ -590,13 +594,13 @@ pkt_done(pkt_t *pkt)
  * first - payload type of the first payload
  * cookie - data passed to callback
  */
-pkt_walk_ret_t
+boolean_t
 pkt_payload_walk(uint8_t *restrict data, size_t len, pkt_walk_fn_t cb,
     uint8_t first, void *restrict cookie, bunyan_logger_t *restrict l)
 {
 	uint8_t			*ptr = data;
 	uint8_t			paytype = first;
-	pkt_walk_ret_t		ret = PKT_WALK_OK;
+	boolean_t		ret = B_TRUE;
 
 	/* 0 is used for both IKEv1 and IKEv2 to indicate last payload */
 	while (len > 0 && paytype != 0) {
@@ -606,7 +610,7 @@ pkt_payload_walk(uint8_t *restrict data, size_t len, pkt_walk_fn_t cb,
 			bunyan_info(l, "Payload header is truncated",
 			    BUNYAN_T_UINT32, "paylen", (uint32_t)len,
 			    BUNYAN_T_END);
-			return (PKT_WALK_ERROR);
+			return (B_FALSE);
 		}
 
 		(void) memcpy(&pay, ptr, sizeof (pay));
@@ -618,29 +622,27 @@ pkt_payload_walk(uint8_t *restrict data, size_t len, pkt_walk_fn_t cb,
 			bunyan_info(l, "Payload size overruns end of packet",
 			    BUNYAN_T_UINT32, "paylen", (uint32_t)pay.pay_length,
 			    BUNYAN_T_END);
-			return (PKT_WALK_ERROR);
+			return (B_FALSE);
 		}
 
-		if (cb != NULL) {
-			ret = cb(paytype, pay.pay_reserved, ptr + sizeof (pay),
-			    pay.pay_length - sizeof (pay), cookie);
-			if (ret != PKT_WALK_OK)
+		if (cb != NULL && !(ret = cb(paytype, pay.pay_reserved,
+		    ptr + sizeof (pay), pay.pay_length - sizeof (pay),
+		    cookie)))
 				break;
-		}
 
 		paytype = pay.pay_next;
 		ptr += pay.pay_length;
 		len -= pay.pay_length;
 	}
 
-	if (ret == PKT_WALK_OK && len > 0) {
+	if (ret && len > 0) {
 		bunyan_info(l, "Packet contains extranenous data",
 		    BUNYAN_T_UINT32, "amt", (uint32_t)len,
 		    BUNYAN_T_END);
-		return (PKT_WALK_ERROR);
+		return (B_FALSE);
 	}
 
-	return ((ret != PKT_WALK_OK) ? PKT_WALK_ERROR : PKT_WALK_OK);
+	return (ret);
 }
 
 static size_t
@@ -753,9 +755,9 @@ pkt_get_spi(uint8_t *restrict *pptr, size_t len, uint64_t *restrict spip)
 	 * and 8 (64-bits) corresponding to the IKE SPI and AH/ESP SPI sizes.
 	 * Thus, trying to write an unsupported value is a programming error.
 	 * However it is possible we might encounter an unsupported SPI length
-	 * (though it would need to be for an unsupported protocol), so
-	 * if we encounter such a situation, we return an error instead of
-	 * aborting.
+	 * on inbound packets (it would need to be for something other than
+	 * IKE, AH, or ESP however).  In such a situation, we return
+	 * an error to let the caller decide what to do.
 	 */
 	switch (len) {
 	case 0:
@@ -776,7 +778,7 @@ pkt_get_spi(uint8_t *restrict *pptr, size_t len, uint64_t *restrict spip)
 static int
 pkt_ctor(void *buf, void *ignore, int flags)
 {
-	_NOTE(ARGUNUSUED(ignore, flags))
+	NOTE(ARGUNUSED(ignore, flags))
 
 	pkt_t *pkt = buf;
 	(void) memset(pkt, 0, sizeof (pkt_t));

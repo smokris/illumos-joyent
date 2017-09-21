@@ -25,15 +25,9 @@ extern "C" {
 
 struct bunyan_logger;
 
-typedef enum pkt_walk_ret {
-	PKT_WALK_ERROR	= -1,
-	PKT_WALK_OK = 0,
-	PKT_WALK_STOP = 1
-} pkt_walk_ret_t;
-
-typedef pkt_walk_ret_t (*pkt_walk_fn_t)(uint8_t, uint8_t, uint8_t *restrict,
+typedef boolean_t (*pkt_walk_fn_t)(uint8_t, uint8_t, uint8_t *restrict,
     size_t, void *restrict);
-pkt_walk_ret_t pkt_payload_walk(uint8_t *restrict, size_t, pkt_walk_fn_t,
+boolean_t pkt_payload_walk(uint8_t *restrict, size_t, pkt_walk_fn_t,
     uint8_t, void *restrict, struct bunyan_logger *restrict);
 
 boolean_t pkt_count_payloads(uint8_t *restrict, size_t, uint8_t, size_t *,

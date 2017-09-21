@@ -73,7 +73,7 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 	VERIFY(!(sa->flags & I2SA_INITIATOR));
 	VERIFY3P(ke_i, !=, NULL);
 
-	bunyan_info(sa->i2sa_log,
+	(void) bunyan_info(sa->i2sa_log,
 	    "Starting new IKE_SA_INIT exchange as responder",
 	    BUNYAN_T_END);
 
@@ -90,7 +90,7 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 		 * to a DH group mismatch or if we were to respond with a
 		 * cookie).  Therefore, we can delete the larval IKE SA.
 		 */
-		ikev2_no_proposal_chosen(sa, pkt, IKEV2_PROTO_IKE, 0);
+		ikev2_no_proposal_chosen(pkt, IKEV2_PROTO_IKE, 0);
 		goto fail;
 	}
 
@@ -207,7 +207,7 @@ redo_init(pkt_t *pkt)
 			/*
 			 * The notification does not have the correct format
 			 */
-			bunyan_info(sa->i2sa_log,
+			(void) bunyan_info(sa->i2sa_log,
 			    "INVALID_KE_PAYLOAD notification does not "
 			    "include a 16-bit DH group payload",
 			    BUNYAN_T_UINT32, "ntfylen",
@@ -242,7 +242,7 @@ ikev2_sa_init_inbound_resp(pkt_t *pkt)
 	ikev2_sa_result_t sa_result = { 0 };
 
 	if (pkt_get_notify(pkt, IKEV2_N_NO_PROPOSAL_CHOSEN, NULL) != NULL) {
-		bunyan_error(sa->i2sa_log,
+		(void) bunyan_error(sa->i2sa_log,
 		    "IKE_SA_INIT exchange failed, no proposal chosen",
 		    BUNYAN_T_END);
 		ikev2_sa_condemn(sa);
@@ -298,7 +298,7 @@ ikev2_sa_init_outbound(ikev2_sa_t *restrict i2sa, uint8_t *restrict cookie,
 	sockaddr_u_t raddr = { .sau_ss = &i2sa->raddr };
 
 	if (nonce == NULL) {
-		bunyan_info(i2sa->i2sa_log,
+		(void) bunyan_info(i2sa->i2sa_log,
 		    "Starting new IKE_SA_INIT exchange as initiator",
 		    BUNYAN_T_END);
 	}
@@ -374,16 +374,18 @@ find_config(pkt_t *pkt, sockaddr_u_t laddr, sockaddr_u_t raddr)
 
 done:
 	if (RULE_IS_DEFAULT(sa->i2sa_rule)) {
-		bunyan_debug(sa->i2sa_log, "Using default rule", BUNYAN_T_END);
+		(void) bunyan_debug(sa->i2sa_log, "Using default rule",
+		    BUNYAN_T_END);
 	} else {
-		bunyan_debug(sa->i2sa_log, "Found rule",
+		(void) bunyan_debug(sa->i2sa_log, "Found rule",
 		    BUNYAN_T_STRING, "label", sa->i2sa_rule->rule_label,
 		    BUNYAN_T_END);
 	}
 
 	if (sa->i2sa_rule->rule_nxf == 0) {
-		bunyan_debug(sa->i2sa_log, "No transforms found", BUNYAN_T_END);
-		ikev2_no_proposal_chosen(sa, pkt, IKEV2_PROTO_IKE, 0);
+		(void) bunyan_debug(sa->i2sa_log, "No transforms found",
+		    BUNYAN_T_END);
+		ikev2_no_proposal_chosen(pkt, IKEV2_PROTO_IKE, 0);
 		return (B_FALSE);
 	}
 
@@ -524,7 +526,7 @@ check_nats(pkt_t *pkt)
 			 * entirely?
 			 */
 			if (n->pn_proto != IKEV2_PROTO_IKE) {
-				bunyan_error(sa->i2sa_log,
+				(void) bunyan_error(sa->i2sa_log,
 				    "Invalid SPI protocol in notification",
 				    BUNYAN_T_STRING, "notification",
 				    ikev2_notify_str(params[i].ntype),
@@ -535,7 +537,7 @@ check_nats(pkt_t *pkt)
 				return (B_FALSE);
 			}
 			if (n->pn_spi != 0) {
-				bunyan_error(sa->i2sa_log,
+				(void) bunyan_error(sa->i2sa_log,
 				    "Non-zero SPI size in NAT notification",
 				    BUNYAN_T_STRING, "notification",
 				    ikev2_notify_str(params[i].ntype),
@@ -543,7 +545,7 @@ check_nats(pkt_t *pkt)
 				return (B_FALSE);
 			}
 			if (n->pn_len != NAT_LEN) {
-				bunyan_error(sa->i2sa_log,
+				(void) bunyan_error(sa->i2sa_log,
 				    "NAT notification size mismatch",
 				    BUNYAN_T_STRING, "notification",
 				    ikev2_notify_str(params[i].ntype),
@@ -555,7 +557,6 @@ check_nats(pkt_t *pkt)
 				return (B_FALSE);
 			}
 
-			/* If we have a match, update the respective */
 			if (memcmp(data, n->pn_ptr, NAT_LEN) == 0) {
 				match = B_TRUE;
 				break;
@@ -571,13 +572,18 @@ check_nats(pkt_t *pkt)
 	}
 
 	/* Switch to using the NAT port if either side is NATted */
-	if (sa->flags & (I2SA_NAT_LOCAL|I2SA_NAT_REMOTE)) {
+	if (I2SA_IS_NAT(sa)) {
 		sockaddr_u_t local_addr = { .sau_ss = &sa->laddr };
 		sockaddr_u_t remote_addr = { .sau_ss = &sa->raddr };
 
 		VERIFY3S(local_addr.sau_ss->ss_family, ==,
 		    remote_addr.sau_ss->ss_family);
 
+		/*
+		 * While sendfromto() uses the source port of the bound socket
+		 * when sending, we still update local and remote for
+		 * clarity
+		 */
 		switch (local_addr.sau_ss->ss_family) {
 		case AF_INET:
 			local_addr.sau_sin->sin_port = htons(IPPORT_IKE_NATT);
@@ -656,7 +662,7 @@ check_vendor(pkt_t *pkt)
 
 		if (memcmp(VENDOR_STR_ILLUMOS_1, pay->pp_ptr,
 		    sizeof (VENDOR_STR_ILLUMOS_1)) == 0) {
-			bunyan_debug(sa->i2sa_log,
+			(void) bunyan_debug(sa->i2sa_log,
 			    "Found illumos_1 vendor payload", BUNYAN_T_END);
 			sa->vendor = VENDOR_ILLUMOS_1;
 		}
@@ -801,7 +807,6 @@ ikev2_sa_keygen(ikev2_sa_result_t *restrict result, pkt_t *restrict init,
 	ikev2_sa_t *sa = resp->pkt_sa;
 	pkt_payload_t *ni = pkt_get_payload(init, IKEV2_PAYLOAD_NONCE, NULL);
 	pkt_payload_t *nr = pkt_get_payload(resp, IKEV2_PAYLOAD_NONCE, NULL);
-	CK_SESSION_HANDLE h = p11h();
 	CK_OBJECT_HANDLE nonce = CK_INVALID_HANDLE;
 	CK_OBJECT_HANDLE skeyseed = CK_INVALID_HANDLE;
 	size_t encrlen = result->sar_encr_keylen;

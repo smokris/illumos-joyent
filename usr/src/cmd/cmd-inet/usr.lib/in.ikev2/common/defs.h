@@ -141,7 +141,8 @@ typedef struct algindex {
 	BUNYAN_T_END)
 /* END CSTYLED */
 
-static inline uint32_t
+
+inline uint32_t
 ss_port(const struct sockaddr_storage *ss)
 {
 	sockaddr_u_t sau;
@@ -158,7 +159,7 @@ ss_port(const struct sockaddr_storage *ss)
 	}
 }
 
-static inline const void *
+inline const void *
 ss_addr(const struct sockaddr_storage *ss)
 {
 	sockaddr_u_t sau;
@@ -175,7 +176,7 @@ ss_addr(const struct sockaddr_storage *ss)
 	}
 }
 
-static inline int
+inline int
 ss_bunyan(const struct sockaddr_storage *ss)
 {
 	switch (ss->ss_family) {

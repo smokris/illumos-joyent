@@ -27,6 +27,7 @@
  * Copyright (c) 2017, Joyent, Inc
  */
 
+#include <note.h>
 #include <string.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -173,7 +174,7 @@ ikev2_try_new_sa(pkt_t *restrict pkt,
 	 * XXX: Since cookies are enabled in high traffic situations,
 	 * might we want to silently discard these?
 	 */
-	if (!ikev2_cookie_check(pkt, l_addr, r_addr)) {
+	if (!ikev2_cookie_check(pkt, r_addr)) {
 		errmsg = "Cookies missing or failed check; discarding";
 		goto discard;
 	}
@@ -296,6 +297,7 @@ ikev2_send(pkt_t *pkt, boolean_t is_error)
 static void
 ikev2_retransmit_cb(te_event_t event, void *data)
 {
+	NOTE(ARGUNUSED(event))
 	VERIFY(IS_WORKER);
 
 	ikev2_sa_t *sa = data;
@@ -303,7 +305,6 @@ ikev2_retransmit_cb(te_event_t event, void *data)
 	ike_header_t *hdr = pkt_header(pkt);
 	hrtime_t retry = 0, retry_init = 0, retry_max = 0;
 	size_t limit = 0;
-	ssize_t len;
 
 	VERIFY0(pthread_mutex_lock(&sa->lock));
 
@@ -406,7 +407,6 @@ ikev2_retransmit_check(pkt_t *pkt)
 
 	if (msgid == sa->inmsgid) {
 		pkt_t *resp = sa->last_resp_sent;
-		ssize_t len = 0;
 
 		if (resp == NULL) {
 			discard = B_FALSE;
@@ -416,7 +416,7 @@ ikev2_retransmit_check(pkt_t *pkt)
 		ikev2_pkt_log(pkt, sa->i2sa_log, BUNYAN_L_DEBUG,
 		    "Resending last response");
 
-		len = sendfromto(select_socket(sa), pkt_start(resp),
+		(void) sendfromto(select_socket(sa), pkt_start(resp),
 		    pkt_len(pkt), &sa->laddr, &sa->raddr);
 		goto done;
 	}

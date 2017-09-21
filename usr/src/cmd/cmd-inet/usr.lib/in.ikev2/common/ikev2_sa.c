@@ -92,7 +92,6 @@ static umem_cache_t	*i2sa_cache;
 #define	IKEV2_SA_RHASH(ss, spi) \
     P2PHASE_TYPED(i2sa_rhash((ss), (spi)), num_buckets, uint64_t)
 
-static void	i2sa_init(ikev2_sa_t *);
 static uint32_t	i2sa_rhash(const struct sockaddr_storage *, uint64_t);
 static int i2sa_compare(const ikev2_sa_t *, const i2sa_cmp_t *);
 
@@ -227,8 +226,8 @@ ikev2_sa_alloc(boolean_t initiator,
 	 * we generate a duplicate, just retry until we pick a value that's
 	 * not in use.
 	 */
+	NOTE(CONSTCOND)
 	while (1) {
-		/*CONSTCOND*/
 		uint64_t spi = random_low_64();
 
 		/*
@@ -384,7 +383,6 @@ ikev2_sa_flush(void)
 void
 ikev2_sa_condemn(ikev2_sa_t *i2sa)
 {
-	size_t num = 0;
 	I2SA_REFHOLD(i2sa);
 
 	i2sa_unlink(i2sa);
@@ -555,10 +553,9 @@ ikev2_sa_set_hashsize(uint_t newamt)
 	 */
 	while (--i >= 0) {
 		for (hashtbl = 0; hashtbl < I2SA_NUM_HASH; hashtbl++) {
-			ilist_t *list, *oldlist;
+			ilist_t *oldlist;
 			ikev2_sa_t *i2sa;
 
-			list = &hash[hashtbl][i].chain;
 			oldlist = &old[hashtbl][i].chain;
 
 			while ((i2sa = ilist_remove_head(oldlist)) != NULL) {
@@ -876,7 +873,7 @@ dec_half_open(void)
 static int
 i2sa_ctor(void *buf, void *dummy, int flags)
 {
-	_NOTE(ARGUNUSUED(dummy, flags))
+	NOTE(ARGUNUSED(dummy, flags))
 
 	ikev2_sa_t *i2sa = buf;
 
@@ -893,7 +890,7 @@ i2sa_ctor(void *buf, void *dummy, int flags)
 static void
 i2sa_dtor(void *buf, void *dummy)
 {
-	_NOTE(ARGUNUSUED(dummy))
+	NOTE(ARGUNUSED(dummy))
 
 	ikev2_sa_t *i2sa = (ikev2_sa_t *)buf;
 
