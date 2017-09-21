@@ -245,7 +245,8 @@ do_immediate(void)
 		    BUNYAN_T_STRING, "rule", rule->rule_label,
 		    BUNYAN_T_END);
 
-		worker_dispatch(WMSG_START, sa, I2SA_LOCAL_SPI(sa) % nworkers);
+		worker_dispatch(WMSG_START, sa,
+		    I2SA_LOCAL_SPI(sa) % wk_nworkers);
 	}
 
 	CONFIG_REFRELE(cfg);

@@ -57,7 +57,7 @@ include $(SRC)/cmd/Makefile.cmd
 include $(SRC)/cmd/Makefile.ctf
 
 CPPFLAGS += -D__EXTENSIONS__
-CPPFLAGS += -DHAVE_POSIX_STYLE_SOCKET_PROTOTYPES -D_POSIX_PTHREAD_SEMANTICS
+CPPFLAGS += -D_POSIX_PTHREAD_SEMANTICS
 
 # Use X/Open sockets for fromto.c
 fromto.o := CPPFLAGS += -D_XOPEN_SOURCE=600

@@ -72,7 +72,7 @@ getbuf(void)
 	if (buf == NULL) {
 		buf = umem_alloc(sizeof (*buf), UMEM_DEFAULT);
 		if (buf == NULL)
-			NOMEM;
+			return (NULL);
 		VERIFY0(thr_setspecific(strbuf_key, buf));
 	}
 	return (buf);
@@ -83,6 +83,9 @@ symstr(void *addr)
 {
 	struct strbuf_s *buf = getbuf();
 	Dl_info_t dlinfo = { 0 };
+
+	if (buf == NULL)
+		return ("");
 
 	if (dladdr(addr, &dlinfo) == 0) {
 		(void) snprintf(buf->symstr, sizeof (buf->symstr), "0x%p",
@@ -107,6 +110,9 @@ afstr(sa_family_t af)
 
 	struct strbuf_s *buf = getbuf();
 
+	if (buf == NULL)
+		return ("");
+
 	(void) snprintf(buf->afstr, sizeof (buf->afstr), "%hhu", af);
 	return (buf->afstr);
 }
@@ -121,6 +127,9 @@ event_str(event_t evt)
 	}
 
 	struct strbuf_s *buf = getbuf();
+
+	if (buf == NULL)
+		return ("");
 
 	(void) snprintf(buf->evtstr, sizeof (buf->evtstr), "%d", evt);
 	return (buf->evtstr);
@@ -140,6 +149,9 @@ port_source_str(ushort_t src)
 	}
 
 	struct strbuf_s *buf = getbuf();
+
+	if (buf == NULL)
+		return ("");
 
 	(void) snprintf(buf->portstr, sizeof (buf->portstr), "%hhu", src);
 	return (buf->portstr);

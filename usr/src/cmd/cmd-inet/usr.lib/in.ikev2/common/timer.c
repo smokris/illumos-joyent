@@ -70,7 +70,7 @@ void
 ike_timer_init(void)
 {
 	/* better be single threaded here! */
-	ASSERT(pthread_self() == 1);
+	VERIFY(pthread_self() == 1);
 
 	evt_cache = umem_cache_create("timer events", sizeof (tevent_t), 0,
 	    evt_ctor, NULL, NULL, NULL, NULL, 0);
@@ -184,12 +184,12 @@ schedule_timeout(te_event_t type, tevent_cb_fn fn, void *arg, hrtime_t val,
     bunyan_logger_t *l)
 {
 	VERIFY(IS_WORKER);
+	VERIFY3P(arg, !=, NULL);
+	VERIFY3S(type, !=, TE_ANY);
 
 	ilist_t *events = &worker->w_timers;
 	tevent_t *te = tevent_alloc(type, val, fn, arg);
 	tevent_t *tnode = ilist_head(events);
-
-	VERIFY3S(type, !=, TE_ANY);
 
 	if (te == NULL)
 		return (B_FALSE);
@@ -206,11 +206,17 @@ static tevent_t *
 tevent_alloc(te_event_t type, hrtime_t dur, tevent_cb_fn fn, void *arg)
 {
 	tevent_t *te = umem_cache_alloc(evt_cache, UMEM_DEFAULT);
+	hrtime_t now = gethrtime();
 
 	if (te == NULL)
 		return (NULL);
 
-	te->te_time = gethrtime() + dur;
+	te->te_time = now + dur;
+	if (te->te_time < now || te->te_time < dur) {
+		errno = EOVERFLOW;
+		tevent_free(te);
+		return (NULL);
+	}
 	te->te_type = type;
 	te->te_fn = fn;
 	te->te_arg = arg;
@@ -233,13 +239,13 @@ tevent_log(bunyan_logger_t *restrict l, bunyan_level_t level,
     const char *restrict msg, const tevent_t *restrict te)
 {
 	hrtime_t now = gethrtime();
-	uint64_t when = NSEC2MSEC(te->te_time - now);
+	int64_t when = NSEC2MSEC(te->te_time - now);
 
 	/* XXX: Get the function name, would dladdr(3C) be better? */
 	(void) getlog(level)(l, msg,
 	    BUNYAN_T_STRING, "event", te_str(te->te_type),
 	    BUNYAN_T_UINT32, "event num", (uint32_t)te->te_type,
-	    BUNYAN_T_UINT64, "ms", when,
+	    BUNYAN_T_INT64, "ms", when,
 	    BUNYAN_T_POINTER, "fn", te->te_fn,
 	    BUNYAN_T_STRING, "fnname", symstr(te->te_fn),
 	    BUNYAN_T_POINTER, "arg", te->te_arg,

@@ -78,7 +78,12 @@ typedef struct config_id_s {
 		} id_buf;
 		in_addr_t	id_ipv4;
 		in6_addr_t	id_ipv6;
-	} val;
+	} id_val;
+#define	idu_str	id_val.id_str
+#define	idu_buf	id_val.id_buf.id_buf
+#define	idu_len	id_val.id_buf.id_len
+#define	idu_ip4	id_val.id_ipv4
+#define	idu_ip6	id_val.id_ipv6
 } config_id_t;
 
 typedef struct config_xf_s {

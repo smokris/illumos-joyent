@@ -416,9 +416,10 @@ pkcs11_callback_handler(CK_SESSION_HANDLE session, CK_NOTIFICATION surrender,
 
 #define	CHUNK_SZ (8)
 void
-pkcs11_session_free(void *arg)
+pkcs11_session_free(CK_SESSION_HANDLE h)
 {
-	CK_SESSION_HANDLE h = (CK_SESSION_HANDLE)arg;
+	if (h == CK_INVALID_HANDLE)
+		return;
 
 	/*
 	 * Per the PKCS#11 standard, multiple handles in the same process

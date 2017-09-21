@@ -112,9 +112,6 @@ struct pkt_s {
 				 */
 	uint8_t			*pkt_ptr;
 
-				/* Copy of ISAKMP header in local byte order */
-	ike_header_t		pkt_header;
-
 				/* Payload index */
 	pkt_payload_t		pkt_payloads[PKT_PAYLOAD_NUM];
 	pkt_payload_t		*pkt_payload_extra;
@@ -143,6 +140,12 @@ inline uint8_t *
 pkt_start(pkt_t *pkt)
 {
 	return ((uint8_t *)&pkt->pkt_raw);
+}
+
+inline ike_header_t *
+pkt_header(const pkt_t *pkt)
+{
+	return ((ike_header_t *)&pkt->pkt_raw);
 }
 
 inline size_t

@@ -41,6 +41,12 @@ typedef enum worker_cmd_e {
 	WC_QUIT
 } worker_cmd_t;
 
+/*
+ * The full lifetime of the wi_data argument depends on the type of message
+ * associated with it.  For every message type however, it can be assumed
+ * that the worker itself will handle any deallocation and the caller need
+ * not concern themselves with it unless dispatching fails.
+ */
 typedef struct worker_item_s {
 	worker_msg_t	wi_msgtype;
 	void		*wi_data;
@@ -60,7 +66,6 @@ typedef struct worker_s {
 	bunyan_logger_t		*w_log;
 	worker_queue_t		w_queue;
 	ilist_t			w_timers;
-	ilist_t			w_sas;
 	boolean_t		w_done;
 	CK_SESSION_HANDLE	w_p11;
 } worker_t;
@@ -68,7 +73,7 @@ typedef struct worker_s {
 extern __thread worker_t *worker;
 #define	IS_WORKER	(worker != NULL)
 
-extern size_t nworkers;
+extern size_t wk_nworkers;
 
 void worker_init(size_t, size_t);
 void worker_suspend(void);

@@ -179,7 +179,13 @@ recvfromto(int s, uint8_t *restrict buf, size_t buflen, int flags,
 	return (len);
 }
 
-/* send packet, with fixing src/dst address pair. */
+/*
+ * Send packet, with fixing src/dst address pair. It should be noted
+ * that the source port value used is the one that was set on the
+ * socket being used (i.e. the port value in 'src' is ignored), while
+ * the port value in 'dest' IS used to determine the destination port of
+ * the datagram.
+ */
 ssize_t
 sendfromto(int s, const uint8_t *restrict buf, size_t buflen,
     struct sockaddr_storage *restrict src,

@@ -80,7 +80,6 @@ typedef enum i2sa_hash_e {
  */
 struct ikev2_sa_s {
 	pthread_mutex_t lock;
-	list_node_t	i2sa_wnode;
 	list_node_t	i2sa_lspi_node;
 	list_node_t	i2sa_rspi_node;
 

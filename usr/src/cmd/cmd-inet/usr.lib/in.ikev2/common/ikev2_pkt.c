@@ -73,7 +73,6 @@ ikev2_pkt_new_exchange(ikev2_sa_t *i2sa, ikev2_exch_t exch_type)
 
 	VERIFY0(pthread_mutex_unlock(&i2sa->lock));
 
-	pkt->pkt_header.flags = IKEV2_FLAG_INITIATOR;
 	pkt->pkt_sa = i2sa;
 	I2SA_REFHOLD(i2sa);
 	return (pkt);
@@ -84,6 +83,7 @@ pkt_t *
 ikev2_pkt_new_response(const pkt_t *init)
 {
 	pkt_t *pkt;
+	ike_header_t *hdr = pkt_header(init);
 	uint8_t flags = IKEV2_FLAG_RESPONSE;
 
 	ASSERT(PKT_IS_V2(init));
@@ -91,11 +91,11 @@ ikev2_pkt_new_response(const pkt_t *init)
 	if (init->pkt_sa->flags & I2SA_INITIATOR)
 		flags |= IKEV2_FLAG_INITIATOR;
 
-	pkt = pkt_out_alloc(init->pkt_header.initiator_spi,
-	    init->pkt_header.responder_spi,
+	pkt = pkt_out_alloc(hdr->initiator_spi,
+	    hdr->responder_spi,
 	    IKEV2_VERSION,
-	    init->pkt_header.exch_type,
-	    init->pkt_header.msgid, flags);
+	    hdr->exch_type,
+	    ntohl(hdr->msgid), flags);
 	if (pkt == NULL)
 		return (NULL);
 
@@ -163,16 +163,20 @@ ikev2_pkt_new_inbound(uint8_t *restrict buf, size_t buflen,
 boolean_t
 ikev2_walk_proposals(uint8_t *restrict start, size_t len,
     ikev2_prop_cb_t cb, void *restrict cookie,
-    bunyan_logger_t *restrict l)
+    bunyan_logger_t *restrict l, boolean_t quiet)
 {
 	uint8_t *ptr = start, *end = start + len;
-
 	while (ptr < end) {
 		ikev2_sa_proposal_t prop = { 0 };
+		uint64_t spi = 0;
+		size_t datalen = 0;
 
 		if (ptr + sizeof (prop) > end) {
-			bunyan_error(l, "Proposal length mismatch",
-			    BUNYAN_T_END);
+			if (!quiet) {
+				(void) bunyan_error(l,
+				    "Proposal length mismatch",
+				    BUNYAN_T_END);
+			}
 			return (B_FALSE);
 		}
 
@@ -180,42 +184,72 @@ ikev2_walk_proposals(uint8_t *restrict start, size_t len,
 		prop.proto_length = ntohs(prop.proto_length);
 
 		if (ptr + prop.proto_length > end) {
-			bunyan_error(l, "Proposal overruns SA payload",
-			    BUNYAN_T_UINT32, "propnum",
-			    (uint32_t)prop.proto_proposalnr,
-			    BUNYAN_T_UINT32, "proplen",
-			    (uint32_t)prop.proto_length, BUNYAN_T_END);
+			if (!quiet) {
+				(void) bunyan_error(l,
+				    "Proposal overruns SA payload",
+				    BUNYAN_T_UINT32, "propnum",
+				    (uint32_t)prop.proto_proposalnr,
+				    BUNYAN_T_UINT32, "proplen",
+				    (uint32_t)prop.proto_length, BUNYAN_T_END);
+			}
+			return (B_FALSE);
+		}
+
+		if (sizeof (prop) + prop.proto_spisize > prop.proto_length) {
+			if (!quiet) {
+				(void) bunyan_error(l,
+				    "SPI length overruns proposal length",
+				    BUNYAN_T_UINT32, "proplen",
+				    (uint32_t)prop.proto_length,
+				    BUNYAN_T_UINT32, "spisize",
+				    (uint32_t)prop.proto_spisize,
+				    BUNYAN_T_END);
+			}
 			return (B_FALSE);
 		}
 
 		if (ptr + prop.proto_length == end) {
 			if (prop.proto_more != IKEV2_PROP_LAST) {
-				bunyan_error(l, "Last proposal does not have "
-				    "IKEV2_PROP_LAST set", BUNYAN_T_END);
+				if (!quiet) {
+					(void) bunyan_error(l,
+					    "Last proposal does not have "
+					    "IKEV2_PROP_LAST set",
+					    BUNYAN_T_END);
+				}
 				return (B_FALSE);
 			}
 		} else {
 			if (prop.proto_more != IKEV2_PROP_MORE) {
-				bunyan_error(l, "Non-last proposal does not "
-				    "have IKEV2_PROP_MORE set", BUNYAN_T_END);
+				if (!quiet) {
+					(void) bunyan_error(l,
+					    "Non-last proposal does not "
+					    "have IKEV2_PROP_MORE set",
+					    BUNYAN_T_END);
+				}
 				return (B_FALSE);
 			}
 		}
 
 		ptr += sizeof (prop);
 
-		uint64_t spi = 0;
-		for (size_t i = 0; i < prop.proto_spisize; i++) {
-			uint64_t val = *ptr;
-			spi = (spi << 8) | (val & 0xffULL);
-			ptr++;
+		if (!pkt_get_spi(&ptr, prop.proto_spisize, &spi)) {
+			if (!quiet) {
+				(void) bunyan_error(l,
+				    "Unsupported SPI length",
+				    BUNYAN_T_UINT32, "spisize",
+				    (uint32_t)prop.proto_spisize,
+				    BUNYAN_T_END);
+			}
+			return (B_FALSE);
 		}
 
-		if (cb != NULL && !cb(&prop, spi, ptr,
-		    len - (size_t)(ptr - start), cookie))
+		datalen = prop.proto_length - sizeof (prop) -
+		    prop.proto_spisize;
+
+		if (cb != NULL && !cb(&prop, spi, ptr, datalen, cookie))
 			return (B_TRUE);
 
-		ptr += prop.proto_length;
+		ptr += datalen;
 	}
 	return (B_TRUE);
 }
@@ -797,15 +831,17 @@ add_iv(pkt_t *restrict pkt)
 
 	switch (mode) {
 	case MODE_CCM:
-	case MODE_GCM:
+	case MODE_GCM: {
+		uint32_t msgid = ntohl(pkt_header(pkt)->msgid);
 		/*
 		 * For these modes, it's sufficient that the IV + key
 		 * is unique.  The packet message id satisifies these
 		 * requirements.
 		 */
-		put32(pkt, pkt->pkt_header.msgid);
-		pkt->pkt_ptr += (len - sizeof (pkt->pkt_header.msgid));
+		put32(pkt, msgid);
+		pkt->pkt_ptr += (len - sizeof (msgid));
 		return (B_TRUE);
+	}
 	case MODE_CTR:
 		/* TODO */
 		return (B_FALSE);
@@ -826,6 +862,7 @@ add_iv(pkt_t *restrict pkt)
 	CK_OBJECT_HANDLE key;
 	CK_ULONG blocklen = 0;
 	CK_RV rc = CKR_OK;
+	uint32_t msgid = ntohl(pkt_header(pkt)->msgid);
 
 	if (pkt->pkt_sa->flags & I2SA_INITIATOR)
 		key = sa->sk_ei;
@@ -853,8 +890,7 @@ add_iv(pkt_t *restrict pkt)
 	CK_BYTE buf[blocklen];
 
 	(void) memset(buf, 0, blocklen);
-	(void) memcpy(buf, &pkt->pkt_header.msgid,
-	    sizeof (pkt->pkt_header.msgid));
+	(void) memcpy(buf, &msgid, sizeof (msgid));
 
 	rc = C_EncryptInit(h, &mech, key);
 	if (rc != CKR_OK) {
@@ -1125,7 +1161,7 @@ ikev2_pkt_done(pkt_t *pkt)
 
 	pkt_payload_t *sk = pkt_get_payload(pkt, IKEV2_PAYLOAD_SK, NULL);
 
-	if (pkt->pkt_header.exch_type == IKEV2_EXCH_IKE_SA_INIT) {
+	if (pkt_header(pkt)->exch_type == IKEV2_EXCH_IKE_SA_INIT) {
 		VERIFY3P(sk, ==, NULL);
 		return (pkt_done(pkt));
 	}
@@ -1208,7 +1244,7 @@ check_payloads(pkt_t *pkt)
 		PAYCOUNT(idx->pp_type)++;
 	}
 
-	if (pkt->pkt_header.exch_type != IKEV2_EXCH_IKE_SA_INIT) {
+	if (pkt_header(pkt)->exch_type != IKEV2_EXCH_IKE_SA_INIT) {
 		if (PAYCOUNT(IKEV2_PAYLOAD_SK) == 0) {
 			ikev2_pkt_log(pkt, log, BUNYAN_L_INFO,
 			    "Non IKE_SA_INIT exchange is missing SK payload");
@@ -1220,8 +1256,8 @@ check_payloads(pkt_t *pkt)
 		return (B_TRUE);
 	}
 
-	if ((pkt->pkt_header.flags & IKEV2_FLAG_RESPONSE) &&
-	    (pkt->pkt_header.responder_spi == 0)) {
+	if ((pkt_header(pkt)->flags & IKEV2_FLAG_RESPONSE) &&
+	    (pkt_header(pkt)->responder_spi == 0)) {
 		if (PAYCOUNT(IKEV2_PAYLOAD_SA) > 0) {
 			ikev2_pkt_log(pkt, log, BUNYAN_L_INFO,
 			    "IKE_SA_INIT error response contains SA payload");
@@ -1307,28 +1343,60 @@ ikev2_pkt_desc(pkt_t *pkt)
 	return (s);
 }
 
+static struct {
+	const char *str;
+	uint8_t val;
+} flagtbl[] = {
+	{ "RESPONSE", IKEV2_FLAG_RESPONSE },
+	{ "VERSION", IKEV2_FLAG_VERSION },
+	{ "INITIATOR", IKEV2_FLAG_INITIATOR }
+};
+
 void
 ikev2_pkt_log(pkt_t *restrict pkt, bunyan_logger_t *restrict log,
     bunyan_level_t level, const char *msg)
 {
+	ike_header_t *hdr = pkt_header(pkt);
 	char *descstr = ikev2_pkt_desc(pkt);
 	char ispi[19];
 	char rspi[19];
+	char flag[30];
 
 	VERIFY3P(descstr, !=, NULL);
 
 	(void) snprintf(ispi, sizeof (ispi), "0x%" PRIX64,
-	    pkt->pkt_header.initiator_spi);
+	    ntohll(hdr->initiator_spi));
 	(void) snprintf(rspi, sizeof (rspi), "0x%" PRIX64,
-	    pkt->pkt_header.responder_spi);
+	    ntohll(hdr->responder_spi));
+	(void) snprintf(flag, sizeof (flag), "0x%" PRIx8, hdr->flags);
+	if (hdr->flags != 0) {
+		size_t count = 0;
+
+		(void) strlcat(flag, "<", sizeof (flag));
+		for (size_t i = 0; i < ARRAY_SIZE(flagtbl); i++) {
+			if (hdr->flags & flagtbl[i].val) {
+				if (count > 0) {
+					(void) strlcat(flag, ",",
+					    sizeof (flag));
+				}
+				(void) strlcat(flag, flagtbl[i].str,
+				    sizeof (flag));
+				count++;
+			}
+		}
+		(void) strlcat(flag, ">", sizeof (flag));
+	}
 
 	getlog(level)(log, msg,
+	    BUNYAN_T_POINTER, "pkt", pkt,
 	    BUNYAN_T_STRING, "initiator_spi", ispi,
 	    BUNYAN_T_UINT64, "responder_spi", rspi,
 	    BUNYAN_T_STRING, "exch_type",
-	    ikev2_exch_str(pkt->pkt_header.exch_type),
-	    BUNYAN_T_UINT32, "msgid", pkt->pkt_header.msgid,
-	    BUNYAN_T_UINT32, "msglen", pkt->pkt_header.length,
+	    ikev2_exch_str(hdr->exch_type),
+	    BUNYAN_T_UINT32, "msgid", ntohl(pkt_header(pkt)->msgid),
+	    BUNYAN_T_UINT32, "msglen", ntohl(pkt_header(pkt)->length),
+	    BUNYAN_T_STRING, "flags", flag,
+	    BUNYAN_T_UINT32, "nxmit", (uint32_t)pkt->pkt_xmit,
 	    BUNYAN_T_STRING, "payloads", descstr,
 	    BUNYAN_T_END);
 	free(descstr);

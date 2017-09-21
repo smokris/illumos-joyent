@@ -100,6 +100,7 @@ void pkcs11_fini(void);
 
 CK_SESSION_HANDLE p11h(void);
 CK_SESSION_HANDLE pkcs11_new_session(void);
+void pkcs11_session_free(CK_SESSION_HANDLE);
 void pkcs11_destroy_obj(const char *, CK_OBJECT_HANDLE_PTR, bunyan_logger_t *);
 
 size_t ikev2_auth_icv_size(ikev2_xf_encr_t, ikev2_xf_auth_t);

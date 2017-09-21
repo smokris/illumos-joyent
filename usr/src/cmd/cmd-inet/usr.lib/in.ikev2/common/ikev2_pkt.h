@@ -94,7 +94,7 @@ typedef boolean_t (*ikev2_xf_cb_t)(ikev2_transform_t *, uint8_t *, size_t,
 typedef boolean_t (*ikev2_xfattr_cb_t)(ikev2_attribute_t *, void *);
 
 boolean_t ikev2_walk_proposals(uint8_t *restrict, size_t, ikev2_prop_cb_t,
-    void *restrict, bunyan_logger_t *restrict);
+    void *restrict, bunyan_logger_t *restrict, boolean_t);
 boolean_t ikev2_walk_xfs(uint8_t *restrict, size_t, ikev2_xf_cb_t,
     void *restrict, bunyan_logger_t *restrict);
 boolean_t ikev2_walk_xfattrs(uint8_t *restrict, size_t, ikev2_xfattr_cb_t,

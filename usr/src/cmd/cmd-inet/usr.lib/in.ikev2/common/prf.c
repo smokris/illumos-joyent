@@ -12,13 +12,16 @@
 /*
  * Copyright 2014 Jason King.
  */
-#include <sys/debug.h>
-#include <security/cryptoki.h>
-#include <umem.h>
-#include <limits.h>
-#include <string.h>
-#include <stdarg.h>
 #include <bunyan.h>
+#include <limits.h>
+#include <security/cryptoki.h>
+#include <stdarg.h>
+#include <string.h>
+#include <sys/debug.h>
+#include <sys/md5.h>	/* For length constants */
+#include <sys/sha1.h>	/* For length constants */
+#include <sys/sha2.h>	/* For length constants */
+#include <umem.h>
 #include "defs.h"
 #include "ikev2.h"
 #include "prf.h"
@@ -55,6 +58,14 @@
  * underlying PRF function.
  */
 #define	PRFP_ITER_MAX	(255)
+
+/*
+ * Output lengths of these digest algs, don't seem to have preexisting
+ * values for these anywhere.
+ */
+#define	AES_CMAC_LENGTH	(16)
+#define	AES_XCBC_LENGTH	(16)
+
 static boolean_t prfplus_update(prfp_t *);
 
 /*
@@ -320,9 +331,10 @@ ikev2_prf_to_p11(ikev2_prf_t prf)
 		return (CKM_SHA512_HMAC);
 	case IKEV2_PRF_AES128_CMAC:
 		return (CKM_AES_CMAC);
-	case IKEV2_PRF_HMAC_TIGER:
 	case IKEV2_PRF_AES128_XCBC:
-		return (0);
+		return (CKM_AES_XCBC_MAC);
+	case IKEV2_PRF_HMAC_TIGER:
+		INVALID("unsupported prf function");
 	}
 
 	INVALID("invalid PRF value");
@@ -335,21 +347,30 @@ size_t
 ikev2_prf_keylen(ikev2_prf_t prf)
 {
 	switch (prf) {
+		/*
+		 * RFC7296 2.12 -- For PRFs based on HMAC, preferred key size is
+		 * equal to the output of the underlying hash function.
+		 */
 	case IKEV2_PRF_HMAC_MD5:
 	case IKEV2_PRF_HMAC_SHA1:
 	case IKEV2_PRF_HMAC_SHA2_256:
 	case IKEV2_PRF_HMAC_SHA2_384:
 	case IKEV2_PRF_HMAC_SHA2_512:
 		/*
-		 * RFC7296 2.12 -- For PRFs based on HMAC, preferred key size is
-		 * equal to the output of the underlying hash function.
+		 * However these two are defined elsewhere, and while the
+		 * RFCs (RFC3664 & RFC4615 respectively) don't explicitly
+		 * state they also use the output length as the preferred
+		 * key size, they happen to be the same
 		 */
-		return (ikev2_prf_outlen(prf));
-	case IKEV2_PRF_AES128_CMAC:
 	case IKEV2_PRF_AES128_XCBC:
-		return (16);
+	case IKEV2_PRF_AES128_CMAC:
+		return (ikev2_prf_outlen(prf));
 	case IKEV2_PRF_HMAC_TIGER:
-		return (0);
+		/*
+		 * We should never negotiate this, so if we try to use it,
+		 * it's a progamming bug in the SA negotiation.
+		 */
+		INVALID("TIGER is unsupported");
 	}
 	INVALID("Invalid PRF value");
 
@@ -362,21 +383,29 @@ ikev2_prf_outlen(ikev2_prf_t prf)
 {
 	switch (prf) {
 	case IKEV2_PRF_HMAC_MD5:
+		return (MD5_DIGEST_LENGTH);
 	case IKEV2_PRF_HMAC_SHA1:
-		return (16);
+		return (SHA1_DIGEST_LENGTH);
 	case IKEV2_PRF_HMAC_SHA2_256:
-		return (32);
+		return (SHA256_DIGEST_LENGTH);
 	case IKEV2_PRF_HMAC_SHA2_384:
-		return (48);
+		return (SHA384_DIGEST_LENGTH);
 	case IKEV2_PRF_HMAC_SHA2_512:
-		return (64);
+		return (SHA512_DIGEST_LENGTH);
 	case IKEV2_PRF_AES128_CMAC:
+		return (AES_CMAC_LENGTH);
 	case IKEV2_PRF_AES128_XCBC:
+		return (AES_XCBC_LENGTH);
 	case IKEV2_PRF_HMAC_TIGER:
-		return (0);
+		/*
+		 * We should never negotiate this, so if we try to use it,
+		 * it's a progamming bug in the SA negotiation.
+		 */
+		INVALID("TIGER is unsupported");
 	}
 
 	INVALID("Invalid PRF value");
+
 	/*NOTREACHED*/
 	return (0);
 }

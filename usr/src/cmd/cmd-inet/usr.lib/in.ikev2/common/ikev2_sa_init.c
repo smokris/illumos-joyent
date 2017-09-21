@@ -49,7 +49,7 @@ static boolean_t ikev2_sa_keygen(ikev2_sa_result_t *restrict, pkt_t *restrict,
 void
 ikev2_sa_init_inbound(pkt_t *pkt)
 {
-	if (pkt->pkt_header.flags & IKEV2_FLAG_INITIATOR)
+	if (pkt_header(pkt)->flags & IKEV2_FLAG_INITIATOR)
 		ikev2_sa_init_inbound_init(pkt);
 	else
 		ikev2_sa_init_inbound_resp(pkt);
@@ -110,7 +110,7 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 		return;
 	}
 
-	sa->init_r = pkt;
+	sa->init_i = pkt;
 
 	/* RFC7296 2.10 nonce length should be at least half key size of PRF */
 	noncelen = ikev2_prf_keylen(sa_result.sar_prf) / 2;
@@ -130,7 +130,7 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 	 * initating packet, so for this one instance we must set it
 	 * manually since the initiator doesn't yet know our local SPI.
 	 */
-	resp->pkt_header.responder_spi = I2SA_LOCAL_SPI(sa);
+	pkt_header(resp)->responder_spi = I2SA_LOCAL_SPI(sa);
 
 	if (!ikev2_sa_add_result(resp, &sa_result))
 		goto fail;
@@ -163,6 +163,8 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 		goto fail;
 	if (!ikev2_send(resp, B_FALSE))
 		goto fail;
+
+	sa->init_r = resp;
 	return;
 
 fail:
@@ -272,7 +274,7 @@ ikev2_sa_init_inbound_resp(pkt_t *pkt)
 	if (!ikev2_sa_keygen(&sa_result, sa->init_i, pkt))
 		goto fail;
 
-	ikev2_sa_set_remote_spi(sa, INBOUND_REMOTE_SPI(&pkt->pkt_header));
+	ikev2_sa_set_remote_spi(sa, INBOUND_REMOTE_SPI(pkt_header(pkt)));
 	sa->init_r = pkt;
 	return;
 
@@ -411,9 +413,12 @@ compute_nat(uint64_t *restrict spi, struct sockaddr_storage *restrict addr,
 	CK_RV ret = CKR_OK;
 	size_t addrlen = (addr->ss_family == AF_INET) ?
 	    sizeof (in_addr_t) : sizeof (in6_addr_t);
-	uint16_t port = (uint16_t)ss_port(addr);
+	uint16_t port = (addr->ss_family == AF_INET) ?
+	    ((struct sockaddr_in *)addr)->sin_port :
+	    ((struct sockaddr_in6 *)addr)->sin6_port;
 
 	VERIFY3U(buflen, >=, NAT_LEN);
+	VERIFY(addr->ss_family == AF_INET || addr->ss_family == AF_INET6);
 
 	p11f = "C_DigestInit";
 	ret = C_DigestInit(h, &mech);
@@ -479,9 +484,30 @@ check_nats(pkt_t *pkt)
 		}
 	};
 
+	/*
+	 * RFC7296 2.23 goes into more detail, but briefly, each side
+	 * generates an SHA1 hash of the packet SPIs (in the order they
+	 * appear in the header), the IP address of the source/destination
+	 * (based on which NAT payload is being constructed) and port number.
+	 * It is permissible that an implementation may include multiple
+	 * NAT_DETECTION_SOURCE_IP payloads if the host has multiple addresses
+	 * and is unsure which one was used to send the datagram.
+	 *
+	 * We perform the same hash (using the IP and port we see) and if
+	 * there are no matches, then the side (local/remote) being checked
+	 * is behind a NAT.  If either side is behind a NAT,  we switch to
+	 * using the NATT port (4500) for all subsequent traffic.
+	 *
+	 * While the presense of a NAT on one side of the connection is all
+	 * that is necessary to switch to NAT traversal mode, we still
+	 * retain knowledge of which side is behind the NAT as we will
+	 * (eventually) want to enable UDP keepalives when we are the ones
+	 * behind a NAT.
+	 */
 	for (size_t i = 0; i < 2; i++) {
 		pkt_notify_t *n = pkt_get_notify(pkt, params[i].ntype, NULL);
 		uint8_t data[NAT_LEN] = { 0 };
+		boolean_t match = B_FALSE;
 
 		/* If notification isn't present, assume no NAT */
 		if (n == NULL)
@@ -529,16 +555,44 @@ check_nats(pkt_t *pkt)
 				return (B_FALSE);
 			}
 
+			/* If we have a match, update the respective */
 			if (memcmp(data, n->pn_ptr, NAT_LEN) == 0) {
-				sa->flags |= params[i].flag;
-				bunyan_debug(sa->i2sa_log, params[i].msg,
-				    BUNYAN_T_END);
+				match = B_TRUE;
 				break;
 			}
 
 			n = pkt_get_notify(pkt, params[i].ntype, n);
 		}
+
+		if (!match) {
+			sa->flags |= params[i].flag;
+			bunyan_debug(sa->i2sa_log, params[i].msg, BUNYAN_T_END);
+		}
 	}
+
+	/* Switch to using the NAT port if either side is NATted */
+	if (sa->flags & (I2SA_NAT_LOCAL|I2SA_NAT_REMOTE)) {
+		sockaddr_u_t local_addr = { .sau_ss = &sa->laddr };
+		sockaddr_u_t remote_addr = { .sau_ss = &sa->raddr };
+
+		VERIFY3S(local_addr.sau_ss->ss_family, ==,
+		    remote_addr.sau_ss->ss_family);
+
+		switch (local_addr.sau_ss->ss_family) {
+		case AF_INET:
+			local_addr.sau_sin->sin_port = htons(IPPORT_IKE_NATT);
+			remote_addr.sau_sin->sin_port = htons(IPPORT_IKE_NATT);
+			break;
+		case AF_INET6:
+			local_addr.sau_sin6->sin6_port = htons(IPPORT_IKE_NATT);
+			remote_addr.sau_sin6->sin6_port =
+			    htons(IPPORT_IKE_NATT);
+			break;
+		default:
+			INVALID("ss_family");
+		}
+	}
+
 	return (B_TRUE);
 }
 
@@ -570,21 +624,12 @@ add_nat(pkt_t *pkt)
 		}
 	};
 
-	/*
-	 * These normally don't get converted to network byte order until
-	 * the packet has finished construction, so we need to do local
-	 * conversion for the NAT payload creation
-	 */
-	uint64_t spi[2] = {
-		htonll(pkt->pkt_header.initiator_spi),
-		htonll(pkt->pkt_header.responder_spi)
-	};
-
 	for (int i = 0; i < 2; i++) {
 		uint8_t data[NAT_LEN] = { 0 };
 
-		if (!compute_nat(spi, params[i].addr, data, sizeof (data),
-		    sa->i2sa_log))
+		/* The SPIs are always at the start of the packet */
+		if (!compute_nat(pkt->pkt_raw, params[i].addr, data,
+		    sizeof (data), sa->i2sa_log))
 			return (B_FALSE);
 
 		if (!ikev2_add_notify(pkt, IKEV2_PROTO_IKE, 0, params[i].ntype,
@@ -775,6 +820,7 @@ ikev2_sa_keygen(ikev2_sa_result_t *restrict result, pkt_t *restrict init,
 	sa->prf = result->sar_prf;
 	sa->dhgrp = result->sar_dh;
 	sa->saltlen = encr_data[result->sar_encr].ed_saltlen;
+	sa->encr_key_len = encrlen / 8;
 
 	if (!create_nonceobj(sa->prf, ni, nr, &nonce, sa->i2sa_log))
 		goto fail;

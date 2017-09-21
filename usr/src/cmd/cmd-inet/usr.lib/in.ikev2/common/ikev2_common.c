@@ -280,7 +280,7 @@ ikev2_sa_match_rule(config_rule_t *restrict rule, pkt_t *restrict pkt,
 			    BUNYAN_T_END);
 
 			VERIFY(ikev2_walk_proposals(pay->pp_ptr, pay->pp_len,
-			    match_rule_prop_cb, &data, l));
+			    match_rule_prop_cb, &data, l, B_FALSE));
 
 			if (data.rd_match) {
 				bunyan_debug(l, "Found proposal match",
@@ -520,7 +520,7 @@ ikev2_sa_match_acquire(parsedmsg_t *restrict pmsg, ikev2_dh_t dh,
 		(void) memset(result, 0, sizeof (*result));
 
 		VERIFY(ikev2_walk_proposals(pay->pp_ptr, pay->pp_len,
-		    match_acq_prop_cb, &data, l));
+		    match_acq_prop_cb, &data, l, B_FALSE));
 
 		if (data.ad_match) {
 			(void) bunyan_debug(l, "Found proposal match",
@@ -638,6 +638,7 @@ match_acq_xf_cb(ikev2_transform_t *xf, uint8_t *buf, size_t buflen,
 		data->ad_res->sar_dh = xf->xf_id;
 		break;
 	case IKEV2_XF_ESN:
+		/* XXX: At some point, pf_key(7P) will need support for this */
 		if (xf->xf_id != IKEV2_ESN_NONE)
 			break;
 		match = B_TRUE;

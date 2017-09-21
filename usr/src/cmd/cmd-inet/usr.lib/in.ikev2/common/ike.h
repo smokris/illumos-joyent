@@ -92,6 +92,9 @@ typedef struct ike_xform ike_xform_t;
 #define	IKE_XFORM_NONE	(0)
 #define	IKE_XFORM_MORE	(3)
 
+#define	IKE_ATTR_MAXTYPE	(0x7fff)
+#define	IKE_ATTR_MAXLEN		(UINT16_MAX - sizeof (ike_xf_attr_t))
+#define	IKE_ATTR_MAXVAL		(UINT16_MAX)
 struct ike_xf_attr {
 	uint16_t	attr_type;
 	uint16_t	attr_len;

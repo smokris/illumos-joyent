@@ -82,8 +82,8 @@ inbound_main(void *ibarg)
 
 	while (1) {
 		if (port_get(inbound_port, &pe, NULL) < 0) {
-			STDERR(error, ib->ib_log, "port_get() failed");
-			continue;
+			STDERR(fatal, ib->ib_log, "port_get() failed");
+			exit(EXIT_FAILURE);
 		}
 
 		(void) bunyan_debug(ib->ib_log, "Received port event",
@@ -117,6 +117,11 @@ inbound(int s)
 	(void) memset(ib->ib_buf, 0, ib->ib_buflen);
 	pktlen = recvfromto(s, ib->ib_buf, ib->ib_buflen, 0, &from, &fromlen,
 	    &to, &tolen);
+
+	/*
+	 * Once we've received the datagram, re-arm socket to other threads
+	 * can receive datagrams from this socket.
+	 */
 	schedule_socket(s, inbound);
 
 	/* recvfromto() should have dumped enough debug info */

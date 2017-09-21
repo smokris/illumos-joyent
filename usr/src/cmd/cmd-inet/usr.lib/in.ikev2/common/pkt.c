@@ -48,16 +48,17 @@ pkt_out_alloc(uint64_t i_spi, uint64_t r_spi, uint8_t version,
     uint8_t exch_type, uint32_t msgid, uint8_t flags)
 {
 	pkt_t *pkt = umem_cache_alloc(pkt_cache, UMEM_DEFAULT);
+	ike_header_t *hdr = pkt_header(pkt);
 
 	if (pkt == NULL)
 		return (NULL);
 
-	pkt->pkt_header.initiator_spi = i_spi;
-	pkt->pkt_header.responder_spi = r_spi;
-	pkt->pkt_header.version = version;
-	pkt->pkt_header.exch_type = exch_type;
-	pkt->pkt_header.msgid = msgid;
-	pkt->pkt_header.flags = flags;
+	hdr->initiator_spi = i_spi;
+	hdr->responder_spi = r_spi;
+	hdr->version = version;
+	hdr->exch_type = exch_type;
+	hdr->msgid = htonl(msgid);
+	hdr->flags = flags;
 
 	pkt->pkt_ptr += sizeof (ike_header_t);
 	return (pkt);
@@ -91,7 +92,6 @@ pkt_in_alloc(uint8_t *restrict buf, size_t buflen, bunyan_logger_t *restrict l)
 	    BUNYAN_T_END);
 
 	(void) memcpy(pkt->pkt_raw, buf, buflen);
-	pkt_hdr_ntoh(&pkt->pkt_header, (const ike_header_t *)&pkt->pkt_raw);
 	pkt->pkt_ptr += buflen;
 
 	if (!pkt_index_payloads(pkt, pkt_start(pkt) + sizeof (ike_header_t),
@@ -141,7 +141,7 @@ pkt_index_cb(uint8_t paytype, uint8_t resv, uint8_t *restrict ptr, size_t len,
 		return (PKT_WALK_ERROR);
 	}
 
-	if (pkt->pkt_header.version == IKEV1_VERSION) {
+	if (pkt_header(pkt)->version == IKEV1_VERSION) {
 		/*
 		 * The IKEv1 notification payload is identical to the IKEv2
 		 * with the exception of the 32-bit DOI field at the begining
@@ -173,11 +173,8 @@ pkt_index_cb(uint8_t paytype, uint8_t resv, uint8_t *restrict ptr, size_t len,
 			return (PKT_WALK_ERROR);
 		}
 
-		if (ntfy.n_spisize == sizeof (uint32_t)) {
-			spi = BE_IN32(ptr);
-		} else if (ntfy.n_spisize == sizeof (uint64_t)) {
-			spi = BE_IN64(ptr);
-		} else {
+		/* This advances ptr for us */
+		if (!pkt_get_spi(&ptr, ntfy.n_spisize, &spi)) {
 			(void) bunyan_warn(data->id_log,
 			    "Invalid SPI length in notify payload",
 			    BUNYAN_T_UINT32, "spilen", (uint32_t)ntfy.n_spisize,
@@ -185,7 +182,6 @@ pkt_index_cb(uint8_t paytype, uint8_t resv, uint8_t *restrict ptr, size_t len,
 			return (PKT_WALK_ERROR);
 		}
 
-		ptr += ntfy.n_spisize;
 		len -= ntfy.n_spisize;
 	}
 
@@ -321,24 +317,25 @@ pkt_add_nindex(pkt_t *pkt, uint64_t spi, uint32_t doi, uint8_t proto,
 }
 
 boolean_t
-pkt_add_payload(pkt_t *pkt, uint8_t ptype, uint8_t resv, uint16_t len)
+pkt_add_payload(pkt_t *pkt, uint8_t ptype, uint8_t resv, size_t len)
 {
+	VERIFY(!pkt->pkt_done);
+
+	if (len > UINT16_MAX)
+		return (B_FALSE);
+	if (pkt_write_left(pkt) < len + sizeof (ike_payload_t))
+		return (B_FALSE);
+
 	ike_payload_t pld = {
 		.pay_next = 0,
 		.pay_reserved = resv,
 		.pay_length = htons(len + sizeof (ike_payload_t))
 	};
 
-	VERIFY(!pkt->pkt_done);
-
-	if (pkt_write_left(pkt) < len + sizeof (ike_payload_t))
-		return (B_FALSE);
-
 	/* Special case for first payload */
 	if (pkt->pkt_payload_count == 0) {
 		VERIFY3U(pkt_len(pkt), ==, sizeof (ike_header_t));
-		pkt->pkt_header.next_payload = ptype;
-		((ike_header_t *)&pkt->pkt_raw)->next_payload = ptype;
+		pkt_header(pkt)->next_payload = ptype;
 	} else {
 		pkt_payload_t *pp =
 		    pkt_payload(pkt, pkt->pkt_payload_count - 1);
@@ -356,7 +353,7 @@ pkt_add_sa(pkt_t *restrict pkt, pkt_sa_state_t *restrict pss)
 	ike_payload_t *payp = (ike_payload_t *)pkt->pkt_ptr;
 	boolean_t ok;
 
-	if (pkt->pkt_header.version == IKEV1_VERSION)
+	if (pkt_header(pkt)->version == IKEV1_VERSION)
 		ok = pkt_add_payload(pkt, IKEV1_PAYLOAD_SA, 0, 0);
 	else
 		ok = pkt_add_payload(pkt, IKEV2_PAYLOAD_SA, 0, 0);
@@ -415,11 +412,19 @@ boolean_t
 pkt_add_xform(pkt_sa_state_t *pss, uint8_t xftype, uint16_t xfid)
 {
 	ike_xform_t	xf = { 0 };
-	uint16_t	len = 0;
+	size_t		proplen = BE_IN16(&pss->pss_prop->prop_len);
+	size_t		paylen = BE_IN16(pss->pss_lenp);
 
 	VERIFY(!pss->pss_pkt->pkt_done);
+	VERIFY3U(paylen, ==, pss->pss_pld->pp_len + sizeof (ike_payload_t));
 
-	if (pkt_write_left(pss->pss_pkt) < sizeof (xf))
+	proplen += sizeof (xf);
+	paylen += sizeof (xf);
+
+	if (pkt_write_left(pss->pss_pkt) < sizeof (xf) ||
+	    proplen > UINT16_MAX || paylen > UINT16_MAX)
+		return (B_FALSE);
+	if (pss->pss_prop->prop_numxform == UINT8_MAX)
 		return (B_FALSE);
 
 	if (pss->pss_xf != NULL)
@@ -433,18 +438,13 @@ pkt_add_xform(pkt_sa_state_t *pss, uint8_t xftype, uint16_t xfid)
 	xf.xf_id = htons(xfid);
 	PKT_APPEND_STRUCT(pss->pss_pkt, xf);
 
-	/* This is uint8_t */
+	/* This is uint8_t so it can be derefenced directly */
 	pss->pss_prop->prop_numxform++;
 
-	len = BE_IN16(&pss->pss_prop->prop_len);
-	len += sizeof (xf);
-	BE_OUT16(&pss->pss_prop->prop_len, len);
-
-	len = BE_IN16(pss->pss_lenp);
-	len += sizeof (xf);
-	BE_OUT16(pss->pss_lenp, len);
-
+	BE_OUT16(&pss->pss_prop->prop_len, proplen);
+	BE_OUT16(pss->pss_lenp, paylen);
 	pss->pss_pld->pp_len += sizeof (xf);
+
 	return (B_TRUE);
 }
 
@@ -452,33 +452,31 @@ boolean_t
 pkt_add_xform_attr_tv(pkt_sa_state_t *pss, uint16_t type, uint16_t val)
 {
 	ike_xf_attr_t	attr = { 0 };
-	uint16_t len = 0;
+	size_t		xflen = BE_IN16(&pss->pss_xf->xf_len);
+	size_t		proplen = BE_IN16(&pss->pss_prop->prop_len);
+	size_t		paylen = BE_IN16(pss->pss_lenp);
 
-	VERIFY3U(type, <, 0x8000);
-	VERIFY3U(val, <, 0x10000);
-
+	VERIFY3U(type, <=, IKE_ATTR_MAXTYPE);
 	VERIFY(!pss->pss_pkt->pkt_done);
+	VERIFY3U(paylen, ==, pss->pss_pld->pp_len + sizeof (ike_payload_t));
 
-	if (pkt_write_left(pss->pss_pkt) < sizeof (attr))
+	xflen += sizeof (attr);
+	proplen += sizeof (attr);
+	paylen += sizeof (attr);
+
+	if (pkt_write_left(pss->pss_pkt) < sizeof (attr) ||
+	    xflen > UINT16_MAX || proplen > UINT16_MAX || paylen > UINT16_MAX)
 		return (B_FALSE);
 
 	attr.attr_type = htons(IKE_ATTR_TYPE(IKE_ATTR_TV, type));
 	attr.attr_len = htons(val);
 	PKT_APPEND_STRUCT(pss->pss_pkt, attr);
 
-	len = BE_IN16(&pss->pss_xf->xf_len);
-	len += sizeof (attr);
-	BE_OUT16(&pss->pss_xf->xf_len, len);
-
-	len = BE_IN16(&pss->pss_prop->prop_len);
-	len += sizeof (attr);
-	BE_OUT16(&pss->pss_prop->prop_len, len);
-
-	len = BE_IN16(pss->pss_lenp);
-	len += sizeof (attr);
-	BE_OUT16(pss->pss_lenp, len);
-
+	BE_OUT16(&pss->pss_xf->xf_len, xflen);
+	BE_OUT16(&pss->pss_prop->prop_len, proplen);
+	BE_OUT16(pss->pss_lenp, paylen);
 	pss->pss_pld->pp_len += sizeof (attr);
+
 	return (B_TRUE);
 }
 
@@ -487,34 +485,35 @@ pkt_add_xform_attr_tlv(pkt_sa_state_t *pss, uint16_t type, const uint8_t *attrp,
     size_t attrlen)
 {
 	ike_xf_attr_t attr = { 0 };
-	size_t len = 0, amt = sizeof (attr) + attrlen;
+	size_t		xflen = BE_IN16(&pss->pss_xf->xf_len);
+	size_t		proplen = BE_IN16(&pss->pss_prop->prop_len);
+	size_t		paylen = BE_IN16(pss->pss_lenp);
+	size_t		len = sizeof (attr) + attrlen;
 
-	VERIFY3U(type, <, 0x8000);
-	VERIFY3U(attrlen, <, 0x10000);
+	VERIFY3U(type, <=, IKE_ATTR_MAXTYPE);
 
 	VERIFY(!pss->pss_pkt->pkt_done);
+	VERIFY3U(paylen, ==, pss->pss_pld->pp_len + sizeof (ike_payload_t));
 
-	if (pkt_write_left(pss->pss_pkt) < amt)
+	/*
+	 * IKE_ATTR_MAXLEN is < UINT16_MAX, so if attrlen <= IKE_ATTR_MAXLEN,
+	 * len cannot have overflowed
+	 */
+	if (attrlen > IKE_ATTR_MAXLEN ||
+	    pkt_write_left(pss->pss_pkt) < len || paylen > UINT16_MAX ||
+	    proplen > UINT16_MAX || xflen > UINT16_MAX)
 		return (B_FALSE);
 
 	attr.attr_type = htons(IKE_ATTR_TYPE(IKE_ATTR_TLV, type));
-	attr.attr_len = htons(attrlen);
+	attr.attr_len = htons(len);
 	PKT_APPEND_STRUCT(pss->pss_pkt, attr);
 	PKT_APPEND_DATA(pss->pss_pkt, attrp, attrlen);
 
-	len = BE_IN16(&pss->pss_xf->xf_len);
-	len += sizeof (attr);
-	BE_OUT16(&pss->pss_xf->xf_len, len);
-
-	len = BE_IN16(&pss->pss_prop->prop_len);
-	len += sizeof (attr);
-	BE_OUT16(&pss->pss_prop->prop_len, len);
-
-	len = BE_IN16(pss->pss_lenp);
-	len += sizeof (attr);
-	BE_OUT16(pss->pss_lenp, len);
-
+	BE_OUT16(&pss->pss_xf->xf_len, xflen);
+	BE_OUT16(&pss->pss_prop->prop_len, proplen);
+	BE_OUT16(pss->pss_lenp, paylen);
 	pss->pss_pld->pp_len += sizeof (attr);
+
 	return (B_TRUE);
 }
 
@@ -530,7 +529,7 @@ pkt_add_notify(pkt_t *restrict pkt, uint32_t doi, uint8_t proto,
 	uint8_t *ptr = NULL;
 	size_t len = spilen + datalen;
 
-	if (pkt->pkt_header.version == IKEV1_VERSION) {
+	if (pkt_header(pkt)->version == IKEV1_VERSION) {
 		len += sizeof (ikev1_notify_t);
 
 		if (!pkt_add_payload(pkt, IKEV1_PAYLOAD_NOTIFY, 0, len))
@@ -541,7 +540,7 @@ pkt_add_notify(pkt_t *restrict pkt, uint32_t doi, uint8_t proto,
 		n.n1.n_spisize = spilen;
 		n.n1.n_type = htons(type);
 		PKT_APPEND_STRUCT(pkt, n.n1);
-	} else if (pkt->pkt_header.version == IKEV2_VERSION) {
+	} else if (pkt_header(pkt)->version == IKEV2_VERSION) {
 		len += sizeof (ikev2_notify_t);
 
 		if (!pkt_add_payload(pkt, IKEV2_PAYLOAD_NOTIFY, 0, len))
@@ -573,60 +572,12 @@ pkt_add_cert(pkt_t *restrict pkt, uint8_t paytype, uint8_t encoding,
 	return (B_TRUE);
 }
 
-void
-pkt_hdr_ntoh(ike_header_t *restrict dest,
-    const ike_header_t *restrict src)
-{
-	/*
-	 * The structures need to be aligned so we can safely dereference
-	 * the fields of ike_header_t.  Since the current uses of this
-	 * are to convert between the raw payload (which itself is
-	 * 64-bit aligned in pkt_t) and the local byteorder copy in
-	 * pkt_t, they _should_ be aligned.
-	 */
-	ASSERT(IS_P2ALIGNED(dest, sizeof (uint64_t)));
-	ASSERT(IS_P2ALIGNED(src, sizeof (uint64_t)));
-	ASSERT3P(src, !=, dest);
-
-	dest->initiator_spi = ntohll(src->initiator_spi);
-	dest->responder_spi = ntohll(src->responder_spi);
-	dest->msgid = ntohl(src->msgid);
-	dest->length = ntohl(src->length);
-	dest->next_payload = src->next_payload;
-	dest->exch_type = src->exch_type;
-	dest->flags = src->flags;
-	dest->version = src->version;
-}
-
-void
-pkt_hdr_hton(ike_header_t *restrict dest,
-    const ike_header_t *restrict src)
-{
-	/*
-	 * Similar to pkt_hdr_ntoh, make sure we can safely dereference
-	 * the fields of ike_header_t.  The alignmens in pkt_t should
-	 * guarantee this.
-	 */
-	ASSERT(IS_P2ALIGNED(dest, sizeof (uint64_t)));
-	ASSERT(IS_P2ALIGNED(src, sizeof (uint64_t)));
-	ASSERT3P(src, !=, dest);
-
-	dest->initiator_spi = htonll(src->initiator_spi);
-	dest->responder_spi = htonll(src->responder_spi);
-	dest->msgid = htonl(src->msgid);
-	dest->length = htonl(src->length);
-	dest->next_payload = src->next_payload;
-	dest->exch_type = src->exch_type;
-	dest->flags = src->flags;
-	dest->version = src->version;
-}
-
 /* pops off all the callbacks in preparation for sending */
 boolean_t
 pkt_done(pkt_t *pkt)
 {
-	pkt->pkt_header.length = pkt_len(pkt);
-	pkt_hdr_hton((ike_header_t *)&pkt->pkt_raw, &pkt->pkt_header);
+	ike_header_t *hdr = pkt_header(pkt);
+	hdr->length = htonl(pkt_len(pkt));
 	pkt->pkt_done = B_TRUE;
 	return (B_TRUE);
 }
@@ -792,6 +743,36 @@ pkt_add_spi(pkt_t *pkt, size_t spilen, uint64_t spi)
 	return (B_TRUE);
 }
 
+boolean_t
+pkt_get_spi(uint8_t *restrict *pptr, size_t len, uint64_t *restrict spip)
+{
+	*spip = 0;
+
+	/*
+	 * When writing an SPI, we only support 3 sizes -- 0, 4 (32-bits),
+	 * and 8 (64-bits) corresponding to the IKE SPI and AH/ESP SPI sizes.
+	 * Thus, trying to write an unsupported value is a programming error.
+	 * However it is possible we might encounter an unsupported SPI length
+	 * (though it would need to be for an unsupported protocol), so
+	 * if we encounter such a situation, we return an error instead of
+	 * aborting.
+	 */
+	switch (len) {
+	case 0:
+		return (B_TRUE);
+	case sizeof (uint32_t):
+		*spip = BE_IN32(*pptr);
+		*pptr += sizeof (uint32_t);
+		return (B_TRUE);
+	case sizeof (uint64_t):
+		*spip = BE_IN64(*pptr);
+		*pptr += sizeof (uint64_t);
+		return (B_TRUE);
+	}
+
+	return (B_FALSE);
+}
+
 static int
 pkt_ctor(void *buf, void *ignore, int flags)
 {
@@ -842,6 +823,7 @@ pkt_fini(void)
 extern inline void put32(pkt_t *, uint32_t);
 extern inline void put64(pkt_t *, uint64_t);
 extern inline uint8_t *pkt_start(pkt_t *);
+extern inline ike_header_t *pkt_header(const pkt_t *pkt);
 extern inline size_t pkt_len(const pkt_t *);
 extern inline size_t pkt_write_left(const pkt_t *);
 extern inline pkt_payload_t *pkt_payload(pkt_t *, uint16_t);

@@ -48,7 +48,7 @@ pkt_t *pkt_in_alloc(uint8_t *restrict, size_t, struct bunyan_logger *restrict);
 pkt_t *pkt_out_alloc(uint64_t, uint64_t, uint8_t, uint8_t, uint32_t, uint8_t);
 void pkt_free(pkt_t *);
 
-boolean_t pkt_add_payload(pkt_t *, uint8_t, uint8_t, uint16_t);
+boolean_t pkt_add_payload(pkt_t *, uint8_t, uint8_t, size_t);
 boolean_t pkt_add_sa(pkt_t *restrict, pkt_sa_state_t *restrict);
 boolean_t pkt_add_prop(pkt_sa_state_t *, uint8_t, uint8_t, size_t, uint64_t);
 boolean_t pkt_add_xform(pkt_sa_state_t *, uint8_t, uint16_t);
@@ -61,6 +61,7 @@ boolean_t pkt_add_cert(pkt_t *restrict, uint8_t, uint8_t,
     const void *restrict, size_t);
 
 boolean_t pkt_add_spi(pkt_t *, size_t, uint64_t);
+boolean_t pkt_get_spi(uint8_t *restrict *, size_t len, uint64_t *restrict);
 
 #ifdef __cplusplus
 }

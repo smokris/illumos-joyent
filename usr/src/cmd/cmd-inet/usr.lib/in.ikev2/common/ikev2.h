@@ -37,6 +37,9 @@ extern "C" {
 /*
  * "IKEv2 Parameters" based on the official RFC-based assignments by IANA
  * (http://www.iana.org/assignments/ikev2-parameters/ikev2-parameters.txt)
+ *
+ * GSA parameters are based on the draft Group Key Management RFC
+ * https://tools.ietf.org/html/draft-yeung-g-ikev2-11
  */
 
 /*

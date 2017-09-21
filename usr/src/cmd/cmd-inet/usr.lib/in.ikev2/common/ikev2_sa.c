@@ -77,6 +77,7 @@ static uint32_t		remote_noise;	/* random noise for rhash */
 static i2sa_bucket_t	*hash[I2SA_NUM_HASH];
 static umem_cache_t	*i2sa_cache;
 
+#define	I2SA_KEY_I2SA		"i2sa"
 #define	I2SA_KEY_LADDR		"local_addr"
 #define	I2SA_KEY_LPORT		"local_port"
 #define	I2SA_KEY_RADDR		"remote_addr"
@@ -257,12 +258,18 @@ ikev2_sa_alloc(boolean_t initiator,
 
 	/* 0x + 64bit hex value + NUL */
 	char buf[19] = { 0 };
-	(void) snprintf(buf, sizeof (buf), "0x%016" PRIX64,
-	    I2SA_LOCAL_SPI(i2sa));
 
-/* XXX: Remove once OS-6341 is fixed */
-#ifdef BUNYAN_FIXED
+	/*
+	 * For protocol processing, the SPIs are treated as opaque values,
+	 * however for debugging/diagnostic/admin purposes, we want to output
+	 * them in native byte order so the SPI values will match
+	 * what other implementations and tools (such as wireshark) display
+	 */
+	(void) snprintf(buf, sizeof (buf), "0x%016" PRIX64,
+	    ntohll(I2SA_LOCAL_SPI(i2sa)));
+
 	if (bunyan_child(log, &i2sa->i2sa_log,
+	    BUNYAN_T_POINTER, I2SA_KEY_I2SA, i2sa,
 	    BUNYAN_T_STRING, I2SA_KEY_LSPI, buf,
 	    ss_bunyan(laddr), I2SA_KEY_LADDR, ss_addr(laddr),
 	    BUNYAN_T_UINT32, I2SA_KEY_LPORT, ss_port(laddr),
@@ -274,30 +281,16 @@ ikev2_sa_alloc(boolean_t initiator,
 		    BUNYAN_T_END);
 		goto fail;
 	}
-#else
-	if (bunyan_child(log, &i2sa->i2sa_log, BUNYAN_T_END) != 0)
-		errx(EXIT_FAILURE, "bunyan_child() failed");
-
-	if (bunyan_key_add(i2sa->i2sa_log,
-	    BUNYAN_T_STRING, I2SA_KEY_LSPI, buf,
-	    ss_bunyan(laddr), I2SA_KEY_LADDR, ss_addr(laddr),
-	    BUNYAN_T_UINT32, I2SA_KEY_LPORT, ss_port(laddr),
-	    ss_bunyan(raddr), I2SA_KEY_RADDR, ss_addr(raddr),
-	    BUNYAN_T_UINT32, I2SA_KEY_RPORT, ss_port(raddr),
-	    BUNYAN_T_BOOLEAN, I2SA_KEY_INITIATOR, initiator,
-	    BUNYAN_T_END) != 0) {
-		errx(EXIT_FAILURE, "bunyan_add_key failed");
-	}
-#endif
 
 	/*
 	 * If we're the initiator, we don't know the remote SPI until after
-	 * the remote peer responds.  However we're we are the responder,
+	 * the remote peer responds.  However if we are the responder,
 	 * we know what it is and can set it now.
 	 */
-	if (!initiator)
+	if (!initiator) {
 		ikev2_sa_set_remote_spi(i2sa,
-		    init_pkt->pkt_header.initiator_spi);
+		    pkt_header(init_pkt)->initiator_spi);
+	}
 
 	/*
 	 * Start SA expiration timer.  We cannot call schedule_timeout()
@@ -312,7 +305,7 @@ ikev2_sa_alloc(boolean_t initiator,
 	 */
 	I2SA_REFHOLD(i2sa);
 	if (!worker_dispatch(WMSG_START_P1_TIMER, i2sa,
-	    I2SA_LOCAL_SPI(i2sa) % nworkers)) {
+	    I2SA_LOCAL_SPI(i2sa) % wk_nworkers)) {
 		(void) bunyan_error(i2sa->i2sa_log,
 		    "Cannot dispatch WMSG_START_P1_TIMER event; aborting",
 		    BUNYAN_T_END);
@@ -331,8 +324,13 @@ fail:
 	VERIFY0(pthread_mutex_unlock(&i2sa->lock));
 	i2sa_unlink(i2sa);
 
-	while (i2sa->refcnt > 0)
+	/*
+	 * When refcnt goes from 1->0, i2sa will get freed, so do last one
+	 * explicitly
+	 */
+	while (i2sa->refcnt > 1)
 		I2SA_REFRELE(i2sa);
+	I2SA_REFRELE(i2sa);
 
 	bunyan_debug(log, "Larval IKE SA creation failed", BUNYAN_T_END);
 	return (NULL);
@@ -633,7 +631,7 @@ ikev2_sa_set_remote_spi(ikev2_sa_t *i2sa, uint64_t remote_spi)
 	char buf[19];	/* 0x + 64bit hex value + NUL */
 
 	(void) snprintf(buf, sizeof (buf), "0x%016" PRIX64,
-	    I2SA_REMOTE_SPI(i2sa));
+	    ntohll(I2SA_REMOTE_SPI(i2sa)));
 	(void) bunyan_key_add(i2sa->i2sa_log,
 	    BUNYAN_T_STRING, I2SA_KEY_RSPI, buf, BUNYAN_T_END);
 
@@ -886,7 +884,6 @@ i2sa_ctor(void *buf, void *dummy, int flags)
 	i2sa->msgwin = 1;
 
 	VERIFY0(pthread_mutex_init(&i2sa->lock, NULL));
-	list_link_init(&i2sa->i2sa_wnode);
 	list_link_init(&i2sa->i2sa_lspi_node);
 	list_link_init(&i2sa->i2sa_rspi_node);
 

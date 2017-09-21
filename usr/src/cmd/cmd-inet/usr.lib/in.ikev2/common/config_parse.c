@@ -39,7 +39,7 @@
 #define	ARRAY_SIZE(x)	(sizeof (x) / sizeof (x[0]))
 #endif
 
-#define	CONFIG_MAX	((size_t)1024*1024)
+#define	CONFIG_MAX	((size_t)(1024*1024))
 #define	CONFIG_CHUNK	((size_t)1024)
 
 typedef enum keyword_e {
@@ -114,7 +114,7 @@ static struct {
 	{ "p2_softlife_kb",	KWF_ARG },
 	{ "p2_nonce_len",	KWF_ARG },
 	{ "local_id_type",	KWF_ARG },
-	{ "p1_xform",		0 },
+	{ "p1_xform",		KWF_MULTI },
 	{ "auth_method",	KWF_ARG },
 	{ "oakley_group",	KWF_ARG },
 	{ "auth_alg",		KWF_ARG },
