@@ -89,7 +89,7 @@ typedef struct pkt_notify {
  * RFC7296 Section 2 states that an implementation MUST accept
  * payloads up to 1280 octects long, and SHOULD be able to send,
  * receive, and support messages up to 3000 octets long.  We elect to
- * round this up to the next power of two (8192).  Similar to the
+ * round this up to a power of two (8192).  Similar to the
  * rational for the sizing of pkt_t.pkt_payloads and pkt_t.pkt_notify,
  * unless a large number of certificates or certificate requests are included
  * this should be more than enough, especially if the recommendation in RFC7296

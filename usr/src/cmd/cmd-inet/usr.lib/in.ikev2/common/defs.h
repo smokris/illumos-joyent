@@ -141,7 +141,7 @@ typedef struct algindex {
 	BUNYAN_T_END)
 /* END CSTYLED */
 
-
+/* A few simple functions to simplify using struct sockaddr's w/ bunyan */
 inline uint32_t
 ss_port(const struct sockaddr_storage *ss)
 {

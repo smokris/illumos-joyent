@@ -69,21 +69,21 @@ typedef struct config_addr_s {
 } config_addr_t;
 
 typedef struct config_id_s {
-	config_auth_id_t	id_type;
+	config_auth_id_t	ci_type;
 	union {
-		char *id_str;
+		char *ciu_str;
 		struct {
-			uint8_t	*id_buf;
-			size_t	id_len;
-		} id_buf;
-		in_addr_t	id_ipv4;
-		in6_addr_t	id_ipv6;
-	} id_val;
-#define	idu_str	id_val.id_str
-#define	idu_buf	id_val.id_buf.id_buf
-#define	idu_len	id_val.id_buf.id_len
-#define	idu_ip4	id_val.id_ipv4
-#define	idu_ip6	id_val.id_ipv6
+			uint8_t	*ciu_buf;
+			size_t	ciu_len;
+		} ciu_buf;
+		in_addr_t	ciu_ipv4;
+		in6_addr_t	ciu_ipv6;
+	} ciu_val;
+#define	cid_str	ciu_val.ciu_str
+#define	cid_buf	ciu_val.ciu_buf.ciu_buf
+#define	cid_len	ciu_val.ciu_buf.ciu_len
+#define	cid_ip4	ciu_val.ciu_ipv4
+#define	cid_ip6	ciu_val.ciu_ipv6
 } config_id_t;
 
 typedef struct config_xf_s {
