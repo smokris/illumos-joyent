@@ -88,7 +88,6 @@ typedef struct parsedmsg_s {
 #define	pmsg_nrsin pmsg_rnau.sau_sin
 #define	pmsg_nrsin6 pmsg_nrau.sau_sin6
 
-typedef void (*pfreq_cb_t)(sadb_msg_t *, void *);
 typedef struct algindex {
 	const char *desc;
 	int doi_num;

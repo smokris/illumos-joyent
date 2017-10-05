@@ -27,21 +27,21 @@
  * Copyright (c) 2017, Joyent, Inc.
  */
 
-#include <sys/types.h>
-#include <net/pfkeyv2.h>
-#include <ipsec_util.h>
-#include <string.h>
+#include <atomic.h>
+#include <bunyan.h>
 #include <errno.h>
 #include <locale.h>
-#include <netdb.h>
-#include <stdio.h>
 #include <note.h>
-#include <atomic.h>
-#include <pthread.h>
 #include <sys/list.h>
+#include <sys/types.h>
 #include <sys/stropts.h>	/* For I_NREAD */
-#include <bunyan.h>
-#include <ucontext.h>
+#include <ipsec_util.h>
+#include <netdb.h>
+#include <net/pfkeyv2.h>
+#include <stdio.h>
+#include <string.h>
+#include <synch.h>
+#include <time.h>
 
 #include "defs.h"
 #include "ikev2.h"
@@ -49,19 +49,25 @@
 #include "ikev2_sa.h"
 #include "inbound.h"
 #include "pkcs11.h"
+#include "worker.h"
 
-struct pfreq;
+/* timeout for a pfkey response in seconds */
+#define	PFKEY_TIMEOUT	2
+
 typedef struct pfreq {
 	list_node_t	pr_node;
-	pfreq_cb_t	*pr_cb;
-	void		*pr_data;
 	uint32_t	pr_msgid;
+	mutex_t		pr_lock;
+	cond_t		pr_cv;
+	sadb_msg_t	*pr_msg;
+	boolean_t	pr_recv;
 } pfreq_t;
 
 static bunyan_logger_t	*pflog;
-static umem_cache_t	*pfreq_cache;
-static pthread_mutex_t	pfreq_lock = PTHREAD_MUTEX_INITIALIZER;
-static list_t		pfreq_list;
+
+/* pfreq lock protects pfreq_list */
+static mutex_t	pfreq_lock = ERRORCHECKMUTEX;
+static list_t	pfreq_list;
 
 /* PF_KEY socket. */
 int pfkey;
@@ -69,9 +75,8 @@ int pfkey;
 /* our msgids */
 static volatile uint32_t msgid = 0;
 
-static int pfreq_ctor(void *, void *, int);
-static pfreq_t *pfreq_new(pfreq_cb_t *, void *);
-static void pfreq_free(pfreq_t *);
+/* number of outstanding requests */
+static volatile uint32_t pf_nreq = 0;
 
 static void handle_reply(sadb_msg_t *);
 static void handle_delete(sadb_msg_t *);
@@ -185,12 +190,11 @@ kef_alg_to_string(int algnum, int protonum, char *algname)
  * The variable arguments are a list of ints with SADB_EXT_* values.
  */
 static boolean_t
-extract_exts(sadb_msg_t *samsg, parsedmsg_t *pmsg, int numexts, ...)
+vextract_exts(sadb_msg_t *samsg, parsedmsg_t *pmsg, int numexts, va_list ap)
 {
 	sadb_ext_t *ext;
 	sadb_ext_t **exts = pmsg->pmsg_exts;
 	int current_ext;
-	va_list ap;
 	boolean_t rc = B_TRUE;
 
 	(void) memset(pmsg, 0, sizeof (parsedmsg_t));
@@ -224,7 +228,6 @@ extract_exts(sadb_msg_t *samsg, parsedmsg_t *pmsg, int numexts, ...)
 	} while (((uint8_t *)ext) - ((uint8_t *)samsg) <
 	    SADB_64TO8(samsg->sadb_msg_len));
 
-	va_start(ap, numexts);
 	while (numexts-- > 0) {
 		current_ext = va_arg(ap, int);
 		if (exts[current_ext] == NULL) {
@@ -232,9 +235,20 @@ extract_exts(sadb_msg_t *samsg, parsedmsg_t *pmsg, int numexts, ...)
 			break;
 		}
 	}
-	va_end(ap);
 
 	return (rc);
+}
+
+static boolean_t
+extract_exts(sadb_msg_t *samsg, parsedmsg_t *pmsg, int numexts, ...)
+{
+	va_list ap;
+	boolean_t ret;
+
+	va_start(ap, numexts);
+	ret = vextract_exts(samsg, pmsg, numexts, ap);
+	va_end(ap);
+	return (ret);
 }
 
 static void
@@ -345,27 +359,42 @@ pfkey_inbound(int s)
 }
 
 /*
- * Send a pfkey message 'msg'.  The reply will invoke the callback
- * function 'cb' with data as an argument.
- * Returns B_TRUE if the request is successfully sent,
- * B_FALSE if there was an error.
+ * Send 'msg' to pfkey, and wait for a reply.  The kernel is expected to
+ * reply within a few ms, so we block waiting for the reply to simplify
+ * handling in the caller.
  */
 boolean_t
-pfkey_send_msg(sadb_msg_t *msg, pfreq_cb_t *cb, void *data)
+pfkey_send_msg(sadb_msg_t *msg, parsedmsg_t *pmsg, int numexts, ...)
 {
-	pfreq_t *req;
+	pfreq_t req = { 0 };
 	ssize_t n;
+	int rc;
+	va_list ap;
+	boolean_t ret = B_TRUE;
 
-	req = pfreq_new(cb, data);
-	if (req == NULL)
+	VERIFY(IS_WORKER);
+
+	/*
+	 * Since we block the calling worker waiting for a reply, we need
+	 * to make sure there's always at least one worker not blocked here
+	 * that can receive the pfkey replies and wake up the callers, so
+	 * stop when there's wk_nworkers - 1 outstanding requests.
+	 */
+	if (atomic_inc_32_nv(&pf_nreq) == wk_nworkers) {
+		errno = EBUSY;
+		atomic_dec_32(&pf_nreq);
 		return (B_FALSE);
+	}
 
-	msg->sadb_msg_seq = req->pr_msgid;
+	VERIFY0(cond_init(&req.pr_cv, USYNC_THREAD, NULL));
+	VERIFY0(mutex_init(&req.pr_lock, USYNC_THREAD|LOCK_ERRORCHECK, NULL));
+
+	msg->sadb_msg_seq = req.pr_msgid = atomic_inc_32_nv(&msgid);
 	msg->sadb_msg_pid = getpid();
 
-	VERIFY0(pthread_mutex_lock(&pfreq_lock));
-	list_insert_tail(&pfreq_list, req);
-	VERIFY0(pthread_mutex_unlock(&pfreq_lock));
+	mutex_enter(&pfreq_lock);
+	list_insert_tail(&pfreq_list, &req);
+	mutex_exit(&pfreq_lock);
 
 	n = write(pfkey, msg, msg->sadb_msg_len);
 	if (n != msg->sadb_msg_len) {
@@ -373,19 +402,45 @@ pfkey_send_msg(sadb_msg_t *msg, pfreq_cb_t *cb, void *data)
 			STDERR(error, log, "pf_key write failed");
 		} else {
 			bunyan_error(log, "pf_key truncated write",
-			    BUNYAN_T_UINT32, "n", (uint32_t)n,
+			    BUNYAN_T_INT32, "n", (int32_t)n,
 			    BUNYAN_T_END);
 		}
 
-		VERIFY0(pthread_mutex_lock(&pfreq_lock));
-		list_remove(&pfreq_list, req);
-		VERIFY0(pthread_mutex_unlock(&pfreq_lock));
-
-		pfreq_free(req);
-		return (B_FALSE);
+		mutex_enter(&pfreq_lock);
+		list_remove(&pfreq_list, &req);
+		mutex_exit(&pfreq_lock);
+		ret = B_FALSE;
+		goto done;
 	}
 
-	return (B_TRUE);
+	mutex_enter(&req.pr_lock);
+	while (!req.pr_recv) {
+		timestruc_t amt;
+
+		amt.tv_sec = time(NULL) + PFKEY_TIMEOUT;
+		amt.tv_nsec = 0;
+		rc = cond_reltimedwait(&req.pr_cv, &req.pr_lock, &amt);
+
+		if (rc == ETIME) {
+			bunyan_error(log, "pf_key timeout",
+			    BUNYAN_T_UINT32, "msgid", req.pr_msgid,
+			    BUNYAN_T_END);
+
+			errno = ETIMEDOUT;
+			ret = B_FALSE;
+			goto done;
+		}
+	}
+
+	va_start(ap, numexts);
+	ret = vextract_exts(req.pr_msg, pmsg, numexts, ap);
+	va_end(ap);
+
+done:
+	mutex_exit(&req.pr_lock);
+	mutex_destroy(&req.pr_lock);
+	cond_destroy(&req.pr_cv);
+	return (ret);
 }
 
 /*
@@ -419,7 +474,7 @@ handle_reply(sadb_msg_t *reply)
 {
 	pfreq_t *req = NULL;
 
-	VERIFY0(pthread_mutex_lock(&pfreq_lock));
+	mutex_enter(&pfreq_lock);
 
 	req = list_head(&pfreq_list);
 	while (req != NULL && req->pr_msgid != reply->sadb_msg_seq)
@@ -427,7 +482,7 @@ handle_reply(sadb_msg_t *reply)
 
 	if (req != NULL)
 		list_remove(&pfreq_list, req);
-	VERIFY0(pthread_mutex_unlock(&pfreq_lock));
+	mutex_exit(&pfreq_lock);
 
 	if (req == NULL) {
 		sadb_log(pflog, BUNYAN_L_INFO,
@@ -436,38 +491,13 @@ handle_reply(sadb_msg_t *reply)
 		return;
 	}
 
-#if 0
-	req->pr_cb(reply, req->pr_data);
-#endif
-	pfreq_free(req);
+	mutex_enter(&req->pr_lock);
+	req->pr_msg = reply;
+	req->pr_recv = B_TRUE;
+	mutex_exit(&req->pr_lock);
+	VERIFY0(cond_signal(&req->pr_cv));
 
-	switch (reply->sadb_msg_type) {
-	case SADB_ACQUIRE:
-	{
-		/* Should be a response to our inverse acquire */
-		parsedmsg_t pmsg = { 0 };
-
-		if (!extract_exts(reply, &pmsg, 1, SADB_X_EXT_EPROP)) {
-			bunyan_info(pflog, "No extended proposal found in "
-			    "ACQUIRE reply.", BUNYAN_T_END);
-			free(reply);
-			return;
-		}
-
-		/*
-		 * XXX: lookup what we queried based on msgid, extract
-		 * SA type and pass to convert_ext_acquire
-		 */
-
-		/* XXX: continue CHILD SA processing */
-		break;
-	}
-	default:
-		/* XXX: More to come */
-		;
-	}
-
-	free(reply);
+	atomic_dec_32(&pf_nreq);
 }
 
 static void
@@ -602,39 +632,6 @@ handle_acquire(sadb_msg_t *samsg, boolean_t create_child_sa)
 	free(samsg);
 }
 
-static int
-pfreq_ctor(void *buf, void *ignore, int flags)
-{
-	_NOTE(ARGUNUSED(ignore, flags))
-
-	pfreq_t *req = buf;
-
-	(void) memset(buf, 0, sizeof (pfreq_t));
-	list_link_init(&req->pr_node);
-	return (0);
-}
-
-static pfreq_t *
-pfreq_new(pfreq_cb_t *cb, void *data)
-{
-	pfreq_t *req = umem_cache_alloc(pfreq_cache, UMEM_DEFAULT);
-
-	if (req == NULL)
-		return (NULL);
-
-	req->pr_msgid = atomic_inc_32_nv(&msgid);
-	req->pr_cb = cb;
-	req->pr_data = data;
-	return (req);
-}
-
-static void
-pfreq_free(pfreq_t *req)
-{
-	(void) pfreq_ctor(req, NULL, 0);
-	umem_cache_free(pfreq_cache, req);
-}
-
 static void
 pfkey_register(uint8_t satype)
 {
@@ -714,11 +711,6 @@ pfkey_init(void)
 	int rc;
 
 	list_create(&pfreq_list, sizeof (pfreq_t), offsetof (pfreq_t, pr_node));
-
-	pfreq_cache = umem_cache_create("pfreq cache", sizeof (pfreq_t),
-	    sizeof (uint64_t), pfreq_ctor, NULL, NULL, NULL, NULL, 0);
-	if (pfreq_cache == NULL)
-		err(EXIT_FAILURE, "Unable to create pfreq cache");
 
 	pfkey = socket(PF_KEY, SOCK_RAW, PF_KEY_V2);
 	if (pfkey == -1)
