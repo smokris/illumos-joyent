@@ -25,8 +25,6 @@
 extern "C" {
 #endif
 
-#define	__packed __attribute__((packed))
-
 #define	IKEV2_VERSION		0x20	/* IKE version 2.0 */
 #define	IKEV2_KEYPAD		"Key Pad for IKEv2"	/* don't change! */
 
