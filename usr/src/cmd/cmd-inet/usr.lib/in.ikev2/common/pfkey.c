@@ -38,6 +38,7 @@
 #include <ipsec_util.h>
 #include <netdb.h>
 #include <net/pfkeyv2.h>
+#include <port.h>
 #include <stdio.h>
 #include <string.h>
 #include <synch.h>
@@ -51,8 +52,31 @@
 #include "pkcs11.h"
 #include "worker.h"
 
-/* timeout for a pfkey response in seconds */
-#define	PFKEY_TIMEOUT	2
+/*
+ * pf_key(7P) operates by exchanging messages over a special socket (creatively
+ * named pfkey in this file).  Our model is that worker threads that need to
+ * interact with the kernel's SADB via pfkey will create the appropriate
+ * message, and then use pfkey_send_msg() to send it to the kernel and receive
+ * it's response (or an error).  In the background there is a (currently)
+ * single dedicated thread for receiving pf_key(7P) messages from the kernel.
+ * This thread will match up replies with the requests sent via pfkey_send_msg()
+ * to determine the correct worker to wake up (as pfkey_send_msg() will block
+ * via a CV until it has either received a reply or has timed out).  Since
+ * pf_key(7P) is message and not stream based, once the socket is readable,
+ * (a dedicated event port waiting on a POLLIN event is used for this), the
+ * pfkey thread itself should never be blocked waiting for I/O.
+ *
+ * The kernel typically replies to a request within milliseconds,
+ * however certain operations (e.g. DUMP) can delay replies.  To prevent
+ * callers from possibly blocking forever (in case a reply was somehow missed,
+ * or dropped), a timeout is defined that should be long enough for any DUMP
+ * operation to complete.  Any request that takes longer than this should be
+ * considered failed by the caller.
+ *
+ * The current timeout value is a guess, and might need to be adjusted based
+ * on live experience.
+ */
+#define	PFKEY_TIMEOUT	2	/* in seconds */
 
 typedef struct pfreq {
 	list_node_t	pr_node;
@@ -72,11 +96,11 @@ static list_t	pfreq_list;
 /* PF_KEY socket. */
 int pfkey;
 
+/* our event port */
+static int pfport;
+
 /* our msgids */
 static volatile uint32_t msgid = 0;
-
-/* number of outstanding requests */
-static volatile uint32_t pf_nreq = 0;
 
 static void handle_reply(sadb_msg_t *);
 static void handle_delete(sadb_msg_t *);
@@ -87,12 +111,6 @@ static void handle_register(sadb_msg_t *);
 
 static void sadb_log(bunyan_logger_t *restrict, bunyan_level_t,
     const char *restrict, sadb_msg_t *restrict);
-
-#if 0
-static ikev2_pay_sa_t *convert_acquire(parsedmsg_t *);
-static ikev2_pay_sa_t *convert_ext_acquire(parsedmsg_t *, ikev2_spi_proto_t);
-static ikev2_xf_auth_t ikev2_pf_to_auth(int);
-#endif
 
 static const char *pfkey_opcodes[] = {
 	"RESERVED", "GETSPI", "UPDATE", "ADD", "DELETE", "GET",
@@ -252,6 +270,17 @@ extract_exts(sadb_msg_t *samsg, parsedmsg_t *pmsg, int numexts, ...)
 }
 
 static void
+pfkey_arm(int s)
+{
+	/* At this point, we can safely re-schedule the socket for reading. */
+	if (port_associate(pfport, PORT_SOURCE_FD, s, POLLIN, NULL) < 0) {
+		STDERR(error, pflog, "port_associate() failed",
+		    BUNYAN_T_INT32, "fd", (int32_t)s, BUNYAN_T_END);
+		exit(EXIT_FAILURE);
+	}
+}
+
+static void
 pfkey_inbound(int s)
 {
 	sadb_msg_t *samsg;
@@ -260,7 +289,7 @@ pfkey_inbound(int s)
 
 	if (ioctl(s, I_NREAD, &length) < 0) {
 		STDERR(error, log, "ioctl(I_NREAD) failed");
-		schedule_socket(s, pfkey_inbound);
+		pfkey_arm(s);
 		return;
 	}
 
@@ -270,14 +299,14 @@ pfkey_inbound(int s)
 		    BUNYAN_T_STRING, "file", __FILE__,
 		    BUNYAN_T_INT32, "line", __LINE__,
 		    BUNYAN_T_END);
-		schedule_socket(s, pfkey_inbound);
+		pfkey_arm(s);
 		return;
 	}
 
 	samsg = malloc(length);
 	if (samsg == NULL) {
 		bunyan_error(log, "No memory for pfkey message", BUNYAN_T_END);
-		schedule_socket(s, pfkey_inbound);
+		pfkey_arm(s);
 		return;
 	}
 
@@ -288,12 +317,12 @@ pfkey_inbound(int s)
 			/* XXX: Should I exit()? */
 		}
 		free(samsg);
-		schedule_socket(s, pfkey_inbound);
+		pfkey_arm(s);
 		return;
 	}
 
 	/* At this point, we can safely re-schedule the socket for reading. */
-	schedule_socket(s, pfkey_inbound);
+	pfkey_arm(s);
 
 	sadb_log(log, BUNYAN_L_DEBUG, "SADB message received", samsg);
 
@@ -373,18 +402,6 @@ pfkey_send_msg(sadb_msg_t *msg, parsedmsg_t *pmsg, int numexts, ...)
 	boolean_t ret = B_TRUE;
 
 	VERIFY(IS_WORKER);
-
-	/*
-	 * Since we block the calling worker waiting for a reply, we need
-	 * to make sure there's always at least one worker not blocked here
-	 * that can receive the pfkey replies and wake up the callers, so
-	 * stop when there's wk_nworkers - 1 outstanding requests.
-	 */
-	if (atomic_inc_32_nv(&pf_nreq) == wk_nworkers) {
-		errno = EBUSY;
-		atomic_dec_32(&pf_nreq);
-		return (B_FALSE);
-	}
 
 	VERIFY0(cond_init(&req.pr_cv, USYNC_THREAD, NULL));
 	VERIFY0(mutex_init(&req.pr_lock, USYNC_THREAD|LOCK_ERRORCHECK, NULL));
@@ -496,8 +513,6 @@ handle_reply(sadb_msg_t *reply)
 	req->pr_recv = B_TRUE;
 	mutex_exit(&req->pr_lock);
 	VERIFY0(cond_signal(&req->pr_cv));
-
-	atomic_dec_32(&pf_nreq);
 }
 
 static void
@@ -684,6 +699,36 @@ pfkey_register(uint8_t satype)
 	handle_register(samsg);
 }
 
+static void *
+pfkey_thread(void *arg)
+{
+	port_event_t pe;
+	boolean_t stop = B_FALSE;
+
+	(void) bunyan_trace(pflog, "pfkey thread starting", BUNYAN_T_END);
+
+	while (!stop) {
+		if (port_get(pfport, &pe, NULL) < 0) {
+			STDERR(fatal, pflog, "port_get() failed");
+			exit(EXIT_FAILURE);
+		}
+
+		(void) bunyan_debug(pflog, "Received port event",
+		    BUNYAN_T_INT32, "event", pe.portev_events,
+		    BUNYAN_T_STRING, "source",
+		    port_source_str(pe.portev_source),
+		    BUNYAN_T_POINTER, "object", pe.portev_object,
+		    BUNYAN_T_POINTER, "cookie", pe.portev_user,
+		    BUNYAN_T_END);
+
+		VERIFY3S(pe.portev_source, ==, PORT_SOURCE_FD);
+
+		pfkey_inbound((int)pe.portev_object);
+	}
+
+	return (NULL);
+}
+
 static void
 sadb_log(bunyan_logger_t *restrict blog, bunyan_level_t level,
     const char *restrict msg, sadb_msg_t *restrict samsg)
@@ -712,6 +757,10 @@ pfkey_init(void)
 
 	list_create(&pfreq_list, sizeof (pfreq_t), offsetof (pfreq_t, pr_node));
 
+	pfport = port_create();
+	if (pfport == -1)
+		err(EXIT_FAILURE, "Unable to create pfkey event port");
+
 	pfkey = socket(PF_KEY, SOCK_RAW, PF_KEY_V2);
 	if (pfkey == -1)
 		err(EXIT_FAILURE, "Unable to create pf_key socket");
@@ -719,12 +768,13 @@ pfkey_init(void)
 	rc = bunyan_child(log, &pflog,
 	    BUNYAN_T_INT32, "socketfd", (int32_t)pfkey,
 	    BUNYAN_T_END);
-	if (rc != 0)
+	if (rc != 0) {
 		errx(EXIT_FAILURE, "Unable to create child logger: %s",
 		    strerror(rc));
+	}
 
 	pfkey_register(SADB_SATYPE_ESP);
 	pfkey_register(SADB_SATYPE_AH);
 
-	schedule_socket(pfkey, pfkey_inbound);
+	pfkey_arm(pfkey);
 }
