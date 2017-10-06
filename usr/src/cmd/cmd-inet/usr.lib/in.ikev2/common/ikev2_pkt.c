@@ -15,21 +15,22 @@
  */
 
 #include <stddef.h>
+#include <alloca.h>
 #include <assert.h>
 #include <umem.h>
 #include <string.h>
 #include <errno.h>
-#include <sys/types.h>
-#include <sys/byteorder.h>
 #include <netinet/in.h>
 #include <security/cryptoki.h>
 #include <errno.h>
-#include <sys/socket.h>
-#include <pthread.h>
+#include <sys/byteorder.h>
 #include <sys/debug.h>
+#include <sys/random.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <pthread.h>
 #include <note.h>
 #include <stdarg.h>
-#include <alloca.h>
 #include "defs.h"
 #include "pkt_impl.h"
 #include "ikev2.h"
@@ -37,7 +38,6 @@
 #include "ikev2_pkt.h"
 #include "ikev2_enum.h"
 #include "pkcs11.h"
-#include "random.h"
 #include "worker.h"
 
 #define	PKT_IS_V2(p) \
@@ -53,7 +53,7 @@ ikev2_pkt_new_exchange(ikev2_sa_t *i2sa, ikev2_exch_t exch_type)
 	uint32_t msgid = 0;
 	uint8_t flags = 0;
 
-	VERIFY0(pthread_mutex_lock(&i2sa->lock));
+	mutex_enter(&i2sa->i2sa_lock);
 	if (exch_type != IKEV2_EXCH_IKE_SA_INIT)
 		msgid = i2sa->outmsgid++;
 
@@ -67,11 +67,11 @@ ikev2_pkt_new_exchange(ikev2_sa_t *i2sa, ikev2_exch_t exch_type)
 
 	if (pkt == NULL) {
 		i2sa->outmsgid--;
-		VERIFY0(pthread_mutex_unlock(&i2sa->lock));
+		mutex_exit(&i2sa->i2sa_lock);
 		return (NULL);
 	}
 
-	VERIFY0(pthread_mutex_unlock(&i2sa->lock));
+	mutex_exit(&i2sa->i2sa_lock);
 
 	pkt->pkt_sa = i2sa;
 	I2SA_REFHOLD(i2sa);
@@ -365,6 +365,10 @@ ikev2_pkt_free(pkt_t *pkt)
 	pkt_free(pkt);
 }
 
+/*
+ * All of the usage and caveats of pkt_add_payload() apply here as well.
+ * For detailed information, see comments in pkt.c
+ */
 static boolean_t
 ikev2_add_payload(pkt_t *pkt, ikev2_pay_type_t ptype, boolean_t critical,
     size_t len)
@@ -626,7 +630,20 @@ ikev2_add_nonce(pkt_t *restrict pkt, uint8_t *restrict nonce, size_t len)
 	if (nonce != NULL) {
 		PKT_APPEND_DATA(pkt, nonce, len);
 	} else {
-		random_high(pkt->pkt_ptr, len);
+		VERIFY3U(len, <=, IKEV2_NONCE_MAX);
+		VERIFY3U(len, >=, IKEV2_NONCE_MIN);
+
+		/*
+		 * We use the nonce as the source of entropy into our PRF,
+		 * and IKEV2_NONCE_MAX is 256, so this should be fine for
+		 * creating our nonce.
+		 */
+		if (getentropy(pkt->pkt_ptr, len) != 0) {
+			STDERR(error, pkt->pkt_sa->i2sa_log,
+			    "error generating random nonce");
+			return (B_FALSE);
+		}
+
 		pkt->pkt_ptr += len;
 	}
 	return (B_TRUE);

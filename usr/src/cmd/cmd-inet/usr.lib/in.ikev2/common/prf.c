@@ -301,8 +301,10 @@ prf_to_p11key(prfp_t *restrict prfp, const char *restrict name, int alg,
 	if (len == 0)
 		return (B_TRUE);
 
-	if (!prfplus(prfp, buf, len))
+	if (!prfplus(prfp, buf, len)) {
+		explicit_bzero(buf, len);
 		return (B_FALSE);
+	}
 
 	rc = SUNW_C_KeyToObject(p11h(), alg, buf, len, objp);
 	explicit_bzero(buf, len);

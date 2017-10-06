@@ -33,6 +33,7 @@
 #include <note.h>
 #include <security/cryptoki.h>
 #include <stdarg.h>
+#include <stdlib.h>
 #include <string.h>
 #include <synch.h>
 #include <syslog.h>
@@ -439,11 +440,11 @@ pkcs11_session_free(CK_SESSION_HANDLE h)
 		CK_SESSION_HANDLE *nh = NULL;
 		size_t newamt = pkcs11_handlesz + CHUNK_SZ;
 
-		nh = reallocarray(pkcs11_handles, newamt,
+		nh = recallocarray(pkcs11_handles, pkcs11_handlesz, newamt,
 		    sizeof (CK_SESSION_HANDLE));
 		if (nh == NULL) {
 			STDERR(error, log,
-			    "reallocarray failed; PKCS#11 session handles"
+			    "recallocarray failed; PKCS#11 session handles"
 			    "will leak");
 			mutex_exit(&pkcs11_handle_lock);
 			return;
@@ -460,6 +461,11 @@ pkcs11_session_free(CK_SESSION_HANDLE h)
 CK_SESSION_HANDLE
 p11h(void)
 {
+	/*
+	 * When a worker is created, it must successfully create a
+	 * PKCS#11 session handle, so this call can never fail or return
+	 * CK_INVALID_HANDLE.
+	 */
 	return (worker->w_p11);
 }
 
@@ -473,6 +479,7 @@ pkcs11_new_session(void)
 	if (pkcs11_nhandles > 0) {
 		h = pkcs11_handles[--pkcs11_nhandles];
 		mutex_exit(&pkcs11_handle_lock);
+		VERIFY3U(h, !=, CK_INVALID_HANDLE);
 		return (h);
 	}
 	mutex_exit(&pkcs11_handle_lock);

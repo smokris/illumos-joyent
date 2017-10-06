@@ -825,7 +825,7 @@ ikev2_sa_keygen(ikev2_sa_result_t *restrict result, pkt_t *restrict init,
 	sa->prf = result->sar_prf;
 	sa->dhgrp = result->sar_dh;
 	sa->saltlen = encr_data[result->sar_encr].ed_saltlen;
-	sa->encr_key_len = encrlen / 8;
+	sa->encr_key_len = encrlen / NBBY;
 
 	if (!create_nonceobj(sa->prf, ni, nr, &nonce, sa->i2sa_log))
 		goto fail;

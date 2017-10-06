@@ -45,7 +45,6 @@ CMD_OBJS =	config.o	\
 		prf.o		\
 		pkcs11.o	\
 		pkt.o		\
-		random.o	\
 		timer.o		\
 		util.o		\
 		worker.o
@@ -69,7 +68,8 @@ LINTFLAGS64 += $(C99LMODE) -erroff=E_STATIC_UNUSED
 
 LINTFLAGS += -errfmt=macro
 
-# Use X/Open sockets for fromto.c
+# Use X/Open sockets for fromto.c so we can use control messages for
+# source address selection
 fromto.o := CPPFLAGS += -D_XOPEN_SOURCE=600
 
 # ... but as a consequence, you have to disable a few lint checks.

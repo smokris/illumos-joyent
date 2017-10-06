@@ -83,7 +83,7 @@ inbound_main(void *ibarg)
 	while (1) {
 		if (port_get(inbound_port, &pe, NULL) < 0) {
 			STDERR(fatal, ib->ib_log, "port_get() failed");
-			exit(EXIT_FAILURE);
+			abort();
 		}
 
 		(void) bunyan_debug(ib->ib_log, "Received port event",

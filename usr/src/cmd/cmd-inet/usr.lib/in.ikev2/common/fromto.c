@@ -55,6 +55,11 @@
 #include "ike.h"
 
 #ifdef lint
+/*
+ * Since this file uses XTI sockets, it also defines boolean_t with values
+ * _B_FALSE and _B_TRUE instead of the typical B_FALSE/B_TRUE.  This keeps
+ * lint from complaining about conflicting definitions.
+ */
 #define	_B_FALSE B_FALSE
 #define	_B_TRUE B_TRUE
 #endif
@@ -114,7 +119,7 @@ recvfromto(int s, uint8_t *restrict buf, size_t buflen, int flags,
 		    BUNYAN_T_INT32, "errno", (int32_t)errno);
 		return (-1);
 	}
-	if (len > buflen) {
+	if (m.msg_flags & MSG_TRUNC) {
 		/*
 		 * size_t and ssize_t should always be "long", but not in 32-
 		 * bit apps for some bizarre reason.

@@ -264,9 +264,9 @@ ikev2_send(pkt_t *pkt, boolean_t is_error)
 
 		CONFIG_REFRELE(cfg);
 
-		VERIFY0(pthread_mutex_lock(&i2sa->lock));
+		mutex_enter(&i2sa->i2sa_lock);
 		i2sa->last_sent = pkt;
-		VERIFY0(pthread_mutex_unlock(&i2sa->lock));
+		mutex_exit(&i2sa->i2sa_lock);
 
 		(void) schedule_timeout(TE_TRANSMIT, ikev2_retransmit_cb, i2sa,
 		    retry, i2sa->i2sa_log);
@@ -283,9 +283,9 @@ ikev2_send(pkt_t *pkt, boolean_t is_error)
 	 */
 	if (hdr->exch_type != IKEV2_EXCH_IKE_SA_INIT ||
 	    hdr->responder_spi != 0) {
-		VERIFY0(pthread_mutex_lock(&i2sa->lock));
+		mutex_enter(&i2sa->i2sa_lock);
 		i2sa->last_resp_sent = pkt;
-		VERIFY0(pthread_mutex_unlock(&i2sa->lock));
+		mutex_exit(&i2sa->i2sa_lock);
 	}
 
 	return (B_TRUE);
@@ -306,16 +306,16 @@ ikev2_retransmit_cb(te_event_t event, void *data)
 	hrtime_t retry = 0, retry_init = 0, retry_max = 0;
 	size_t limit = 0;
 
-	VERIFY0(pthread_mutex_lock(&sa->lock));
+	mutex_enter(&sa->i2sa_lock);
 
 	/* XXX: what about condemned SAs */
 	if (sa->outmsgid > ntohl(hdr->msgid) || sa->last_sent == NULL) {
 		/* already acknowledged */
-		VERIFY0(pthread_mutex_unlock(&sa->lock));
+		mutex_exit(&sa->i2sa_lock);
 		ikev2_pkt_free(pkt);
 		return;
 	}
-	VERIFY0(pthread_mutex_unlock(&sa->lock));
+	mutex_exit(&sa->i2sa_lock);
 
 	config_t *cfg = config_get();
 	retry_init = cfg->cfg_retry_init;
@@ -363,7 +363,7 @@ ikev2_retransmit_check(pkt_t *pkt)
 	uint32_t msgid = ntohl(hdr->msgid);
 	boolean_t discard = B_TRUE;
 
-	VERIFY0(pthread_mutex_lock(&sa->lock));
+	mutex_enter(&sa->i2sa_lock);
 	if (sa->flags & I2SA_CONDEMNED)
 		goto done;
 
@@ -441,7 +441,7 @@ ikev2_retransmit_check(pkt_t *pkt)
 	discard = B_FALSE;
 
 done:
-	VERIFY0(pthread_mutex_unlock(&sa->lock));
+	mutex_exit(&sa->i2sa_lock);
 	return (discard);
 }
 

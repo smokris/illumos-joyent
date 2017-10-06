@@ -41,6 +41,7 @@
 #include <strings.h>
 #include <sys/debug.h>
 #include <sys/list.h>
+#include <sys/random.h>
 #include <sys/sysmacros.h>
 #include <sys/types.h>
 #include <umem.h>
@@ -52,7 +53,6 @@
 #include "ilist.h"
 #include "pkcs11.h"
 #include "pkt.h"
-#include "random.h"
 #include "timer.h"
 #include "worker.h"
 
@@ -200,7 +200,7 @@ ikev2_sa_alloc(boolean_t initiator,
 {
 	ikev2_sa_t	*i2sa = NULL;
 
-	bunyan_trace(log, "Attempting to create new larval IKE SA",
+	(void) bunyan_trace(log, "Attempting to create new larval IKE SA",
 	    BUNYAN_T_BOOLEAN, I2SA_KEY_INITIATOR, initiator,
 	    ss_bunyan(laddr), I2SA_KEY_LADDR, ss_addr(laddr),
 	    ss_bunyan(raddr), I2SA_KEY_RADDR, ss_addr(raddr),
@@ -210,7 +210,7 @@ ikev2_sa_alloc(boolean_t initiator,
 		return (NULL);
 
 	/* Keep anyone else out while we initialize */
-	VERIFY0(pthread_mutex_lock(&i2sa->lock));
+	mutex_enter(&i2sa->i2sa_lock);
 
 	ASSERT((init_pkt == NULL) ||
 	    (init_pkt->hdr.exch_type == IKEV2_EXCHANGE_IKE_SA_INIT));
@@ -228,7 +228,9 @@ ikev2_sa_alloc(boolean_t initiator,
 	 */
 	NOTE(CONSTCOND)
 	while (1) {
-		uint64_t spi = random_low_64();
+		uint64_t spi = 0;
+
+		arc4random_buf(&spi, sizeof (spi));
 
 		/*
  		 * Incredibly unlikely we'll ever randomly generate 0, but
@@ -311,7 +313,7 @@ ikev2_sa_alloc(boolean_t initiator,
 		goto fail;
 	}
 
-	VERIFY0(pthread_mutex_unlock(&i2sa->lock));
+	mutex_exit(&i2sa->i2sa_lock);
 
 	(void) bunyan_debug(i2sa->i2sa_log, "New larval IKE SA created",
 	    BUNYAN_T_POINTER, "sa", i2sa,
@@ -320,7 +322,7 @@ ikev2_sa_alloc(boolean_t initiator,
 	return (i2sa);
 
 fail:
-	VERIFY0(pthread_mutex_unlock(&i2sa->lock));
+	mutex_exit(&i2sa->i2sa_lock);
 	i2sa_unlink(i2sa);
 
 	/*
@@ -331,7 +333,7 @@ fail:
 		I2SA_REFRELE(i2sa);
 	I2SA_REFRELE(i2sa);
 
-	bunyan_debug(log, "Larval IKE SA creation failed", BUNYAN_T_END);
+	(void) bunyan_debug(log, "Larval IKE SA creation failed", BUNYAN_T_END);
 	return (NULL);
 }
 
@@ -387,7 +389,7 @@ ikev2_sa_condemn(ikev2_sa_t *i2sa)
 
 	i2sa_unlink(i2sa);
 
-	VERIFY0(pthread_mutex_lock(&i2sa->lock));
+	mutex_enter(&i2sa->i2sa_lock);
 
 	(void) bunyan_info(i2sa->i2sa_log, "Condemning IKE SA", BUNYAN_T_END);
 
@@ -420,7 +422,7 @@ ikev2_sa_condemn(ikev2_sa_t *i2sa)
 	i2sa->last_sent = NULL;
 	i2sa->last_recvd = NULL;
 
-	VERIFY0(pthread_mutex_unlock(&i2sa->lock));
+	mutex_exit(&i2sa->i2sa_lock);
 
 	I2SA_REFRELE(i2sa);
 	/* XXX: should we do anything else here? */
@@ -534,7 +536,7 @@ ikev2_sa_set_hashsize(uint_t newamt)
 	}
 
 	/* New tables means a new fudge factor.  Pick one randomly. */
-	remote_noise = random_low_32();
+	remote_noise = arc4random();
 
 	i = num_buckets;
 
@@ -880,7 +882,7 @@ i2sa_ctor(void *buf, void *dummy, int flags)
 	(void) memset(i2sa, 0, sizeof (*i2sa));
 	i2sa->msgwin = 1;
 
-	VERIFY0(pthread_mutex_init(&i2sa->lock, NULL));
+	mutex_init(&i2sa->i2sa_lock, USYNC_THREAD|LOCK_ERRORCHECK, NULL);
 	list_link_init(&i2sa->i2sa_lspi_node);
 	list_link_init(&i2sa->i2sa_rspi_node);
 
@@ -894,7 +896,7 @@ i2sa_dtor(void *buf, void *dummy)
 
 	ikev2_sa_t *i2sa = (ikev2_sa_t *)buf;
 
-	VERIFY0(pthread_mutex_destroy(&i2sa->lock));
+	mutex_destroy(&i2sa->i2sa_lock);
 }
 
 static int

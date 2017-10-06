@@ -19,6 +19,7 @@
 #include <string.h>
 #include <synch.h>
 #include <sys/debug.h>
+#include <sys/random.h>
 #include <sys/time.h>
 #include <time.h>
 #include <pthread.h>
@@ -28,7 +29,6 @@
 #include "ikev2_pkt.h"
 #include "ikev2_proto.h"
 #include "pkcs11.h"
-#include "random.h"
 #include "worker.h"
 
 #define	COOKIE_MECH		CKM_SHA_1
@@ -305,7 +305,8 @@ cookie_update_secret(void)
 
 	if (SECRET_BIRTH(i2c_version) != 0)
 		i2c_version++;
-	random_low(SECRET(i2c_version), COOKIE_SECRET_LEN);
+
+	arc4random_buf(SECRET(i2c_version), COOKIE_SECRET_LEN);
 	SECRET_BIRTH(i2c_version) = gethrtime();
 
 	VERIFY0(rw_unlock(&i2c_lock));

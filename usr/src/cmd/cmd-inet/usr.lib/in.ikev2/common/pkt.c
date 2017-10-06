@@ -320,6 +320,21 @@ pkt_add_nindex(pkt_t *pkt, uint64_t spi, uint32_t doi, uint8_t proto,
 	return (B_TRUE);
 }
 
+/*
+ * Add a payload header to pkt as the first step in adding a payload.
+ * NOTE: len is the amount of data that will be added by subsequent operations
+ * not including the payload header itself -- the function will add that itself.
+ * If there is not enough space left for 'len + sizeof (ike_payload_t)' bytes
+ * of data (i.e. header + size of data), the function will return B_FALSE.
+ *
+ * It is permissible to pass a length of 0 for complex payloads where it can
+ * be cumbersome or tedious to calculate the length a priori (e.g. an IKEv1 or
+ * IKEv2 SA payload).  In such instances, the functions constructing the
+ * payload must perform their own checks, and are responsible for updating
+ * the payload length value.  However such callers should still examine
+ * the return value of pkt_add_payload() as it will still check that there's
+ * at least enough space for the payload header.
+ */
 boolean_t
 pkt_add_payload(pkt_t *pkt, uint8_t ptype, uint8_t resv, size_t len)
 {
@@ -442,7 +457,7 @@ pkt_add_xform(pkt_sa_state_t *pss, uint8_t xftype, uint16_t xfid)
 	xf.xf_id = htons(xfid);
 	PKT_APPEND_STRUCT(pss->pss_pkt, xf);
 
-	/* This is uint8_t so it can be derefenced directly */
+	/* prop_numxform is uint8_t so it can be derefenced directly */
 	pss->pss_prop->prop_numxform++;
 
 	BE_OUT16(&pss->pss_prop->prop_len, proplen);
@@ -533,8 +548,12 @@ pkt_add_notify(pkt_t *restrict pkt, uint32_t doi, uint8_t proto,
 	uint8_t *ptr = NULL;
 	size_t len = spilen + datalen;
 
+	VERIFY3U(spilen, <, UINT16_MAX);
+	VERIFY3U(datalen, <, UINT16_MAX);
+
 	if (pkt_header(pkt)->version == IKEV1_VERSION) {
 		len += sizeof (ikev1_notify_t);
+		VERIFY3U(len, <=, UINT16_MAX);
 
 		if (!pkt_add_payload(pkt, IKEV1_PAYLOAD_NOTIFY, 0, len))
 			return (B_FALSE);
@@ -546,6 +565,7 @@ pkt_add_notify(pkt_t *restrict pkt, uint32_t doi, uint8_t proto,
 		PKT_APPEND_STRUCT(pkt, n.n1);
 	} else if (pkt_header(pkt)->version == IKEV2_VERSION) {
 		len += sizeof (ikev2_notify_t);
+		VERIFY3U(len, <=, UINT16_MAX);
 
 		if (!pkt_add_payload(pkt, IKEV2_PAYLOAD_NOTIFY, 0, len))
 			return (B_FALSE);
@@ -666,11 +686,31 @@ pay_to_idx(pkt_t *pkt, pkt_payload_t *pay)
 	return (idx);
 }
 
+/*
+ * Return the first payload of a given type after 'start'.  If start is NULL,
+ * the first payload of the given type will be returned.  This allows for
+ * iteration through payloads of a given type in a packet using code
+ * similar to:
+ * 	pkt_payload_t *pay;
+ * 	...
+ * 	for (pay = pkt_get_payload(pkt, IKEV2_PAYLOAD_CERT, NULL);
+ * 	    pay != NULL;
+ * 	    pay = pkt_get_payload(pkt, IKEV2_PAYLOAD_CERT, pay)) {
+ * 		...
+ * 	}
+ *
+ * It is a fatal error to pass a value in start that is not an existing
+ * payload in pkt.
+ */
 pkt_payload_t *
 pkt_get_payload(pkt_t *pkt, uint8_t type, pkt_payload_t *start)
 {
-	size_t idx = pay_to_idx(pkt, start);
+	size_t idx = (start == NULL) ? 0 : pay_to_idx(pkt, start);
 
+	/*
+	 * If we're searching for the next payload of 'type', we want to
+	 * being searching after 'start'.
+	 */
 	if (start != NULL)
 		idx++;
 
@@ -706,11 +746,31 @@ notify_to_idx(pkt_t *pkt, pkt_notify_t *n)
 	return (idx);
 }
 
+/*
+ * Return the first payload of type 'type' after 'start'.  If start is
+ * NULL, return the first notify payload of type 'type'.  This allows one
+ * to iterate through multiple instances of a given notify type using something
+ * such as:
+ * 	pkt_notify_t *n;
+ * 	...
+ * 	for (n = pkt_get_notify(pkt, IKEV2_N_NAT_DETECTION_SOURCE_IP, NULL);
+ * 	    n != NULL;
+ * 	    n = pkt_get_notify(pkt, IKEV2_N_NAT_DETECTION_SOURCE_IP, n)) {
+ * 		....
+ * 	}
+ *
+ * It is a fatal error to pass in a notify in 'start' that does not exist
+ * in pkt.
+ */
 pkt_notify_t *
 pkt_get_notify(pkt_t *pkt, uint16_t type, pkt_notify_t *start)
 {
 	size_t idx = notify_to_idx(pkt, start);
 
+	/*
+	 * If we're looking for the next instance of 'type', we need to
+	 * begin our search after the previous value returned (start).
+	 */
 	if (start != NULL)
 		idx++;
 

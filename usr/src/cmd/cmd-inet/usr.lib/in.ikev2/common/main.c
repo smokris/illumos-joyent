@@ -41,7 +41,6 @@
 extern void pkt_init(void);
 extern void pkt_fini(void);
 extern void ikev2_sa_init(void);
-extern void random_init(void);
 extern void pfkey_init(void);
 static void signal_init(void);
 static void event(event_t, void *);
@@ -175,7 +174,12 @@ main(int argc, char **argv)
 			exit(EXIT_FAILURE);
 		}
 
-		(void) close(fd);
+		if (close(fd) < 0) {
+			STDERR(fatal, log, "close(2) failed",
+			    BUNYAN_T_INT32, "fd", (int)fd,
+			    BUNYAN_T_END);
+			exit(EXIT_FAILURE);
+		}
 	}
 
 	if ((port = port_create()) < 0) {
@@ -189,7 +193,6 @@ main(int argc, char **argv)
 	}
 
 	signal_init();
-	random_init();
 	pkcs11_init();
 	pkt_init();
 	ike_timer_init();

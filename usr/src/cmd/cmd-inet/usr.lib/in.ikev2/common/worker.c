@@ -218,7 +218,7 @@ worker_do_suspend(worker_t *w)
 	--wk_nsuspended;
 	mutex_exit(&wk_suspend_lock);
 
-	bunyan_debug(w->w_log, "Worker resuming", BUNYAN_T_END);
+	(void) bunyan_debug(w->w_log, "Worker resuming", BUNYAN_T_END);
 	/* leave wq->wq_lock locked */
 }
 
@@ -230,7 +230,7 @@ worker_resume(void)
 		worker_t *w = wk_workers[i];
 		worker_queue_t *wq = &w->w_queue;
 
-		bunyan_trace(log, "Waking up worker",
+		(void) bunyan_trace(log, "Waking up worker",
 		    BUNYAN_T_UINT32, "worker", (uint32_t)i,
 		    BUNYAN_T_END);
 
@@ -241,7 +241,12 @@ worker_resume(void)
 	}
 	VERIFY0(rw_unlock(&wk_worker_lock));
 
-	bunyan_trace(log, "Finished resuming workers", BUNYAN_T_END);
+	mutex_enter(&wk_suspend_lock);
+	while (wk_nsuspended > 0)
+		VERIFY0(cond_wait(&wk_suspend_cv, &wk_suspend_lock));
+	mutex_exit(&wk_suspend_lock);
+
+	(void) bunyan_trace(log, "Finished resuming workers", BUNYAN_T_END);
 }
 
 boolean_t

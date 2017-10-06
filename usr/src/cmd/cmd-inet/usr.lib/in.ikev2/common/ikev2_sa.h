@@ -68,6 +68,15 @@ typedef enum i2sa_hash_e {
 #define	I2SA_SALT_LEN	(32)	/* Maximum size of salt, may be smaller */
 
 /*
+ * Which state the IKEv2 SA can be in.  Currently there are just two, but
+ * it is expected this will grow.
+ */
+typedef enum ikev2_sa_state {
+	IKEV2_SA_IDLE,
+	IKEV2_SA_BUSY,
+} ikev2_sa_state_t;
+
+/*
  * The IKEv2 SA.
  *
  * This is the central data structure to the IKEv2 daemon.  It is a
@@ -79,7 +88,15 @@ typedef enum i2sa_hash_e {
  * Because of the distinct sets of lookup keys, it requires two linkages.
  */
 struct ikev2_sa_s {
-	pthread_mutex_t lock;
+				/* protects i2sa_state */
+	mutex_t			i2sa_state_lock;
+	ikev2_sa_state_t	i2sa_state;
+
+			/*
+			 * protects everything else, acquire after
+			 * i2sa_state_lock
+			 */
+	mutex_t		i2sa_lock;
 	list_node_t	i2sa_lspi_node;
 	list_node_t	i2sa_rspi_node;
 
