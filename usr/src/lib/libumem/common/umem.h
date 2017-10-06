@@ -22,12 +22,12 @@
 /*
  * Copyright 2004 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ *
+ * Copyright (c) 2018, Joyent, Inc.
  */
 
 #ifndef _UMEM_H
 #define	_UMEM_H
-
-#pragma ident	"%Z%%M%	%I%	%E% SMI"
 
 #include <sys/types.h>
 #include <sys/vmem.h>
@@ -39,7 +39,7 @@ extern "C" {
 
 #define	UMEM_DEFAULT	0x0000	/* normal -- may fail */
 #define	UMEM_NOFAIL	0x0100	/* Never fails -- may call exit(2) */
-
+#define	UMEM_EXCISE	0x0200	/* Zero any freed memory on realloc* calls */
 #define	UMEM_FLAGS	0xffff	/* all settable umem flags */
 
 extern void *umem_alloc(size_t, int);
@@ -47,6 +47,12 @@ extern void *umem_alloc_align(size_t, size_t, int);
 extern void *umem_zalloc(size_t, int);
 extern void umem_free(void *, size_t);
 extern void umem_free_align(void *, size_t);
+extern void *umem_realloc(void *, size_t, size_t, int);
+extern void *umem_calloc(size_t, size_t, int);
+extern void *umem_reallocarray(void *, size_t, size_t, size_t, int);
+extern void umem_cfree(void *, size_t, size_t);
+extern void umem_excise(void *, size_t);
+extern void umem_cexcise(void *, size_t, size_t);
 
 /*
  * Flags for umem_cache_create()

@@ -2266,6 +2266,123 @@ _umem_free_align(void *buf, size_t size)
 	vmem_xfree(umem_memalign_arena, buf, size);
 }
 
+/* This is sqrt(SIZE_MAX + 1) */
+#define	MUL_NO_OVERFLOW ((size_t)1 << (sizeof (size_t) * 4))
+
+/*
+ * This is intended to look like the newer GCC / clang __builtin_umul_overflow
+ * intrinsics to facilitate using them in lieu of this function.
+ */
+static boolean_t
+mul_overflow(size_t nelem, size_t elsize, size_t *totalp)
+{
+	*totalp = nelem * elsize;
+
+	if ((nelem >= MUL_NO_OVERFLOW || elsize >= MUL_NO_OVERFLOW) &&
+	    nelem > 0 && SIZE_MAX / nelem < elsize)
+		return (B_TRUE);
+
+	return (B_FALSE);
+}
+
+void *
+umem_calloc(size_t nelem, size_t elsize, int umflag)
+{
+	size_t total;
+
+	if (nelem == 0 || elsize == 0) {
+		total = 0;
+	} else if (mul_overflow(nelem, elsize, &total)) {
+		errno = ENOMEM; /* Follow what calloc(3C) does */
+		return (NULL);
+	}
+
+	return (_umem_zalloc(total, umflag));
+}
+
+void *
+umem_realloc(void *ptr, size_t oldsize, size_t newsize, int umflag)
+{
+	void *newptr;
+	boolean_t excise = (umflag & UMEM_EXCISE) ? B_TRUE : B_FALSE;
+
+	/* Don't pass UMEM_EXCISE to any *alloc function */
+	umflag &= ~(UMEM_EXCISE);
+
+	if (ptr == NULL)
+		return (_umem_alloc(newsize, umflag));
+
+	if ((newptr = _umem_alloc(newsize, umflag)) == NULL)
+		return (NULL);
+
+	(void) memcpy(newptr, ptr, MIN(oldsize, newsize));
+
+	if (excise)
+		umem_excise(ptr, oldsize);
+	else
+		_umem_free(ptr, oldsize);
+
+	return (newptr);
+}
+
+void *
+umem_reallocarray(void *ptr, size_t oldnelem, size_t nelem, size_t elsize,
+    int umflag)
+{
+	void *newptr;
+	size_t newtotal, oldtotal;
+	boolean_t excise = (umflag & UMEM_EXCISE) ? B_TRUE : B_FALSE;
+
+	umflag &= ~(UMEM_EXCISE);
+
+	if (ptr == NULL)
+		return (umem_calloc(nelem, elsize, umflag));
+
+	if (mul_overflow(nelem, elsize, &newtotal)) {
+			errno = ENOMEM;
+			return (NULL);
+	}
+
+	if (mul_overflow(oldnelem, elsize, &oldtotal)) {
+		errno = EINVAL;
+		return (NULL);
+	}
+
+	if ((newptr = _umem_zalloc(newtotal, umflag)) == NULL)
+		return (NULL);
+
+	(void) memcpy(newptr, ptr, MIN(oldtotal, newtotal));
+
+	if (excise)
+		umem_excise(ptr, oldtotal);
+	else
+		_umem_free(ptr, oldtotal);
+
+	return (newptr);
+}
+
+void
+umem_cfree(void *ptr, size_t nelem, size_t elsize)
+{
+	_umem_free(ptr, nelem * elsize);
+}
+
+void
+umem_excise(void *ptr, size_t size)
+{
+	explicit_bzero(ptr, size);
+	_umem_free(ptr, size);
+}
+
+void
+umem_cexcise(void *ptr, size_t nelem, size_t elsize)
+{
+	size_t total = nelem * elsize;
+
+	explicit_bzero(ptr, total);
+	umem_free(ptr, total);
+}
+
 static void *
 umem_firewall_va_alloc(vmem_t *vmp, size_t size, int vmflag)
 {

@@ -162,3 +162,16 @@ isspace(int c)
 	}
 	return (0);
 }
+
+#pragma weak __explicit_bzero_hook
+void
+__explicit_bzero_hook(void *buf, size_t len)
+{
+}
+
+void
+explicit_bzero(void *buf, size_t len)
+{
+	(void) memset(buf, 0, len);
+	__explicit_bzero_hook(buf, len);
+}

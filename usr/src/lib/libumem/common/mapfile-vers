@@ -49,7 +49,6 @@ LOAD_SEGMENT umem {
 };
 $endif
 
-
 SYMBOL_VERSION SUNW_1.1 {
     global:
 	calloc			{ FLAGS = NODIRECT };
@@ -71,6 +70,12 @@ SYMBOL_VERSION SUNW_1.1 {
 SYMBOL_VERSION SUNWprivate_1.1 {
     global:
 	umem_alloc_align;
+	umem_calloc;
+	umem_cexcise;
+	umem_cfree;
+	umem_excise;
+	umem_realloc;
+	umem_reallocarray;
 	umem_free_align;
 	umem_reap;
 	vmem_add;
