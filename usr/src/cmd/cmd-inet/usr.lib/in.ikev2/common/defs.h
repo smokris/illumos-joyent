@@ -211,7 +211,7 @@ typedef enum event {
 
 extern char *my_fmri;
 extern bunyan_logger_t *log;
-extern int port;
+extern int main_port;
 
 typedef int (*bunyan_logfn_t)(bunyan_logger_t *, const char *, ...);
 bunyan_logfn_t getlog(bunyan_level_t);

@@ -326,7 +326,7 @@ ikev2_cookie_init(void)
 	struct sigevent se = { 0 };
 	port_notify_t pn;
 
-	pn.portnfy_port = port;
+	pn.portnfy_port = main_port;
 	pn.portnfy_user = (void *)cookie_update_secret;
 	se.sigev_notify = SIGEV_PORT;
 	se.sigev_value.sival_ptr = &pn;

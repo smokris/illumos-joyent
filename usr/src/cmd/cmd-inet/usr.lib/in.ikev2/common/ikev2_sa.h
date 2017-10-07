@@ -37,7 +37,7 @@
 #include <sys/socket.h>
 #include <stddef.h>
 #include <synch.h>
-#include <pthread.h>
+#include <thread.h>
 #include "defs.h"
 #include "ikev2.h"
 
@@ -76,6 +76,20 @@ typedef enum ikev2_sa_state {
 	IKEV2_SA_BUSY,
 } ikev2_sa_state_t;
 
+typedef enum ikev2_sa_event {
+	SAE_NONE = 0,
+	SAE_PKT,
+	SAE_P1_EXPIRE,
+	SAE_SOFT_EXPIRE,
+	SAE_HARD_EXPIRE
+} ikev2_sa_event_t;
+
+#define	IKEV2_SA_QUEUE_DEPTH	16
+typedef struct ikev2_sa_queue_entry {
+	ikev2_sa_event_t	sqe_event;
+	void			*sqe_data;
+} ikev2_sa_queue_entry_t;
+
 /*
  * The IKEv2 SA.
  *
@@ -88,9 +102,10 @@ typedef enum ikev2_sa_state {
  * Because of the distinct sets of lookup keys, it requires two linkages.
  */
 struct ikev2_sa_s {
-				/* protects i2sa_state */
+				/* protects i2sa_state and i2sa_tid */
 	mutex_t			i2sa_state_lock;
 	ikev2_sa_state_t	i2sa_state;
+	thread_t		i2sa_tid;	/* set when active */
 
 			/*
 			 * protects everything else, acquire after
@@ -165,6 +180,11 @@ struct ikev2_sa_s {
 	uint8_t		salt_i[I2SA_SALT_LEN];
 	uint8_t		salt_r[I2SA_SALT_LEN];
 	size_t		saltlen;
+
+	mutex_t			i2sa_queue_lock;
+	ikev2_sa_queue_entry_t	i2sa_queue[IKEV2_SA_QUEUE_DEPTH];
+	size_t			i2sa_queue_start;
+	size_t			i2sa_queue_end;
 };
 
 struct ikev2_child_sa {

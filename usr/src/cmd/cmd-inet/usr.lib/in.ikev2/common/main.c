@@ -53,7 +53,7 @@ static boolean_t done;
 static pthread_t signal_tid;
 
 bunyan_logger_t *log = NULL;
-int port = -1;
+int main_port = -1;
 
 static void
 usage(const char *name)
@@ -182,7 +182,7 @@ main(int argc, char **argv)
 		}
 	}
 
-	if ((port = port_create()) < 0) {
+	if ((main_port = port_create()) < 0) {
 		STDERR(fatal, log, "main port_create() failed");
 		exit(EXIT_FAILURE);
 	}
@@ -266,7 +266,7 @@ main_loop(void)
 
 	/*CONSTCOND*/
 	while (!done) {
-		if (port_get(port, &pe, NULL) < 0) {
+		if (port_get(main_port, &pe, NULL) < 0) {
 			STDERR(error, log, "port_get() failed");
 			continue;
 		}
@@ -370,8 +370,10 @@ signal_thread(void *arg)
 		    BUNYAN_T_INT32, "signum", (int32_t)signo,
 		    BUNYAN_T_END);
 
-		if (port_send(port, EVENT_SIGNAL, (void *)(uintptr_t)signo) < 0)
+		if (port_send(main_port, EVENT_SIGNAL,
+		    (void *)(uintptr_t)signo) < 0) {
 			STDERR(error, log, "port_send() failed");
+		}
 	}
 
 	/*NOTREACHED*/
