@@ -5294,6 +5294,7 @@ f usr/lib/amd64/libpcidb.so.1 0755 root bin
 f usr/lib/amd64/libpcsc.so.1 0755 root bin
 f usr/lib/amd64/libpctx.so.1 0755 root bin
 s usr/lib/amd64/libpctx.so=libpctx.so.1
+f usr/lib/amd64/libperiodic.so.1 0755 root bin
 f usr/lib/amd64/libpicl.so.1 0755 root bin
 s usr/lib/amd64/libpicl.so=libpicl.so.1
 f usr/lib/amd64/libpkcs11.so.1 0755 root bin
@@ -6810,6 +6811,7 @@ f usr/lib/libpcidb.so.1 0755 root bin
 f usr/lib/libpcsc.so.1 0755 root bin
 f usr/lib/libpctx.so.1 0755 root bin
 s usr/lib/libpctx.so=libpctx.so.1
+f usr/lib/libperiodic.so.1 0755 root bin
 f usr/lib/libpicl.so.1 0755 root bin
 s usr/lib/libpicl.so=libpicl.so.1
 f usr/lib/libpicld_pluginutil.so.1 0755 root bin

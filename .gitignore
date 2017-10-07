@@ -3849,6 +3849,10 @@ usr/src/lib/libpctx/amd64/lint.out
 usr/src/lib/libpctx/amd64/llib-lpctx.ln
 usr/src/lib/libpctx/i386/lint.out
 usr/src/lib/libpctx/i386/llib-lpctx.ln
+usr/src/lib/libperiodic/amd64/llib-lperiodic.ln
+usr/src/lib/libperiodic/amd64/lint.out
+usr/src/lib/libperiodic/i386/llib-lperiodic.ln
+usr/src/lib/libperiodic/i386/lint.out
 usr/src/lib/libpicl/amd64/lint.out
 usr/src/lib/libpicl/amd64/llib-lpicl.ln
 usr/src/lib/libpicl/i386/lint.out
