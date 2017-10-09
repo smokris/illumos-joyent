@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2015 Joyent, Inc.
+ * Copyright 2018 Joyent, Inc.
  */
 
 /*
@@ -296,7 +296,8 @@ periodic_schedule(periodic_handle_t *perh, hrtime_t time, int flags,
 {
 	periodic_t *p;
 
-	if (flags != 0 && (flags & ~(PERIODIC_ONESHOT | PERIODIC_ABSOLUTE)) != 0) {
+	if (flags != 0 &&
+	    (flags & ~(PERIODIC_ONESHOT | PERIODIC_ABSOLUTE)) != 0) {
 		errno = EINVAL;
 		return (-1);
 	}
