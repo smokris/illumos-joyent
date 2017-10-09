@@ -94,7 +94,7 @@ static mutex_t	pfreq_lock = ERRORCHECKMUTEX;
 static list_t	pfreq_list;
 
 /* PF_KEY socket. */
-int pfkey;
+static int pfsock;
 
 /* our event port */
 static int pfport;
@@ -413,7 +413,7 @@ pfkey_send_msg(sadb_msg_t *msg, parsedmsg_t *pmsg, int numexts, ...)
 	list_insert_tail(&pfreq_list, &req);
 	mutex_exit(&pfreq_lock);
 
-	n = write(pfkey, msg, msg->sadb_msg_len);
+	n = write(pfsock, msg, msg->sadb_msg_len);
 	if (n != msg->sadb_msg_len) {
 		if (n < 0) {
 			STDERR(error, log, "pf_key write failed");
@@ -481,9 +481,125 @@ pfkey_send_error(const sadb_msg_t *src, uint8_t reason)
 	msg.sadb_msg_seq = src->sadb_msg_seq;
 	msg.sadb_msg_pid = src->sadb_msg_pid;
 
-	n = write(pfkey, &msg, sizeof (sadb_msg_t));
+	n = write(pfsock, &msg, sizeof (sadb_msg_t));
 	if (n != sizeof (sadb_msg_t))
 		STDERR(error, log, "Unable to send PFKEY error notification");
+}
+
+/*
+ * Add an sadb_address_t extension to a pfkey message.  Caller must fill
+ * in SADB address type (SRC, INNER_DST, etc.).  Caller must guarantee memory
+ * pointed to by saaddr is sufficiently large to hold sadb_address_t + the
+ * actual address.
+ *
+ * Returns total size of extension (in bytes) -- sadb_address_t and actual
+ * address.  It also sets *endp to just after the end of the address (i.e.
+ * where the next extension would go).
+ */
+static size_t
+pfkey_add_address(sadb_address_t *saaddr, sockaddr_u_t addr, void *endp)
+{
+	sockaddr_u_t msgaddr = {
+		.sau_ss = (struct sockaddr_storage *)(saaddr + 1)
+	};
+	sockaddr_u_t nextaddr;
+	size_t len = 0;
+
+	switch (addr.sau_ss->ss_family) {
+	case AF_INET:
+		nextaddr.sau_sin = (msgaddr.sau_sin + 1);
+		len = sizeof (struct sockaddr_in);
+		(void) memcpy(msgaddr.sau_sin, addr.sau_sin, len);
+		break;
+	case AF_INET6:
+		nextaddr.sau_sin6 = (msgaddr.sau_sin6 + 1);
+		len = sizeof (struct sockaddr_in6);
+		(void) memcpy(msgaddr.sau_sin6, addr.sau_sin6, len);
+		break;
+	default:
+		INVALID("ss_family");
+	}
+
+	len += sizeof (*saaddr);
+	saaddr->sadb_address_len = SADB_8TO64(len);
+
+	(*(void **)endp) = nextaddr.sau_ss;
+	return (len);
+}
+
+boolean_t
+pfkey_getspi(sockaddr_u_t src, sockaddr_u_t dest, uint8_t satype,
+    parsedmsg_t *resp)
+{
+	uint64_t buffer[128];
+	sadb_msg_t *samsg = (sadb_msg_t *)buffer;
+	sadb_address_t *sasrc = NULL, *sadest = NULL;
+	sadb_spirange_t *range = NULL;
+	size_t len = 0;
+
+	/*
+	 * Use sizeof (struct sockaddr_storage) as worst case address size
+	 * for compile time check
+	 */
+	CTASSERT(sizeof (buffer) >= sizeof (*samsg) +
+	    2 * (sizeof (*sasrc) + sizeof (struct sockaddr_storage)) +
+	    sizeof (*range));
+
+	VERIFY3U(src.sau_ss->ss_family, ==, dest.sau_ss->ss_family);
+
+	samsg->sadb_msg_version = PF_KEY_V2;
+	samsg->sadb_msg_type = SADB_GETSPI;
+	samsg->sadb_msg_satype = satype;
+	len += sizeof (*samsg);
+	/* pfkey_send_msg() sets pid and msgid for us */
+
+	sasrc = (sadb_address_t *)(samsg + 1);
+	sasrc->sadb_address_exttype = SADB_EXT_ADDRESS_SRC;
+	sasrc->sadb_address_proto = 0;			/* XXX: fill me in! */
+	sasrc->sadb_address_prefixlen = 0;		/* XXX: fill me in! */
+	len += pfkey_add_address(sasrc, src, &sadest);
+
+	sadest->sadb_address_exttype = SADB_EXT_ADDRESS_DST;
+	sadest->sadb_address_proto = 0;			/* XXX: fill me in! */
+	sadest->sadb_address_prefixlen = 0;		/* XXX: fill me in! */
+	len += pfkey_add_address(sadest, dest, &range);
+
+	range->sadb_spirange_len = SADB_8TO64(sizeof (*range));
+	range->sadb_spirange_exttype = SADB_EXT_SPIRANGE;
+	range->sadb_spirange_min = 1;
+	range->sadb_spirange_max = UINT32_MAX;
+	len += sizeof (*range);
+
+	samsg->sadb_msg_len = SADB_8TO64(len);
+
+	/*
+	 * The kernel randomly pics an SPI within the range we pass.  If it
+	 * happens to collide with an existing SPI, the GETSPI request will
+	 * fail with EEXIST.  We keep trying until we either succeed, or
+	 * get an error other than EEXIST.  Technically this means
+	 * if we've exhaused our SPI space, we'll loop forever.  However, there
+	 * is no definitive way to detect this, and since the address space is
+	 * 32 bits, it seems reasonable at this time to assume we will run out
+	 * of resources long before we could ever possibly have 2^32 IPsec SAs
+	 * (larval or otherwise).
+	 *
+	 * XXX: The semantics here and with pfkey_send_msg could be improved.
+	 * Revisit after other pfkey functions are added.
+	 */
+	do {
+		if (resp->pmsg_samsg != NULL)
+			free(resp->pmsg_samsg);
+		resp->pmsg_samsg = NULL;
+		errno = 0;
+		if (!pfkey_send_msg(samsg, resp, 3,
+		    SADB_EXT_SA, SADB_EXT_ADDRESS_SRC, SADB_EXT_ADDRESS_DST)) {
+			if (errno != 0)
+				return (B_FALSE);
+		}
+	} while (resp->pmsg_samsg->sadb_msg_errno != 0 &&
+	    resp->pmsg_samsg->sadb_msg_errno != EEXIST);
+
+	return (resp->pmsg_samsg->sadb_msg_errno == 0 ? B_TRUE : B_FALSE);
 }
 
 static void
@@ -647,58 +763,6 @@ handle_acquire(sadb_msg_t *samsg, boolean_t create_child_sa)
 	free(samsg);
 }
 
-static void
-pfkey_register(uint8_t satype)
-{
-	uint64_t buffer[128] = { 0 };
-	sadb_msg_t *samsg = (sadb_msg_t *)buffer;
-	ssize_t n;
-	uint32_t msgid = atomic_inc_32_nv(&msgid);
-	pid_t pid = getpid();
-
-	CTASSERT(sizeof (buffer) >= sizeof (*samsg));
-
-	samsg->sadb_msg_version = PF_KEY_V2;
-	samsg->sadb_msg_type = SADB_REGISTER;
-	samsg->sadb_msg_errno = 0;
-	samsg->sadb_msg_satype = satype;
-	samsg->sadb_msg_reserved = 0;
-	samsg->sadb_msg_seq = msgid;
-	samsg->sadb_msg_pid = pid;
-	samsg->sadb_msg_len = SADB_8TO64(sizeof (*samsg));
-
-	n = write(pfkey, buffer, sizeof (*samsg));
-	if (n < 0)
-		err(EXIT_FAILURE, "pf_key write error");
-	if (n < sizeof (*samsg))
-		errx(EXIT_FAILURE, "Unable to write pf_key register message");
-
-	do {
-		(void) memset(buffer, 0, sizeof (buffer));
-		n = read(pfkey, buffer, sizeof (buffer));
-		if (n < 0)
-			err(EXIT_FAILURE, "pf_key read failure");
-	} while (samsg->sadb_msg_seq != msgid ||
-	    samsg->sadb_msg_pid != pid ||
-	    samsg->sadb_msg_type != SADB_REGISTER);
-
-	if (samsg->sadb_msg_errno != 0) {
-		if (samsg->sadb_msg_errno != EPROTONOSUPPORT)
-			errx(EXIT_FAILURE, "pf_key register returned %s (%d).",
-			    strerror(samsg->sadb_msg_errno),
-			    samsg->sadb_msg_errno);
-		bunyan_error(pflog, "Protocol not supported",
-		    BUNYAN_T_UINT32, "msg_satype",
-		    (uint32_t)samsg->sadb_msg_satype, BUNYAN_T_END);
-	}
-
-	bunyan_debug(pflog, "Initial REGISTER with SADB",
-	    BUNYAN_T_STRING, "satype", pfkey_satype(samsg->sadb_msg_satype),
-	    BUNYAN_T_END);
-
-	handle_register(samsg);
-}
-
 static void *
 pfkey_thread(void *arg)
 {
@@ -727,6 +791,58 @@ pfkey_thread(void *arg)
 	}
 
 	return (NULL);
+}
+
+static void
+pfkey_register(uint8_t satype)
+{
+	uint64_t buffer[128] = { 0 };
+	sadb_msg_t *samsg = (sadb_msg_t *)buffer;
+	ssize_t n;
+	uint32_t msgid = atomic_inc_32_nv(&msgid);
+	pid_t pid = getpid();
+
+	CTASSERT(sizeof (buffer) >= sizeof (*samsg));
+
+	samsg->sadb_msg_version = PF_KEY_V2;
+	samsg->sadb_msg_type = SADB_REGISTER;
+	samsg->sadb_msg_errno = 0;
+	samsg->sadb_msg_satype = satype;
+	samsg->sadb_msg_reserved = 0;
+	samsg->sadb_msg_seq = msgid;
+	samsg->sadb_msg_pid = pid;
+	samsg->sadb_msg_len = SADB_8TO64(sizeof (*samsg));
+
+	n = write(pfsock, buffer, sizeof (*samsg));
+	if (n < 0)
+		err(EXIT_FAILURE, "pf_key write error");
+	if (n < sizeof (*samsg))
+		errx(EXIT_FAILURE, "Unable to write pf_key register message");
+
+	do {
+		(void) memset(buffer, 0, sizeof (buffer));
+		n = read(pfsock, buffer, sizeof (buffer));
+		if (n < 0)
+			err(EXIT_FAILURE, "pf_key read failure");
+	} while (samsg->sadb_msg_seq != msgid ||
+	    samsg->sadb_msg_pid != pid ||
+	    samsg->sadb_msg_type != SADB_REGISTER);
+
+	if (samsg->sadb_msg_errno != 0) {
+		if (samsg->sadb_msg_errno != EPROTONOSUPPORT)
+			errx(EXIT_FAILURE, "pf_key register returned %s (%d).",
+			    strerror(samsg->sadb_msg_errno),
+			    samsg->sadb_msg_errno);
+		bunyan_error(pflog, "Protocol not supported",
+		    BUNYAN_T_UINT32, "msg_satype",
+		    (uint32_t)samsg->sadb_msg_satype, BUNYAN_T_END);
+	}
+
+	bunyan_debug(pflog, "Initial REGISTER with SADB",
+	    BUNYAN_T_STRING, "satype", pfkey_satype(samsg->sadb_msg_satype),
+	    BUNYAN_T_END);
+
+	handle_register(samsg);
 }
 
 static void
@@ -761,13 +877,14 @@ pfkey_init(void)
 	if (pfport == -1)
 		err(EXIT_FAILURE, "Unable to create pfkey event port");
 
-	pfkey = socket(PF_KEY, SOCK_RAW, PF_KEY_V2);
-	if (pfkey == -1)
+	pfsock = socket(PF_KEY, SOCK_RAW, PF_KEY_V2);
+	if (pfsock == -1)
 		err(EXIT_FAILURE, "Unable to create pf_key socket");
 
 	rc = bunyan_child(log, &pflog,
-	    BUNYAN_T_INT32, "socketfd", (int32_t)pfkey,
+	    BUNYAN_T_INT32, "pfsock", (int32_t)pfsock,
 	    BUNYAN_T_END);
+
 	if (rc != 0) {
 		errx(EXIT_FAILURE, "Unable to create child logger: %s",
 		    strerror(rc));
@@ -776,5 +893,5 @@ pfkey_init(void)
 	pfkey_register(SADB_SATYPE_ESP);
 	pfkey_register(SADB_SATYPE_AH);
 
-	pfkey_arm(pfkey);
+	pfkey_arm(pfsock);
 }
