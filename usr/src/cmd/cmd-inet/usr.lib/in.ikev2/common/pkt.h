@@ -137,106 +137,22 @@ typedef struct pkt_sa_state {
 	ike_xform_t	*pss_xf;	/* Ptr to current xform struct */
 } pkt_sa_state_t;
 
-inline uint8_t *
-pkt_start(pkt_t *pkt)
-{
-	return ((uint8_t *)&pkt->pkt_raw);
-}
-
-inline ike_header_t *
-pkt_header(const pkt_t *pkt)
-{
-	return ((ike_header_t *)&pkt->pkt_raw);
-}
-
-inline size_t
-pkt_len(const pkt_t *pkt)
-{
-	const uint8_t *start = (const uint8_t *)&pkt->pkt_raw;
-	size_t len = (size_t)(pkt->pkt_ptr - start);
-
-	VERIFY3P(pkt->pkt_ptr, >=, start);
-	VERIFY3U(len, <=, MAX_PACKET_SIZE);
-	return ((size_t)(pkt->pkt_ptr - start));
-}
-
-inline size_t
-pkt_write_left(const pkt_t *pkt)
-{
-	return (MAX_PACKET_SIZE - pkt_len(pkt));
-}
-
-inline pkt_payload_t *
-pkt_payload(pkt_t *pkt, uint16_t idx)
-{
-	VERIFY3U(idx, <, pkt->pkt_payload_count);
-	if (idx < PKT_PAYLOAD_NUM)
-		return (&pkt->pkt_payloads[idx]);
-	return (pkt->pkt_payload_extra + (idx - PKT_PAYLOAD_NUM));
-}
-
-inline ike_payload_t *
-pkt_idx_to_payload(pkt_payload_t *idxp)
-{
-	VERIFY3P(idxp->pp_ptr, !=, NULL);
-
-	/*
-	 * This _always_ points to the first byte after the ISAKMP/IKEV2
-	 * payload header (empty payloads will have pp_len set to 0.
-	 * ike_payload_t is defined as having byte alignment, so
-	 * we can always backup up from pp_ptr to get to the payload
-	 * header.
-	 */
-	ike_payload_t *pay = (ike_payload_t *)idxp->pp_ptr;
-	return (pay - 1);
-}
-
-inline pkt_notify_t *
-pkt_notify(pkt_t *pkt, uint16_t idx)
-{
-	VERIFY3U(idx, <, pkt->pkt_notify_count);
-	if (idx < PKT_NOTIFY_NUM)
-		return (&pkt->pkt_notify[idx]);
-	return (pkt->pkt_notify_extra + (idx - PKT_NOTIFY_NUM));
-}
-
-inline void
-put32(pkt_t *pkt, uint32_t val)
-{
-	BE_OUT32(pkt->pkt_ptr, val);
-	pkt->pkt_ptr += sizeof (uint32_t);
-}
-
-inline void
-put64(pkt_t *pkt, uint64_t val)
-{
-	BE_OUT64(pkt->pkt_ptr, val);
-	pkt->pkt_ptr += sizeof (uint64_t);
-}
-
-#define	PKT_APPEND_STRUCT(_pkt, _struct)				\
-do {									\
-	VERIFY3U(pkt_write_left(_pkt), >=, sizeof (_struct));		\
-	(void) memcpy((_pkt)->pkt_ptr, &(_struct), sizeof (_struct));	\
-	(_pkt)->pkt_ptr += sizeof (_struct);				\
-NOTE(CONSTCOND) } while (0)
-
-#define	PKT_APPEND_DATA(_pkt, _ptr, _len)		\
-do {							\
-	if ((_len) == 0)				\
-		break;					\
-	VERIFY3U(pkt_write_left(_pkt), >=, (_len));	\
-	(void) memcpy((_pkt)->pkt_ptr, (_ptr), (_len));	\
-	(_pkt)->pkt_ptr += (_len);			\
-NOTE(CONSTCOND) } while (0)
-
+uint8_t *pkt_start(const pkt_t *);
+ike_header_t *pkt_header(const pkt_t *);
+size_t pkt_len(const pkt_t *);
+size_t pkt_write_left(const pkt_t *);
+boolean_t put32(pkt_t *, uint32_t);
+boolean_t put64(pkt_t *, uint64_t);
+boolean_t pkt_append_data(pkt_t *restrict, const void *restrict, size_t);
 boolean_t pkt_done(pkt_t *);
 void pkt_init(void);
 void pkt_fini(void);
 void pkt_free(pkt_t *);
-
 pkt_payload_t *pkt_get_payload(pkt_t *, uint8_t, pkt_payload_t *);
 pkt_notify_t *pkt_get_notify(pkt_t *, uint16_t, pkt_notify_t *);
+
+#define	PKT_APPEND_STRUCT(_pkt, _struct) \
+	VERIFY(pkt_append_data(_pkt, &(_struct), sizeof (_struct)))
 
 #ifdef __cplusplus
 }

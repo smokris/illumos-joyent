@@ -526,7 +526,7 @@ pkt_add_xform_attr_tlv(pkt_sa_state_t *pss, uint16_t type, const uint8_t *attrp,
 	attr.attr_type = htons(IKE_ATTR_TYPE(IKE_ATTR_TLV, type));
 	attr.attr_len = htons(len);
 	PKT_APPEND_STRUCT(pss->pss_pkt, attr);
-	PKT_APPEND_DATA(pss->pss_pkt, attrp, attrlen);
+	VERIFY(pkt_append_data(pss->pss_pkt, attrp, attrlen));
 
 	BE_OUT16(&pss->pss_xf->xf_len, xflen);
 	BE_OUT16(&pss->pss_prop->prop_len, proplen);
@@ -578,7 +578,7 @@ pkt_add_notify(pkt_t *restrict pkt, uint32_t doi, uint8_t proto,
 
 	VERIFY(pkt_add_spi(pkt, spilen, spi));
 	ptr = pkt->pkt_ptr;
-	PKT_APPEND_DATA(pkt, data, datalen);
+	pkt_append_data(pkt, data, datalen);
 
 	return (pkt_add_nindex(pkt, spi, doi, proto, type, ptr, datalen));
 }
@@ -592,7 +592,7 @@ pkt_add_cert(pkt_t *restrict pkt, uint8_t paytype, uint8_t encoding,
 
 	pkt->pkt_ptr[0] = encoding;
 	pkt->pkt_ptr += 1;
-	PKT_APPEND_DATA(pkt, data, datalen);
+	VERIFY(pkt_append_data(pkt, data, datalen));
 	return (B_TRUE);
 }
 
@@ -792,10 +792,10 @@ pkt_add_spi(pkt_t *pkt, size_t spilen, uint64_t spi)
 	switch (spilen) {
 	case sizeof (uint32_t):
 		VERIFY3U(spi, <=, UINT_MAX);
-		put32(pkt, (uint32_t)spi);
+		VERIFY(put32(pkt, (uint32_t)spi));
 		break;
 	case sizeof (uint64_t):
-		put64(pkt, spi);
+		VERIFY(put64(pkt, spi));
 		break;
 	case 0:
 		break;
@@ -882,12 +882,100 @@ pkt_fini(void)
 	umem_cache_destroy(pkt_cache);
 }
 
-extern inline void put32(pkt_t *, uint32_t);
-extern inline void put64(pkt_t *, uint64_t);
-extern inline uint8_t *pkt_start(pkt_t *);
-extern inline ike_header_t *pkt_header(const pkt_t *pkt);
-extern inline size_t pkt_len(const pkt_t *);
-extern inline size_t pkt_write_left(const pkt_t *);
-extern inline pkt_payload_t *pkt_payload(pkt_t *, uint16_t);
-extern inline pkt_notify_t *pkt_notify(pkt_t *, uint16_t);
-extern inline ike_payload_t *pkt_idx_to_payload(pkt_payload_t *);
+size_t
+pkt_len(const pkt_t *pkt)
+{
+	const uint8_t *start = (const uint8_t *)&pkt->pkt_raw;
+	size_t len = (size_t)(pkt->pkt_ptr - start);
+
+	VERIFY3P(pkt->pkt_ptr, >=, start);
+	VERIFY3U(len, <=, MAX_PACKET_SIZE);
+	return ((size_t)(pkt->pkt_ptr - start));
+}
+
+size_t
+pkt_write_left(const pkt_t *pkt)
+{
+	return (MAX_PACKET_SIZE - pkt_len(pkt));
+}
+
+pkt_payload_t *
+pkt_payload(pkt_t *pkt, uint16_t idx)
+{
+	VERIFY3U(idx, <, pkt->pkt_payload_count);
+	if (idx < PKT_PAYLOAD_NUM)
+		return (&pkt->pkt_payloads[idx]);
+	return (pkt->pkt_payload_extra + (idx - PKT_PAYLOAD_NUM));
+}
+
+pkt_notify_t *
+pkt_notify(pkt_t *pkt, uint16_t idx)
+{
+	VERIFY3U(idx, <, pkt->pkt_notify_count);
+	if (idx < PKT_NOTIFY_NUM)
+		return (&pkt->pkt_notify[idx]);
+	return (pkt->pkt_notify_extra + (idx - PKT_NOTIFY_NUM));
+}
+
+boolean_t
+put32(pkt_t *pkt, uint32_t val)
+{
+	if (pkt_write_left(pkt) < sizeof (uint32_t))
+		return (B_FALSE);
+
+	BE_OUT32(pkt->pkt_ptr, val);
+	pkt->pkt_ptr += sizeof (uint32_t);
+	return (B_TRUE);
+}
+
+boolean_t
+put64(pkt_t *pkt, uint64_t val)
+{
+	if (pkt_write_left(pkt) < sizeof (uint64_t))
+		return (B_FALSE);
+
+	BE_OUT64(pkt->pkt_ptr, val);
+	pkt->pkt_ptr += sizeof (uint64_t);
+	return (B_TRUE);
+}
+
+ike_payload_t *
+pkt_idx_to_payload(pkt_payload_t *idxp)
+{
+	VERIFY3P(idxp->pp_ptr, !=, NULL);
+
+	/*
+	 * This _always_ points to the first byte after the ISAKMP/IKEV2
+	 * payload header (empty payloads will have pp_len set to 0.
+	 * ike_payload_t is defined as having byte alignment, so
+	 * we can always backup up from pp_ptr to get to the payload
+	 * header.
+	 */
+	ike_payload_t *pay = (ike_payload_t *)idxp->pp_ptr;
+	return (pay - 1);
+}
+
+boolean_t
+pkt_append_data(pkt_t *restrict pkt, const void *restrict data, size_t len)
+{
+	if (len == 0)
+		return (B_TRUE);
+
+	if (pkt_write_left(pkt) < len)
+		return (B_FALSE);
+	(void) memcpy(pkt->pkt_ptr, data, len);
+	pkt->pkt_ptr += len;
+	return (B_TRUE);
+}
+
+uint8_t *
+pkt_start(const pkt_t *pkt)
+{
+	return ((uint8_t *)pkt->pkt_raw);
+}
+
+ike_header_t *
+pkt_header(const pkt_t *pkt)
+{
+	return ((ike_header_t *)pkt->pkt_raw);
+}

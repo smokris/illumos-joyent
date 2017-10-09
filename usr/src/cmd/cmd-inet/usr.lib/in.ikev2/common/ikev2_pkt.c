@@ -557,7 +557,7 @@ ikev2_add_id_common(pkt_t *restrict pkt, boolean_t id_i, ikev2_id_type_t idtype,
 
 	id.id_type = (uint8_t)idtype;
 	PKT_APPEND_STRUCT(pkt, id);
-	PKT_APPEND_DATA(pkt, data, len);
+	VERIFY(pkt_append_data(pkt, data, len));
 	return (B_TRUE);
 }
 
@@ -611,7 +611,7 @@ ikev2_add_auth(pkt_t *restrict pkt, ikev2_auth_type_t auth_method,
 
 	auth.auth_method = (uint8_t)auth_method;
 	PKT_APPEND_STRUCT(pkt, auth);
-	PKT_APPEND_DATA(pkt, data, len);
+	VERIFY(pkt_append_data(pkt, data, len));
 	return (B_TRUE);
 }
 
@@ -628,7 +628,7 @@ ikev2_add_nonce(pkt_t *restrict pkt, uint8_t *restrict nonce, size_t len)
 	 * when we have to add additional payloads (COOKIE, new DH group).
 	 */
 	if (nonce != NULL) {
-		PKT_APPEND_DATA(pkt, nonce, len);
+		VERIFY(pkt_append_data(pkt, nonce, len));
 	} else {
 		VERIFY3U(len, <=, IKEV2_NONCE_MAX);
 		VERIFY3U(len, >=, IKEV2_NONCE_MIN);
@@ -693,7 +693,7 @@ ikev2_add_vendor(pkt_t *restrict pkt, const void *restrict vid, size_t len)
 {
 	if (!ikev2_add_payload(pkt, IKEV2_PAYLOAD_VENDOR, B_FALSE, len))
 		return (B_FALSE);
-	PKT_APPEND_DATA(pkt, vid, len);
+	VERIFY(pkt_append_data(pkt, vid, len));
 	return (B_TRUE);
 }
 
@@ -797,8 +797,8 @@ ikev2_add_ts(pkt_t *restrict pkt, ikev2_ts_type_t type, uint8_t ip_proto,
 	ts.ts_protoid = ip_proto;
 	ts.ts_length = htons(ts.ts_length);
 	PKT_APPEND_STRUCT(pkt, ts);
-	PKT_APPEND_DATA(pkt, startptr, len);
-	PKT_APPEND_DATA(pkt, endptr, len);
+	VERIFY(pkt_append_data(pkt, startptr, len));
+	VERIFY(pkt_append_data(pkt, endptr, len));
 	return (B_TRUE);
 }
 #else
@@ -861,7 +861,7 @@ add_iv(pkt_t *restrict pkt)
 		 * is unique.  The packet message id satisifies these
 		 * requirements.
 		 */
-		put32(pkt, msgid);
+		VERIFY(put32(pkt, msgid));
 		pkt->pkt_ptr += (len - sizeof (msgid));
 		return (B_TRUE);
 	}

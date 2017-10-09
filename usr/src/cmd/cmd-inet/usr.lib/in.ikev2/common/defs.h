@@ -127,6 +127,11 @@ typedef struct algindex {
 #define	ARRAY_SIZE(x) (sizeof (x) / sizeof (x[0]))
 #endif
 
+/* A few simple functions to simplify using struct sockaddr's w/ bunyan */
+int ss_bunyan(const struct sockaddr_storage *);
+uint32_t ss_port(const struct sockaddr_storage *);
+const void *ss_addr(const struct sockaddr_storage *);
+
 /* cstyle cannot handle ## __VA_ARGS */
 /* BEGIN CSTYLED */
 #define	STDERR(_lvl, _log, _msg, ...)			\
@@ -139,56 +144,6 @@ typedef struct algindex {
 	## __VA_ARGS__,					\
 	BUNYAN_T_END)
 /* END CSTYLED */
-
-/* A few simple functions to simplify using struct sockaddr's w/ bunyan */
-inline uint32_t
-ss_port(const struct sockaddr_storage *ss)
-{
-	sockaddr_u_t sau;
-	sau.sau_ss = (struct sockaddr_storage *)ss;
-	switch (ss->ss_family) {
-	case AF_INET:
-		return ((uint32_t)ntohs(sau.sau_sin->sin_port));
-	case AF_INET6:
-		return ((uint32_t)ntohs(sau.sau_sin6->sin6_port));
-	default:
-		INVALID("ss->ss_family");
-		/*NOTREACHED*/
-		return (0);
-	}
-}
-
-inline const void *
-ss_addr(const struct sockaddr_storage *ss)
-{
-	sockaddr_u_t sau;
-	sau.sau_ss = (struct sockaddr_storage *)ss;
-	switch (ss->ss_family) {
-	case AF_INET:
-		return (&sau.sau_sin->sin_addr);
-	case AF_INET6:
-		return (&sau.sau_sin6->sin6_addr);
-	default:
-		INVALID("ss->ss_family");
-		/*NOTREACHED*/
-		return (NULL);
-	}
-}
-
-inline int
-ss_bunyan(const struct sockaddr_storage *ss)
-{
-	switch (ss->ss_family) {
-	case AF_INET:
-		return (BUNYAN_T_IP);
-	case AF_INET6:
-		return (BUNYAN_T_IP6);
-	default:
-		INVALID("ss->ss_family");
-		/*NOTREACHED*/
-		return (BUNYAN_T_END);
-	}
-}
 
 /* BEGIN CSTYLED */
 #define	NETLOG(_level, _log, _msg, _src, _dest, ...)	\

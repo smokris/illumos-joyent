@@ -32,6 +32,10 @@ extern "C" {
 #define	IKEV2_NONCE_MIN		(16)
 #define	IKEV2_NONCE_MAX		(256)
 
+#ifndef __packed
+#define	__packed __attribute__((packed))
+#endif
+
 /*
  * "IKEv2 Parameters" based on the official RFC-based assignments by IANA
  * (http://www.iana.org/assignments/ikev2-parameters/ikev2-parameters.txt)
