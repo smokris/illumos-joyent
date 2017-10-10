@@ -27,7 +27,6 @@
 #include <security/cryptoki.h>
 #include <errno.h>
 #include <sys/socket.h>
-#include <pthread.h>
 #include <sys/debug.h>
 #include <note.h>
 #include <err.h>
@@ -39,6 +38,7 @@
 #include "pkt.h"
 #include "pkt_impl.h"
 #include "pkcs11.h"
+#include "worker.h"
 
 static umem_cache_t	*pkt_cache;
 
@@ -70,11 +70,13 @@ pkt_out_alloc(uint64_t i_spi, uint64_t r_spi, uint8_t version,
  * header, and cache the location of the payloads in the payload field.
  */
 pkt_t *
-pkt_in_alloc(uint8_t *restrict buf, size_t buflen, bunyan_logger_t *restrict l)
+pkt_in_alloc(void *restrict buf, size_t buflen)
 {
 	ike_header_t *hdr = (ike_header_t *)buf;
 	pkt_t *pkt = NULL;
 	uint8_t first;
+
+	VERIFY(IS_WORKER);
 
 	/* If inbound checks didn't catch these, it's a bug */
 	VERIFY3U(buflen, >=, sizeof (ike_header_t));
@@ -84,11 +86,11 @@ pkt_in_alloc(uint8_t *restrict buf, size_t buflen, bunyan_logger_t *restrict l)
 	first = hdr->next_payload;
 
 	if ((pkt = umem_cache_alloc(pkt_cache, UMEM_DEFAULT)) == NULL) {
-		STDERR(error, l, "umem_cache_alloc failed");
+		STDERR(error, worker->w_log, "umem_cache_alloc failed");
 		return (NULL);
 	}
 
-	(void) bunyan_trace(l, "Allocated new pkt_t",
+	(void) bunyan_trace(worker->w_log, "Allocated new pkt_t",
 	    BUNYAN_T_POINTER, "pkt", pkt,
 	    BUNYAN_T_END);
 
@@ -96,12 +98,12 @@ pkt_in_alloc(uint8_t *restrict buf, size_t buflen, bunyan_logger_t *restrict l)
 	pkt->pkt_ptr += buflen;
 
 	if (!pkt_index_payloads(pkt, pkt_start(pkt) + sizeof (ike_header_t),
-	    pkt_len(pkt) - sizeof (ike_header_t), first, l)) {
+	    pkt_len(pkt) - sizeof (ike_header_t), first, worker->w_log)) {
 		pkt_free(pkt);
 		return (NULL);
 	}
 
-	(void) bunyan_trace(l, "Finished indexing payloads",
+	(void) bunyan_trace(worker->w_log, "Finished indexing payloads",
 	    BUNYAN_T_POINTER, "pkt", pkt,
 	    BUNYAN_T_UINT32, "num_payloads", pkt->pkt_payload_count,
 	    BUNYAN_T_END);

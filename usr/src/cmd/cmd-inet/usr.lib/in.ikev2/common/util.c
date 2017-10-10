@@ -79,23 +79,15 @@ getbuf(void)
 }
 
 const char *
-symstr(void *addr)
+symstr(void *addr, char *buf, size_t buflen)
 {
-	struct strbuf_s *buf = getbuf();
 	Dl_info_t dlinfo = { 0 };
 
-	if (buf == NULL)
-		return ("");
+	if (dladdr(addr, &dlinfo) != 0)
+		return (dlinfo.dli_sname);
 
-	if (dladdr(addr, &dlinfo) == 0) {
-		(void) snprintf(buf->symstr, sizeof (buf->symstr), "0x%p",
-		    addr);
-	} else {
-		(void) strlcpy(buf->symstr, dlinfo.dli_sname,
-		    sizeof (buf->symstr));
-	}
-
-	return (buf->symstr);
+	(void) snprintf(buf, buflen, "0x%p", addr);
+	return (buf);
 }
 
 const char *
@@ -134,35 +126,78 @@ event_str(event_t evt)
 	(void) snprintf(buf->evtstr, sizeof (buf->evtstr), "%d", evt);
 	return (buf->evtstr);
 }
+#undef STR
 
-const char *
-port_source_str(ushort_t src)
+#define	STR(x, s, l) case x: (void) strlcpy(s, #x, l); return (s)
+char *
+port_source_str(ushort_t src, char *buf, size_t buflen)
 {
 	switch (src) {
-	STR(PORT_SOURCE_AIO);
-	STR(PORT_SOURCE_FD);
-	STR(PORT_SOURCE_MQ);
-	STR(PORT_SOURCE_TIMER);
-	STR(PORT_SOURCE_USER);
-	STR(PORT_SOURCE_ALERT);
-	STR(PORT_SOURCE_FILE);
+	STR(PORT_SOURCE_AIO, buf, buflen);
+	STR(PORT_SOURCE_FD, buf, buflen);
+	STR(PORT_SOURCE_MQ, buf, buflen);
+	STR(PORT_SOURCE_TIMER, buf, buflen);
+	STR(PORT_SOURCE_USER, buf, buflen);
+	STR(PORT_SOURCE_ALERT, buf, buflen);
+	STR(PORT_SOURCE_FILE, buf, buflen);
 	}
 
-	struct strbuf_s *buf = getbuf();
-
-	if (buf == NULL)
-		return ("");
-
-	(void) snprintf(buf->portstr, sizeof (buf->portstr), "%hhu", src);
-	return (buf->portstr);
+	(void) snprintf(buf, buflen, "%hhu", src);
+	return (buf);
 }
 #undef STR
 
-/* inline parking lot */
-extern inline uint32_t ss_port(const struct sockaddr_storage *);
-extern inline const void *ss_addr(const struct sockaddr_storage *);
-extern inline int ss_bunyan(const struct sockaddr_storage *);
+int
+ss_bunyan(const struct sockaddr_storage *ss)
+{
+	switch (ss->ss_family) {
+	case AF_INET:
+		return (BUNYAN_T_IP);
+	case AF_INET6:
+		return (BUNYAN_T_IP6);
+	default:
+		INVALID("ss->ss_family");
+		/*NOTREACHED*/
+		return (0);
+	}
+}
 
+/* Returns uint32_t to avoid lots of casts w/ libbunyan */
+uint32_t
+ss_port(const struct sockaddr_storage *ss)
+{
+	sockaddr_u_t sau = { .sau_ss = (struct sockaddr_storage *)ss };
+
+	switch (ss->ss_family) {
+	case AF_INET:
+		return (ntohs(sau.sau_sin->sin_port));
+	case AF_INET6:
+		return (ntohs(sau.sau_sin6->sin6_port));
+	default:
+		INVALID("ss->ss_family");
+		/*NOTREACHED*/
+		return (0);
+	}
+}
+
+const void *
+ss_addr(const struct sockaddr_storage *ss)
+{
+	sockaddr_u_t sau = { .sau_ss = (struct sockaddr_storage *)ss };
+
+	switch (ss->ss_family) {
+	case AF_INET:
+		return (&sau.sau_sin->sin_addr);
+	case AF_INET6:
+		return (&sau.sau_sin6->sin6_addr);
+	default:
+		INVALID("ss->ss_family");
+		/*NOTREACHED*/
+		return (0);
+	}
+}
+
+/* inline parking lot */
 extern inline void ilist_create(ilist_t *, size_t, size_t);
 extern inline void ilist_destroy(ilist_t *);
 extern inline void ilist_insert_after(ilist_t *, void *, void *);

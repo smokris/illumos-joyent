@@ -31,17 +31,17 @@
 #ifndef _DEFS_H
 #define	_DEFS_H
 
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <sys/debug.h>
-#include <ikedoor.h>
-#include <cryptoutil.h>
-#include <security/cryptoki.h>
-#include <stdio.h>
-#include <assert.h>
-#include <umem.h>
 #include <bunyan.h>
+#include <cryptoutil.h>
 #include <libintl.h>
+#include <security/cryptoki.h>
+#include <sys/debug.h>
+#include <sys/list.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <ikedoor.h>
+#include <stdio.h>
+#include <umem.h>
 
 #ifdef  __cplusplus
 extern "C" {
@@ -58,7 +58,7 @@ typedef union sockaddr_u_s {
 
 /* Parsed-out PF_KEY message. */
 typedef struct parsedmsg_s {
-	struct parsedmsg_s *pmsg_next;
+	list_node_t pmsg_node;
 	sadb_msg_t *pmsg_samsg;
 	sadb_ext_t *pmsg_exts[SADB_EXT_MAX + 2]; /* 2 for alignment */
 	sockaddr_u_t pmsg_sau;
@@ -87,6 +87,7 @@ typedef struct parsedmsg_s {
 #define	pmsg_nrss pmsg_nrau.sau_ss
 #define	pmsg_nrsin pmsg_rnau.sau_sin
 #define	pmsg_nrsin6 pmsg_nrau.sau_sin6
+void parsedmsg_free(parsedmsg_t *);
 
 typedef struct algindex {
 	const char *desc;
@@ -132,30 +133,45 @@ int ss_bunyan(const struct sockaddr_storage *);
 uint32_t ss_port(const struct sockaddr_storage *);
 const void *ss_addr(const struct sockaddr_storage *);
 
+#define	BLOG_KEY_SRC		"src"
+#define	BLOG_KEY_SRCPORT	"srcport"
+#define	BLOG_KEY_DEST		"dest"
+#define	BLOG_KEY_DESTPORT	"destport"
+
+#define	BLOG_KEY_ERRMSG		"err"
+#define	BLOG_KEY_ERRNO		"errno"
+#define	BLOG_KEY_FILE		"file"
+#define	BLOG_KEY_FUNC		"func"
+#define	BLOG_KEY_LINE		"line"
+
 /* cstyle cannot handle ## __VA_ARGS */
 /* BEGIN CSTYLED */
-#define	STDERR(_lvl, _log, _msg, ...)			\
-	(void) bunyan_##_lvl((_log), (_msg),		\
-	BUNYAN_T_STRING, "err", strerror(errno),	\
-	BUNYAN_T_INT32, "errno", (int32_t)(errno),	\
-	BUNYAN_T_STRING, "func", __func__,		\
-	BUNYAN_T_STRING, "file", __FILE__,		\
-	BUNYAN_T_INT32, "line", __LINE__,		\
-	## __VA_ARGS__,					\
+#define	TSTDERR(_e, _lvl, _log, _msg, ...)			\
+	(void) bunyan_##_lvl((_log), (_msg),			\
+	BUNYAN_T_STRING, BLOG_KEY_ERRMSG, strerror(_e),		\
+	BUNYAN_T_INT32, BLOG_KEY_ERRNO, (int32_t)(_e),		\
+	BUNYAN_T_STRING, BLOG_KEY_FUNC, __func__,		\
+	BUNYAN_T_STRING, BLOG_KEY_FILE, __FILE__,		\
+	BUNYAN_T_INT32, BLOG_KEY_LINE, __LINE__,		\
+	## __VA_ARGS__,						\
 	BUNYAN_T_END)
+
+#define	STDERR(_lvl, _log, _msg, ...) \
+	TSTDERR(errno, _lvl, _log, _msg, ## __VA_ARGS__)
+
 /* END CSTYLED */
 
 /* BEGIN CSTYLED */
-#define	NETLOG(_level, _log, _msg, _src, _dest, ...)	\
-	(void) bunyan_##_level((_log), (_msg),		\
-	BUNYAN_T_STRING, "func", __func__,		\
-	BUNYAN_T_STRING, "file", __FILE__,		\
-	BUNYAN_T_INT32, "line", __LINE__,		\
-	ss_bunyan(_src), "srcaddr", ss_addr(_src),	\
-	BUNYAN_T_UINT32, "srcport", ss_port(_src),	\
-	ss_bunyan(_dest), "destaddr", ss_addr(_dest),	\
-	BUNYAN_T_UINT32, "destport", ss_port(_dest),	\
-	## __VA_ARGS__,					\
+#define	NETLOG(_level, _log, _msg, _src, _dest, ...)		\
+	(void) bunyan_##_level((_log), (_msg),			\
+	BUNYAN_T_STRING, BLOG_KEY_FUNC, __func__,		\
+	BUNYAN_T_STRING, BLOG_KEY_FILE, __FILE__,		\
+	BUNYAN_T_INT32, BLOG_KEY_LINE, __LINE__,		\
+	ss_bunyan(_src), BLOG_KEY_SRC, ss_addr(_src),		\
+	BUNYAN_T_UINT32, BLOG_KEY_SRCPORT, ss_port(_src),	\
+	ss_bunyan(_dest), BLOG_KEY_DEST, ss_addr(_dest),	\
+	BUNYAN_T_UINT32, BLOG_KEY_DESTPORT, ss_port(_dest),	\
+	## __VA_ARGS__,						\
 	BUNYAN_T_END)
 /* END CSTYLED */
 
@@ -172,9 +188,21 @@ typedef int (*bunyan_logfn_t)(bunyan_logger_t *, const char *, ...);
 bunyan_logfn_t getlog(bunyan_level_t);
 
 const char *afstr(sa_family_t);
-const char *symstr(void *);
+const char *symstr(void *, char *, size_t);
 const char *event_str(event_t);
-const char *port_source_str(ushort_t);
+
+/* Size of largest possible port source string + NUL */
+#define	PORT_SOURCE_STR_LEN	20
+char *port_source_str(ushort_t, char *, size_t);
+
+size_t pfkey_add_address(sadb_address_t *, sockaddr_u_t, void *);
+void pfkey_send_error(const sadb_msg_t *, uint8_t);
+boolean_t pfkey_getspi(sockaddr_u_t, sockaddr_u_t, uint8_t, uint32_t *);
+boolean_t pfkey_inverse_acquire(sockaddr_u_t, sockaddr_u_t, sockaddr_u_t,
+    sockaddr_u_t, parsedmsg_t **);
+
+void sadb_log(bunyan_logger_t *restrict, bunyan_level_t, const char *restrict,
+    sadb_msg_t *restrict);
 
 #ifdef  __cplusplus
 }

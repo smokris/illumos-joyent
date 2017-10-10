@@ -42,12 +42,12 @@ extern "C" {
 
 #define	PKCS11ERR(_lvl, _log, _p11f, _rv, ...)				\
 	(void) bunyan_##_lvl((_log), "PKCS#11 call failed",		\
-	BUNYAN_T_STRING, "file", __FILE__,				\
-	BUNYAN_T_UINT32, "line", (uint32_t)__LINE__,			\
-	BUNYAN_T_STRING, "func", __func__,				\
+	BUNYAN_T_STRING, BLOG_KEY_FILE, __FILE__,			\
+	BUNYAN_T_UINT32, BLOG_KEY_LINE, (uint32_t)__LINE__,		\
+	BUNYAN_T_STRING, BLOG_KEY_FUNC, __func__,			\
 	BUNYAN_T_STRING, "p11func", _p11f,				\
-	BUNYAN_T_UINT64, "errnum", (uint64_t)(_rv),			\
-	BUNYAN_T_STRING, "err", pkcs11_strerror(_rv),			\
+	BUNYAN_T_UINT64, "p11err", (uint64_t)(_rv),			\
+	BUNYAN_T_STRING, BLOG_KEY_ERRMSG, pkcs11_strerror(_rv),		\
 	## __VA_ARGS__,							\
 	BUNYAN_T_END)
 

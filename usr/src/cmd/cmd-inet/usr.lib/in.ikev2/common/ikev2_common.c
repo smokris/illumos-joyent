@@ -272,7 +272,7 @@ ikev2_sa_match_rule(config_rule_t *restrict rule, pkt_t *restrict pkt,
 
 			(void) memset(result, 0, sizeof (*result));
 
-			bunyan_trace(l,
+			(void) bunyan_trace(l,
 			    "Checking rule transform against proposals",
 			    BUNYAN_T_UINT32, "xfnum", (uint32_t)i,
 			    BUNYAN_T_STRING, "xf", rule->rule_xf[i]->xf_str,
@@ -282,6 +282,11 @@ ikev2_sa_match_rule(config_rule_t *restrict rule, pkt_t *restrict pkt,
 			    match_rule_prop_cb, &data, l, B_FALSE));
 
 			if (data.rd_match) {
+				char estr[IKEV2_ENUM_STRLEN];
+				char astr[IKEV2_ENUM_STRLEN];
+				char pstr[IKEV2_ENUM_STRLEN];
+				char dstr[IKEV2_ENUM_STRLEN];
+
 				bunyan_debug(l, "Found proposal match",
 				    BUNYAN_T_STRING, "xf",
 				    rule->rule_xf[i]->xf_str,
@@ -289,15 +294,19 @@ ikev2_sa_match_rule(config_rule_t *restrict rule, pkt_t *restrict pkt,
 				    (uint32_t)result->sar_propnum,
 				    BUNYAN_T_UINT64, "spi", result->sar_spi,
 				    BUNYAN_T_STRING, "encr",
-				    ikev2_xf_encr_str(result->sar_encr),
+				    ikev2_xf_encr_str(result->sar_encr, estr,
+				    sizeof (estr)),
 				    BUNYAN_T_UINT32, "keylen",
 				    (uint32_t)result->sar_encr_keylen,
 				    BUNYAN_T_STRING, "auth",
-				    ikev2_xf_auth_str(result->sar_auth),
+				    ikev2_xf_auth_str(result->sar_auth, astr,
+				    sizeof (astr)),
 				    BUNYAN_T_STRING, "prf",
-				    ikev2_prf_str(result->sar_prf),
+				    ikev2_prf_str(result->sar_prf, pstr,
+				    sizeof (pstr)),
 				    BUNYAN_T_STRING, "dh",
-				    ikev2_dh_str(result->sar_dh),
+				    ikev2_dh_str(result->sar_dh, dstr,
+				    sizeof (dstr)),
 				    BUNYAN_T_END);
 				return (B_TRUE);
 			}
@@ -319,9 +328,11 @@ match_rule_prop_cb(ikev2_sa_proposal_t *prop, uint64_t spi, uint8_t *buf,
 	    BUNYAN_T_END);
 
 	if (prop->proto_protoid != IKEV2_PROTO_IKE) {
-		bunyan_trace(data->rd_log, "Proposal is not for IKE",
+		char buf[IKEV2_ENUM_STRLEN];
+
+		(void) bunyan_trace(data->rd_log, "Proposal is not for IKE",
 		    BUNYAN_T_STRING, "protocol",
-		    ikev2_spi_str(prop->proto_protoid),
+		    ikev2_spi_str(prop->proto_protoid, buf, sizeof (buf)),
 		    BUNYAN_T_END);
 		return (B_FALSE);
 	}
@@ -357,10 +368,12 @@ match_rule_xf_cb(ikev2_transform_t *xf, uint8_t *buf, size_t buflen,
     void *cookie)
 {
 	struct rule_data_s *data = cookie;
+	char str[IKEV2_ENUM_STRLEN];
 	boolean_t match = B_FALSE;
 
 	(void) bunyan_trace(data->rd_log, "Checking transform",
-		    BUNYAN_T_STRING, "xftype", ikev2_xf_type_str(xf->xf_type),
+		    BUNYAN_T_STRING, "xftype", ikev2_xf_type_str(xf->xf_type,
+		    str, sizeof (str)),
 		    BUNYAN_T_UINT32, "val", (uint32_t)xf->xf_id,
 		    BUNYAN_T_END);
 
@@ -431,7 +444,8 @@ match_rule_xf_cb(ikev2_transform_t *xf, uint8_t *buf, size_t buflen,
 
 	if (match) {
 		(void) bunyan_trace(data->rd_log, "Partial match",
-		    BUNYAN_T_STRING, "type", ikev2_xf_type_str(xf->xf_type),
+		    BUNYAN_T_STRING, "type", ikev2_xf_type_str(xf->xf_type, str,
+		    sizeof (str)),
 		    BUNYAN_T_UINT32, "val", (uint32_t)xf->xf_id,
 		    BUNYAN_T_END);
 		data->rd_res->sar_match |= (uint32_t)1 << xf->xf_type;
@@ -522,19 +536,27 @@ ikev2_sa_match_acquire(parsedmsg_t *restrict pmsg, ikev2_dh_t dh,
 		    match_acq_prop_cb, &data, l, B_FALSE));
 
 		if (data.ad_match) {
+			char estr[IKEV2_ENUM_STRLEN];
+			char astr[IKEV2_ENUM_STRLEN];
+			char pstr[IKEV2_ENUM_STRLEN];
+			char dstr[IKEV2_ENUM_STRLEN];
+
 			(void) bunyan_debug(l, "Found proposal match",
 			    BUNYAN_T_UINT32, "propnum",
 			    (uint32_t)result->sar_propnum,
 			    BUNYAN_T_UINT64, "spi", result->sar_spi,
 			    BUNYAN_T_STRING, "encr",
-			    ikev2_xf_encr_str(result->sar_encr),
+			    ikev2_xf_encr_str(result->sar_encr, estr,
+			    sizeof (estr)),
 			    BUNYAN_T_UINT32, "keylen",
 			    (uint32_t)result->sar_encr_keylen,
 			    BUNYAN_T_STRING, "auth",
-			    ikev2_xf_auth_str(result->sar_auth),
+			    ikev2_xf_auth_str(result->sar_auth, astr,
+			    sizeof (astr)),
 			    BUNYAN_T_STRING, "prf",
-			    ikev2_prf_str(result->sar_prf),
-			    BUNYAN_T_STRING, "dh", ikev2_dh_str(result->sar_dh),
+			    ikev2_prf_str(result->sar_prf, pstr, sizeof (pstr)),
+			    BUNYAN_T_STRING, "dh", ikev2_dh_str(result->sar_dh,
+			    dstr, sizeof (dstr)),
 			    BUNYAN_T_UINT32, "esn", (uint32_t)result->sar_esn,
 			    BUNYAN_T_END);
 			return (B_TRUE);
@@ -551,13 +573,14 @@ match_acq_prop_cb(ikev2_sa_proposal_t *prop, uint64_t spi, uint8_t *buf,
 {
 	NOTE(ARGUNUSED(spi))
 	struct acquire_data_s *data = cookie;
+	char str[2][IKEV2_ENUM_STRLEN];
 
 	if (prop->proto_protoid != data->ad_spitype) {
 		bunyan_debug(data->ad_log, "Proposal is not for this SA type",
 		    BUNYAN_T_STRING, "exp_satype",
-		    ikev2_spi_str(data->ad_spitype),
+		    ikev2_spi_str(data->ad_spitype, str[1], sizeof (str[1])),
 		    BUNYAN_T_STRING, "prop_satype",
-		    ikev2_spi_str(prop->proto_protoid),
+		    ikev2_spi_str(prop->proto_protoid, str[2], sizeof (str[2])),
 		    BUNYAN_T_UINT32, "prop_satype_val",
 		    (uint32_t)prop->proto_protoid, BUNYAN_T_END);
 		return (B_FALSE);

@@ -347,11 +347,13 @@ dh_genpair(ikev2_dh_t group, CK_OBJECT_HANDLE_PTR restrict pub,
 	CK_MECHANISM mech = { CKM_DH_PKCS_KEY_PAIR_GEN, NULL_PTR, 0 };
 	CK_ATTRIBUTE template[2];
 	CK_RV rc;
+	char buf[IKEV2_ENUM_STRLEN];
 
 	dh = dh_get_group(group);
 	if (dh == NULL) {
 		bunyan_error(l, "Invalid DH group",
-		    BUNYAN_T_STRING, "dhgrp", ikev2_dh_str(group),
+		    BUNYAN_T_STRING, "dhgrp", ikev2_dh_str(group, buf,
+		    sizeof (buf)),
 		    BUNYAN_T_INT32, "val", (int32_t)group,
 		    BUNYAN_T_END);
 		return (B_FALSE);

@@ -16,72 +16,57 @@
 #ifndef _WORKER_H
 #define	_WORKER_H
 
-#include <bunyan.h>
+#include <inttypes.h>
 #include <thread.h>
 #include <security/cryptoki.h>
-#include <stddef.h>
-#include <synch.h>
-#include "ilist.h"
+#include <sys/list.h>
+#include "pkt.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-typedef enum worker_msg_e {
-	WMSG_NONE,
-	WMSG_PACKET,
-	WMSG_PFKEY,
-	WMSG_START,		/* Temp. for testing */
-	WMSG_START_P1_TIMER,
-} worker_msg_t;
+struct bunyan_logger;
+struct periodic_handle;
 
-typedef enum worker_cmd_e {
-	WC_NONE,
-	WC_SUSPEND,
-	WC_QUIT
+typedef enum worker_cmd {
+	WC_NONE = 0,
+	WC_QUIT,
+	WC_PFKEY,
+	WC_START,
 } worker_cmd_t;
 
-/*
- * The full lifetime of the wi_data argument depends on the type of message
- * associated with it.  For every message type however, it can be assumed
- * that the worker itself will handle any deallocation and the caller need
- * not concern themselves with it unless dispatching fails.
- */
-typedef struct worker_item_s {
-	worker_msg_t	wi_msgtype;
-	void		*wi_data;
-} worker_item_t;
-
-typedef struct worker_queue_s {
-	mutex_t		wq_lock;
-	cond_t		wq_cv;
-	worker_cmd_t	wq_cmd;
-	worker_item_t	*wq_items;
-	size_t		wq_start;
-	size_t		wq_end;
-} worker_queue_t;
-
-typedef struct worker_s {
+typedef struct worker {
+	list_node_t		w_node;
 	thread_t		w_tid;
-	bunyan_logger_t		*w_log;
-	worker_queue_t		w_queue;
-	ilist_t			w_timers;
-	boolean_t		w_done;
+	struct bunyan_logger	*w_log;
 	CK_SESSION_HANDLE	w_p11;
+	boolean_t		w_quit;
+				/*
+				 * We create a per-worker buffer for inbound
+				 * datagrams so we are always guaranteed we
+				 * can receive the datagram and drain it
+				 * from the kernel's queue and if we're lucky
+				 * be able to log information about it, even
+				 * if we have to discard it due to allocation
+				 * failures.
+				 */
+	uint64_t		w_buf[SADB_8TO64(MAX_PACKET_SIZE)];
 } worker_t;
 
 extern __thread worker_t *worker;
 #define	IS_WORKER	(worker != NULL)
 
+extern struct periodic_handle *wk_periodic;
 extern size_t wk_nworkers;
+extern int wk_evport;
 
-void worker_init(size_t, size_t);
+void worker_init(size_t);
 void worker_suspend(void);
 void worker_resume(void);
 boolean_t worker_add(void);
-void worker_del(void);
-void worker_stop(void);
-boolean_t worker_dispatch(worker_msg_t, void *, size_t);
+boolean_t worker_del(void);
+boolean_t worker_send_cmd(worker_cmd_t, void *);
 
 #ifdef __cplusplus
 }

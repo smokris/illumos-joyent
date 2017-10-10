@@ -24,11 +24,9 @@ extern "C" {
 #endif
 
 extern int ikesock4, ikesock6, nattsock;
-extern int inbound_port;
-extern size_t ninbound;
 
-void inbound_init(size_t);
 void schedule_socket(int, void (*)(int));
+void inbound_init(void);
 
 #ifdef __cplusplus
 }

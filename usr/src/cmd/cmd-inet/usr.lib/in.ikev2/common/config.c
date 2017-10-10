@@ -15,6 +15,7 @@
 #include <sys/types.h>
 #include <sys/debug.h>
 #include <pthread.h>
+#include <string.h>
 #include "defs.h"
 #include "config.h"
 #include "ikev2_enum.h"
@@ -41,14 +42,18 @@ void
 config_xf_log(bunyan_logger_t *b, bunyan_level_t level, const char *msg,
     const config_xf_t *xf)
 {
+	char str[4][IKEV2_ENUM_STRLEN];
 	getlog(level)(b, msg,
-	    BUNYAN_T_STRING, "xf_encralg", ikev2_xf_encr_str(xf->xf_encr),
+	    BUNYAN_T_STRING, "xf_encralg", ikev2_xf_encr_str(xf->xf_encr,
+	    str[0], sizeof (str[0])),
 	    BUNYAN_T_UINT32, "xf_minbits", (uint32_t)xf->xf_minbits,
 	    BUNYAN_T_UINT32, "xf_maxbits", (uint32_t)xf->xf_maxbits,
-	    BUNYAN_T_STRING, "xf_authalg", ikev2_xf_auth_str(xf->xf_auth),
+	    BUNYAN_T_STRING, "xf_authalg", ikev2_xf_auth_str(xf->xf_auth,
+	    str[1], sizeof (str[1])),
 	    BUNYAN_T_STRING, "xf_authtype",
-	    ikev2_auth_type_str(xf->xf_authtype),
-	    BUNYAN_T_STRING, "xf_dh", ikev2_dh_str(xf->xf_dh),
+	    ikev2_auth_type_str(xf->xf_authtype, str[2], sizeof (str[2])),
+	    BUNYAN_T_STRING, "xf_dh", ikev2_dh_str(xf->xf_dh, str[3],
+	    sizeof (str[3])),
 	    BUNYAN_T_END);
 }
 
@@ -85,6 +90,31 @@ config_get_rule(sockaddr_u_t local, sockaddr_u_t remote)
 	}
 
 	return (&cfg->cfg_default);
+}
+
+boolean_t
+config_addr_to_ss(config_addr_t *caddr, sockaddr_u_t saddr)
+{
+	switch (caddr->cfa_type) {
+	case CFG_ADDR_IPV4_PREFIX:
+	case CFG_ADDR_IPV4_RANGE:
+	case CFG_ADDR_IPV6_PREFIX:
+	case CFG_ADDR_IPV6_RANGE:
+		return (B_FALSE);
+	case CFG_ADDR_IPV4:
+		saddr.sau_sin->sin_family = AF_INET;
+		saddr.sau_sin->sin_port = htons(IPPORT_IKE);
+		(void) memcpy(&saddr.sau_sin->sin_addr, &caddr->cfa_start4,
+		    sizeof (in_addr_t));
+		break;
+	case CFG_ADDR_IPV6:
+		saddr.sau_sin6->sin6_family = AF_INET6;
+		saddr.sau_sin6->sin6_port = htons(IPPORT_IKE);
+		(void) memcpy(&saddr.sau_sin6->sin6_addr, &caddr->cfa_start6,
+		    sizeof (in6_addr_t));
+		break;
+	}
+	return (B_TRUE);
 }
 
 static boolean_t

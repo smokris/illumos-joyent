@@ -38,8 +38,7 @@ struct bunyan_logger;
 	(((hdr)->flags == IKEV2_FLAG_INITIATOR) ? \
 	    (hdr)->initiator_spi : (hdr)->responder_spi)
 
-pkt_t *ikev2_pkt_new_inbound(uint8_t *restrict, size_t,
-    struct bunyan_logger *restrict);
+pkt_t *ikev2_pkt_new_inbound(void *restrict, size_t);
 pkt_t *ikev2_pkt_new_exchange(struct ikev2_sa_s *, ikev2_exch_t);
 pkt_t *ikev2_pkt_new_response(const pkt_t *);
 void ikev2_pkt_free(pkt_t *);

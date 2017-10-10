@@ -35,8 +35,12 @@
 #include "ikev2_sa.h"
 #include "inbound.h"
 #include "pkcs11.h"
-#include "timer.h"
 #include "worker.h"
+
+typedef struct lockingfd {
+	mutex_t lf_lock;
+	int	lf_fd;
+} lockingfd_t;
 
 extern void pkt_init(void);
 extern void pkt_fini(void);
@@ -50,7 +54,7 @@ static void main_loop(void);
 static void do_immediate(void);
 
 static boolean_t done;
-static pthread_t signal_tid;
+static thread_t signal_tid;
 
 bunyan_logger_t *log = NULL;
 int main_port = -1;
@@ -83,11 +87,41 @@ _umem_debug_init(void)
 }
 #endif
 
+static int
+nofail_cb(void)
+{
+	/*
+	 * XXX Do we want to maybe change behavior based on debug/non-debug
+	 * or make it a configuration or maybe SMF parameter to control
+	 * abort vs. exit vs. something else?
+	 */
+	assfail("Out of memory", __FILE__, __LINE__);
+	/*NOTREACHED*/
+	return (UMEM_CALLBACK_EXIT(EXIT_FAILURE));
+}
+
+/*
+ * For now at least, a workaround so that multiple bunyan children don't
+ * step on each other during output be serializing writes to the same fd.
+ */
+static int
+lockingfd_log(nvlist_t *nvl, const char *js, void *arg)
+{
+	lockingfd_t *lf = arg;
+	int ret;
+
+	mutex_enter(&lf->lf_lock);
+	ret = bunyan_stream_fd(nvl, js, (void *)(uintptr_t)lf->lf_fd);
+	mutex_exit(&lf->lf_lock);
+	return (ret);
+}
+
 int
 main(int argc, char **argv)
 {
 	FILE *f = NULL;
 	char *cfgfile = "/etc/inet/ike/config";
+	lockingfd_t logfd = { ERRORCHECKMUTEX, STDOUT_FILENO };
 	int c, rc;
 	boolean_t debug_mode = B_FALSE;
 	boolean_t check_cfg = B_FALSE;
@@ -97,6 +131,8 @@ main(int argc, char **argv)
 #define	TEXT_DOMAIN "SYS_TEST"
 #endif
 	(void) textdomain(TEXT_DOMAIN);
+
+	umem_nofail_callback(nofail_cb);
 
 	while ((c = getopt(argc, argv, "cdf:")) != -1) {
 		switch (c) {
@@ -127,11 +163,12 @@ main(int argc, char **argv)
 	if ((rc = bunyan_init(basename(argv[0]), &log)) < 0)
 		errx(EXIT_FAILURE, "bunyan_init() failed: %s", strerror(rc));
 
-	/* hard coded just during development */
+	/* hard coded to TRACE just during development */
 	if ((rc = bunyan_stream_add(log, "stdout", BUNYAN_L_TRACE,
-	    bunyan_stream_fd, (void *)STDOUT_FILENO)) < 0)
+	    lockingfd_log, &logfd)) < 0) {
 		errx(EXIT_FAILURE, "bunyan_stream_add() failed: %s",
 		    strerror(rc));
+	}
 
 	if ((f = fopen(cfgfile, "rF")) == NULL) {
 		STDERR(fatal, log, "cannot open config file",
@@ -187,21 +224,15 @@ main(int argc, char **argv)
 		exit(EXIT_FAILURE);
 	}
 
-	if ((inbound_port = port_create()) < 0) {
-		STDERR(fatal, log, "inbound port_create() failed");
-		exit(EXIT_FAILURE);
-	}
-
 	signal_init();
 	pkcs11_init();
 	pkt_init();
-	ike_timer_init();
 	ikev2_sa_init();
 
 	/* XXX: make these configurable */
-	worker_init(8, 8);
+	worker_init(8);
 	pfkey_init();
-	inbound_init(2);
+	inbound_init();
 	main_loop();
 
 	pkt_fini();
@@ -216,40 +247,13 @@ do_immediate(void)
 	config_t *cfg = config_get();
 
 	for (size_t i = 0; cfg->cfg_rules[i] != NULL; i++) {
-		if (!cfg->cfg_rules[i]->rule_immediate)
+		config_rule_t *rule = cfg->cfg_rules[i];
+
+		if (!rule->rule_immediate)
 			continue;
 
-		config_rule_t *rule = cfg->cfg_rules[i];
-		ikev2_sa_t *sa = NULL;
-		struct sockaddr_storage laddr = { 0 };
-		struct sockaddr_storage raddr = { 0 };
-		sockaddr_u_t sl = { .sau_ss = &laddr };
-		sockaddr_u_t sr = { .sau_ss = &raddr };
-
-		VERIFY3S(rule->rule_local_addr[0].cfa_type, ==, CFG_ADDR_IPV4);
-		VERIFY3S(rule->rule_remote_addr[0].cfa_type, ==, CFG_ADDR_IPV4);
-
-		sl.sau_sin->sin_family = AF_INET;
-		sl.sau_sin->sin_port = htons(IPPORT_IKE);
-		(void) memcpy(&sl.sau_sin->sin_addr,
-		    &rule->rule_local_addr[0].cfa_startu.cfa_ip4,
-		    sizeof (in_addr_t));
-
-		sr.sau_sin->sin_family = AF_INET;
-		sr.sau_sin->sin_port = htons(IPPORT_IKE);
-		(void) memcpy(&sr.sau_sin->sin_addr,
-		    &rule->rule_remote_addr[0].cfa_startu.cfa_ip4,
-		    sizeof (in_addr_t));
-
-		sa = ikev2_sa_alloc(B_TRUE, NULL, &laddr, &raddr);
-		VERIFY3P(sa, !=, NULL);
-
-		bunyan_trace(sa->i2sa_log, "Dispatching larval SA to worker",
-		    BUNYAN_T_STRING, "rule", rule->rule_label,
-		    BUNYAN_T_END);
-
-		worker_dispatch(WMSG_START, sa,
-		    I2SA_LOCAL_SPI(sa) % wk_nworkers);
+		CONFIG_REFHOLD(cfg);	/* for worker */
+		VERIFY(worker_send_cmd(WC_START, rule));
 	}
 
 	CONFIG_REFRELE(cfg);
@@ -266,6 +270,8 @@ main_loop(void)
 
 	/*CONSTCOND*/
 	while (!done) {
+		char portsrc[PORT_SOURCE_STR_LEN];
+
 		if (port_get(main_port, &pe, NULL) < 0) {
 			STDERR(error, log, "port_get() failed");
 			continue;
@@ -273,7 +279,8 @@ main_loop(void)
 
 		(void) bunyan_trace(log, "received event",
 		    BUNYAN_T_STRING, "source",
-		    port_source_str(pe.portev_source),
+		    port_source_str(pe.portev_source, portsrc,
+		    sizeof (portsrc)),
 		    BUNYAN_T_STRING, "event",
 		    event_str(pe.portev_events),
 		    BUNYAN_T_UINT32, "event num",
@@ -350,7 +357,8 @@ signal_thread(void *arg)
 	sigset_t sigset;
 	int signo;
 
-	bunyan_trace(log, "signal thread awaiting signals", BUNYAN_T_END);
+	(void) bunyan_trace(log, "signal thread awaiting signals",
+	    BUNYAN_T_END);
 
 	(void) sigfillset(&sigset);
 
@@ -386,7 +394,8 @@ signal_init(void)
 	sigset_t nset;
 	int rc;
 
-	bunyan_trace(log, "Creating signal handling thread", BUNYAN_T_END);
+	(void) bunyan_trace(log, "Creating signal handling thread",
+	    BUNYAN_T_END);
 
 	/* block all signals in main thread */
 	(void) sigfillset(&nset);
@@ -395,13 +404,8 @@ signal_init(void)
 	rc = thr_create(NULL, 0, signal_thread, NULL, THR_DETACHED,
 	    &signal_tid);
 	if (rc != 0) {
-		bunyan_fatal(log, "Signal handling thread creation failed",
-		    BUNYAN_T_STRING, "errmsg", strerror(rc),
-		    BUNYAN_T_INT32, "errno", (int32_t)rc,
-		    BUNYAN_T_STRING, "file", __FILE__,
-		    BUNYAN_T_INT32, "line", (int32_t)__LINE__,
-		    BUNYAN_T_STRING, "func", __func__,
-		    BUNYAN_T_END);
+		TSTDERR(rc, fatal, log,
+		    "Signal handling thread creation failed");
 		exit(EXIT_FAILURE);
 	}
 }

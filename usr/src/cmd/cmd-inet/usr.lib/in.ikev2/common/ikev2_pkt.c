@@ -28,7 +28,6 @@
 #include <sys/random.h>
 #include <sys/socket.h>
 #include <sys/types.h>
-#include <pthread.h>
 #include <note.h>
 #include <stdarg.h>
 #include "defs.h"
@@ -53,7 +52,8 @@ ikev2_pkt_new_exchange(ikev2_sa_t *i2sa, ikev2_exch_t exch_type)
 	uint32_t msgid = 0;
 	uint8_t flags = 0;
 
-	mutex_enter(&i2sa->i2sa_lock);
+	VERIFY(MUTEX_HELD(&i2sa->i2sa_lock));
+
 	if (exch_type != IKEV2_EXCH_IKE_SA_INIT)
 		msgid = i2sa->outmsgid++;
 
@@ -67,11 +67,8 @@ ikev2_pkt_new_exchange(ikev2_sa_t *i2sa, ikev2_exch_t exch_type)
 
 	if (pkt == NULL) {
 		i2sa->outmsgid--;
-		mutex_exit(&i2sa->i2sa_lock);
 		return (NULL);
 	}
-
-	mutex_exit(&i2sa->i2sa_lock);
 
 	pkt->pkt_sa = i2sa;
 	I2SA_REFHOLD(i2sa);
@@ -86,7 +83,9 @@ ikev2_pkt_new_response(const pkt_t *init)
 	ike_header_t *hdr = pkt_header(init);
 	uint8_t flags = IKEV2_FLAG_RESPONSE;
 
-	ASSERT(PKT_IS_V2(init));
+	VERIFY3U(IKE_GET_MAJORV(hdr->version), ==,
+	    IKE_GET_MAJORV(IKEV2_VERSION));
+	VERIFY(MUTEX_HELD(&init->pkt_sa->i2sa_lock));
 
 	if (init->pkt_sa->flags & I2SA_INITIATOR)
 		flags |= IKEV2_FLAG_INITIATOR;
@@ -106,19 +105,21 @@ ikev2_pkt_new_response(const pkt_t *init)
 
 /* Allocate a ikev2_pkt_t for an inbound datagram in raw */
 pkt_t *
-ikev2_pkt_new_inbound(uint8_t *restrict buf, size_t buflen,
-    bunyan_logger_t *restrict l)
+ikev2_pkt_new_inbound(void *restrict buf, size_t buflen)
 {
 	const ike_header_t	*hdr = NULL;
 	pkt_t			*pkt = NULL;
 	size_t			*counts = NULL;
 	size_t			i = 0;
 	boolean_t		keep = B_TRUE;
+	char			exch[IKEV2_ENUM_STRLEN];
 
-	(void) bunyan_trace(l, "Creating new inbound IKEV2 packet",
+	VERIFY(IS_WORKER);
+
+	(void) bunyan_trace(worker->w_log, "Creating new inbound IKEV2 packet",
 	    BUNYAN_T_END);
 
-	ASSERT(IS_P2ALIGNED(buf, sizeof (uint64_t)));
+	VERIFY(IS_P2ALIGNED(buf, sizeof (uint64_t)));
 
 	hdr = (const ike_header_t *)buf;
 
@@ -135,14 +136,16 @@ ikev2_pkt_new_inbound(uint8_t *restrict buf, size_t buflen,
 	case IKEV2_EXCH_GSA_REGISTRATION:
 	case IKEV2_EXCH_GSA_REKEY:
 	default:
-		(void) bunyan_info(l, "Unknown/unsupported exchange type",
+		(void) bunyan_info(worker->w_log,
+		    "Unknown/unsupported exchange type",
 		    BUNYAN_T_STRING, "exch_type",
-		    ikev2_exch_str(hdr->exch_type), BUNYAN_T_END);
+		    ikev2_exch_str(hdr->exch_type, exch, sizeof (exch)),
+		    BUNYAN_T_END);
 		return (NULL);
 	}
 
 	/* pkt_in_alloc() will log any errors messages */
-	if ((pkt = pkt_in_alloc(buf, buflen, l)) == NULL)
+	if ((pkt = pkt_in_alloc(buf, buflen)) == NULL)
 		return (NULL);
 
 	if (!check_payloads(pkt)) {
@@ -972,6 +975,9 @@ ikev2_pkt_encryptdecrypt(pkt_t *pkt, boolean_t encrypt)
 	encr_modes_t mode = encr_data[sa->encr].ed_mode;
 	uint8_t padlen = 0;
 
+	VERIFY(IS_WORKER);
+	VERIFY(MUTEX_HELD(&sa->i2sa_lock));
+
 	if (sa->flags & I2SA_INITIATOR) {
 		key = sa->sk_ei;
 		salt = sa->salt_i;
@@ -1243,6 +1249,7 @@ static boolean_t
 check_payloads(pkt_t *pkt)
 {
 	size_t paycount[IKEV2_NUM_PAYLOADS] = { 0 };
+	char logbuf[64];
 
 #define	PAYCOUNT(type)	paycount[(type) - IKEV2_PAYLOAD_MIN]
 
@@ -1254,8 +1261,9 @@ check_payloads(pkt_t *pkt)
 		if (pay->pay_reserved & IKEV2_CRITICAL_PAYLOAD) {
 			(void) bunyan_info(log,
 			    "Packet payload has critical bit set",
-			    BUNYAN_T_UINT32, "payload", (uint32_t)idx->pp_type,
-			    BUNYAN_T_END);
+			    BUNYAN_T_STRING, "payload",
+			    ikev2_pay_str(idx->pp_type, logbuf,
+			    sizeof (logbuf)), BUNYAN_T_END);
 			return (B_FALSE);
 		}
 
@@ -1315,17 +1323,21 @@ ikev2_pkt_desc(pkt_t *pkt)
 	size_t len = 0;
 	uint16_t i;
 	uint16_t j;
+	char buf[IKEV2_ENUM_STRLEN];
+	char nbuf[IKEV2_ENUM_STRLEN];
 
 	for (i = j = 0; i < pkt->pkt_payload_count; i++) {
 		pkt_payload_t *pay = pkt_payload(pkt, i);
 		const char *paystr =
-		    ikev2_pay_short_str((ikev2_pay_type_t)pay->pp_type);
+		    ikev2_pay_short_str((ikev2_pay_type_t)pay->pp_type, buf,
+		    sizeof (buf));
 
 		len += strlen(paystr) + 2;
 		if (pay->pp_type == IKEV2_PAYLOAD_NOTIFY) {
 			pkt_notify_t *n = pkt_notify(pkt, j++);
 			const char *nstr =
-			    ikev2_notify_str((ikev2_notify_type_t)n->pn_type);
+			    ikev2_notify_str((ikev2_notify_type_t)n->pn_type,
+			    nbuf, sizeof (nbuf));
 
 			len += strlen(nstr) + 2;
 		}
@@ -1337,7 +1349,8 @@ ikev2_pkt_desc(pkt_t *pkt)
 	for (i = j = 0; i < pkt->pkt_payload_count; i++) {
 		pkt_payload_t *pay = pkt_payload(pkt, i);
 		const char *paystr =
-		    ikev2_pay_short_str((ikev2_pay_type_t)pay->pp_type);
+		    ikev2_pay_short_str((ikev2_pay_type_t)pay->pp_type, buf,
+		    sizeof (buf));
 
 		if (i > 0)
 			(void) strlcat(s, ", ", len);
@@ -1346,7 +1359,8 @@ ikev2_pkt_desc(pkt_t *pkt)
 		if (pay->pp_type == IKEV2_PAYLOAD_NOTIFY) {
 			pkt_notify_t *n = pkt_notify(pkt, j++);
 			const char *nstr =
-			    ikev2_notify_str((ikev2_notify_type_t)n->pn_type);
+			    ikev2_notify_str((ikev2_notify_type_t)n->pn_type,
+			    nbuf, sizeof (nbuf));
 
 			/*
 			 * Notify type is 16-bits, so (XXXXX) (7 chars) is
@@ -1387,6 +1401,7 @@ ikev2_pkt_log(pkt_t *restrict pkt, bunyan_logger_t *restrict log,
 	char ispi[19];
 	char rspi[19];
 	char flag[30];
+	char exch[IKEV2_ENUM_STRLEN];
 
 	VERIFY3P(descstr, !=, NULL);
 
@@ -1395,6 +1410,7 @@ ikev2_pkt_log(pkt_t *restrict pkt, bunyan_logger_t *restrict log,
 	(void) snprintf(rspi, sizeof (rspi), "0x%" PRIX64,
 	    ntohll(hdr->responder_spi));
 	(void) snprintf(flag, sizeof (flag), "0x%" PRIx8, hdr->flags);
+
 	if (hdr->flags != 0) {
 		size_t count = 0;
 
@@ -1416,9 +1432,9 @@ ikev2_pkt_log(pkt_t *restrict pkt, bunyan_logger_t *restrict log,
 	getlog(level)(log, msg,
 	    BUNYAN_T_POINTER, "pkt", pkt,
 	    BUNYAN_T_STRING, "initiator_spi", ispi,
-	    BUNYAN_T_UINT64, "responder_spi", rspi,
+	    BUNYAN_T_STRING, "responder_spi", rspi,
 	    BUNYAN_T_STRING, "exch_type",
-	    ikev2_exch_str(hdr->exch_type),
+	    ikev2_exch_str(hdr->exch_type, exch, sizeof (exch)),
 	    BUNYAN_T_UINT32, "msgid", ntohl(pkt_header(pkt)->msgid),
 	    BUNYAN_T_UINT32, "msglen", ntohl(pkt_header(pkt)->length),
 	    BUNYAN_T_STRING, "flags", flag,

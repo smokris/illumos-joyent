@@ -41,7 +41,7 @@ pkt_payload_t *pkt_payload(pkt_t *, uint16_t);
 pkt_notify_t *pkt_notify(pkt_t *, uint16_t);
 ike_payload_t *pkt_idx_to_payload(pkt_payload_t *);
 
-pkt_t *pkt_in_alloc(uint8_t *restrict, size_t, struct bunyan_logger *restrict);
+pkt_t *pkt_in_alloc(void*restrict, size_t);
 pkt_t *pkt_out_alloc(uint64_t, uint64_t, uint8_t, uint8_t, uint32_t, uint8_t);
 void pkt_free(pkt_t *);
 

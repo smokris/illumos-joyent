@@ -50,59 +50,11 @@
 #include "ikev2.h"
 #include "ikev2_pkt.h"
 #include "ikev2_proto.h"
-
-typedef struct inbound_s {
-	thread_t	ib_tid;
-	bunyan_logger_t	*ib_log;
-	uint8_t		*ib_buf;
-	size_t		ib_buflen;
-} inbound_t;
+#include "worker.h"
 
 int ikesock4 = -1;
 int ikesock6 = -1;
 int nattsock = -1;
-size_t ninbound = 0;
-int inbound_port = -1;
-
-static rwlock_t ib_lock = DEFAULTRWLOCK;
-static inbound_t *ibdata;
-static size_t ibdata_alloc;
-static __thread inbound_t *ib = NULL;
-
-static void *
-inbound_main(void *ibarg)
-{
-	port_event_t pe;
-
-	ib = ibarg;
-
-	(void) bunyan_trace(ib->ib_log, "Inbound main loop starting",
-	    BUNYAN_T_END);
-
-	NOTE(CONSTCOND)
-	while (1) {
-		if (port_get(inbound_port, &pe, NULL) < 0) {
-			STDERR(fatal, ib->ib_log, "port_get() failed");
-			abort();
-		}
-
-		(void) bunyan_debug(ib->ib_log, "Received port event",
-		    BUNYAN_T_INT32, "event", pe.portev_events,
-		    BUNYAN_T_STRING, "source",
-		    port_source_str(pe.portev_source),
-		    BUNYAN_T_POINTER, "object", pe.portev_object,
-		    BUNYAN_T_POINTER, "cookie", pe.portev_user,
-		    BUNYAN_T_END);
-
-		VERIFY3S(pe.portev_source, ==, PORT_SOURCE_FD);
-
-		void (*fn)(int) = (void (*)(int))pe.portev_user;
-		int fd = (int)pe.portev_object;
-		fn(fd);
-	}
-
-	return (NULL);
-}
 
 static void
 inbound(int s)
@@ -114,9 +66,11 @@ inbound(int s)
 	socklen_t fromlen = sizeof (from);
 	ssize_t pktlen;
 
-	(void) memset(ib->ib_buf, 0, ib->ib_buflen);
-	pktlen = recvfromto(s, ib->ib_buf, ib->ib_buflen, 0, &from, &fromlen,
-	    &to, &tolen);
+	VERIFY(IS_WORKER);
+
+	(void) memset(worker->w_buf, 0, sizeof (worker->w_buf));
+	pktlen = recvfromto(s, worker->w_buf, sizeof (worker->w_buf), 0, &from,
+	    &fromlen, &to, &tolen);
 
 	/*
 	 * Once we've received the datagram, re-arm socket to other threads
@@ -132,18 +86,17 @@ inbound(int s)
 	VERIFY3U(pktlen, >=, sizeof (ike_header_t));
 
 	/* sanity checks */
-	ike_header_t *hdr = (ike_header_t *)ib->ib_buf;
+	ike_header_t *hdr = (ike_header_t *)worker->w_buf;
 	size_t hdrlen = ntohl(hdr->length);
 
-	VERIFY(bunyan_key_add(ib->ib_log,
-	    ss_bunyan(&from), "src", ss_addr(&from),
-	    BUNYAN_T_UINT32, "srcport", ss_port(&from),
-	    ss_bunyan(&to), "dest", ss_addr(&to),
-	    BUNYAN_T_UINT32, "destport", ss_port(&to),
-	    BUNYAN_T_END) == 0);
+	(void) bunyan_key_add(worker->w_log,
+	    ss_bunyan(&from), BLOG_KEY_SRC, ss_addr(&from),
+	    BUNYAN_T_UINT32, BLOG_KEY_SRCPORT, ss_port(&from),
+	    ss_bunyan(&to), BLOG_KEY_DEST, ss_addr(&to),
+	    BUNYAN_T_UINT32, BLOG_KEY_DESTPORT, ss_port(&to), BUNYAN_T_END);
 
 	if (hdrlen != pktlen) {
-		(void) bunyan_info(ib->ib_log,
+		(void) bunyan_info(worker->w_log,
 		    "ISAKMP/IKE header length doesn't match received length",
 		    BUNYAN_T_UINT32, "hdrlen", (uint32_t)hdrlen,
 		    BUNYAN_T_UINT32, "pktlen", (uint32_t)pktlen,
@@ -154,17 +107,17 @@ inbound(int s)
 	switch (hdr->version) {
 	case IKEV1_VERSION:
 		/* XXX: Until we support V1 */
-		bunyan_info(ib->ib_log, "Discarding ISAKMP/IKEV1 packet",
+		bunyan_info(worker->w_log, "Discarding ISAKMP/IKEV1 packet",
 		    BUNYAN_T_END);
 		return;
 	case IKEV2_VERSION:
-		pkt = ikev2_pkt_new_inbound(ib->ib_buf, pktlen, ib->ib_log);
+		pkt = ikev2_pkt_new_inbound(worker->w_buf, pktlen);
 		if (pkt == NULL)
 			return;
-		ikev2_dispatch(pkt, &from, &to);
+		ikev2_inbound(pkt, &from, &to);
 		return;
 	default:
-		bunyan_info(ib->ib_log, "Unsupported ISAKMP/IKE version",
+		bunyan_info(worker->w_log, "Unsupported ISAKMP/IKE version",
 		    BUNYAN_T_UINT32, "version", hdr->version,
 		    BUNYAN_T_END);
 		return;
@@ -174,7 +127,7 @@ inbound(int s)
 void
 schedule_socket(int fd, void (*cb)(int))
 {
-	if (port_associate(inbound_port, PORT_SOURCE_FD, fd, POLLIN,
+	if (port_associate(wk_evport, PORT_SOURCE_FD, fd, POLLIN,
 	    (void *)cb) < 0) {
 		STDERR(error, log, "port_associate() failed",
 		    BUNYAN_T_INT32, "fd", (int32_t)fd,
@@ -192,7 +145,7 @@ schedule_socket(int fd, void (*cb)(int))
 }
 
 static int
-udp_listener_socket(sa_family_t af, uint16_t port)
+udp_listener_socket(sa_family_t af, uint16_t port, boolean_t natt)
 {
 	struct sockaddr_storage storage = { 0 };
 	sockaddr_u_t sau = { .sau_ss = &storage };
@@ -200,6 +153,9 @@ udp_listener_socket(sa_family_t af, uint16_t port)
 	int sock = -1;
 	int yes = 1;
 	ipsec_req_t ipsr = { 0 };
+
+	/* natt can only be true for AF_INET sockets */
+	VERIFY(af == AF_INET || !natt);
 
 	ipsr.ipsr_ah_req = ipsr.ipsr_esp_req = IPSEC_PREF_NEVER;
 
@@ -220,12 +176,6 @@ udp_listener_socket(sa_family_t af, uint16_t port)
 		    BUNYAN_T_END);
 		exit(EXIT_FAILURE);
 	}
-
-	(void) bunyan_trace(log, "UDP socket created",
-	    BUNYAN_T_INT32, "fd", (int32_t)sock,
-	    BUNYAN_T_STRING, "af", afstr(af),
-	    BUNYAN_T_UINT32, "port", (uint32_t)port,
-	    BUNYAN_T_END);
 
 	sau.sau_ss->ss_family = af;
 	/* Exploit that sin_port and sin6_port live at the same offset. */
@@ -268,7 +218,7 @@ udp_listener_socket(sa_family_t af, uint16_t port)
 	}
 
 	/* Setup IPv4 NAT Traversal */
-	if (af == AF_INET && port == IPPORT_IKE_NATT) {
+	if (natt) {
 		int nat_t = 1;
 
 		if (setsockopt(sock, IPPROTO_UDP, UDP_NAT_T_ENDPOINT,
@@ -277,52 +227,22 @@ udp_listener_socket(sa_family_t af, uint16_t port)
 			    "UDP_NAT_T_ENDPOINT", __func__);
 	}
 
+	(void) bunyan_trace(log, "UDP socket created",
+	    BUNYAN_T_INT32, "fd", (int32_t)sock,
+	    BUNYAN_T_STRING, "af", afstr(af),
+	    BUNYAN_T_UINT32, "port", (uint32_t)port,
+	    BUNYAN_T_BOOLEAN, "natt", natt,
+	    BUNYAN_T_END);
+
 	return (sock);
 }
 
 void
-inbound_init(size_t n)
+inbound_init(void)
 {
-	/* main() should initialize inbound_port */
-	VERIFY3S(inbound_port, >=, 0);
-
-	ikesock4 = udp_listener_socket(AF_INET, IPPORT_IKE);
-	nattsock = udp_listener_socket(AF_INET, IPPORT_IKE_NATT);
-	ikesock6 = udp_listener_socket(AF_INET6, IPPORT_IKE);
-
-	size_t amt = n * sizeof (inbound_t);
-	VERIFY3U(amt, >, sizeof (inbound_t));
-	VERIFY3U(amt, >=, n);
-
-	ibdata = umem_zalloc(amt, UMEM_DEFAULT);
-	if (ibdata == NULL)
-		NOMEM;
-
-	for (size_t i = 0; i < n; i++) {
-		ibdata[i].ib_buf = umem_alloc(MAX_PACKET_SIZE, UMEM_DEFAULT);
-		if (ibdata[i].ib_buf == NULL)
-			NOMEM;
-		ibdata[i].ib_buflen = MAX_PACKET_SIZE;
-
-		if (bunyan_child(log, &ibdata[i].ib_log, BUNYAN_T_END) != 0)
-			NOMEM;
-
-		int rc = thr_create(NULL, 0, inbound_main, &ibdata[i], 0,
-		    &ibdata[i].ib_tid);
-
-		if (rc != 0) {
-			bunyan_fatal(log, "Cannot create inbound thread",
-			    BUNYAN_T_STRING, "errmsg", strerror(rc),
-			    BUNYAN_T_INT32, "errno", rc,
-			    BUNYAN_T_STRING, "file", __FILE__,
-			    BUNYAN_T_INT32, "line", __LINE__,
-			    BUNYAN_T_STRING, "func", __func__,
-			    BUNYAN_T_END);
-			exit(EXIT_FAILURE);
-		}
-	}
-
-	ninbound = n;
+	ikesock4 = udp_listener_socket(AF_INET, IPPORT_IKE, B_FALSE);
+	nattsock = udp_listener_socket(AF_INET, IPPORT_IKE_NATT, B_TRUE);
+	ikesock6 = udp_listener_socket(AF_INET6, IPPORT_IKE, B_FALSE);
 
 	schedule_socket(ikesock4, inbound);
 	schedule_socket(nattsock, inbound);

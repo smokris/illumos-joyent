@@ -45,7 +45,6 @@ CMD_OBJS =	config.o	\
 		prf.o		\
 		pkcs11.o	\
 		pkt.o		\
-		timer.o		\
 		util.o		\
 		worker.o
 
@@ -80,7 +79,7 @@ C99MODE = $(C99_ENABLE)
 CFLAGS += $(CCVERBOSE) -D_REENTRANT
 CFLAGS64 += $(CCVERBOSE) -D_REENTRANT
 LDLIBS += -lnsl -lsecdb -lumem -lxnet -lipsecutil -lpkcs11 -lcryptoutil
-LDLIBS += -lnvpair -lbunyan
+LDLIBS += -lnvpair -lbunyan -lperiodic
 
 FILEMODE = 0555
 GROUP = bin

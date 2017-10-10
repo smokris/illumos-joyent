@@ -23,7 +23,7 @@
 extern "C" {
 #endif
 
-ssize_t recvfromto(int, uint8_t *restrict, size_t, int,
+ssize_t recvfromto(int, void *restrict, size_t, int,
     struct sockaddr_storage *restrict, socklen_t *restrict,
     struct sockaddr_storage *restrict, socklen_t *restrict);
 

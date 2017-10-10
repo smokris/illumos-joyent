@@ -163,6 +163,8 @@ config_rule_t *config_get_rule(union sockaddr_u_s,
 void cfg_rule_free(config_rule_t *);
 void cfg_free(config_t *);
 
+boolean_t config_addr_to_ss(config_addr_t *, union sockaddr_u_s);
+
 #ifdef __cplusplus
 }
 #endif

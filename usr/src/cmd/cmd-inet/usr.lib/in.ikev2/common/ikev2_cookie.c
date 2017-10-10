@@ -13,8 +13,10 @@
  * Copyright (c) 2017, Joyent, Inc.
  */
 
+#include <err.h>
 #include <errno.h>
 #include <netinet/in.h>
+#include <libperiodic.h>
 #include <signal.h>
 #include <string.h>
 #include <synch.h>
@@ -22,7 +24,6 @@
 #include <sys/random.h>
 #include <sys/time.h>
 #include <time.h>
-#include <pthread.h>
 #include <port.h>
 #include "defs.h"
 #include "ikev2_cookie.h"
@@ -55,41 +56,39 @@ size_t ikev2_cookie_threshold = 128;
  * (when we request it) to prevent a remote peer from being able to generate
  * large amounts of larval (half-open) IKE SAs.
  *
- * Whenever cookies are enabled, we arm cookie_timer to fire every
- * COOKIE_SECRET_LIFETIME seconds to trigger the generation of a new secret
- * and increment of the version.  When the cookie_timer fires, it generates
- * an event on the event port used by the main thread which calls
- * cookie_update_secret() to create the new secret and increment the version
- * number.
+ * We create a new secret every COOKIE_SECRET_LIFETIME nanoseconds (currently
+ * once a minute).  We retain the previous secret and allow it's use for up to
+ * COOKIE_GRACE seconds after rotation to minimize excessive IKE_SA_INIT
+ * exchanges if an exchange happens to occur near the end of the current
+ * secret's lifetime.  This rotation is done to minimize the chances a remote
+ * attacker will be able to determine the value of the secret (and thus
+ * defeat it's purpose).  It should be noted that the cookie secret is not
+ * used in deriving any key material -- only as a deterrent, as such having
+ * old values persist in memory for a while after use is not a major concern.
  *
- * This rotation is done to minimize the ability of a remote attacker from
- * being able to determine the value of secret.  When we generate a new
- * secret, we do retain the previous version and allow the old secret to
- * be used for up to COOKIE_GRACE seconds after a new cookie is created.  This
- * should minimize excessive IKE_SA_INIT exchanges if they happen to occur
- * right before a new secret is generated, while hopefully having a minimal
- * impact on the effectiveness of the cookies themselves.
+ * While we only choose 8 bits to hold the version number, with current the
+ * current lifetime settings, the version number will wrap around about every
+ * 4.5 hours.  Since we only concern ourselves at most with the current and
+ * previous version numbers, the worst (and largely absurd) case is someone
+ * could reply with a cookie derived from a 4.5 old secret.  In this instance,
+ * the cookie check will fail, and things will proceed in the same manner as
+ * if the cookie wasn't present (i.e. an error response with a cookie derived
+ * from the current secret will be sent, and processing will not proceed until
+ * a response with the current cookie is received).  This seems like a
+ * reasonable tradeoff as long as the peers doing the exchange reside on the
+ * same planet.
  *
- * The cookie secrets are not used in any way in deriving keying material
- * and only serve to make the prediction of the cookie value by a remote
- * attacker relatively expensive.  As such, we are not concerned about old
- * secret values lingering around in memory after they expire.
+ * We currently only start sending cookies in responses once we hit a threshold
+ * of larval (half-open) IKE SAs (as indicated by the i2c_enabled variable).
+ * However, we are always updating the cookie secret at all times, even while
+ * it is not being used.  The impact is minimal, and it makes things simpler.
  *
- * While it is possible the version value could wrap around (being only 8-bits),
- * this is also not a concern as we generally only are concerned if the returned
- * cookie value has the same version as ours, or for COOKIE_GRACE seconds after
- * a new secret is generated, if the returned cookie version is the previous
- * version.  With the currently defined values, if cookies are continuously
- * enabled, it will take approximately 4.25 hours to wrap around.  In the worst
- * (and largely absurd) case, if a remote peer send back a cookie derived using
- * an 4.25 hour old secret that was derived using the same version (having
- * wrapped-around), the cookie check will merely fail and the remote peer will
- * need to resend its IKE_SA_INIT request with a current cookie.  This does
- * mean that we impose a maximum latency of
- * COOKIE_SECRET_LIFETIME + COOKIE_GRACE (currently 65) seconds on packets,
- * regardless of configured IKE timeouts.  Since we currently do not currently
- * have networks that span beyond Earth, this seems like a reasonable limitation
- * for the time being.
+ * One may note that the threat of a DOS attack from a single host is far
+ * less likely these days than a DDOS, and that cookies are not as effective
+ * in mitigating such attacks.  Such an observer would be correct, however
+ * this is still a SHOULD recommendation in the RFC, it's not particularly
+ * complex, and we MUST support responding to a responder who sends us
+ * cookies -- so it's not really doing much harm.
  */
 static struct secret_s {
 	uint8_t s_val[COOKIE_SECRET_LEN];
@@ -102,49 +101,23 @@ static struct secret_s {
 static rwlock_t i2c_lock = DEFAULTRWLOCK;
 static volatile uint8_t i2c_version;
 static boolean_t i2c_enabled;
-static timer_t i2c_timer;
+static periodic_id_t cookie_timer_id;
 
-static void cookie_update_secret(void);
+static void cookie_update_secret(void *);
 
 void
 ikev2_cookie_enable(void)
 {
 	VERIFY0(rw_wrlock(&i2c_lock));
-	if (i2c_enabled)
-		goto done;
-
-	if (SECRET_AGE(i2c_version) < COOKIE_SECRET_LIFETIME) {
-		struct itimerspec it = { 0 };
-		hrtime_t exp = SECRET_BIRTH(i2c_version) +
-		    COOKIE_SECRET_LIFETIME;
-
-		it.it_value.tv_sec = NSEC2SEC(exp);
-		it.it_value.tv_nsec = exp % NANOSEC;
-
-		if (timer_settime(i2c_timer, TIMER_ABSTIME, &it,
-		    NULL) != 0) {
-			STDERR(fatal, log, "timer_settime() failed");
-			exit(EXIT_FAILURE);
-		}
-		goto done;
-	}
-
-	cookie_update_secret();
-
-done:
+	i2c_enabled = B_TRUE;
 	VERIFY0(rw_unlock(&i2c_lock));
 }
 
 void
 ikev2_cookie_disable(void)
 {
-	struct itimerspec it = { 0 };
 	VERIFY0(rw_wrlock(&i2c_lock));
 	i2c_enabled = B_FALSE;
-	if (timer_settime(i2c_timer, 0, &it, NULL) != 0) {
-		STDERR(fatal, log, "timer_settime() failed");
-		exit(EXIT_FAILURE);
-	}
 	VERIFY0(rw_unlock(&i2c_lock));
 }
 
@@ -296,43 +269,35 @@ done:
 	return (ok);
 }
 
+/*ARGSUSED*/
 static void
-cookie_update_secret(void)
+cookie_update_secret(void *dummy)
 {
-	struct itimerspec it = { 0 };
+	uint32_t version = 0;
 
 	VERIFY0(rw_wrlock(&i2c_lock));
 
 	if (SECRET_BIRTH(i2c_version) != 0)
 		i2c_version++;
 
+	version = i2c_version;
+
 	arc4random_buf(SECRET(i2c_version), COOKIE_SECRET_LEN);
 	SECRET_BIRTH(i2c_version) = gethrtime();
 
 	VERIFY0(rw_unlock(&i2c_lock));
 
-	it.it_value.tv_sec = NSEC2SEC(COOKIE_SECRET_LIFETIME);
-	it.it_value.tv_nsec = COOKIE_SECRET_LIFETIME % NANOSEC;
-	it.it_interval = it.it_value;
-	if (timer_settime(i2c_timer, 0, &it, NULL) != 0) {
-		STDERR(fatal, log, "timer_settime() failed");
-		exit(EXIT_FAILURE);
-	}
+	(void) bunyan_debug(log, "Created new cookie secret",
+	    BUNYAN_T_UINT32, "version", version, BUNYAN_T_END);
 }
 
 void
 ikev2_cookie_init(void)
 {
-	struct sigevent se = { 0 };
-	port_notify_t pn;
+	cookie_update_secret(NULL);
 
-	pn.portnfy_port = main_port;
-	pn.portnfy_user = (void *)cookie_update_secret;
-	se.sigev_notify = SIGEV_PORT;
-	se.sigev_value.sival_ptr = &pn;
-
-	if (timer_create(CLOCK_REALTIME, &se, &i2c_timer) != 0) {
-		STDERR(fatal, log, "timer_create() failed");
-		exit(EXIT_FAILURE);
+	if (periodic_schedule(wk_periodic, COOKIE_SECRET_LIFETIME, 0,
+	    cookie_update_secret, NULL, &cookie_timer_id) != 0) {
+		err(EXIT_FAILURE, "Could not schedule cookie periodic");
 	}
 }

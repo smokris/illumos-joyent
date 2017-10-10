@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2017 Joyent, Inc.
+ * Copyright (c) 2017, Joyent, Inc.
  */
 
 #ifndef _IKEV2_PROTO_H
@@ -27,15 +27,20 @@ extern "C" {
 struct pkt_s;
 struct ikev2_sa_s;
 struct sockaddr_storage;
+struct config_rule_s;
+struct parsedmsg_s;
 
-void ikev2_dispatch(struct pkt_s *, const struct sockaddr_storage *,
+void ikev2_inbound(struct pkt_s *, const struct sockaddr_storage *,
     const struct sockaddr_storage *);
+void ikev2_pfkey(struct parsedmsg_s *);
+void ikev2_sa_init_cfg(struct config_rule_s *);
+
 boolean_t ikev2_send(struct pkt_s *, boolean_t);
-void ikev2_inbound(struct pkt_s *);
+void ikev2_dispatch(struct ikev2_sa_s *);
 
 void ikev2_sa_init_inbound(struct pkt_s *);
-void ikev2_sa_init_outbound(struct ikev2_sa_s *restrict, uint8_t *restrict,
-    size_t, ikev2_dh_t, uint8_t *restrict, size_t);
+void ikev2_sa_init_outbound(struct ikev2_sa_s *restrict,
+    struct parsedmsg_s *restrict);
 
 #ifdef __cplusplus
 }

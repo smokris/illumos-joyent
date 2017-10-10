@@ -13,29 +13,29 @@
  * Copyright (c) 2017 Joyent, Inc.
  */
 
-#include <pthread.h>
-#include <umem.h>
-#include <err.h>
-#include <sys/debug.h>
 #include <bunyan.h>
-#include <time.h>
+#include <err.h>
 #include <string.h>
+#include <sys/debug.h>
+#include <time.h>
+#include <umem.h>
+#include "config.h"
 #include "defs.h"
-#include "worker.h"
-#include "pkt.h"
-#include "timer.h"
-#include "pkcs11.h"
+#include "dh.h"
+#include "ikev2_common.h"
+#include "ikev2_enum.h"
+#include "ikev2_pkt.h"
 #include "ikev2_proto.h"
 #include "ikev2_sa.h"
-#include "config.h"
-#include "ikev2_pkt.h"
-#include "ikev2_enum.h"
-#include "ikev2_common.h"
+#include "pkcs11.h"
+#include "pkt.h"
 #include "prf.h"
-#include "dh.h"
+#include "worker.h"
 
 static void ikev2_sa_init_inbound_init(pkt_t *);
 static void ikev2_sa_init_inbound_resp(pkt_t *);
+static void do_sa_init_outbound(ikev2_sa_t *restrict, uint8_t *restrict,
+    size_t, ikev2_dh_t, uint8_t *restrict, size_t);
 
 static boolean_t find_config(pkt_t *, sockaddr_u_t, sockaddr_u_t);
 static boolean_t add_nat(pkt_t *);
@@ -49,6 +49,9 @@ static boolean_t ikev2_sa_keygen(ikev2_sa_result_t *restrict, pkt_t *restrict,
 void
 ikev2_sa_init_inbound(pkt_t *pkt)
 {
+	VERIFY(IS_WORKER);
+	VERIFY(MUTEX_HELD(&pkt->pkt_sa->i2sa_lock));
+
 	if (pkt_header(pkt)->flags & IKEV2_FLAG_INITIATOR)
 		ikev2_sa_init_inbound_init(pkt);
 	else
@@ -221,9 +224,9 @@ redo_init(pkt_t *pkt)
 		uint16_t val = BE_IN16(invalid_ke->pn_ptr);
 		dh = val;
 	}
-
-	(void) cancel_timeout(TE_TRANSMIT, out, sa->i2sa_log);
-	ikev2_sa_init_outbound(sa, cookie->pn_ptr, cookie->pn_len,
+	(void) periodic_cancel(wk_periodic, sa->i2sa_xmit_timer);
+	sa->i2sa_xmit_timer = 0;
+	do_sa_init_outbound(sa, cookie->pn_ptr, cookie->pn_len,
 	    dh, nonce->pp_ptr, nonce->pp_len);
 
 	ikev2_pkt_free(pkt);
@@ -284,13 +287,47 @@ fail:
 	/* XXX: Anything else? */
 }
 
+static void
+cfg_addr_to_sockaddr(config_addr_t *c, sockaddr_u_t s)
+{
+	switch (c->cfa_type) {
+	case CFG_ADDR_IPV4:
+	case CFG_ADDR_IPV4_PREFIX:
+	case CFG_ADDR_IPV4_RANGE:
+		s.sau_sin->sin_family = AF_INET;
+		s.sau_sin->sin_port = htons(IPPORT_IKE);
+		(void) memcpy(&s.sau_sin->sin_addr, &c->cfa_start4,
+		    sizeof (in_addr_t));
+		break;
+	case CFG_ADDR_IPV6:
+	case CFG_ADDR_IPV6_PREFIX:
+	case CFG_ADDR_IPV6_RANGE:
+		s.sau_sin6->sin6_family = AF_INET6;
+		s.sau_sin6->sin6_port = htons(IPPORT_IKE);
+		(void) memcpy(&s.sau_sin6->sin6_addr, &c->cfa_start6,
+		    sizeof (in6_addr_t));
+		break;
+	}
+}
+
+void
+ikev2_sa_init_outbound(ikev2_sa_t *restrict sa, parsedmsg_t *restrict pmsg)
+{
+	VERIFY(MUTEX_HELD(&sa->i2sa_lock));
+	VERIFY(list_is_empty(&sa->i2sa_pending));
+	VERIFY(!(sa->flags & I2SA_AUTHENTICATED));
+
+	list_insert_tail(&sa->i2sa_pending, pmsg);
+	do_sa_init_outbound(sa, NULL, 0, IKEV2_DH_NONE, NULL, 0);
+}
+
 /*
  * Start a new IKE_SA_INIT using the given larval refheld IKE SA.
  * The other parameters are normally NULL / 0 and are used when the response
  * requests a cookie or a new DH group.
  */
-void
-ikev2_sa_init_outbound(ikev2_sa_t *restrict i2sa, uint8_t *restrict cookie,
+static void
+do_sa_init_outbound(ikev2_sa_t *restrict i2sa, uint8_t *restrict cookie,
     size_t cookielen, ikev2_dh_t dh, uint8_t *restrict nonce, size_t noncelen)
 {
 	pkt_t *pkt = NULL;
@@ -520,6 +557,9 @@ check_nats(pkt_t *pkt)
 			return (B_FALSE);
 
 		while (n != NULL) {
+			char nstr[IKEV2_ENUM_STRLEN];
+			char spistr[IKEV2_ENUM_STRLEN];
+
 			/*
 			 * XXX: Should these validation failures just ignore
 			 * the individual payload, or discard the packet
@@ -529,9 +569,11 @@ check_nats(pkt_t *pkt)
 				(void) bunyan_error(sa->i2sa_log,
 				    "Invalid SPI protocol in notification",
 				    BUNYAN_T_STRING, "notification",
-				    ikev2_notify_str(params[i].ntype),
+				    ikev2_notify_str(params[i].ntype, nstr,
+				    sizeof (nstr)),
 				    BUNYAN_T_STRING, "protocol",
-				    ikev2_spi_str(n->pn_proto),
+				    ikev2_spi_str(n->pn_proto, spistr,
+				    sizeof (spistr)),
 				    BUNYAN_T_UINT32, "protonum",
 				    (uint32_t)n->pn_proto, BUNYAN_T_END);
 				return (B_FALSE);
@@ -540,7 +582,8 @@ check_nats(pkt_t *pkt)
 				(void) bunyan_error(sa->i2sa_log,
 				    "Non-zero SPI size in NAT notification",
 				    BUNYAN_T_STRING, "notification",
-				    ikev2_notify_str(params[i].ntype),
+				    ikev2_notify_str(params[i].ntype, nstr,
+				    sizeof (nstr)),
 				    BUNYAN_T_END);
 				return (B_FALSE);
 			}
@@ -548,7 +591,8 @@ check_nats(pkt_t *pkt)
 				(void) bunyan_error(sa->i2sa_log,
 				    "NAT notification size mismatch",
 				    BUNYAN_T_STRING, "notification",
-				    ikev2_notify_str(params[i].ntype),
+				    ikev2_notify_str(params[i].ntype, nstr,
+				    sizeof (nstr)),
 				    BUNYAN_T_UINT32, "notifylen",
 				    (uint32_t)n->pn_len,
 				    BUNYAN_T_UINT32, "expected",
