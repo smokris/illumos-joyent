@@ -107,6 +107,8 @@ SYMBOL_VERSION SUNWprivate_1.1 {
 	rparsealg;
 	rparseidtype;
 	rparsesatype;
+	sadb_op_str;
+	sadb_type_str;
 	save_address;
 	save_assoc;
 	save_ident;

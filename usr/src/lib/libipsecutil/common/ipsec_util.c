@@ -364,6 +364,45 @@ dump_sockaddr(struct sockaddr *sa, uint8_t prefixlen, boolean_t addr_only,
 	return (0);
 }
 
+char *
+sadb_op_str(uint8_t op, char *buf, size_t buflen)
+{
+	static const char *pfkey_opcodes[] = {
+	    "RESERVED", "GETSPI", "UPDATE", "ADD", "DELETE", "GET",
+	    "ACQUIRE", "REGISTER", "EXPIRE", "FLUSH", "DUMP", "X_PROMISC",
+	    "X_INVERSE_ACQUIRE", "X_UPDATEPAIR", "X_DELPAIR"
+	};
+
+	if (op < A_CNT(pfkey_opcodes)) {
+		(void) strlcpy(buf, pfkey_opcodes[op], buflen);
+	} else {
+		(void) snprintf(buf, buflen, dgettext(TEXT_DOMAIN,
+		    "Unknown (%hhu)"), op);
+	}
+	return (buf);
+}
+
+char *
+sadb_type_str(uint8_t type, char *buf, size_t buflen)
+{
+	static const char *pfkey_satypes[] = {
+	    "UNSPEC", NULL, "AH", "ESP", NULL, "RSVP", "OSPFV2",
+	    "RIPV2", "MIP"
+	};
+	const char *str = NULL;
+
+	if (type < A_CNT(pfkey_satypes))
+		str = pfkey_satypes[type];
+
+	if (str != NULL) {
+		(void) strlcpy(buf, str, buflen);
+	} else {
+		(void) snprintf(buf, buflen,
+		    dgettext(TEXT_DOMAIN, "<unknown %hhu>"), type);
+	}
+	return (buf);
+}
+
 /*
  * Dump a key, any salt and bitlen.
  * The key is made up of a stream of bits. If the algorithm requires a salt
