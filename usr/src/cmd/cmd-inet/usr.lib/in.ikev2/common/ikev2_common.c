@@ -248,16 +248,18 @@ static boolean_t match_rule_attr_cb(ikev2_attribute_t *, void *);
 
 boolean_t
 ikev2_sa_match_rule(config_rule_t *restrict rule, pkt_t *restrict pkt,
-    ikev2_sa_result_t *restrict result)
+    ikev2_sa_result_t *restrict result, ikev2_auth_type_t *restrict authp)
 {
 	pkt_payload_t *pay = pkt_get_payload(pkt, IKEV2_PAYLOAD_SA, NULL);
 	bunyan_logger_t *l = pkt->pkt_sa->i2sa_log;
 
 	VERIFY3P(pay, !=, NULL);
 
-	bunyan_debug(l, "Checking rules against proposals",
+	(void) bunyan_debug(l, "Checking rules against proposals",
 	    BUNYAN_T_STRING, "rule", rule->rule_label,
 	    BUNYAN_T_END);
+
+	*authp = IKEV2_AUTH_NONE;
 
 	for (size_t i = 0; rule->rule_xf[i] != NULL; i++) {
 		for (size_t j = 0; j < ARRAY_SIZE(prf_supported); j++) {
@@ -286,12 +288,18 @@ ikev2_sa_match_rule(config_rule_t *restrict rule, pkt_t *restrict pkt,
 				char astr[IKEV2_ENUM_STRLEN];
 				char pstr[IKEV2_ENUM_STRLEN];
 				char dstr[IKEV2_ENUM_STRLEN];
+				char authstr[IKEV2_ENUM_STRLEN];
 
-				bunyan_debug(l, "Found proposal match",
+				*authp = rule->rule_xf[i]->xf_authtype;
+
+				(void) bunyan_debug(l, "Found proposal match",
 				    BUNYAN_T_STRING, "xf",
 				    rule->rule_xf[i]->xf_str,
 				    BUNYAN_T_UINT32, "propnum",
 				    (uint32_t)result->sar_propnum,
+				    BUNYAN_T_STRING, "authmethod",
+				    ikev2_auth_type_str(*authp, authstr,
+				    sizeof (authstr)),
 				    BUNYAN_T_UINT64, "spi", result->sar_spi,
 				    BUNYAN_T_STRING, "encr",
 				    ikev2_xf_encr_str(result->sar_encr, estr,
@@ -308,6 +316,7 @@ ikev2_sa_match_rule(config_rule_t *restrict rule, pkt_t *restrict pkt,
 				    ikev2_dh_str(result->sar_dh, dstr,
 				    sizeof (dstr)),
 				    BUNYAN_T_END);
+
 				return (B_TRUE);
 			}
 		}

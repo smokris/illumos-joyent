@@ -35,6 +35,7 @@
 #include "ikev2_sa.h"
 #include "inbound.h"
 #include "pkcs11.h"
+#include "preshared.h"
 #include "worker.h"
 
 typedef struct lockingfd {
@@ -182,6 +183,8 @@ main(int argc, char **argv)
 
 	if (check_cfg)
 		return (EXIT_SUCCESS);
+
+	preshared_init(B_FALSE);
 
 	if (!debug_mode) {
 		/* Explicitly handle closing of fds below */

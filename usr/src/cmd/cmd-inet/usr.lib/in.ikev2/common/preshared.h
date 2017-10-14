@@ -115,6 +115,7 @@ typedef struct preshared_entry_s {
  * Interface function prototypes
  *
  */
+void preshared_init(boolean_t);
 
 /*
  * char *preshared_load()

@@ -1105,7 +1105,8 @@ ikev2_pkt_encryptdecrypt(pkt_t *pkt, boolean_t encrypt)
 			if (pad[i] == padlen)
 				continue;
 
-			bunyan_warn(sa->i2sa_log, "Padding validation failed",
+			(void) bunyan_warn(sa->i2sa_log,
+			    "Padding validation failed",
 			    BUNYAN_T_UINT32, "padlen", (uint32_t)padlen,
 			    BUNYAN_T_UINT32, "offset", (uint32_t)i,
 			    BUNYAN_T_END);
@@ -1114,7 +1115,7 @@ ikev2_pkt_encryptdecrypt(pkt_t *pkt, boolean_t encrypt)
 	}
 	datalen -= padlen + 1;
 
-	ike_payload_t *skpay = ((ike_payload_t *)sk->pp_ptr) - 1;
+	ike_payload_t *skpay = pkt_idx_to_payload(sk);
 
 	if (!pkt_index_payloads(pkt, data, datalen, skpay->pay_next,
 	    sa->i2sa_log))
@@ -1175,7 +1176,7 @@ ikev2_pkt_signverify(pkt_t *pkt, boolean_t sign)
 	if (memcmp(icv, outbuf, auth_data[sa->auth].ad_icvlen) == 0)
 		return (B_TRUE);
 
-	bunyan_info(sa->i2sa_log, "Payload signature validation failed",
+	(void) bunyan_warn(sa->i2sa_log, "Payload signature validation failed",
 	    BUNYAN_T_END);
 	return (B_FALSE);
 }

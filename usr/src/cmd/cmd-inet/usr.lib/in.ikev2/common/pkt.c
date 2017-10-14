@@ -152,7 +152,7 @@ pkt_index_cb(uint8_t paytype, uint8_t resv, uint8_t *restrict ptr, size_t len,
 		 * with the exception of the 32-bit DOI field at the begining
 		 * of the struct.
 		 */
-	 	if (len < sizeof (ikev2_notify_t) + sizeof (uint32_t)) {
+		if (len < sizeof (ikev2_notify_t) + sizeof (uint32_t)) {
 			(void) bunyan_warn(data->id_log,
 			    "Notify payload is truncated",
 			    BUNYAN_T_END);
@@ -342,10 +342,14 @@ pkt_add_payload(pkt_t *pkt, uint8_t ptype, uint8_t resv, size_t len)
 {
 	VERIFY(!pkt->pkt_done);
 
-	if (len + sizeof (ike_payload_t) > UINT16_MAX)
+	if (len + sizeof (ike_payload_t) > UINT16_MAX) {
+		errno = ERANGE;
 		return (B_FALSE);
-	if (pkt_write_left(pkt) < len + sizeof (ike_payload_t))
+	}
+	if (pkt_write_left(pkt) < len + sizeof (ike_payload_t)) {
+		errno = ENOSPC;
 		return (B_FALSE);
+	}
 
 	ike_payload_t pld = {
 		.pay_next = 0,
@@ -399,8 +403,10 @@ pkt_add_prop(pkt_sa_state_t *pss, uint8_t propnum, uint8_t proto, size_t spilen,
 
 	VERIFY(!pss->pss_pkt->pkt_done);
 
-	if (pkt_write_left(pss->pss_pkt) < amt)
+	if (pkt_write_left(pss->pss_pkt) < amt) {
+		errno = ENOSPC;
 		return (B_FALSE);
+	}
 
 	if (pss->pss_prop != NULL)
 		pss->pss_prop->prop_more = IKE_PROP_MORE;
@@ -442,11 +448,18 @@ pkt_add_xform(pkt_sa_state_t *pss, uint8_t xftype, uint16_t xfid)
 	proplen += sizeof (xf);
 	paylen += sizeof (xf);
 
-	if (pkt_write_left(pss->pss_pkt) < sizeof (xf) ||
-	    proplen > UINT16_MAX || paylen > UINT16_MAX)
+	if (pkt_write_left(pss->pss_pkt) < sizeof (xf)) {
+		errno = ENOSPC;
 		return (B_FALSE);
-	if (pss->pss_prop->prop_numxform == UINT8_MAX)
+	}
+	if (proplen > UINT16_MAX || paylen > UINT16_MAX) {
+		errno = ERANGE;
 		return (B_FALSE);
+	}
+	if (pss->pss_prop->prop_numxform == UINT8_MAX) {
+		errno = ERANGE;
+		return (B_FALSE);
+	}
 
 	if (pss->pss_xf != NULL)
 		pss->pss_xf->xf_more = IKE_XFORM_MORE;
@@ -485,9 +498,14 @@ pkt_add_xform_attr_tv(pkt_sa_state_t *pss, uint16_t type, uint16_t val)
 	proplen += sizeof (attr);
 	paylen += sizeof (attr);
 
-	if (pkt_write_left(pss->pss_pkt) < sizeof (attr) ||
-	    xflen > UINT16_MAX || proplen > UINT16_MAX || paylen > UINT16_MAX)
+	if (pkt_write_left(pss->pss_pkt) < sizeof (attr)) {
+		errno = ENOSPC;
 		return (B_FALSE);
+	}
+	if (xflen > UINT16_MAX || proplen > UINT16_MAX || paylen > UINT16_MAX) {
+		errno = ERANGE;
+		return (B_FALSE);
+	}
 
 	attr.attr_type = htons(IKE_ATTR_TYPE(IKE_ATTR_TV, type));
 	attr.attr_len = htons(val);
@@ -520,10 +538,15 @@ pkt_add_xform_attr_tlv(pkt_sa_state_t *pss, uint16_t type, const uint8_t *attrp,
 	 * IKE_ATTR_MAXLEN is < UINT16_MAX, so if attrlen <= IKE_ATTR_MAXLEN,
 	 * len cannot have overflowed
 	 */
-	if (attrlen > IKE_ATTR_MAXLEN ||
-	    pkt_write_left(pss->pss_pkt) < len || paylen > UINT16_MAX ||
-	    proplen > UINT16_MAX || xflen > UINT16_MAX)
+	if (pkt_write_left(pss->pss_pkt) < len) {
+		errno = ENOSPC;
 		return (B_FALSE);
+	}
+	if (attrlen > IKE_ATTR_MAXLEN || paylen > UINT16_MAX ||
+	    proplen > UINT16_MAX || xflen > UINT16_MAX) {
+		errno = ERANGE;
+		return (B_FALSE);
+	}
 
 	attr.attr_type = htons(IKE_ATTR_TYPE(IKE_ATTR_TLV, type));
 	attr.attr_len = htons(len);

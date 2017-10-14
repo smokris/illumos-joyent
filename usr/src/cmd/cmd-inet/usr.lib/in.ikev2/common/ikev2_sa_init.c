@@ -33,7 +33,7 @@
 #include "worker.h"
 
 static void ikev2_sa_init_inbound_init(pkt_t *);
-static void ikev2_sa_init_inbound_resp(pkt_t *);
+static boolean_t ikev2_sa_init_inbound_resp(pkt_t *);
 static void do_sa_init_outbound(ikev2_sa_t *restrict, uint8_t *restrict,
     size_t, ikev2_dh_t, uint8_t *restrict, size_t);
 
@@ -52,10 +52,13 @@ ikev2_sa_init_inbound(pkt_t *pkt)
 	VERIFY(IS_WORKER);
 	VERIFY(MUTEX_HELD(&pkt->pkt_sa->i2sa_lock));
 
-	if (pkt_header(pkt)->flags & IKEV2_FLAG_INITIATOR)
+	if (pkt_header(pkt)->flags & IKEV2_FLAG_INITIATOR) {
 		ikev2_sa_init_inbound_init(pkt);
-	else
-		ikev2_sa_init_inbound_resp(pkt);
+	} else {
+		if (!ikev2_sa_init_inbound_resp(pkt))
+			return;
+		ikev2_ike_auth_outbound(pkt->pkt_sa);
+	}
 }
 
 /*
@@ -71,6 +74,7 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 	pkt_payload_t *ke_i = pkt_get_payload(pkt, IKEV2_PAYLOAD_KE, NULL);
 	ikev2_sa_result_t sa_result = { 0 };
 	size_t noncelen = 0;
+	ikev2_auth_type_t authmethod;
 
 	/* Verify inbound sanity checks */
 	VERIFY(!(sa->flags & I2SA_INITIATOR));
@@ -86,7 +90,7 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 		goto fail;
 	check_vendor(pkt);
 
-	if (!ikev2_sa_match_rule(sa->i2sa_rule, pkt, &sa_result)) {
+	if (!ikev2_sa_match_rule(sa->i2sa_rule, pkt, &sa_result, &authmethod)) {
 		/*
 		 * It seems very unlikely that an initiator will be able to
 		 * react and resend a new payload in this situation (as opposed
@@ -114,6 +118,7 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 	}
 
 	sa->init_i = pkt;
+	sa->authmethod = authmethod;
 
 	/* RFC7296 2.10 nonce length should be at least half key size of PRF */
 	noncelen = ikev2_prf_keylen(sa_result.sar_prf) / 2;
@@ -237,12 +242,13 @@ redo_init(pkt_t *pkt)
 /*
  * We initiated the IKE_SA_INIT exchange, this is the remote response
  */
-static void
+static boolean_t
 ikev2_sa_init_inbound_resp(pkt_t *pkt)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
 	pkt_payload_t *ke_r = pkt_get_payload(pkt, IKEV2_PAYLOAD_KE, NULL);
 	ikev2_sa_result_t sa_result = { 0 };
+	ikev2_auth_type_t authmethod;
 
 	if (pkt_get_notify(pkt, IKEV2_N_NO_PROPOSAL_CHOSEN, NULL) != NULL) {
 		(void) bunyan_error(sa->i2sa_log,
@@ -250,17 +256,17 @@ ikev2_sa_init_inbound_resp(pkt_t *pkt)
 		    BUNYAN_T_END);
 		ikev2_sa_condemn(sa);
 		ikev2_pkt_free(pkt);
-		return;
+		return (B_FALSE);
 	}
 
 	/* Did we get a request for cookies or a new DH group? */
 	if (redo_init(pkt))
-		return;
+		return (B_FALSE);
 	if (!check_nats(pkt))
 		goto fail;
 	check_vendor(pkt);
 
-	if (!ikev2_sa_match_rule(sa->i2sa_rule, pkt, &sa_result)) {
+	if (!ikev2_sa_match_rule(sa->i2sa_rule, pkt, &sa_result, &authmethod)) {
 		/*
 		 * XXX: Tried to send back something that wasn't in the propsals
 		 * we sent.  What should we do?  Just destroy the IKE SA?
@@ -268,7 +274,7 @@ ikev2_sa_init_inbound_resp(pkt_t *pkt)
 		 * back before we timeout.
 		 */
 		ikev2_pkt_free(pkt);
-		return;
+		return (B_FALSE);
 	}
 
 	if (!dh_derivekey(sa->dh_privkey, ke_r->pp_ptr, ke_r->pp_len,
@@ -278,13 +284,15 @@ ikev2_sa_init_inbound_resp(pkt_t *pkt)
 		goto fail;
 
 	ikev2_sa_set_remote_spi(sa, INBOUND_REMOTE_SPI(pkt_header(pkt)));
+	sa->authmethod = authmethod;
 	sa->init_r = pkt;
-	return;
+	return (B_TRUE);
 
 fail:
 	ikev2_sa_condemn(sa);
 	ikev2_pkt_free(pkt);
 	/* XXX: Anything else? */
+	return (B_FALSE);
 }
 
 static void

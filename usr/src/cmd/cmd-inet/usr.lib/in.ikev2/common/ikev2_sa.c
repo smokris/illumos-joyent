@@ -526,6 +526,7 @@ ikev2_sa_free(ikev2_sa_t *i2sa)
 	DESTROY(i2sa, sk_er);
 	DESTROY(i2sa, sk_pi);
 	DESTROY(i2sa, sk_pr);
+	DESTROY(i2sa, psk);
 #undef  DESTROY
 
 	/* TODO: free child SAs */

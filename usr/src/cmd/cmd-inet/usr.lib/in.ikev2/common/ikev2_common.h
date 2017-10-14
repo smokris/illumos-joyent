@@ -53,7 +53,8 @@ boolean_t ikev2_sa_from_rule(struct pkt_s *restrict,
     const struct config_rule_s *restrict, uint64_t);
 
 boolean_t ikev2_sa_match_rule(struct config_rule_s *restrict,
-    struct pkt_s *restrict, ikev2_sa_result_t *restrict);
+    struct pkt_s *restrict, ikev2_sa_result_t *restrict,
+    ikev2_auth_type_t *restrict);
 boolean_t ikev2_sa_match_acquire(struct parsedmsg_s *restrict, ikev2_dh_t,
     struct pkt_s *restrict, ikev2_sa_result_t *restrict);
 

@@ -150,6 +150,7 @@ struct ikev2_sa_s {
 			 */
 	vendor_t	vendor;
 
+	ikev2_auth_type_t authmethod;	/* How the IKEV2 SA is authenticated */
 	ikev2_xf_encr_t	encr;		/* Encryption algorithm */
 	size_t		encr_key_len;	/* Key length (bytes) for encr */
 	ikev2_xf_auth_t	auth;		/* Authentication algorithm */
@@ -180,6 +181,7 @@ struct ikev2_sa_s {
 	CK_OBJECT_HANDLE dh_pubkey;
 	CK_OBJECT_HANDLE dh_privkey;
 	CK_OBJECT_HANDLE dh_key;
+
 	CK_OBJECT_HANDLE sk_d;
 	CK_OBJECT_HANDLE sk_ai;
 	CK_OBJECT_HANDLE sk_ar;
@@ -187,6 +189,8 @@ struct ikev2_sa_s {
 	CK_OBJECT_HANDLE sk_er;
 	CK_OBJECT_HANDLE sk_pi;
 	CK_OBJECT_HANDLE sk_pr;
+
+	CK_OBJECT_HANDLE psk;
 
 	/* Salt size may be smaller, but no larger than I2SA_SALT_LEN */
 	uint8_t		salt_i[I2SA_SALT_LEN];

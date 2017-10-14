@@ -786,7 +786,14 @@ ikev2_dispatch(ikev2_sa_t *sa)
 
 		if (events & I2SA_EVT_P1_EXPIRE) {
 			events &= ~(I2SA_EVT_P1_EXPIRE);
-			ikev2_sa_condemn(sa);
+
+			/*
+			 * If the P1 timer happened to fire around the same
+			 * time we successfully authenticated, we'll ignore
+			 * it.
+			 */
+			if (!(sa->flags & I2SA_AUTHENTICATED))
+				ikev2_sa_condemn(sa);
 		}
 		if (events & I2SA_EVT_HARD_EXPIRE) {
 			events &= ~(I2SA_EVT_HARD_EXPIRE);
@@ -848,22 +855,46 @@ ikev2_dispatch_pkt(pkt_t *pkt)
 
 	switch (pkt_header(pkt)->exch_type) {
 	case IKEV2_EXCH_IKE_SA_INIT:
+		/* Nothing to decrypt */
+		break;
+	case IKEV2_EXCH_IKE_AUTH:
+	case IKEV2_EXCH_CREATE_CHILD_SA:
+	case IKEV2_EXCH_INFORMATIONAL:
+	case IKEV2_EXCH_IKE_SESSION_RESUME:
+		if (!ikev2_pkt_signverify(pkt, B_FALSE))
+			goto discard;
+		/*
+		 * This also indexes and verifies the sizes of the
+		 * decrypted payloads.
+		 */
+		if (!ikev2_pkt_encryptdecrypt(pkt, B_FALSE))
+			goto discard;
+		break;
+	default:
+		ikev2_pkt_log(pkt, pkt->pkt_sa->i2sa_log,
+		    BUNYAN_L_ERROR, "Unknown IKEv2 exchange");
+		goto discard;
+	}
+
+	switch (pkt_header(pkt)->exch_type) {
+	case IKEV2_EXCH_IKE_SA_INIT:
 		ikev2_sa_init_inbound(pkt);
 		break;
 	case IKEV2_EXCH_IKE_AUTH:
+		ikev2_ike_auth_inbound(pkt);
+		break;
 	case IKEV2_EXCH_CREATE_CHILD_SA:
 	case IKEV2_EXCH_INFORMATIONAL:
 	case IKEV2_EXCH_IKE_SESSION_RESUME:
 		/* TODO */
 		ikev2_pkt_log(pkt, pkt->pkt_sa->i2sa_log, BUNYAN_L_INFO,
 		    "Exchange not implemented yet");
-		ikev2_pkt_free(pkt);
-		break;
-	default:
-		ikev2_pkt_log(pkt, pkt->pkt_sa->i2sa_log,
-		    BUNYAN_L_ERROR, "Unknown IKEv2 exchange");
-		ikev2_pkt_free(pkt);
+		goto discard;
 	}
+	return;
+
+discard:
+	ikev2_pkt_free(pkt);
 }
 
 static void

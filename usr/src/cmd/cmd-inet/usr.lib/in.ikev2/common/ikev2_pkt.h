@@ -84,7 +84,7 @@ boolean_t ikev2_add_config_attr(pkt_t *restrict, ikev2_cfg_attr_type_t,
 
 boolean_t ikev2_pkt_done(pkt_t *);
 boolean_t ikev2_pkt_signverify(pkt_t *, boolean_t);
-boolean_t ikev2_pkt_decrypt(pkt_t *);
+boolean_t ikev2_pkt_encryptdecrypt(pkt_t *, boolean_t);
 
 typedef boolean_t (*ikev2_prop_cb_t)(ikev2_sa_proposal_t *, uint64_t, uint8_t *,
     size_t, void *);

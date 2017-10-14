@@ -27,25 +27,26 @@
 
 PROG = in.ikev2d
 
-CMD_OBJS =	config.o	\
-		config_parse.o	\
-		dh.o		\
-		fromto.o	\
-		ikev2_common.o	\
-		ikev2_cookie.o	\
-		ikev2_enum.o	\
-		ikev2_pkt.o	\
-		ikev2_proto.o	\
-		ikev2_sa.o	\
-		ikev2_sa_init.o	\
-		inbound.o	\
-		main.o		\
-		pfkey.o		\
-		preshared.o	\
-		prf.o		\
-		pkcs11.o	\
-		pkt.o		\
-		util.o		\
+CMD_OBJS =	config.o		\
+		config_parse.o		\
+		dh.o			\
+		fromto.o		\
+		ikev2_common.o		\
+		ikev2_cookie.o		\
+		ikev2_enum.o		\
+		ikev2_ike_auth.o	\
+		ikev2_pkt.o		\
+		ikev2_proto.o		\
+		ikev2_sa.o		\
+		ikev2_sa_init.o		\
+		inbound.o		\
+		main.o			\
+		pfkey.o			\
+		preshared.o		\
+		prf.o			\
+		pkcs11.o		\
+		pkt.o			\
+		util.o			\
 		worker.o
 
 COM_OBJS = list.o

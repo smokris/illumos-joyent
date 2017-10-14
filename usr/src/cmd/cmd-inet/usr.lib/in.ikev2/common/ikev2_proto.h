@@ -42,6 +42,9 @@ void ikev2_sa_init_inbound(struct pkt_s *);
 void ikev2_sa_init_outbound(struct ikev2_sa_s *restrict,
     struct parsedmsg_s *restrict);
 
+void ikev2_ike_auth_inbound(struct pkt_s *);
+void ikev2_ike_auth_outbound(struct ikev2_sa_s *);
+
 #ifdef __cplusplus
 }
 #endif
