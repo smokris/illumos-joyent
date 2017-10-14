@@ -400,9 +400,6 @@ pfkey_send_msg(sadb_msg_t *msg, parsedmsg_t **pmsg, int numexts, ...)
 	VERIFY0(cond_init(&req.pr_cv, USYNC_THREAD, NULL));
 	VERIFY0(mutex_init(&req.pr_lock, USYNC_THREAD|LOCK_ERRORCHECK, NULL));
 
-	msg->sadb_msg_seq = req.pr_msgid = atomic_inc_32_nv(&msgid);
-	msg->sadb_msg_pid = getpid();
-
 	mutex_enter(&pfreq_lock);
 	list_insert_tail(&pfreq_list, &req);
 	mutex_exit(&pfreq_lock);
@@ -479,12 +476,7 @@ pfkey_send_error(const sadb_msg_t *src, uint8_t reason)
 	ssize_t n;
 
 	/* Errors consists of just the sadb header */
-	msg.sadb_msg_len = SADB_8TO64(sizeof (sadb_msg_t));
-	msg.sadb_msg_version = PF_KEY_V2;
-	msg.sadb_msg_type = src->sadb_msg_type;
-	msg.sadb_msg_errno = reason;
-	msg.sadb_msg_satype = src->sadb_msg_satype;
-	msg.sadb_x_msg_diagnostic = SADB_X_DIAGNOSTIC_NONE;
+	pfkey_msg_init(&msg, src->sadb_msg_type, src->sadb_msg_satype);
 	msg.sadb_msg_seq = src->sadb_msg_seq;
 	msg.sadb_msg_pid = src->sadb_msg_pid;
 
@@ -571,11 +563,8 @@ pfkey_getspi(sockaddr_u_t src, sockaddr_u_t dest, uint8_t satype,
 	do {
 		(void) memset(buffer, 0, sizeof (buffer));
 
-		samsg->sadb_msg_version = PF_KEY_V2;
-		samsg->sadb_msg_type = SADB_GETSPI;
-		samsg->sadb_msg_satype = satype;
+		pfkey_msg_init(samsg, SADB_GETSPI, satype);
 		len += sizeof (*samsg);
-		/* pfkey_send_msg() sets pid and msgid for us */
 
 		sasrc = (sadb_address_t *)(samsg + 1);
 		sasrc->sadb_address_exttype = SADB_EXT_ADDRESS_SRC;
@@ -640,9 +629,7 @@ pfkey_inverse_acquire(sockaddr_u_t src, sockaddr_u_t dest,
 	if (isrc.sau_ss != NULL)
 		VERIFY3U(isrc.sau_ss->ss_family, ==, idest.sau_ss->ss_family);
 
-	msg->sadb_msg_version = PF_KEY_V2;
-	msg->sadb_msg_type = SADB_X_INVERSE_ACQUIRE;
-	msg->sadb_msg_satype = SADB_SATYPE_UNSPEC;
+	pfkey_msg_init(msg, SADB_X_INVERSE_ACQUIRE, SADB_SATYPE_UNSPEC);
 	len += sizeof (*msg);
 
 	addr[0] = (sadb_address_t *)(msg + 1);
@@ -676,10 +663,7 @@ pfkey_get(uint8_t satype, uint32_t spi, sockaddr_u_t src, sockaddr_u_t dest,
 	sadb_address_t *sasrc = NULL, *sadest = NULL;
 	size_t len = 0;
 
-	msg->sadb_msg_version = PF_KEY_V2;
-	msg->sadb_msg_type = SADB_GET;
-	msg->sadb_msg_satype = satype;
-	len = sizeof (*msg);
+	pfkey_msg_init(msg, SADB_GET, satype);
 
 	sa = (sadb_sa_t *)(msg + 1);
 	sa->sadb_sa_len = SADB_8TO64(sizeof (*sa));
@@ -913,14 +897,7 @@ pfkey_register(uint8_t satype)
 
 	CTASSERT(sizeof (buffer) >= sizeof (*samsg));
 
-	samsg->sadb_msg_version = PF_KEY_V2;
-	samsg->sadb_msg_type = SADB_REGISTER;
-	samsg->sadb_msg_errno = 0;
-	samsg->sadb_msg_satype = satype;
-	samsg->sadb_msg_reserved = 0;
-	samsg->sadb_msg_seq = msgid;
-	samsg->sadb_msg_pid = pid;
-	samsg->sadb_msg_len = SADB_8TO64(sizeof (*samsg));
+	pfkey_msg_init(samsg, SADB_REGISTER, satype);
 
 	n = write(pfsock, buffer, sizeof (*samsg));
 	if (n < 0)
@@ -954,6 +931,19 @@ pfkey_register(uint8_t satype)
 	    BUNYAN_T_END);
 
 	handle_register(samsg);
+}
+
+void
+pfkey_msg_init(sadb_msg_t *samsg, uint8_t type, uint8_t satype)
+{
+	samsg->sadb_msg_version = PF_KEY_V2;
+	samsg->sadb_msg_type = type;
+	samsg->sadb_msg_errno = 0;
+	samsg->sadb_msg_satype = satype;
+	samsg->sadb_msg_len = SADB_8TO64(sizeof (*samsg));
+	samsg->sadb_msg_reserved = 0;
+	samsg->sadb_msg_seq = atomic_inc_32_nv(&msgid);
+	samsg->sadb_msg_pid = getpid();
 }
 
 void

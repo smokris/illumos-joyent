@@ -195,6 +195,7 @@ const char *event_str(event_t);
 #define	PORT_SOURCE_STR_LEN	20
 char *port_source_str(ushort_t, char *, size_t);
 
+void pfkey_msg_init(sadb_msg_t *, uint8_t, uint8_t);
 size_t pfkey_add_address(sadb_address_t *, sockaddr_u_t, void *);
 void pfkey_send_error(const sadb_msg_t *, uint8_t);
 boolean_t pfkey_getspi(sockaddr_u_t, sockaddr_u_t, uint8_t, uint32_t *);
