@@ -77,6 +77,8 @@ typedef enum keyword_e {
 	KW_LOCAL_ID,
 	KW_REMOTE_ID,
 	KW_IMMEDIATE,
+	KW_P1_SOFTLIFE_SECS,
+	KW_P1_HARDLIFE_SECS,
 	KW_MAX
 } keyword_t;
 
@@ -130,6 +132,8 @@ static struct {
 	{ "local_id",		KWF_ARG },
 	{ "remote_id",		KWF_ARG|KWF_MULTI },
 	{ "immediate",		0 },
+	{ "p1_softlife_secs",	KWF_ARG },
+	{ "p1_hardlife_secs",	KWF_ARG },
 };
 
 static struct {
@@ -429,12 +433,20 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 				goto fail;
 			}
 			break;
+		case KW_P1_SOFTLIFE_SECS:
+			if (!parse_int(targ->t_str, &val.ui)) {
+				tok_invalid(targ, blog, kw);
+				goto fail;
+			}
+			cfg->cfg_p1_softlife_secs = val.ui;
+			break;
+		case KW_P1_HARDLIFE_SECS:
 		case KW_P1_LIFETIME_SECS:
 			if (!parse_int(targ->t_str, &val.ui)) {
 				tok_invalid(targ, blog, kw);
 				goto fail;
 			}
-			cfg->cfg_p1_lifetime_secs = val.ui;
+			cfg->cfg_p1_hardlife_secs = val.ui;
 			break;
 		case KW_P1_NONCE_LEN:
 			if (!parse_int(targ->t_str, &val.ui)) {

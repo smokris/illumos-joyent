@@ -136,7 +136,8 @@ struct config_s {
 	size_t			cfg_retry_limit;
 	boolean_t		cfg_ignore_crls;
 	boolean_t		cfg_use_http;
-	size_t			cfg_p1_lifetime_secs;
+	size_t			cfg_p1_softlife_secs;
+	size_t			cfg_p1_hardlife_secs;
 	size_t			cfg_p1_nonce_len;
 	size_t			cfg_p2_lifetime_secs;
 	size_t			cfg_p2_softlife_secs;
