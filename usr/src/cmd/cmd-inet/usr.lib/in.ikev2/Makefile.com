@@ -31,6 +31,7 @@ CMD_OBJS =	config.o		\
 		config_parse.o		\
 		dh.o			\
 		fromto.o		\
+		ikev2_child_sa.o	\
 		ikev2_common.o		\
 		ikev2_cookie.o		\
 		ikev2_enum.o		\

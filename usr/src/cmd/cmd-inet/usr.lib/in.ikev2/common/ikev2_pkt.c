@@ -565,6 +565,20 @@ ikev2_add_id_common(pkt_t *restrict pkt, boolean_t id_i, ikev2_id_type_t idtype,
 }
 
 boolean_t
+ikev2_add_id(pkt_t *restrict pkt, boolean_t initiator, ikev2_id_type_t idtype,
+    ...)
+{
+	va_list ap;
+	boolean_t ret;
+
+	va_start(ap, idtype);
+	ret = ikev2_add_id_common(pkt, initiator, idtype, ap);
+	va_end(ap);
+
+	return (ret);
+}
+
+boolean_t
 ikev2_add_id_i(pkt_t *restrict pkt, ikev2_id_type_t idtype, ...)
 {
 	va_list ap;

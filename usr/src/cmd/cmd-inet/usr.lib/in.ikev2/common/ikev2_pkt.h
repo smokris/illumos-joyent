@@ -51,6 +51,7 @@ boolean_t ikev2_add_xf_attr(pkt_sa_state_t *, ikev2_xf_attr_type_t, uintptr_t);
 boolean_t ikev2_add_xf_encr(pkt_sa_state_t *, ikev2_xf_encr_t, uint16_t,
     uint16_t);
 boolean_t ikev2_add_ke(pkt_t *restrict, ikev2_dh_t, CK_OBJECT_HANDLE);
+boolean_t ikev2_add_id(pkt_t *restrict, boolean_t, ikev2_id_type_t, ...);
 boolean_t ikev2_add_id_i(pkt_t *restrict, ikev2_id_type_t, ...);
 boolean_t ikev2_add_id_r(pkt_t *restrict, ikev2_id_type_t, ...);
 boolean_t ikev2_add_cert(pkt_t *restrict, ikev2_cert_t,
@@ -70,11 +71,13 @@ boolean_t ikev2_add_delete_spi(pkt_t *, uint64_t);
 boolean_t ikev2_add_vendor(pkt_t *restrict, const void *restrict,
     size_t);
 
+#if 0
 boolean_t ikev2_add_ts_i(pkt_t *);
 boolean_t ikev2_add_ts_r(pkt_t *);
 boolean_t ikev2_add_ts(pkt_t *restrict, ikev2_ts_type_t, uint8_t,
-    const sockaddr_u_t *restrict,
-    const sockaddr_u_t *restrict);
+    const sockaddr_u_t restrict,
+    const sockaddr_u_t restrict);
+#endif
 
 boolean_t ikev2_add_sk(pkt_t *);
 

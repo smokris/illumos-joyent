@@ -211,13 +211,13 @@ typedef struct token {
 } token_t;
 
 typedef struct input {
-	char 	*in_buf;
+	char	*in_buf;
 	size_t	in_buflen;
 	char	**in_lines;
 } input_t;
 
 typedef struct input_cursor {
-	input_t 	*ic_input;
+	input_t		*ic_input;
 	char		*ic_p;
 	token_t		*ic_peek;
 	bunyan_logger_t	*ic_log;
@@ -228,6 +228,7 @@ static void add_addr(config_addr_t **restrict, size_t *restrict,
     const config_addr_t *restrict);
 static void add_xf(config_rule_t *restrict, config_xf_t *restrict);
 static void add_rule(config_t *restrict, config_rule_t *restrict);
+static void add_remid(config_rule_t *restrict, config_id_t *restrict);
 
 static token_t *tok_new(const char *, const char *, const char *, size_t,
     size_t);
@@ -243,7 +244,8 @@ static boolean_t parse_rule(input_cursor_t *restrict, const token_t *restrict,
     config_rule_t **restrict);
 static boolean_t parse_address(input_cursor_t *restrict, token_t *restrict,
     config_addr_t *restrict);
-
+static boolean_t parse_p1_id(input_cursor_t *restrict, token_t *restrict,
+    config_id_t **restrict);
 static boolean_t parse_xform(input_cursor_t *restrict, config_xf_t **restrict);
 static boolean_t parse_encrbits(input_cursor_t *restrict,
     config_xf_t *restrict);
@@ -252,7 +254,8 @@ static boolean_t parse_kw(const char *restrict, keyword_t *restrict);
 static boolean_t parse_auth(const char *restrict, ikev2_auth_type_t *restrict);
 static boolean_t parse_authalg(const char *restrict, ikev2_xf_auth_t *restrict);
 static boolean_t parse_encralg(const char *restrict, ikev2_xf_encr_t *restrict);
-static boolean_t parse_p1_id(const char *restrict, config_auth_id_t *restrict);
+static boolean_t parse_p1_id_type(const char *restrict,
+    config_auth_id_t *restrict);
 static boolean_t parse_p2_pfs(const char *restrict, ikev2_dh_t *restrict);
 static boolean_t parse_ip(const char *restrict, in_addr_t *restrict);
 static boolean_t parse_ip6(const char *restrict, in6_addr_t *restrict);
@@ -326,6 +329,7 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 	VERIFY3P(cfg, !=, NULL);
 
 	/* Set defaults */
+	cfg->cfg_local_id_type = CFG_AUTH_ID_IPV4;
 	cfg->cfg_expire_timer = SEC2NSEC(300);
 	cfg->cfg_retry_init = MSEC2NSEC(500);
 	cfg->cfg_retry_max = SEC2NSEC(30);
@@ -505,8 +509,11 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 			cfg->cfg_p2_nonce_len = val.ui;
 			break;
 		case KW_LOCAL_ID_TYPE:
-			tok_log(t, blog, BUNYAN_L_INFO, "Unimplemented "
-			    "configuration parameter", "keyword");
+			if (!parse_p1_id_type(targ->t_str,
+			    &cfg->cfg_local_id_type)) {
+				tok_invalid(targ, blog, kw);
+				goto fail;
+			}
 			break;
 		case KW_USE_HTTP:
 			cfg->cfg_use_http = B_TRUE;
@@ -739,9 +746,9 @@ parse_xform(input_cursor_t *restrict ic, config_xf_t **restrict xfp)
 		goto fail;
 
 	/*
- 	 * end points to closing '}' of transform, so end - start + 2
- 	 * includes closing } plus room for NUL
- 	 */
+	 * end points to closing '}' of transform, so end - start + 2
+	 * includes closing } plus room for NUL
+	 */
 	val = (uint64_t)(end - start) + 2;
 	xf->xf_str = calloc(1, val);
 	VERIFY3P(xf->xf_str, !=, NULL);
@@ -868,10 +875,13 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
     config_rule_t **restrict rulep)
 {
 	token_t *t = NULL, *targ = NULL;
+	token_t *local_id = NULL;
 	config_rule_t *rule = NULL;
 	config_xf_t *xf = NULL;
+	config_id_t *remid = NULL;
 	config_addr_t addr = { 0 };
 	size_t kwcount[KW_MAX] = { 0 };
+	config_auth_id_t local_id_type = CFG_AUTH_ID_IPV4;
 	boolean_t ok = B_TRUE;
 
 	*rulep = NULL;
@@ -903,7 +913,7 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 
 		if (kwcount[kw] > 0 && !KW_IS_MULTI(kw)) {
 			tok_log(t, ic->ic_log, BUNYAN_L_ERROR,
-	    		    "Configuration parameter can only appear once in a "
+			    "Configuration parameter can only appear once in a "
 			    "transform definition", "parameter");
 			goto fail;
 		}
@@ -942,17 +952,18 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 			    &rule->rule_nremote_addr, &addr);
 			break;
 		case KW_LOCAL_ID:
-			rule->rule_local_id = strdup(targ->t_str);
-			if (rule->rule_local_id == NULL)
-				goto fail;
+			/* Set aside we're done */
+			VERIFY3P(local_id, ==, NULL);
+			local_id = targ;
+			targ = NULL;
 			break;
 		case KW_REMOTE_ID:
-			add_str(&rule->rule_remote_id,
-			    &rule->rule_remote_id_alloc, targ->t_str);
+			if (!parse_p1_id(ic, targ, &remid))
+				goto fail;
+			add_remid(rule, remid);
 			break;
 		case KW_LOCAL_ID_TYPE:
-			if (!parse_p1_id(targ->t_str,
-			    &rule->rule_local_id_type)) {
+			if (!parse_p1_id_type(targ->t_str, &local_id_type)) {
 				tok_log(t, ic->ic_log, BUNYAN_L_ERROR,
 				    "Unable to parse local_id_type", "value");
 				goto fail;
@@ -977,9 +988,32 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 	}
 
 	if (t == NULL) {
-		bunyan_error(ic->ic_log, "Input truncated while reading rule",
+		(void) bunyan_error(ic->ic_log,
+		    "Input truncated while reading rule",
 		    BUNYAN_T_END);
 		goto fail;
+	}
+
+	if (kwcount[KW_LOCAL_ID_TYPE] > 0 && kwcount[KW_LOCAL_ID] == 0) {
+		tok_error(start, ic->ic_log, "Local ID type specified, but "
+		    "local ID value missing in rule", NULL);
+			goto fail;
+	} else if (kwcount[KW_LOCAL_ID_TYPE] > 0 && kwcount[KW_LOCAL_ID] > 0) {
+		if (!parse_p1_id(ic, local_id, &rule->rule_local_id)) {
+			if (errno == EINVAL)
+				tok_error(local_id, ic->ic_log,
+				    "Unable to parse local id type", "str");
+			goto fail;
+		}
+		if (local_id_type != rule->rule_local_id->cid_type) {
+			tok_error(local_id, ic->ic_log,
+			    "Local ID type in rule does not match given "
+			    "local ID", NULL);
+			goto fail;
+		}
+	} else if (kwcount[KW_LOCAL_ID_TYPE] == 0 && kwcount[KW_LOCAL_ID] > 0) {
+		if (!parse_p1_id(ic, local_id, &rule->rule_local_id))
+			goto fail;
 	}
 
 	/* Try to show as many errors as we can */
@@ -1010,6 +1044,14 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 			ok = B_FALSE;
 			break;
 		}
+
+		if (authtype != IKEV2_AUTH_SHARED_KEY_MIC &&
+		    kwcount[KW_LOCAL_ID] == 0) {
+			tok_error(start, ic->ic_log,
+			    "Non-preshared authentication methods require "
+			    "a local-id", NULL);
+			ok = B_FALSE;
+		}
 	}
 
 	if (!ok)
@@ -1017,12 +1059,14 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 
 	tok_free(t);
 	tok_free(targ);
+	tok_free(local_id);
 	*rulep = rule;
 	return (B_TRUE);
 
 fail:
 	tok_free(t);
 	tok_free(targ);
+	tok_free(local_id);
 	free(rule);
 	return (B_FALSE);
 }
@@ -1205,7 +1249,7 @@ parse_encralg(const char *restrict str, ikev2_xf_encr_t *restrict encp)
 }
 
 static boolean_t
-parse_p1_id(const char *restrict str, config_auth_id_t *restrict p1p)
+parse_p1_id_type(const char *restrict str, config_auth_id_t *restrict p1p)
 {
 	for (size_t i = 0; i < ARRAY_SIZE(p1_id_tab); i++) {
 		if (strcmp(p1_id_tab[i].p1_str, str) == 0) {
@@ -1214,6 +1258,79 @@ parse_p1_id(const char *restrict str, config_auth_id_t *restrict p1p)
 		}
 	}
 	return (B_FALSE);
+}
+
+static boolean_t
+parse_p1_id(input_cursor_t *restrict ic, token_t *restrict t,
+    config_id_t **restrict idp)
+{
+	config_id_t *id = NULL;
+	void *ptr = NULL;
+	struct sockaddr_storage ss = { 0 };
+	sockaddr_u_t addr = { .sau_ss = &ss };
+	size_t len = 0;
+	config_auth_id_t idtype = CFG_AUTH_ID_DNS;
+
+	*idp = NULL;
+
+	/*
+	* Sadly, while the existing ike.config requires one specify a type
+	* for the local id, it tries to guess the type of the remote ID
+	* string, however it is not documented on how that is done.  This
+	* is a best guess at matching that.  We assume if the string
+	* successfully parses as either an IPV4 or IPV6 address that it
+	* should should be of the respective type, an email address must
+	* contain a '@', something with '.' that didn't parse as an
+	* IPV4 address is a DNS name, something with ':' that didn't parse
+	* as an IPV6 address is a GN (based on draft-ietf-pkix-generalname-00),
+	* while something with '=' that didn't parse as a GN is a DN.
+	*
+	* We currently don't parse the _{PREFIX,RANGE} variants of IPV4 and
+	* IPV6.  Those seem to be ID types specific to IKEv1, and are not
+	* present in IKEv2.  When we add IKEv1 support, we likely will
+	* get rid of them altogether and require our peer to never offer
+	* such an ID.  Every IKEv1 implementation encountered so far appears to
+	* allow one to choose the type of ID presented during authentication,
+	* so it seems unlikely it would cause any interoperability concerns.
+	*/
+	if (inet_pton(AF_INET, t->t_str, addr.sau_sin) == 1) {
+		idtype = CFG_AUTH_ID_IPV4;
+		len = sizeof (in_addr_t);
+		ptr = &addr.sau_sin->sin_addr;
+	} else if (inet_pton(AF_INET6, t->t_str, addr.sau_sin6) == 1) {
+		idtype = CFG_AUTH_ID_IPV6;
+		len = sizeof (in6_addr_t);
+		ptr = &addr.sau_sin6->sin6_addr;
+	} else if (strchr(t->t_str, '@') != NULL) {
+		idtype = CFG_AUTH_ID_EMAIL;
+		len = strlen(t->t_str) + 1;
+		ptr = t->t_str;
+	} else if (strchr(t->t_str, '.') != NULL) {
+		idtype = CFG_AUTH_ID_DNS;
+		len = strlen(t->t_str) + 1;
+		ptr = t->t_str;
+	} else if (strchr(t->t_str, ':') != NULL) {
+		idtype = CFG_AUTH_ID_GN;
+		/* TODO */
+		INVALID("implement me!");
+	} else if (strchr(t->t_str, '=') != NULL) {
+		idtype = CFG_AUTH_ID_DN;
+		/* TODO */
+		INVALID("implement me!");
+	} else {
+		tok_error(t, ic->ic_log, "Unable to determine ID type", "id");
+		return (B_FALSE);
+	}
+
+	if ((id = calloc(1, sizeof (*id) + len)) == NULL)
+		return (B_FALSE);
+
+	id->cid_type = idtype;
+	id->cid_len = len;
+	(void) memcpy(id->cid_data, ptr, len);
+
+	*idp = id;
+	return (B_TRUE);
 }
 
 static token_t *
@@ -1642,6 +1759,26 @@ add_addr(config_addr_t **restrict addrs, size_t *restrict naddrs,
 
 	*addrs = newaddrs;
 	*naddrs += 1;
+}
+
+static void
+add_remid(config_rule_t *restrict rule, config_id_t *restrict id)
+{
+	config_id_t **ids = NULL;
+	size_t amt = 0;
+
+	for (size_t i = 0;
+	    rule->rule_remote_id != NULL && rule->rule_remote_id[i] != NULL;
+	    i++) {
+		amt++;
+	}
+
+	ids = recallocarray(rule->rule_remote_id, amt, amt + 1,
+	    sizeof (config_id_t *));
+	VERIFY3P(ids, !=, NULL);
+
+	ids[amt] = id;
+	rule->rule_remote_id = ids;
 }
 
 /* Is the given character a token separator? */

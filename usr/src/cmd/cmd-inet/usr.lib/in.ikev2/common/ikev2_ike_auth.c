@@ -18,6 +18,7 @@
 #include <strings.h>
 #include <synch.h>
 #include <sys/debug.h>
+#include "config.h"
 #include "defs.h"
 #include "ikev2.h"
 #include "ikev2_common.h"
@@ -35,9 +36,11 @@ static void ikev2_ike_auth_inbound_init(pkt_t *);
 static void ikev2_ike_auth_inbound_resp(pkt_t *);
 static boolean_t ikev2_auth_failed(const pkt_t *);
 static boolean_t ikev2_auth(pkt_t *, boolean_t);
-static boolean_t create_psk(ikev2_sa_t *restrict, preshared_entry_t *restrict);
+static boolean_t create_psk(ikev2_sa_t *);
 static boolean_t calc_auth(ikev2_sa_t *restrict, boolean_t,
     const uint8_t *restrict, size_t, uint8_t *restrict, size_t);
+static boolean_t add_id(pkt_t *, config_id_t *id, boolean_t);
+static boolean_t i2id_is_equal(const pkt_payload_t *, const config_id_t *);
 
 void
 ikev2_ike_auth_inbound(pkt_t *pkt)
@@ -61,47 +64,9 @@ ikev2_ike_auth_inbound_init(pkt_t *req)
 	VERIFY(MUTEX_HELD(&req->pkt_sa->i2sa_lock));
 
 	ikev2_sa_t *sa = req->pkt_sa;
+	config_rule_t *rule = sa->i2sa_rule;
 	pkt_t *resp = NULL;
-	parsedmsg_t *pmsg = NULL;
 	pkt_payload_t *id_r = NULL;
-	sockaddr_u_t src = { .sau_ss = &sa->raddr };
-	sockaddr_u_t dest = { .sau_ss = &sa->laddr };
-	ikev2_sa_result_t result = { 0 };
-	uint32_t spi = 0;
-
-	/*
-	 * RFC7296 2.21.2 - We must first authenticate before we can
-	 * possibly send errors related to the piggybacked child SA
-	 * creation.
-	 */
-	if (!ikev2_auth(req, B_TRUE)) {
-		ikev2_auth_failed(req);	/* XXX: return value ! */
-		ikev2_sa_condemn(sa);
-		goto fail;
-	}
-
-	if (!pfkey_getspi(src, dest, 0, &spi))
-		goto fail;
-
-	/* XXX: Handle TSi TSr payloads from initiator */
-
-	if (!ikev2_sa_match_acquire(pmsg, IKEV2_DH_NONE, req, &result)) {
-		int proto = 0, spi = 0; /* XXX! */
-
-		ikev2_no_proposal_chosen(req, proto, spi);
-		/*
-		 * XXX: For testing purposes at least, we elect to keep
-		 * the IKE SA around even after failing to negotiate the
-		 * child SA.  This is permissible (RFC7296 2.21.2), and
-		 * could help with additional testing during development.
-		 * We can revisit if we wish to keep this (possibly as an
-		 * optional policy option) before integration.
-		 */
-		goto fail;
-	}
-
-	/* The initiator may optionally equest we send a specific ID */
-	id_r = pkt_get_payload(req, IKEV2_PAYLOAD_IDr, NULL);
 
 	resp = ikev2_pkt_new_response(req);
 	/*
@@ -114,23 +79,47 @@ ikev2_ike_auth_inbound_init(pkt_t *req)
 	if (!ikev2_add_sk(resp))
 		goto fail;
 
-	/* XXX: Add IDr payload */
+	/*
+	 * RFC7296 2.21.2 - We must first authenticate before we can
+	 * possibly send errors related to the piggybacked child SA
+	 * creation.
+	 */
+	if (!ikev2_auth(req, B_TRUE)) {
+		ikev2_auth_failed(req);	/* XXX: return value ! */
+		ikev2_sa_condemn(sa);
+		goto fail;
+	}
 
+	/* The initiator may optionally equest we send a specific ID */
+	if ((id_r = pkt_get_payload(req, IKEV2_PAYLOAD_IDr, NULL)) != NULL) {
+		/*
+		 * If the initiator is requesting an ID that is not the one
+		 * specified in the rule, for now we'll note the difference
+		 * and still respond, using our configured id.
+		 */
+		if (!i2id_is_equal(id_r, rule->rule_local_id)) {
+			uint8_t idtype = *id_r->pp_ptr;
+			char typebuf[IKEV2_ENUM_STRLEN];
+			char idbuf[256] = { 0 };
+
+			(void) bunyan_warn(sa->i2sa_log,
+			    "Initiator requested ID other than ours",
+			    BUNYAN_T_STRING, "idtype",
+			    ikev2_id_type_str(idtype, typebuf,
+			    sizeof (typebuf)),
+			    BUNYAN_T_STRING, "id",
+			    ikev2_id_str(id_r, idbuf, sizeof (idbuf)),
+			    BUNYAN_T_END);
+		}
+	}
+
+	if (!add_id(resp, rule->rule_local_id, B_FALSE))
+		goto fail;
 	/* XXX: Add CERT payloads */
-
-	/* XXX: ADD CERTREQ payloads */
-
-	if (!ikev2_auth(resp, B_FALSE))
+	if (!ikev2_auth(req, B_FALSE))
 		goto fail;
 
-	if (!ikev2_sa_add_result(resp, &result))
-		goto fail;
-
-	/* XXX: Add TSi TSr Payloads */
-
-	if (!ikev2_send(resp, B_FALSE))
-		goto fail;
-
+	ikev2_create_child_sa_inbound(req, resp);
 	return;
 
 fail:
@@ -147,49 +136,31 @@ ikev2_ike_auth_outbound(ikev2_sa_t *sa)
 	VERIFY(IS_WORKER);
 	VERIFY(MUTEX_HELD(&sa->i2sa_lock));
 
+	config_rule_t *rule = sa->i2sa_rule;
 	pkt_t *req = ikev2_pkt_new_exchange(sa, IKEV2_EXCH_IKE_AUTH);
-	parsedmsg_t *pmsg = list_head(&sa->i2sa_pending);
-	sockaddr_u_t src = { .sau_ss = &sa->laddr };
-	sockaddr_u_t dest = { .sau_ss = &sa->raddr };
-	uint32_t spi = 0;
 
 	/* We should have at least one ACQUIRE pending if we got this far */
-	VERIFY3P(pmsg, !=, NULL);
-	VERIFY3U(pmsg->pmsg_samsg->sadb_msg_type, ==, SADB_ACQUIRE);
+	VERIFY(!list_is_empty(&sa->i2sa_pending));
 
 	if (req == NULL)
 		goto fail;
-
-	/* XXX: how to delete if we fail? */
-	if (!pfkey_getspi(src, dest, pmsg->pmsg_samsg->sadb_msg_satype, &spi))
-		goto fail;
-
 	if (!ikev2_add_sk(req))
 		goto fail;
-
-	/* XXX: Get & add ID payload */
+	if (!add_id(req, rule->rule_local_id, B_TRUE))
+		goto fail;
 
 	/* XXX: Add any CERT or CERTREQ payloads */
 
-	/* XXX: Add an IDr payload if requesting a specific ID from peer */
-
-	if (!ikev2_auth(req, B_TRUE))
-		goto fail;
-
 	/*
-	 * RFC7296 1.2 (Last paragraph) -- the IKE_AUTH exchanges do not
-	 * contain nonce or KE payloads.  Only subsequent CREATE_CHILD_SA
-	 * exchanges (new IPsec SAs or rekeys) can perform a new integrity
-	 * (DH/ECP/etc) exchange.
+	 * XXX: We can optionally add _1_ IDr payload to indicate a preferred
+	 * ID for the responder to use.  Since we currently support multiple
+	 * remote ids in a rule, not sure there's any benefit to do this.
+	 * For now, we will elect to no do this.
 	 */
-	if (!ikev2_sa_from_acquire(req, pmsg, spi, IKEV2_DH_NONE))
+	if (!ikev2_auth(req, B_FALSE))
 		goto fail;
 
-	/* XXX: Add TS's */
-
-	if (!ikev2_send(req, B_FALSE))
-		goto fail;
-
+	ikev2_create_child_sa_outbound(sa, req);
 	return;
 
 fail:
@@ -205,6 +176,43 @@ ikev2_ike_auth_inbound_resp(pkt_t *resp)
 {
 	VERIFY(IS_WORKER);
 	VERIFY(MUTEX_HELD(&resp->pkt_sa->i2sa_lock));
+
+	ikev2_sa_t *sa = resp->pkt_sa;
+	config_id_t **remote_ids = sa->i2sa_rule->rule_remote_id;
+	pkt_payload_t *id_r = NULL;
+	boolean_t match = B_FALSE;
+
+	/* XXX: check for error NOTIFICATIONS */
+
+	if (ikev2_auth(resp, B_TRUE))
+		goto fail;
+
+	for (size_t i = 0; remote_ids != NULL && remote_ids[i] != NULL; i++) {
+		if (i2id_is_equal(id_r, remote_ids[i])) {
+			match = B_TRUE;
+			break;
+		}
+	}
+	if (!match && remote_ids != NULL) {
+		ikev2_id_t *id = (ikev2_id_t *)id_r->pp_ptr;
+		char typebuf[IKEV2_ENUM_STRLEN];
+		char idbuf[128];
+
+		(void) bunyan_error(sa->i2sa_log, "Unknown remote ID given",
+		    BUNYAN_T_STRING, "idtype", ikev2_id_type_str(id->id_type,
+		    typebuf, sizeof (typebuf)),
+		    BUNYAN_T_STRING, "id", ikev2_id_str(id_r, idbuf,
+		    sizeof (idbuf)),
+		    BUNYAN_T_END);
+
+		/* XXX: Create new informational exchange to delete IKE SA */
+	}
+
+	ikev2_create_child_sa_inbound(resp, NULL);
+
+fail:
+	/* TODO */
+	ikev2_pkt_free(resp);
 }
 
 /*
@@ -239,6 +247,10 @@ ikev2_auth(pkt_t *pkt, boolean_t check)
 
 	switch (sa->authmethod) {
 	case IKEV2_AUTH_SHARED_KEY_MIC:
+		if (sa->psk == CK_INVALID_HANDLE && !create_psk(sa)) {
+			/* XXX: error */
+			goto done;
+		}
 		buflen = ikev2_prf_outlen(sa->prf);
 		break;
 	case IKEV2_AUTH_RSA_SIG:
@@ -395,8 +407,11 @@ done:
 
 /* Compute prf(<preshared secret>, IKEV2_KEYPAD) and store in objp */
 static boolean_t
-create_psk(ikev2_sa_t *restrict sa, preshared_entry_t *restrict pe)
+create_psk(ikev2_sa_t *sa)
 {
+	preshared_entry_t *pe = NULL;
+	sockaddr_u_t laddr = { .sau_ss = &sa->laddr };
+	sockaddr_u_t raddr = { .sau_ss = &sa->raddr };
 	CK_SESSION_HANDLE h = p11h();
 	CK_MECHANISM_TYPE mechtype = ikev2_prf_to_p11(sa->prf);
 	CK_OBJECT_HANDLE psktemp = CK_INVALID_HANDLE;
@@ -405,9 +420,27 @@ create_psk(ikev2_sa_t *restrict sa, preshared_entry_t *restrict pe)
 	boolean_t ret = B_FALSE;
 	uint8_t buf[outlen];
 
+	switch (sa->raddr.ss_family) {
+	case AF_INET:
+		pe = lookup_ps_by_in_addr(&laddr.sau_sin->sin_addr,
+		    &raddr.sau_sin->sin_addr);
+		break;
+	case AF_INET6:
+		pe = lookup_ps_by_in6_addr(&laddr.sau_sin6->sin6_addr,
+		    &raddr.sau_sin6->sin6_addr);
+	default:
+		INVALID("ss_family");
+	}
+
+	if (pe == NULL) {
+		(void) bunyan_error(sa->i2sa_log,
+		    "No matching preshared key found", BUNYAN_T_END);
+		return (B_FALSE);
+	}
+
 	/*
 	 * First need to convert the preshared secret into a PKCS#11 object
-	 * XXX: We could potentially do this on startup.
+	 * XXX: We could potentially do this when we load the secrets.
 	 */
 	rc = SUNW_C_KeyToObject(h, mechtype, pe->pe_keybuf, pe->pe_keybuf_bytes,
 	    &psktemp);
@@ -433,6 +466,118 @@ done:
 	pkcs11_destroy_obj("psktemp", &psktemp, sa->i2sa_log);
 	explicit_bzero(buf, outlen);
 	return (ret);
+}
+
+static boolean_t
+add_id(pkt_t *pkt, config_id_t *id, boolean_t initiator)
+{
+	ikev2_sa_t *sa = pkt->pkt_sa;
+	ikev2_id_type_t id_type = IKEV2_ID_FQDN; /* set default to quiet GCC */
+	size_t idlen = 0;
+	void *ptr = NULL;
+
+	if (id == NULL) {
+		switch (sa->laddr.ss_family) {
+		case AF_INET:
+			id_type = IKEV2_ID_IPV4_ADDR;
+			idlen = sizeof (in_addr_t);
+			ptr = &((struct sockaddr_in *)&sa->laddr)->sin_addr;
+			break;
+		case AF_INET6:
+			id_type = IKEV2_ID_IPV6_ADDR;
+			idlen = sizeof (in6_addr_t);
+			ptr = &((struct sockaddr_in6 *)&sa->laddr)->sin6_addr;
+			break;
+		default:
+			INVALID("ss_family");
+		}
+	} else if (id->cid_len == 0) {
+		/* parsing should prevent this */
+		INVALID("id->cid_len");
+	} else {
+		idlen = id->cid_len;
+		ptr = id->cid_data;
+
+		switch (id->cid_type) {
+		case CFG_AUTH_ID_DN:
+			id_type = IKEV2_ID_DER_ASN1_DN;
+			break;
+		case CFG_AUTH_ID_DNS:
+			id_type = IKEV2_ID_FQDN;
+			/* Exclude trailing NUL */
+			idlen--;
+			break;
+		case CFG_AUTH_ID_GN:
+			id_type = IKEV2_ID_DER_ASN1_GN;
+			break;
+		case CFG_AUTH_ID_IPV4:
+		case CFG_AUTH_ID_IPV4_PREFIX:
+		case CFG_AUTH_ID_IPV4_RANGE:
+			id_type = IKEV2_ID_IPV4_ADDR;
+			break;
+		case CFG_AUTH_ID_IPV6:
+		case CFG_AUTH_ID_IPV6_PREFIX:
+		case CFG_AUTH_ID_IPV6_RANGE:
+			id_type = IKEV2_ID_IPV6_ADDR;
+			break;
+		case CFG_AUTH_ID_EMAIL:
+			id_type = IKEV2_ID_RFC822_ADDR;
+			/* Exclude trailing NUL */
+			idlen--;
+			break;
+		}
+	}
+
+	return (ikev2_add_id(pkt, initiator, id_type, ptr, idlen));
+}
+
+static boolean_t
+i2id_is_equal(const pkt_payload_t *i2id, const config_id_t *cid)
+{
+	ikev2_id_t *i2idp = (ikev2_id_t *)i2id->pp_ptr;
+	void *id = (void *)(i2idp + 1);
+	size_t cidlen = cid->cid_len;
+	size_t idlen = i2id->pp_len - sizeof (*i2idp);
+
+	switch (cid->cid_type) {
+	case CFG_AUTH_ID_DNS:
+		if (i2idp->id_type != IKEV2_ID_FQDN)
+			return (B_FALSE);
+		/* Exclude trailing NUL in comparison */
+		cidlen--;
+		break;
+	case CFG_AUTH_ID_EMAIL:
+		if (i2idp->id_type != IKEV2_ID_RFC822_ADDR)
+			return (B_FALSE);
+		/* Exclude trailing NUL in comparison */
+		cidlen--;
+		break;
+	case CFG_AUTH_ID_GN:
+		if (i2idp->id_type != IKEV2_ID_DER_ASN1_GN)
+			return (B_FALSE);
+		break;
+	case CFG_AUTH_ID_DN:
+		if (i2idp->id_type != IKEV2_ID_DER_ASN1_DN)
+			return (B_FALSE);
+		break;
+	case CFG_AUTH_ID_IPV4:
+	case CFG_AUTH_ID_IPV4_PREFIX:
+	case CFG_AUTH_ID_IPV4_RANGE:
+		if (i2idp->id_type != IKEV2_ID_IPV4_ADDR)
+			return (B_FALSE);
+		break;
+	case CFG_AUTH_ID_IPV6:
+	case CFG_AUTH_ID_IPV6_PREFIX:
+	case CFG_AUTH_ID_IPV6_RANGE:
+		if (i2idp->id_type != IKEV2_ID_IPV6_ADDR)
+			return (B_FALSE);
+	}
+	if (cid->cid_len != idlen)
+		return (B_FALSE);
+	if (memcmp(id, cid->cid_data, idlen) != 0)
+		return (B_FALSE);
+
+	return (B_TRUE);
 }
 
 static boolean_t

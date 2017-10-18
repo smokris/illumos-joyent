@@ -30,6 +30,7 @@
 #ifndef _PKT_H
 #define	_PKT_H
 
+#include <net/pfkeyv2.h>
 #include <note.h>
 #include <stddef.h>
 #include <sys/types.h>

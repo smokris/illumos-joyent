@@ -443,3 +443,20 @@ ikev2_notify_str(ikev2_notify_type_t id, char *buf, size_t buflen)
 	(void) snprintf(buf, buflen, "%hu", (uint16_t)id);
 	return (buf);
 }
+
+const char *
+ikev2_id_type_str(ikev2_id_type_t id, char *buf, size_t buflen)
+{
+	switch (id) {
+	STR(IKEV2_ID_IPV4_ADDR);
+	STR(IKEV2_ID_FQDN);
+	STR(IKEV2_ID_RFC822_ADDR);
+	STR(IKEV2_ID_IPV6_ADDR);
+	STR(IKEV2_ID_DER_ASN1_DN);
+	STR(IKEV2_ID_DER_ASN1_GN);
+	STR(IKEV2_ID_KEY_ID);
+	STR(IKEV2_ID_FC_NAME);
+	}
+	(void) snprintf(buf, buflen, "%hhu", (uint8_t)id);
+	return (buf);
+}

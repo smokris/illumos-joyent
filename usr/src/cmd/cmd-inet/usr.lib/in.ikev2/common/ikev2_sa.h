@@ -150,6 +150,9 @@ struct ikev2_sa_s {
 			 */
 	vendor_t	vendor;
 
+	struct config_id_s *local_id;
+	struct config_id_s *remote_id;
+
 	ikev2_auth_type_t authmethod;	/* How the IKEV2 SA is authenticated */
 	ikev2_xf_encr_t	encr;		/* Encryption algorithm */
 	size_t		encr_key_len;	/* Key length (bytes) for encr */

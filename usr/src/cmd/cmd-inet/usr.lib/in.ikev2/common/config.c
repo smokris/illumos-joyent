@@ -12,6 +12,9 @@
 /*
  * Copyright (c) 2017, Joyent, Inc.
  */
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/debug.h>
 #include <pthread.h>
@@ -173,6 +176,48 @@ cfg_addr_match(const sockaddr_u_t l, const config_addr_t *restrict r)
 		return (B_TRUE);
 	}
 	return (B_FALSE);
+}
+
+char *
+config_id_str(const config_id_t *id, char *buf, size_t buflen)
+{
+	const void *ptr = id->cid_data;
+	int af = 0;
+
+	switch (id->cid_type) {
+	case CFG_AUTH_ID_DNS:
+	case CFG_AUTH_ID_EMAIL:
+		(void) strlcpy(buf, (const char *)ptr, buflen);
+		break;
+	case CFG_AUTH_ID_DN:
+	case CFG_AUTH_ID_GN:
+		/* TODO! */
+		INVALID("dn/gn to str not implemented yet");
+		break;
+	case CFG_AUTH_ID_IPV4:
+	case CFG_AUTH_ID_IPV4_PREFIX:
+	case CFG_AUTH_ID_IPV4_RANGE:
+		af = AF_INET;
+		break;
+	case CFG_AUTH_ID_IPV6:
+	case CFG_AUTH_ID_IPV6_PREFIX:
+	case CFG_AUTH_ID_IPV6_RANGE:
+		af = AF_INET6;
+		break;
+	}
+
+	if (inet_ntop(af, ptr, buf, buflen) == NULL)
+		(void) memset(buf, 0, buflen);
+
+	return (buf);
+}
+
+void
+config_id_free(config_id_t *id)
+{
+	if (id == NULL)
+		return;
+	free(id);
 }
 
 void

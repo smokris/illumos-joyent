@@ -511,6 +511,9 @@ ikev2_sa_free(ikev2_sa_t *i2sa)
 	if (i2sa->i2sa_rule != NULL)
 		CONFIG_REFRELE(i2sa->i2sa_rule->rule_config);
 
+	config_id_free(i2sa->local_id);
+	config_id_free(i2sa->remote_id);
+
 	/* All unauthenticated IKEv2 SAs are considered larval */
 	if (!(i2sa->flags & I2SA_AUTHENTICATED))
 		dec_half_open();

@@ -17,6 +17,7 @@
 #define	_IKEV2_COMMON_H
 
 #include <inttypes.h>
+#include <sys/types.h>
 #include "ikev2.h"
 
 #ifdef __cplusplus
@@ -41,6 +42,7 @@ struct pkt_s;
 struct config_rule_s;
 struct parsedmsg_s;
 struct ikev2_sa_s;
+struct pkt_payload;
 
 ikev2_xf_auth_t ikev2_pfkey_to_auth(int);
 ikev2_xf_encr_t ikev2_pfkey_to_encr(int);
@@ -62,6 +64,8 @@ void ikev2_no_proposal_chosen(const struct pkt_s *restrict,
     ikev2_spi_proto_t, uint64_t);
 void ikev2_invalid_ke(const struct pkt_s *, ikev2_spi_proto_t, uint64_t,
     ikev2_dh_t);
+
+char* ikev2_id_str(struct pkt_payload *restrict , char *restrict, size_t);
 
 #ifdef __cplusplus
 }

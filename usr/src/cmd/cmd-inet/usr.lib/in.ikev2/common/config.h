@@ -69,21 +69,13 @@ typedef struct config_addr_s {
 } config_addr_t;
 
 typedef struct config_id_s {
-	config_auth_id_t	ci_type;
-	union {
-		char *ciu_str;
-		struct {
-			uint8_t	*ciu_buf;
-			size_t	ciu_len;
-		} ciu_buf;
-		in_addr_t	ciu_ipv4;
-		in6_addr_t	ciu_ipv6;
-	} ciu_val;
-#define	cid_str	ciu_val.ciu_str
-#define	cid_buf	ciu_val.ciu_buf.ciu_buf
-#define	cid_len	ciu_val.ciu_buf.ciu_len
-#define	cid_ip4	ciu_val.ciu_ipv4
-#define	cid_ip6	ciu_val.ciu_ipv6
+	config_auth_id_t	cid_type;
+				/*
+				 * size of cid_data, for string types, includes
+				 * trailing NUL.
+				 */
+	size_t			cid_len;
+	uint8_t			cid_data[];
 } config_id_t;
 
 typedef struct config_xf_s {
@@ -102,17 +94,15 @@ struct config_s;
 typedef struct config_rule_s {
 	struct config_s		*rule_config;
 	char			*rule_label;
-	config_auth_id_t	rule_local_id_type;
 	config_addr_t		*rule_local_addr;
 	size_t			rule_nlocal_addr;
 	config_addr_t		*rule_remote_addr;
 	size_t			rule_nremote_addr;
-	config_id_t		*rule_id;
 	config_xf_t		**rule_xf;
 	size_t			rule_nxf;
 	ikev2_dh_t		rule_p2_dh;
-	char			*rule_local_id;
-	char			**rule_remote_id;
+	config_id_t		*rule_local_id;
+	config_id_t		**rule_remote_id;
 	size_t			rule_remote_id_alloc;
 	boolean_t		rule_immediate;
 } config_rule_t;
@@ -125,6 +115,7 @@ struct config_s {
 	size_t			cfg_xforms_alloc;
 	char			*cfg_proxy;
 	char			*cfg_socks;
+	config_auth_id_t	cfg_local_id_type;
 	char			**cfg_cert_root;
 	size_t			cfg_cert_root_alloc;
 	char			**cfg_cert_trust;
@@ -165,6 +156,8 @@ void cfg_rule_free(config_rule_t *);
 void cfg_free(config_t *);
 
 boolean_t config_addr_to_ss(config_addr_t *, union sockaddr_u_s);
+char *config_id_str(const config_id_t *, char *, size_t);
+void config_id_free(config_id_t *);
 
 #ifdef __cplusplus
 }

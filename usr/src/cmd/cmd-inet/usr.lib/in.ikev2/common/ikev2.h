@@ -367,7 +367,7 @@ typedef enum ikev2_notify_type {
  * DELETE payload
  */
 struct ikev2_delete {
-	uint8_t 	del_protoid;		/* Protocol Id */
+	uint8_t		del_protoid;		/* Protocol Id */
 	uint8_t		del_spisize;		/* SPI size */
 	uint16_t	del_nspi;		/* Number of SPIs */
 	/* Followed by variable length SPIs */

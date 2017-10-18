@@ -12,10 +12,13 @@
 /*
  * Copyright (c) 2017, Joyent, Inc.
  */
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <string.h>
+#include <sys/debug.h>
+#include <sys/socket.h>
 #include <sys/types.h>
 #include <net/pfkeyv2.h>
-#include <sys/debug.h>
-#include <string.h>
 #include "defs.h"
 #include "ikev2_sa.h"
 #include "ikev2_pkt.h"
@@ -742,4 +745,39 @@ ikev2_invalid_ke(const pkt_t *src, ikev2_spi_proto_t proto, uint64_t spi,
 	}
 
 	(void) ikev2_send(resp, B_TRUE);
+}
+
+char *
+ikev2_id_str(pkt_payload_t *restrict id, char *restrict buf, size_t buflen)
+{
+	ikev2_id_t *idp = (ikev2_id_t *)id->pp_ptr;
+	ikev2_id_type_t type = idp->id_type;
+	void *data = (idp + 1);
+	size_t datalen = id->pp_len - sizeof (*idp);
+
+	switch (type) {
+	case IKEV2_ID_IPV4_ADDR:
+		(void) inet_ntop(AF_INET, data, buf, buflen);
+		break;
+	case IKEV2_ID_FQDN:
+	case IKEV2_ID_RFC822_ADDR:
+		(void) strlcpy(buf, data, buflen);
+		break;
+	case IKEV2_ID_IPV6_ADDR:
+		(void) inet_ntop(AF_INET6, data, buf, buflen);
+		break;
+	case IKEV2_ID_DER_ASN1_DN:
+	case IKEV2_ID_DER_ASN1_GN:
+		INVALID("not implemented yet");
+		break;
+	case IKEV2_ID_KEY_ID:
+	default:
+		(void) writehex(data, datalen, NULL, buf, buflen);
+		break;
+	case IKEV2_ID_FC_NAME:
+		(void) writehex(data, datalen, ":", buf, buflen);
+		break;
+	}
+
+	return (buf);
 }

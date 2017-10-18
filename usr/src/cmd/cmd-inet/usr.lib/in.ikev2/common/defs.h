@@ -204,6 +204,7 @@ boolean_t pfkey_inverse_acquire(sockaddr_u_t, sockaddr_u_t, sockaddr_u_t,
 
 void sadb_log(bunyan_logger_t *restrict, bunyan_level_t, const char *restrict,
     sadb_msg_t *restrict);
+char *writehex(uint8_t *, size_t, char *, char *, size_t);
 
 #ifdef  __cplusplus
 }

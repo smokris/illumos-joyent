@@ -197,6 +197,40 @@ ss_addr(const struct sockaddr_storage *ss)
 	}
 }
 
+char *
+writehex(uint8_t *data, size_t datalen, char *sep, char *buf, size_t buflen)
+{
+	if (datalen == 0) {
+		if (buflen > 0)
+			buf[0] = '\0';
+		return (buf);
+	}
+
+	size_t seplen = 0;
+	size_t total = 0;
+
+	if (sep == NULL)
+		sep = "";
+	else
+		seplen = strlen(sep);
+
+	for (size_t i = 0; i < datalen; i++) {
+		size_t len = (i > 0) ? seplen + 2 : 2;
+
+		/*
+		 * Check if next byte (w/ separator) will fit to prevent
+		 * partial writing of byte
+		 */
+		if (len + 1 > buflen)
+			break;
+
+		total += snprintf(buf + total, buflen - total, "%s%02hhx",
+		    (i > 0) ? sep : "", data[i]);
+	}
+
+	return (buf);
+}
+
 /* inline parking lot */
 extern inline void ilist_create(ilist_t *, size_t, size_t);
 extern inline void ilist_destroy(ilist_t *);
