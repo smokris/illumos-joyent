@@ -405,7 +405,12 @@ done:
 	return (ret);
 }
 
-/* Compute prf(<preshared secret>, IKEV2_KEYPAD) and store in objp */
+/*
+ * Find the PSK for these addresses,
+ * compute prf(<preshared secret>, IKEV2_KEYPAD), store as PKCS#11 object,
+ * and save as sa->psk so it's ready for to use when creating/validating the
+ * AUTH payloads.
+ */
 static boolean_t
 create_psk(ikev2_sa_t *sa)
 {
@@ -528,6 +533,23 @@ add_id(pkt_t *pkt, config_id_t *id, boolean_t initiator)
 		}
 	}
 
+	/*
+	 * The same as !(initiator ^ (sa->flags & I2SA_INITIATOR)) but hopefully
+	 * clearer -- if we're adding our own ID, save it to sa.
+	 */
+	if ((initiator && (sa->flags & I2SA_INITIATOR)) ||
+	    (!initiator && !(sa->flags & I2SA_INITIATOR))) {
+		config_id_t *copy;
+
+		if ((copy = calloc(1, sizeof (*copy) + idlen)) == NULL)
+			return (B_FALSE);
+
+		copy->cid_type = id_type;
+		copy->cid_len = idlen;
+		(void) memcpy(copy->cid_data, ptr, idlen);
+		sa->local_id = copy;
+	}
+
 	return (ikev2_add_id(pkt, initiator, id_type, ptr, idlen));
 }
 
@@ -538,6 +560,11 @@ i2id_is_equal(const pkt_payload_t *i2id, const config_id_t *cid)
 	void *id = (void *)(i2idp + 1);
 	size_t cidlen = cid->cid_len;
 	size_t idlen = i2id->pp_len - sizeof (*i2idp);
+
+	if (cid == NULL && i2id == NULL)
+		return (B_TRUE);
+	else if (cid == NULL)
+		return (B_FALSE);
 
 	switch (cid->cid_type) {
 	case CFG_AUTH_ID_DNS:

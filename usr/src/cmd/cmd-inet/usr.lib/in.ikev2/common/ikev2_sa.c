@@ -52,6 +52,7 @@
 #include "ikev2_proto.h"
 #include "ikev2_sa.h"
 #include "ilist.h"
+#include "pfkey.h"
 #include "pkcs11.h"
 #include "pkt.h"
 #include "worker.h"

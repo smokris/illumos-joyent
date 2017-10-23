@@ -73,7 +73,6 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 	sockaddr_u_t raddr = { .sau_ss = &sa->raddr };
 	pkt_payload_t *ke_i = pkt_get_payload(pkt, IKEV2_PAYLOAD_KE, NULL);
 	ikev2_sa_result_t sa_result = { 0 };
-	size_t noncelen = 0;
 	ikev2_auth_type_t authmethod;
 
 	/* Verify inbound sanity checks */
@@ -97,7 +96,7 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 		 * to a DH group mismatch or if we were to respond with a
 		 * cookie).  Therefore, we can delete the larval IKE SA.
 		 */
-		ikev2_no_proposal_chosen(pkt, IKEV2_PROTO_IKE, 0);
+		(void) ikev2_no_proposal_chosen(pkt, IKEV2_PROTO_IKE);
 		goto fail;
 	}
 
@@ -112,22 +111,14 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 	 * an AUTH exchange, or we time out.
 	 */
 	if (ikev2_get_dhgrp(pkt) != sa_result.sar_dh) {
-		ikev2_invalid_ke(pkt, IKEV2_PROTO_IKE, 0, sa_result.sar_dh);
+		(void) ikev2_invalid_ke(pkt, IKEV2_PROTO_IKE, 0,
+		    sa_result.sar_dh);
 		ikev2_pkt_free(pkt);
 		return;
 	}
 
 	sa->init_i = pkt;
 	sa->authmethod = authmethod;
-
-	/* RFC7296 2.10 nonce length should be at least half key size of PRF */
-	noncelen = ikev2_prf_keylen(sa_result.sar_prf) / 2;
-
-	/* But must still be within defined limits */
-	if (noncelen < IKEV2_NONCE_MIN)
-		noncelen = IKEV2_NONCE_MIN;
-	if (noncelen > IKEV2_NONCE_MAX)
-		noncelen = IKEV2_NONCE_MAX;
 
 	resp = ikev2_pkt_new_response(pkt);
 	if (resp == NULL)
@@ -156,7 +147,13 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 	if (!ikev2_add_ke(resp, sa_result.sar_dh, sa->dh_pubkey))
 		goto fail;
 
-	if (!ikev2_add_nonce(resp, NULL, noncelen))
+	/*
+	 * RFC7296 2.10 nonce length should be at least half key size of PRF.
+	 * ikev2_add_nonce will cap the nonce length to the range
+	 * [IKEV2_NONCE_MIN, IKEV2_NONCE_MAX].
+	 */
+	if (!ikev2_add_nonce(resp, NULL,
+	    ikev2_prf_keylen(sa_result.sar_prf) / 2))
 		goto fail;
 	if (!add_nat(resp))
 		goto fail;
@@ -172,6 +169,14 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 	if (!ikev2_send(resp, B_FALSE))
 		goto fail;
 
+	/*
+	 * We don't reuse DH keys, and the DH key is not needed once we've
+	 * sent our response (a new one may optionally be created for a
+	 * CREATE_CHILD_SA exchange).
+	 */
+	pkcs11_destroy_obj("dh_pubkey", &sa->dh_pubkey, sa->i2sa_log);
+	pkcs11_destroy_obj("dh_privkey", &sa->dh_privkey, sa->i2sa_log);
+	pkcs11_destroy_obj("gir", &sa->dh_key, sa->i2sa_log);
 	sa->init_r = resp;
 	return;
 
@@ -181,6 +186,7 @@ fail:
 	    BUNYAN_T_END);
 
 	sa->init_r = NULL;
+	/* condemning/deleting the IKEv2 SA will destroy the DH objects */
 	ikev2_sa_condemn(sa);
 	ikev2_pkt_free(pkt);
 	ikev2_pkt_free(resp);
@@ -430,7 +436,7 @@ done:
 	if (sa->i2sa_rule->rule_nxf == 0) {
 		(void) bunyan_debug(sa->i2sa_log, "No transforms found",
 		    BUNYAN_T_END);
-		ikev2_no_proposal_chosen(pkt, IKEV2_PROTO_IKE, 0);
+		(void) ikev2_no_proposal_chosen(pkt, IKEV2_PROTO_IKE);
 		return (B_FALSE);
 	}
 

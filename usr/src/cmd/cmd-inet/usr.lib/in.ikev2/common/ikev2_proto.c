@@ -44,6 +44,7 @@
 #include "ikev2_pkt.h"
 #include "ikev2_proto.h"
 #include "ikev2_sa.h"
+#include "pfkey.h"
 #include "pkt.h"
 #include "worker.h"
 
@@ -108,6 +109,18 @@ ikev2_inbound(pkt_t *pkt, const struct sockaddr_storage *restrict src_addr,
 		if (remote_spi == 0) {
 			ikev2_pkt_log(pkt, worker->w_log, BUNYAN_L_DEBUG,
 			    "Received packet with a 0 remote SPI; discarding");
+			ikev2_pkt_free(pkt);
+			return;
+		}
+
+		/*
+		 * If we received a response, we should either have an IKE SA
+		 * or discard it, but shouldn't try to create a larval IKE SA.
+		 */
+		if (I2P_IS_RESPONSE(pkt)) {
+			ikev2_pkt_log(pkt, worker->w_log, BUNYAN_L_DEBUG,
+			    "Received response to non-existant IKE SA; "
+			    "discarding");
 			ikev2_pkt_free(pkt);
 			return;
 		}

@@ -49,6 +49,7 @@
 #include "ikev2_pkt.h"
 #include "ikev2_sa.h"
 #include "inbound.h"
+#include "pfkey.h"
 #include "pkcs11.h"
 #include "worker.h"
 
@@ -399,6 +400,7 @@ pfkey_send_msg(sadb_msg_t *msg, parsedmsg_t **pmsg, int numexts, ...)
 
 	VERIFY0(cond_init(&req.pr_cv, USYNC_THREAD, NULL));
 	VERIFY0(mutex_init(&req.pr_lock, USYNC_THREAD|LOCK_ERRORCHECK, NULL));
+	req.pr_msgid = msg->sadb_msg_seq;
 
 	mutex_enter(&pfreq_lock);
 	list_insert_tail(&pfreq_list, &req);
@@ -1013,4 +1015,28 @@ parsedmsg_free(parsedmsg_t *pmsg)
 		return;
 	free(pmsg->pmsg_samsg);
 	free(pmsg);
+}
+
+/*
+ * Convert a pf_key(7P) SADB_SATYPE_* value to the corresponding IKEv2
+ * protocol.
+ *
+ * This is future-proofing things a bit.  If we ever support key exchange
+ * for additional SA types, it's unlikely the SADB and IKEv2 values will
+ * match, so this provides a single place to do the translation.
+ */
+ikev2_spi_proto_t
+satype_to_ikev2(uint8_t satype)
+{
+	switch (satype) {
+	/* These values match */
+	case SADB_SATYPE_UNSPEC:
+	case SADB_SATYPE_AH:
+	case SADB_SATYPE_ESP:
+		return ((ikev2_spi_proto_t)satype);
+	default:
+		INVALID("satype");
+	}
+	/*NOTREACHED*/
+	return (0);
 }

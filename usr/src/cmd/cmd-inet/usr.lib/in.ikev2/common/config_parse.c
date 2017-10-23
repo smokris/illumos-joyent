@@ -995,9 +995,17 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 	}
 
 	if (kwcount[KW_LOCAL_ID_TYPE] > 0 && kwcount[KW_LOCAL_ID] == 0) {
-		tok_error(start, ic->ic_log, "Local ID type specified, but "
-		    "local ID value missing in rule", NULL);
+		config_id_t *id = NULL;
+		switch (local_id_type) {
+		case CFG_AUTH_ID_IPV4:
+		case CFG_AUTH_ID_IPV6:
+			break;
+		default:
+			tok_error(start, ic->ic_log,
+			    "Local ID type specified, but "
+			    "local ID value missing in rule", NULL);
 			goto fail;
+		}
 	} else if (kwcount[KW_LOCAL_ID_TYPE] > 0 && kwcount[KW_LOCAL_ID] > 0) {
 		if (!parse_p1_id(ic, local_id, &rule->rule_local_id)) {
 			if (errno == EINVAL)

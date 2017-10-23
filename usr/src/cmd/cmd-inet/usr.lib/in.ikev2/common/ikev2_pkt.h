@@ -30,6 +30,8 @@ extern "C" {
 struct ikev2_sa_s;
 struct bunyan_logger;
 
+#define	I2P_IS_RESPONSE(p) (!!(pkt_header(p)->flags & IKEV2_FLAG_INITIATOR))
+
 #define	INBOUND_LOCAL_SPI(hdr) \
 	(((hdr)->flags == IKEV2_FLAG_INITIATOR) ? \
 	    (hdr)->responder_spi : (hdr)->initiator_spi)
@@ -89,18 +91,22 @@ boolean_t ikev2_pkt_done(pkt_t *);
 boolean_t ikev2_pkt_signverify(pkt_t *, boolean_t);
 boolean_t ikev2_pkt_encryptdecrypt(pkt_t *, boolean_t);
 
+boolean_t ikev2_no_proposal_chosen(pkt_t *, ikev2_spi_proto_t);
+boolean_t ikev2_invalid_ke(pkt_t *, ikev2_spi_proto_t, uint64_t, ikev2_dh_t);
+
 typedef boolean_t (*ikev2_prop_cb_t)(ikev2_sa_proposal_t *, uint64_t, uint8_t *,
     size_t, void *);
 typedef boolean_t (*ikev2_xf_cb_t)(ikev2_transform_t *, uint8_t *, size_t,
     void *);
-typedef boolean_t (*ikev2_xfattr_cb_t)(ikev2_attribute_t *, void *);
+typedef boolean_t (*ikev2_xfattr_cb_t)(ikev2_xf_type_t, uint16_t,
+    ikev2_attribute_t *, void *);
 
 boolean_t ikev2_walk_proposals(uint8_t *restrict, size_t, ikev2_prop_cb_t,
     void *restrict, bunyan_logger_t *restrict, boolean_t);
 boolean_t ikev2_walk_xfs(uint8_t *restrict, size_t, ikev2_xf_cb_t,
     void *restrict, bunyan_logger_t *restrict);
 boolean_t ikev2_walk_xfattrs(uint8_t *restrict, size_t, ikev2_xfattr_cb_t,
-    void *restrict, bunyan_logger_t *restrict);
+    ikev2_xf_type_t, uint16_t, void *restrict, bunyan_logger_t *restrict);
 
 void ikev2_pkt_log(pkt_t *restrict, bunyan_logger_t *restrict, bunyan_level_t,
     const char *);

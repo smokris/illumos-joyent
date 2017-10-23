@@ -20,13 +20,15 @@
 #include <locale.h>
 #include <libgen.h>
 #include <netinet/in.h>
+#include <paths.h>
 #include <port.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/debug.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <sys/debug.h>
 #include <thread.h>
 #include <unistd.h>
 #include "config.h"
@@ -50,7 +52,8 @@ extern void pfkey_init(void);
 static void signal_init(void);
 static void event(event_t, void *);
 static void do_signal(int);
-static void main_loop(void);
+static void main_loop(int);
+static int ikev2_daemonize(void);
 
 static void do_immediate(void);
 
@@ -92,9 +95,8 @@ static int
 nofail_cb(void)
 {
 	/*
-	 * XXX Do we want to maybe change behavior based on debug/non-debug
-	 * or make it a configuration or maybe SMF parameter to control
-	 * abort vs. exit vs. something else?
+	 * XXX Do we want to control behavior (abort vs exit) based on
+	 * debug/non-debug, or configuration or SMF parameter?
 	 */
 	assfail("Out of memory", __FILE__, __LINE__);
 	/*NOTREACHED*/
@@ -102,8 +104,8 @@ nofail_cb(void)
 }
 
 /*
- * For now at least, a workaround so that multiple bunyan children don't
- * step on each other during output be serializing writes to the same fd.
+ * A temporary workaround to serialize writing to the same fd by multiple
+ * bunyan children
  */
 static int
 lockingfd_log(nvlist_t *nvl, const char *js, void *arg)
@@ -123,7 +125,9 @@ main(int argc, char **argv)
 	FILE *f = NULL;
 	char *cfgfile = "/etc/inet/ike/config";
 	lockingfd_t logfd = { ERRORCHECKMUTEX, STDOUT_FILENO };
+	struct rlimit rlim;
 	int c, rc;
+	int fd = -1;
 	boolean_t debug_mode = B_FALSE;
 	boolean_t check_cfg = B_FALSE;
 
@@ -134,6 +138,10 @@ main(int argc, char **argv)
 	(void) textdomain(TEXT_DOMAIN);
 
 	umem_nofail_callback(nofail_cb);
+
+	rlim.rlim_cur = RLIM_INFINITY;
+	rlim.rlim_max = RLIM_INFINITY;
+	(void) setrlimit(RLIMIT_CORE, &rlim);
 
 	while ((c = getopt(argc, argv, "cdf:")) != -1) {
 		switch (c) {
@@ -179,48 +187,16 @@ main(int argc, char **argv)
 
 	process_config(f, check_cfg, log);
 
-	(void) fclose(f);
+	if (fclose(f) == EOF)
+		err(EXIT_FAILURE, "fclose(\"%s\") failed", cfgfile);
 
 	if (check_cfg)
 		return (EXIT_SUCCESS);
 
 	preshared_init(B_FALSE);
 
-	if (!debug_mode) {
-		/* Explicitly handle closing of fds below */
-		if (daemon(0, 1) != 0) {
-			STDERR(fatal, log, "Could not run as daemon");
-			exit(EXIT_FAILURE);
-		}
-
-		/*
-		 * This assumes that STDERR_FILENO > STDOUT_FILENO &&
-		 * STDERR_FILENO > STDIN_FILENO.  Since this has been the
-		 * case for over 40 years, this seems a safe assumption.
-		 */
-		closefrom(STDERR_FILENO + 1);
-
-		int fd = open("/dev/null", O_RDONLY);
-
-		if (fd < 0) {
-			STDERR(fatal, log,
-			    "Could not open /dev/null for stdin");
-			exit(EXIT_FAILURE);
-		}
-
-		if (dup2(fd, STDIN_FILENO) < 0) {
-			STDERR(fatal, log,
-			    "dup2 failed for stdin");
-			exit(EXIT_FAILURE);
-		}
-
-		if (close(fd) < 0) {
-			STDERR(fatal, log, "close(2) failed",
-			    BUNYAN_T_INT32, "fd", (int)fd,
-			    BUNYAN_T_END);
-			exit(EXIT_FAILURE);
-		}
-	}
+	if (!debug_mode)
+		fd = ikev2_daemonize();
 
 	if ((main_port = port_create()) < 0) {
 		STDERR(fatal, log, "main port_create() failed");
@@ -236,7 +212,7 @@ main(int argc, char **argv)
 	worker_init(8);
 	pfkey_init();
 	inbound_init();
-	main_loop();
+	main_loop(fd);
 
 	pkt_fini();
 	pkcs11_fini();
@@ -263,9 +239,13 @@ do_immediate(void)
 }
 
 static void
-main_loop(void)
+main_loop(int fd)
 {
 	port_event_t pe;
+	int rval = 0;
+
+	(void) write(fd, &rval, sizeof (rval));
+	(void) close(fd);
 
 	(void) bunyan_trace(log, "starting main loop", BUNYAN_T_END);
 
@@ -329,6 +309,67 @@ reload(void)
 {
 }
 
+static int
+ikev2_daemonize(void)
+{
+	sigset_t set, oset;
+	pid_t child;
+	int dupfd, fds[2];
+
+	if (chdir("/") != 0)
+		err(EXIT_FAILURE, "chdir(\"/\") failed");
+
+	closefrom(STDERR_FILENO + 1);
+
+	if (pipe(fds) != 0)
+		err(EXIT_FAILURE, "Could not create pipe for daemonizing");
+
+	/*
+	 * Block everything except SIGABRT until the child is up and running
+	 * so the parent doesn't accidentially exit too soon.
+	 */
+	if (sigfillset(&set) != 0)
+		abort();
+	if (sigdelset(&set, SIGABRT) != 0)
+		abort();
+	if (thr_sigsetmask(SIG_SETMASK, &set, &oset) != 0)
+		abort();
+
+	if ((child = fork()) == -1)
+		err(EXIT_FAILURE, "Could not fork for daemonizing");
+
+	if (child != 0) {
+		int status;
+
+		(void) close(fds[1]);
+		if (read(fds[0], &status, sizeof (status)) == sizeof (status))
+			_exit(status);
+
+		if (waitpid(child, &status, 0) == child && WIFEXITED(status))
+			_exit(WEXITSTATUS(status));
+
+		_exit(EXIT_FAILURE);
+	}
+
+	/* XXX: Drop privileges */
+
+	if (close(fds[0]) != 0)
+		abort();
+	if (setsid() == -1)
+		abort();
+	if (thr_sigsetmask(SIG_SETMASK, &oset, NULL) != 0)
+		abort();
+
+	(void) umask(0022);
+
+	if ((dupfd = open(_PATH_DEVNULL, O_RDONLY)) < 0)
+		err(EXIT_FAILURE, "Could not open %s", _PATH_DEVNULL);
+	if (dup2(dupfd, STDIN_FILENO) == -1)
+		err(EXIT_FAILURE, "Could not dup stdin");
+
+	return (fds[1]);
+}
+
 static void
 do_signal(int signum)
 {
@@ -363,7 +404,10 @@ signal_thread(void *arg)
 	(void) bunyan_trace(log, "signal thread awaiting signals",
 	    BUNYAN_T_END);
 
-	(void) sigfillset(&sigset);
+	if (sigfillset(&sigset) != 0)
+		abort();
+	if (sigdelset(&sigset, SIGABRT) != 0)
+		abort();
 
 	/*CONSTCOND*/
 	while (1) {
@@ -401,7 +445,11 @@ signal_init(void)
 	    BUNYAN_T_END);
 
 	/* block all signals in main thread */
-	(void) sigfillset(&nset);
+	if (sigfillset(&nset) != 0)
+		abort();
+	if (sigdelset(&nset, SIGABRT) != 0)
+		abort();
+
 	VERIFY0(thr_sigsetmask(SIG_SETMASK, &nset, NULL));
 
 	rc = thr_create(NULL, 0, signal_thread, NULL, THR_DETACHED,

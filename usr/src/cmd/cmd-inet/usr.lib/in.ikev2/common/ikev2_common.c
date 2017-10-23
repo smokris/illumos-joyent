@@ -247,7 +247,8 @@ static boolean_t match_rule_prop_cb(ikev2_sa_proposal_t *, uint64_t, uint8_t *,
     size_t, void *);
 static boolean_t match_rule_xf_cb(ikev2_transform_t *, uint8_t *, size_t,
     void *);
-static boolean_t match_rule_attr_cb(ikev2_attribute_t *, void *);
+static boolean_t match_rule_attr_cb(ikev2_xf_type_t, uint16_t,
+    ikev2_attribute_t *, void *);
 
 boolean_t
 ikev2_sa_match_rule(config_rule_t *restrict rule, pkt_t *restrict pkt,
@@ -394,14 +395,16 @@ match_rule_xf_cb(ikev2_transform_t *xf, uint8_t *buf, size_t buflen,
 		if (data->rd_xf->xf_encr != xf->xf_id)
 			break;
 
+		/*
+		 * If the encr alg matches, it should be something
+		 * defined.
+		 */
+		VERIFY3U(xf->xf_id, <=, IKEV2_ENCR_MAX);
 		if (buflen > 0) {
-			/*
-			 * XXX: Verify if there should be attributes for this
-			 * particular alg?
-			 */
 			data->rd_keylen_match = B_FALSE;
 			VERIFY(ikev2_walk_xfattrs(buf, buflen,
-			    match_rule_attr_cb, cookie, data->rd_log));
+			    match_rule_attr_cb, xf->xf_type, xf->xf_id, cookie,
+			    data->rd_log));
 
 			/*
 			 * RFC7296 3.3.6 - Unknown attribute means skip
@@ -414,6 +417,7 @@ match_rule_xf_cb(ikev2_transform_t *xf, uint8_t *buf, size_t buflen,
 			if (!data->rd_keylen_match)
 				break;
 		}
+
 		data->rd_res->sar_encr = xf->xf_id;
 		match = B_TRUE;
 		break;
@@ -467,15 +471,33 @@ match_rule_xf_cb(ikev2_transform_t *xf, uint8_t *buf, size_t buflen,
 }
 
 static boolean_t
-match_rule_attr_cb(ikev2_attribute_t *attr, void *cookie)
+match_rule_attr_cb(ikev2_xf_type_t xftype, uint16_t xfid,
+    ikev2_attribute_t *attr, void *cookie)
 {
 	struct rule_data_s *data = cookie;
 
-	/* Only one attribute type is recognized currently */
+	switch (xftype) {
+	case IKEV2_XF_ENCR:
+		break;
+	case IKEV2_XF_AUTH:
+	case IKEV2_XF_DH:
+	case IKEV2_XF_PRF:
+	case IKEV2_XF_ESN:
+		data->rd_skip = B_TRUE;
+		return (B_FALSE);
+	}
+
+	/* Currently, only the keylength attribute is defined and supported */
 	if (IKE_ATTR_GET_TYPE(attr->attr_type) != IKEV2_XF_ATTR_KEYLEN) {
 		data->rd_skip = B_TRUE;
 		return (B_FALSE);
 	}
+
+	if (xfid > IKEV2_ENCR_MAX)
+		return (B_FALSE);
+
+	if (!encr_keylen_allowed(xfid))
+		return (B_FALSE);
 
 	if (attr->attr_length >= data->rd_xf->xf_minbits &&
 	    attr->attr_length <= data->rd_xf->xf_maxbits) {
@@ -502,7 +524,8 @@ static boolean_t match_acq_prop_cb(ikev2_sa_proposal_t *, uint64_t,
     uint8_t *, size_t, void *);
 static boolean_t match_acq_xf_cb(ikev2_transform_t *, uint8_t *, size_t,
     void *);
-static boolean_t match_acq_attr_cb(ikev2_attribute_t *, void *);
+static boolean_t match_acq_attr_cb(ikev2_xf_type_t, uint16_t,
+    ikev2_attribute_t *, void *);
 
 boolean_t
 ikev2_sa_match_acquire(parsedmsg_t *restrict pmsg, ikev2_dh_t dh,
@@ -652,7 +675,32 @@ match_acq_xf_cb(ikev2_transform_t *xf, uint8_t *buf, size_t buflen,
 	case IKEV2_XF_ENCR:
 		if (xf->xf_id != data->ad_comb->sadb_comb_encrypt)
 			break;
-		/* XXX: match attr */
+
+		/*
+		 * If the alg matches, it should be something we know.
+		 * Note xf_id is unsigned, so no need to check if >= 0
+		 */
+		VERIFY3U(xf->xf_id, <=, IKEV2_ENCR_MAX);
+
+		if (buflen > 0) {
+			data->ad_keylen_match = B_FALSE;
+			VERIFY(ikev2_walk_xfattrs(buf, buflen,
+			    match_acq_attr_cb, xf->xf_type, xf->xf_id, cookie,
+			    data->ad_log));
+
+			/*
+			 * RFD7296 3.3.6 - Unknown attribute means skip the
+			 * transform, but not the whole proposal.
+			 */
+			if (data->ad_skip) {
+				data->ad_skip = B_FALSE;
+				break;
+			}
+			if (!data->ad_keylen_match)
+				break;
+		}
+		data->ad_res->sar_encr = xf->xf_id;
+		match = B_TRUE;
 		break;
 	case IKEV2_XF_PRF:
 		bunyan_debug(data->ad_log,
@@ -688,7 +736,8 @@ match_acq_xf_cb(ikev2_transform_t *xf, uint8_t *buf, size_t buflen,
 }
 
 static boolean_t
-match_acq_attr_cb(ikev2_attribute_t *attr, void *cookie)
+match_acq_attr_cb(ikev2_xf_type_t xftype, uint16_t xfid,
+    ikev2_attribute_t *attr, void *cookie)
 {
 	struct acquire_data_s *data = cookie;
 
@@ -705,46 +754,6 @@ match_acq_attr_cb(ikev2_attribute_t *attr, void *cookie)
 	}
 
 	return (B_TRUE);
-}
-
-void
-ikev2_no_proposal_chosen(const pkt_t *restrict src,
-    ikev2_spi_proto_t proto, uint64_t spi)
-{
-	pkt_t *resp = ikev2_pkt_new_response(src);
-
-	if (resp == NULL)
-		return;
-
-	if (!ikev2_add_notify(resp, proto, spi, IKEV2_N_NO_PROPOSAL_CHOSEN,
-	    NULL, 0)) {
-		ikev2_pkt_free(resp);
-		return;
-	}
-
-	/* Nothing can be done if send fails for this, so ignore return val */
-	(void) ikev2_send(resp, B_TRUE);
-
-	/* ikev2_send consumes packet, no need to free afterwards */
-}
-
-void
-ikev2_invalid_ke(const pkt_t *src, ikev2_spi_proto_t proto, uint64_t spi,
-    ikev2_dh_t dh)
-{
-	pkt_t *resp = ikev2_pkt_new_response(src);
-	uint16_t val = htons((uint16_t)dh);
-
-	if (resp == NULL)
-		return;
-
-	if (!ikev2_add_notify(resp, proto, spi, IKEV2_N_INVALID_KE_PAYLOAD,
-	    &val, sizeof (val))) {
-		ikev2_pkt_free(resp);
-		return;
-	}
-
-	(void) ikev2_send(resp, B_TRUE);
 }
 
 char *

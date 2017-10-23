@@ -138,6 +138,7 @@ encr_data_t encr_data[IKEV2_ENCR_MAX + 1] = {
 	{ 0, "3IDEA", MODE_CBC, 128, 128, 0, 16, 8, 8, 0, 0 },
 	{ CKM_DES_CBC, "DES_IV32", MODE_CBC, 64, 64, 0, 64, 8, 4, 0, 0 },
 	{ CKM_RC4, "RC4", MODE_CBC, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ 0, "NULL", MODE_NONE, 0, 0, 0, 0, 0, 0, 0, 0 },
 	{ CKM_AES_CBC, "AES_CBC", MODE_CBC, 128, 256, 64, 0, 16, 16, 0, 0 },
 	{ CKM_AES_CTR, "AES_CTR", MODE_CTR,  128, 256, 64, 0, 16, 16, 0, 0 },
 	{ CKM_AES_CCM, "AES_CCM_8", MODE_CCM, 128, 256, 64, 0, 16, 16, 8, 3 },
@@ -169,9 +170,9 @@ auth_data_t auth_data[IKEV2_XF_AUTH_MAX + 1] = {
 	{ CKM_AES_CMAC, "AES_CMAC_96", 16, 16, 12 },
 
 	/*
- 	 * These three aren't specified for IKE, just AH and ESP, so
- 	 * their key length, etc. aren't needed.
- 	 */
+	 * These three aren't specified for IKE, just AH and ESP, so
+	 * their key length, etc. aren't needed.
+	 */
 	{ CKM_AES_GMAC, "AES_128_GMAC", 16, 0, 0 },
 	{ CKM_AES_GMAC, "AES_192_GMAC", 24, 0, 0 },
 	{ CKM_AES_GMAC, "AES_256_GMAC", 32, 0, 0 },
@@ -189,7 +190,7 @@ void
 pkcs11_init(void)
 {
 	CK_RV			rv = CKR_OK;
-	CK_ULONG 		nslot = 0;
+	CK_ULONG		nslot = 0;
 	CK_C_INITIALIZE_ARGS	args = {
 		NULL_PTR,		/* CreateMutex */
 		NULL_PTR,		/* DestroyMutex */
@@ -493,6 +494,28 @@ pkcs11_new_session(void)
 	}
 
 	return (h);
+}
+
+boolean_t
+encr_keylen_req(ikev2_xf_encr_t alg)
+{
+	VERIFY3S(alg, >=, 0);
+	VERIFY3S(alg, <=, IKEV2_ENCR_MAX);
+
+	if (encr_data[alg].ed_keydefault == 0)
+		return (B_TRUE);
+	return (B_FALSE);
+}
+
+boolean_t
+encr_keylen_allowed(ikev2_xf_encr_t alg)
+{
+	VERIFY3S(alg, >=, 0);
+	VERIFY3S(alg, <=, IKEV2_ENCR_MAX);
+
+	if (encr_data[alg].ed_keymin == encr_data[alg].ed_keymax)
+		return (B_FALSE);
+	return (B_TRUE);
 }
 
 /*

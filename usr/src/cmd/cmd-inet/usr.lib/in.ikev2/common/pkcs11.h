@@ -73,8 +73,6 @@ typedef struct encr_data_s {
 	size_t			ed_icvlen;	/* For combined modes */
 	size_t			ed_saltlen;	/* For combined modes */
 } encr_data_t;
-#define	ENCR_KEYLEN_REQ(_e)	((_e)->ed_keydefault == 0)
-#define	ENCR_KEYLEN_ALLOWED(_e)	(!((_e)->ed_keymin == (_e)->ed_keymax))
 
 typedef struct auth_data_s {
 	CK_MECHANISM_TYPE	ad_p11id;
@@ -97,6 +95,9 @@ extern CK_INFO pkcs11_info;
 
 void pkcs11_init(void);
 void pkcs11_fini(void);
+
+boolean_t encr_keylen_req(ikev2_xf_encr_t);
+boolean_t encr_keylen_allowed(ikev2_xf_encr_t);
 
 CK_SESSION_HANDLE p11h(void);
 CK_SESSION_HANDLE pkcs11_new_session(void);
