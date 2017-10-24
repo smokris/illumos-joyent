@@ -1016,6 +1016,7 @@ ikev2_pkt_encryptdecrypt(pkt_t *pkt, boolean_t encrypt)
 
 	VERIFY(IS_WORKER);
 	VERIFY(MUTEX_HELD(&sa->i2sa_lock));
+	VERIFY3U(ivlen + sa->saltlen, <=, noncelen);
 
 	if (sa->flags & I2SA_INITIATOR) {
 		key = sa->sk_ei;
@@ -1025,17 +1026,15 @@ ikev2_pkt_encryptdecrypt(pkt_t *pkt, boolean_t encrypt)
 		salt = sa->salt_r;
 	}
 
-	(void) memcpy(nonce, iv, ivlen);
-	if (sa->saltlen > 0)
-		(void) memcpy(nonce + ivlen, salt, sa->saltlen);
-
 	iv = sk->pp_ptr;
-
 	data = iv + ivlen;
 	datalen = (CK_ULONG)(pkt->pkt_ptr - data) - icvlen;
 	outlen = pkt_write_left(pkt) + icvlen;
-
 	icv = data + datalen;
+
+	(void) memcpy(nonce, iv, ivlen);
+	if (sa->saltlen > 0)
+		(void) memcpy(nonce + ivlen, salt, sa->saltlen);
 
 	if (encrypt) {
 		/* If we're creating it, it better be correct */
@@ -1240,7 +1239,7 @@ ikev2_pkt_done(pkt_t *pkt)
 	CK_ULONG datalen = (CK_ULONG)(pkt->pkt_ptr - sk->pp_ptr);
 	CK_ULONG icvlen = ikev2_auth_icv_size(sa->encr, sa->auth);
 	CK_ULONG blocklen = encr_data[sa->encr].ed_blocklen;
-	uint16_t sklen = sizeof (ike_payload_t);
+	uint16_t sklen = 0;
 	boolean_t ok = B_TRUE;
 	uint8_t padlen = 0;
 
@@ -1274,8 +1273,9 @@ ikev2_pkt_done(pkt_t *pkt)
 	 */
 	pkt->pkt_ptr += icvlen;
 
-	sklen += (uint16_t)(pkt->pkt_ptr - sk->pp_ptr);
-	BE_OUT16(&skpay->pay_length, sklen);
+	sklen = (uint16_t)(pkt->pkt_ptr - sk->pp_ptr);
+	sk->pp_len = sklen;
+	BE_OUT16(&skpay->pay_length, sklen + sizeof (ike_payload_t));
 
 	ok = pkt_done(pkt);
 	ok &= ikev2_pkt_encryptdecrypt(pkt, B_TRUE);

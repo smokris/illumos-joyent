@@ -28,6 +28,7 @@
 #include "config.h"
 #include "pkcs11.h"
 #include "pkt.h"
+#include "worker.h"
 
 /*
  * XXX: IKEv1 selected the PRF based on the authentication algorithm.
@@ -44,15 +45,84 @@ static ikev2_prf_t prf_supported[] = {
 	IKEV2_PRF_HMAC_MD5
 };
 
+static boolean_t
+ikev2_sa_from_ext_acquire(pkt_t *restrict pkt, parsedmsg_t *restrict pmsg,
+    uint32_t spi, ikev2_dh_t dh)
+{
+	sadb_prop_t *prop = (sadb_prop_t *)pmsg->pmsg_exts[SADB_X_EXT_EPROP];
+	sadb_x_ecomb_t *ecomb = (sadb_x_ecomb_t *)(prop + 1);
+	sadb_x_algdesc_t *alg = (sadb_x_algdesc_t *)(ecomb + 1);
+	size_t propnum = 0;
+	pkt_sa_state_t pss;
+	boolean_t ok;
+	VERIFY3P(prop, !=, NULL);
+
+	ok = ikev2_add_sa(pkt, &pss);
+
+	for (size_t i = 0; i < prop->sadb_x_prop_numecombs; i++) {
+		ikev2_spi_proto_t proto;
+
+		/* Probably overly cautious */
+		if (ecomb->sadb_x_ecomb_numalgs == 0) {
+			ecomb = (sadb_x_ecomb_t *)alg;
+			continue;
+		}
+
+		proto = alg->sadb_x_algdesc_satype;
+		ok &= ikev2_add_prop(&pss, propnum++, proto, spi);
+
+		for (size_t j = 0; j < ecomb->sadb_x_ecomb_numalgs;
+		    j++, alg++) {
+			uint8_t algnum = alg->sadb_x_algdesc_alg;
+			uint16_t minbits = alg->sadb_x_algdesc_minbits;
+			uint16_t maxbits = alg->sadb_x_algdesc_maxbits;
+
+			if (alg->sadb_x_algdesc_satype != proto) {
+				(void) bunyan_warn(worker->w_log,
+				    "Extended proposal contains different "
+				    "SA types in the same ecomb",
+				    BUNYAN_T_END);
+				continue;
+			}
+
+			switch (alg->sadb_x_algdesc_algtype) {
+			case SADB_X_ALGTYPE_NONE:
+				break;
+			case SADB_X_ALGTYPE_CRYPT:
+				ok &= ikev2_add_xf_encr(&pss,
+				    ikev2_pfkey_to_encr(algnum), minbits,
+				    maxbits);
+				break;
+			case SADB_X_ALGTYPE_AUTH:
+				ok &= ikev2_add_xform(&pss, IKEV2_XF_AUTH,
+				    ikev2_pfkey_to_auth(algnum));
+				break;
+			case SADB_X_ALGTYPE_COMPRESS:
+				(void) bunyan_warn(worker->w_log,
+				    "Extended proposal contains a compression "
+				    "algorithm specification",
+				    BUNYAN_T_UINT32, "alg", (uint32_t)algnum,
+				    BUNYAN_T_END);
+				continue;
+			}
+		}
+
+		ecomb = (sadb_x_ecomb_t *)alg;
+	}
+
+	return (ok);
+}
+
 boolean_t
 ikev2_sa_from_acquire(pkt_t *restrict pkt, parsedmsg_t *restrict pmsg,
     uint32_t spi, ikev2_dh_t dh)
 {
 	sadb_msg_t *samsg = pmsg->pmsg_samsg;
 	sadb_prop_t *prop;
-	sadb_comb_t *comb;
-	boolean_t ok;
+	sadb_comb_t *comb, *end;
+	size_t propnum = 0;
 	ikev2_spi_proto_t spi_type = IKEV2_PROTO_NONE;
+	boolean_t ok;
 	pkt_sa_state_t pss;
 
 	ASSERT3U(samsg->sadb_msg_type, ==, SADB_ACQUIRE);
@@ -64,18 +134,21 @@ ikev2_sa_from_acquire(pkt_t *restrict pkt, parsedmsg_t *restrict pmsg,
 	case SADB_SATYPE_ESP:
 		spi_type = IKEV2_PROTO_ESP;
 		break;
+	case SADB_SATYPE_UNSPEC:
+		/* ACQURE as a result of an INVERSE_ACQUIRE */
+		return (ikev2_sa_from_ext_acquire(pkt, pmsg, spi, dh));
 	default:
 		INVALID("sadb_msg_satype");
 	}
 
 	prop = (sadb_prop_t *)pmsg->pmsg_exts[SADB_EXT_PROPOSAL];
-	ASSERT3U(prop->sadb_prop_exttype, ==, SADB_EXT_PROPOSAL);
+	VERIFY3U(prop->sadb_prop_exttype, ==, SADB_EXT_PROPOSAL);
 
 	ok = ikev2_add_sa(pkt, &pss);
 
-	comb = (sadb_comb_t *)(prop + 1);
-	for (size_t i = 0; i < prop->sadb_x_prop_numecombs; i++, comb++) {
-		ok &= ikev2_add_prop(&pss, i + 1, spi_type, spi);
+	end = (sadb_comb_t *)((uint64_t *)prop + prop->sadb_prop_len);
+	for (comb = (sadb_comb_t *)(prop + 1); comb < end; comb++) {
+		ok &= ikev2_add_prop(&pss, propnum++, spi_type, spi);
 
 		if (comb->sadb_comb_encrypt != SADB_EALG_NONE) {
 			ikev2_xf_encr_t encr;

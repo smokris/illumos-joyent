@@ -30,6 +30,7 @@
 static void ikev2_create_child_sa_inbound_init(pkt_t *restrict,
     pkt_t *restrict);
 static void ikev2_create_child_sa_inbound_resp(pkt_t *);
+static uint8_t get_satype(parsedmsg_t *);
 
 void
 ikev2_create_child_sa_inbound(pkt_t *restrict pkt, pkt_t *restrict resp)
@@ -182,6 +183,7 @@ ikev2_create_child_sa_outbound(ikev2_sa_t *restrict sa, pkt_t *restrict req)
 	ikev2_spi_proto_t proto =
 	    satype_to_ikev2(pmsg->pmsg_samsg->sadb_msg_satype);
 	uint32_t spi = 0;
+	uint8_t satype;
 	boolean_t transport_mode = B_FALSE;
 
 	if (pmsg->pmsg_isau.sau_ss == NULL)
@@ -199,7 +201,9 @@ ikev2_create_child_sa_outbound(ikev2_sa_t *restrict sa, pkt_t *restrict req)
 			goto fail;
 	}
 
-	if (!pfkey_getspi(src, dest, pmsg->pmsg_samsg->sadb_msg_satype, &spi))
+	satype = get_satype(pmsg);
+
+	if (!pfkey_getspi(src, dest, satype, &spi))
 		goto fail;
 	/* XXX: IPcomp (when we add support) */
 	if (transport_mode && !ikev2_add_notify(req, proto, spi,
@@ -260,4 +264,34 @@ create_keymat(ikev2_sa_t *restrict sa, pkt_payload_t *restrict ni,
 		    NULL);
 	}
 	return (ret);
+}
+
+/*
+ * XXX: Just return the first non-UNSPEC SATYPE found.
+ * This is very temporary until more of the CREATE_CHILD_SA stuff is complete.
+ */
+static uint8_t
+get_satype(parsedmsg_t *pmsg)
+{
+	sadb_msg_t *msg = pmsg->pmsg_samsg;
+	sadb_prop_t *prop = (sadb_prop_t *)pmsg->pmsg_exts[SADB_X_EXT_EPROP];
+	sadb_x_ecomb_t *ecomb = NULL;
+
+	if (prop == NULL || msg->sadb_msg_satype != SADB_SATYPE_UNSPEC)
+		return (msg->sadb_msg_satype);
+
+	ecomb = (sadb_x_ecomb_t *)(prop + 1);
+	for (size_t i = 0; i < prop->sadb_x_prop_numecombs; i++) {
+		sadb_x_algdesc_t *alg = (sadb_x_algdesc_t *)(ecomb + 1);
+
+		for (size_t j = 0; j < ecomb->sadb_x_ecomb_numalgs;
+		   j++, alg++) {
+			if (alg->sadb_x_algdesc_satype != SADB_SATYPE_UNSPEC)
+				return (alg->sadb_x_algdesc_satype);
+		}
+
+		prop = (sadb_prop_t *)alg;
+	}
+
+	return (SADB_SATYPE_UNSPEC);
 }
