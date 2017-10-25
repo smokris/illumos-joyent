@@ -172,6 +172,7 @@ void
 ikev2_create_child_sa_outbound(ikev2_sa_t *restrict sa, pkt_t *restrict req)
 {
 	VERIFY(IS_WORKER);
+	VERIFY(!MUTEX_HELD(&sa->i2sa_queue_lock));
 	VERIFY(MUTEX_HELD(&sa->i2sa_lock));
 
 	parsedmsg_t *pmsg = list_head(&sa->i2sa_pending);

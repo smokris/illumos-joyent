@@ -642,7 +642,7 @@ pfkey_getspi(sockaddr_u_t src, sockaddr_u_t dest, uint8_t satype,
 		(void) sadb_type_str(satype, type, sizeof (type));
 
 		/* SPI values are usually displayed as hex */
-		(void) snprintf(spistr, sizeof (spistr), "0x" PRIX32, *spi);
+		(void) snprintf(spistr, sizeof (spistr), "0x%" PRIX32, *spi);
 
 		(void) bunyan_debug(log, "Allocated larval IPsec SA",
 		    BUNYAN_T_STRING, "satype", type,

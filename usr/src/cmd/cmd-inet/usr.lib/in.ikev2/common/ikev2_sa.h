@@ -101,12 +101,19 @@ typedef enum i2sa_evt {
  * Because of the distinct sets of lookup keys, it requires two linkages.
  */
 struct ikev2_sa_s {
-			/* Protects i2sa_queue_* and i2sa_events fields */
+	/*
+	 * i2sa_queue_lock protects i2sa_queue_*, i2sa_events, and the
+	 * periodic timers.  Acquire before acquiring i2sa_lock.
+	 */
 	mutex_t		i2sa_queue_lock;
 	i2sa_msg_t	i2sa_queue[I2SA_QUEUE_DEPTH];
 	size_t		i2sa_queue_start;
 	size_t		i2sa_queue_end;
 	i2sa_evt_t	i2sa_events;
+	periodic_id_t	i2sa_xmit_timer;
+	periodic_id_t	i2sa_p1_timer;
+	periodic_id_t	i2sa_softlife_timer;
+	periodic_id_t	i2sa_hardlife_timer;
 
 			/*
 			 * i2sa_lock protects everything else, acquire after
@@ -156,7 +163,6 @@ struct ikev2_sa_s {
 	uint32_t	outmsgid;	/* Next msgid for outbound packets. */
 	uint32_t	inmsgid;	/* Next expected inbound msgid. */
 
-	periodic_id_t	i2sa_xmit_timer;
 	struct pkt_s	*init_i;	/* IKE_SA_INIT packet. */
 	struct pkt_s	*init_r;
 	struct pkt_s	*last_resp_sent;
@@ -165,9 +171,7 @@ struct ikev2_sa_s {
 
 	time_t		birth;		/* When was AUTH completed */
 	hrtime_t	softexpire;
-	periodic_id_t	i2sa_softlife_timer;
 	hrtime_t	hardexpire;
-	periodic_id_t	i2sa_hardlife_timer;
 
 	list_t		i2sa_pending;
 	list_t		i2sa_child_sas;
@@ -190,8 +194,6 @@ struct ikev2_sa_s {
 	uint8_t		salt_i[I2SA_SALT_LEN];
 	uint8_t		salt_r[I2SA_SALT_LEN];
 	size_t		saltlen;
-
-	periodic_id_t		i2sa_p1_timer;
 };
 
 struct ikev2_child_sa {
@@ -262,6 +264,9 @@ void	ikev2_sa_condemn(ikev2_sa_t *);
 void	ikev2_sa_flush(void);
 void	ikev2_sa_set_hashsize(uint_t);
 
+void ikev2_sa_post_event(ikev2_sa_t *, i2sa_evt_t);
+boolean_t ikev2_sa_arm_timer(ikev2_sa_t *, i2sa_evt_t, hrtime_t);
+boolean_t ikev2_sa_disarm_timer(ikev2_sa_t *, i2sa_evt_t);
 boolean_t ikev2_sa_queuemsg(ikev2_sa_t *, i2sa_msg_type_t, void *);
 const char *i2sa_msgtype_str(i2sa_msg_type_t);
 

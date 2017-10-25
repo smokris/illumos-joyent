@@ -134,6 +134,7 @@ void
 ikev2_ike_auth_outbound(ikev2_sa_t *sa)
 {
 	VERIFY(IS_WORKER);
+	VERIFY(!MUTEX_HELD(&sa->i2sa_queue_lock));
 	VERIFY(MUTEX_HELD(&sa->i2sa_lock));
 
 	config_rule_t *rule = sa->i2sa_rule;
@@ -160,7 +161,11 @@ ikev2_ike_auth_outbound(ikev2_sa_t *sa)
 	if (!ikev2_auth(req, B_FALSE))
 		goto fail;
 
+#if 0
 	ikev2_create_child_sa_outbound(sa, req);
+#else
+	ikev2_send(req, B_FALSE);
+#endif
 	return;
 
 fail:
@@ -208,7 +213,9 @@ ikev2_ike_auth_inbound_resp(pkt_t *resp)
 		/* XXX: Create new informational exchange to delete IKE SA */
 	}
 
+#if 0
 	ikev2_create_child_sa_inbound(resp, NULL);
+#endif
 
 fail:
 	/* TODO */

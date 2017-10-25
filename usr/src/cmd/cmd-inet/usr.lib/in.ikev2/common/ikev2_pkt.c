@@ -53,8 +53,7 @@ ikev2_pkt_new_exchange(ikev2_sa_t *i2sa, ikev2_exch_t exch_type)
 
 	VERIFY(MUTEX_HELD(&i2sa->i2sa_lock));
 
-	if (exch_type != IKEV2_EXCH_IKE_SA_INIT)
-		msgid = i2sa->outmsgid++;
+	msgid = i2sa->outmsgid++;
 
 	if (i2sa->flags & I2SA_INITIATOR)
 		flags |= IKEV2_FLAG_INITIATOR;
@@ -128,11 +127,11 @@ ikev2_pkt_new_inbound(void *restrict buf, size_t buflen)
 	size_t			*counts = NULL;
 	size_t			i = 0;
 	boolean_t		keep = B_TRUE;
-	char			exch[IKEV2_ENUM_STRLEN];
+	char			exch[IKEV2_ENUM_STRLEN] = { 0 };
 
 	VERIFY(IS_WORKER);
 
-	(void) bunyan_trace(log, "Creating new inbound IKEV2 packet",
+	(void) bunyan_trace(log, "Creating new inbound IKEv2 packet",
 	    BUNYAN_T_END);
 
 	VERIFY(IS_P2ALIGNED(buf, sizeof (uint64_t)));
@@ -144,12 +143,14 @@ ikev2_pkt_new_inbound(void *restrict buf, size_t buflen)
 
 	pktkey = (hdr->flags & IKEV2_FLAG_RESPONSE) ?
 	    LOG_KEY_RESP : LOG_KEY_REQ;
-	(void) ikev2_exch_str(hdr->exch_type, exch, sizeof (exch));
 
 	/* These are added early in case there is an error */
 	(void) bunyan_key_add(log,
-	    BUNYAN_T_STRING, LOG_KEY_EXCHTYPE, exch,
+	    BUNYAN_T_STRING, LOG_KEY_EXCHTYPE,
+	    ikev2_exch_str(hdr->exch_type, exch, sizeof (exch)),
 	    BUNYAN_T_END);
+	key_add_ike_spi(LOG_KEY_LSPI, ntohll(INBOUND_LOCAL_SPI(hdr)));
+	key_add_ike_spi(LOG_KEY_RSPI, ntohll(INBOUND_REMOTE_SPI(hdr)));
 
 	switch ((ikev2_exch_t)hdr->exch_type) {
 	case IKEV2_EXCH_IKE_SA_INIT:

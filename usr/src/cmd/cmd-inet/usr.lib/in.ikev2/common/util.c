@@ -232,7 +232,7 @@ key_add_ike_spi(const char *name, uint64_t spi)
 {
 	char buf[19] = { 0 };	/* 0x + 64bit hex + NUL */
 
-	(void) snprintf(buf, sizeof (buf), "0x016" PRIX64, spi);
+	(void) snprintf(buf, sizeof (buf), "0x%016" PRIX64, spi);
 	(void) bunyan_key_add(log, BUNYAN_T_STRING, name, buf, BUNYAN_T_END);
 }
 

@@ -34,6 +34,7 @@
 #include "config.h"
 #include "defs.h"
 #include "defs.h"
+#include "ikev2_cookie.h"
 #include "ikev2_sa.h"
 #include "inbound.h"
 #include "pkcs11.h"
@@ -211,6 +212,7 @@ main(int argc, char **argv)
 	/* XXX: make these configurable */
 	worker_init(8);
 	pfkey_init();
+	ikev2_cookie_init();
 	inbound_init();
 	main_loop(fd);
 

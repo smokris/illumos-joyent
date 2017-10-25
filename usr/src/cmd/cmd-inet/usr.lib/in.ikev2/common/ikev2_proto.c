@@ -48,7 +48,6 @@
 #include "pkt.h"
 #include "worker.h"
 
-static void ikev2_retransmit_cb(void *);
 static void ikev2_dispatch_pkt(pkt_t *);
 static void ikev2_dispatch_pfkey(ikev2_sa_t *restrict, parsedmsg_t *restrict);
 
@@ -412,6 +411,7 @@ ikev2_send(pkt_t *pkt, boolean_t is_error)
 	boolean_t resp = !!(hdr->flags & IKEV2_FLAG_RESPONSE);
 
 	VERIFY(IS_WORKER);
+	VERIFY(!MUTEX_HELD(&i2sa->i2sa_queue_lock));
 	VERIFY(MUTEX_HELD(&i2sa->i2sa_lock));
 
 	if (!ikev2_pkt_done(pkt)) {
@@ -435,6 +435,7 @@ ikev2_send(pkt_t *pkt, boolean_t is_error)
 	free(str);
 	str = NULL;
 
+	VERIFY3U(ntohl(pkt_header(pkt)->length), ==, pkt_len(pkt));
 	s = select_socket(i2sa);
 	len = sendfromto(s, pkt_start(pkt), pkt_len(pkt), &i2sa->laddr,
 	    &i2sa->raddr);
@@ -466,11 +467,9 @@ ikev2_send(pkt_t *pkt, boolean_t is_error)
 		hrtime_t retry = cfg->cfg_retry_init;
 
 		CONFIG_REFRELE(cfg);
-
 		i2sa->last_sent = pkt;
-		if (periodic_schedule(wk_periodic, retry, PERIODIC_ONESHOT,
-		    ikev2_retransmit_cb, i2sa, &i2sa->i2sa_xmit_timer) != 0) {
-			/* XXX: msg */
+		if (!ikev2_sa_arm_timer(i2sa, I2SA_EVT_PKT_XMIT, retry)) {
+			STDERR(error, "Could not arm packet retransmit timer");
 			return (B_FALSE);
 		}
 		return (B_TRUE);
@@ -480,9 +479,12 @@ ikev2_send(pkt_t *pkt, boolean_t is_error)
 	 * Normally, we save the last repsonse packet we've sent in order to
 	 * re-send the last response in case the remote system retransmits
 	 * the last exchange it initiated.  However for IKE_SA_INIT exchanges,
-	 * responses of the form HDR(A,0) are not saved, as these should be
-	 * either a request for cookies, a new DH group, or a failed exchange
-	 * (no proposal chosen).
+	 * _responses_ of the form HDR(A,0) are not saved for retransmission.
+	 * These responses should be either a request for cookies, a new DH
+	 * group, or a failed exchange (no proposal chosen), and we will
+	 * want to process the resulting reply (which, if it happens, should
+	 * be a restart of the IKE_SA_INIT exchange with the updated
+	 * parameters).
 	 */
 	if (hdr->exch_type != IKEV2_EXCH_IKE_SA_INIT ||
 	    hdr->responder_spi != 0) {
@@ -496,17 +498,13 @@ ikev2_send(pkt_t *pkt, boolean_t is_error)
  * Trigger a resend of our last request due to timeout waiting for a
  * response.
  */
-static void
+void
 ikev2_retransmit_cb(void *data)
 {
 	VERIFY(IS_WORKER);
 
 	ikev2_sa_t *sa = data;
-
-	mutex_enter(&sa->i2sa_queue_lock);
-	sa->i2sa_events |= I2SA_EVT_PKT_XMIT;
-	ikev2_dispatch(sa);
-	mutex_exit(&sa->i2sa_queue_lock);
+	ikev2_sa_post_event(sa, I2SA_EVT_PKT_XMIT);
 }
 
 /*
@@ -515,22 +513,17 @@ ikev2_retransmit_cb(void *data)
 static void
 ikev2_retransmit(ikev2_sa_t *sa)
 {
-	VERIFY(IS_WORKER);
-
 	pkt_t *pkt = sa->last_sent;
 	ike_header_t *hdr = pkt_header(pkt);
 	hrtime_t retry = 0, retry_init = 0, retry_max = 0;
 	size_t limit = 0;
 
+	VERIFY(IS_WORKER);
+	VERIFY(!MUTEX_HELD(&sa->i2sa_queue_lock));
 	VERIFY(MUTEX_HELD(&sa->i2sa_lock));
 
-	if (sa->flags & I2SA_CONDEMNED)
-		return;
-
-	/* XXX: what about condemned SAs */
-	if (sa->outmsgid > ntohl(hdr->msgid) || sa->last_sent == NULL) {
+	if (pkt == NULL) {
 		/* already acknowledged */
-		ikev2_pkt_free(pkt);
 		return;
 	}
 
@@ -562,18 +555,11 @@ ikev2_retransmit(ikev2_sa_t *sa)
 	(void) sendfromto(select_socket(sa), pkt_start(pkt), pkt_len(pkt),
 	    &sa->laddr, &sa->raddr);
 
-	if (periodic_schedule(wk_periodic, retry, PERIODIC_ONESHOT,
-	    ikev2_retransmit_cb, sa, &sa->i2sa_xmit_timer) != 0) {
-		if (errno == ENOMEM) {
-			(void) bunyan_error(log,
-			    "No memory to reschedule packet retransmit; "
+	if (!ikev2_sa_arm_timer(sa, I2SA_EVT_PKT_XMIT, retry)) {
+		(void) bunyan_error(log,
+		    "No memory to reschedule packet retransmit; "
 			    "deleting IKE SA", BUNYAN_T_END);
-			ikev2_sa_condemn(sa);
-			return;
-		}
-
-		STDERR(fatal, "Unexpected error scheduling packet retransmit");
-		abort();
+		ikev2_sa_condemn(sa);
 	}
 }
 
@@ -592,6 +578,7 @@ ikev2_retransmit_check(pkt_t *pkt)
 	uint32_t msgid = ntohl(hdr->msgid);
 	boolean_t discard = B_TRUE;
 
+	VERIFY(!MUTEX_HELD(&sa->i2sa_queue_lock));
 	VERIFY(MUTEX_HELD(&sa->i2sa_lock));
 
 	if (sa->flags & I2SA_CONDEMNED)
@@ -600,7 +587,7 @@ ikev2_retransmit_check(pkt_t *pkt)
 	if (hdr->flags & IKEV2_FLAG_RESPONSE) {
 		pkt_t *last = sa->last_sent;
 
-		if (msgid != sa->outmsgid) {
+		if (sa->outmsgid == 0 || msgid != sa->outmsgid - 1) {
 			/*
 			 * Not a response to our last message.
 			 *
@@ -610,9 +597,11 @@ ikev2_retransmit_check(pkt_t *pkt)
 			goto done;
 		}
 
-		/* A response to our last message */
-		VERIFY0(periodic_cancel(wk_periodic, sa->i2sa_xmit_timer));
-		sa->i2sa_xmit_timer = 0;
+		/*
+		 * A response to our last message, ignore if the timer happened
+		 * to fire as we processed the reply.
+		 */
+		(void) ikev2_sa_disarm_timer(sa, I2SA_EVT_PKT_XMIT);
 
 		/*
 		 * Corner case: this isn't the actual response in the
@@ -849,6 +838,9 @@ ikev2_dispatch(ikev2_sa_t *sa)
 static void
 ikev2_dispatch_pkt(pkt_t *pkt)
 {
+	VERIFY(!MUTEX_HELD(&pkt->pkt_sa->i2sa_queue_lock));
+	VERIFY(MUTEX_HELD(&pkt->pkt_sa->i2sa_lock));
+
 	if (ikev2_retransmit_check(pkt)) {
 		ikev2_pkt_free(pkt);
 		return;
