@@ -32,8 +32,7 @@ boolean_t pfkey_getspi(sockaddr_u_t, sockaddr_u_t, uint8_t, uint32_t *);
 boolean_t pfkey_inverse_acquire(sockaddr_u_t, sockaddr_u_t, sockaddr_u_t,
     sockaddr_u_t, parsedmsg_t **);
 ikev2_spi_proto_t satype_to_ikev2(uint8_t);
-void sadb_log(bunyan_logger_t *restrict, bunyan_level_t, const char *restrict,
-    sadb_msg_t *restrict);
+void sadb_log(bunyan_level_t, const char *restrict, sadb_msg_t *restrict);
 
 #ifdef __cplusplus
 }

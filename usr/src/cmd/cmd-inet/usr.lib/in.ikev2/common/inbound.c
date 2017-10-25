@@ -73,7 +73,7 @@ inbound(int s)
 	    &fromlen, &to, &tolen);
 
 	/*
-	 * Once we've received the datagram, re-arm socket to other threads
+	 * Once we've received the datagram, re-arm socket so other threads
 	 * can receive datagrams from this socket.
 	 */
 	schedule_socket(s, inbound);
@@ -89,14 +89,13 @@ inbound(int s)
 	ike_header_t *hdr = (ike_header_t *)worker->w_buf;
 	size_t hdrlen = ntohl(hdr->length);
 
-	(void) bunyan_key_add(worker->w_log,
-	    ss_bunyan(&from), BLOG_KEY_SRC, ss_addr(&from),
-	    BUNYAN_T_UINT32, BLOG_KEY_SRCPORT, ss_port(&from),
-	    ss_bunyan(&to), BLOG_KEY_DEST, ss_addr(&to),
-	    BUNYAN_T_UINT32, BLOG_KEY_DESTPORT, ss_port(&to), BUNYAN_T_END);
+	key_add_ike_version(LOG_KEY_VERSION, hdr->version);
+	(void) bunyan_key_add(log,
+	    BUNYAN_T_UINT32, LOG_KEY_MSGID, ntohl(hdr->msgid),
+	    BUNYAN_T_END);
 
 	if (hdrlen != pktlen) {
-		(void) bunyan_info(worker->w_log,
+		(void) bunyan_info(log,
 		    "ISAKMP/IKE header length doesn't match received length",
 		    BUNYAN_T_UINT32, "hdrlen", (uint32_t)hdrlen,
 		    BUNYAN_T_UINT32, "pktlen", (uint32_t)pktlen,
@@ -107,7 +106,7 @@ inbound(int s)
 	switch (hdr->version) {
 	case IKEV1_VERSION:
 		/* XXX: Until we support V1 */
-		bunyan_info(worker->w_log, "Discarding ISAKMP/IKEV1 packet",
+		(void) bunyan_info(log, "Discarding ISAKMP/IKEV1 packet",
 		    BUNYAN_T_END);
 		return;
 	case IKEV2_VERSION:
@@ -117,8 +116,7 @@ inbound(int s)
 		ikev2_inbound(pkt, &from, &to);
 		return;
 	default:
-		bunyan_info(worker->w_log, "Unsupported ISAKMP/IKE version",
-		    BUNYAN_T_UINT32, "version", hdr->version,
+		(void) bunyan_info(log, "Unsupported ISAKMP/IKE version",
 		    BUNYAN_T_END);
 		return;
 	}
@@ -129,7 +127,7 @@ schedule_socket(int fd, void (*cb)(int))
 {
 	if (port_associate(wk_evport, PORT_SOURCE_FD, fd, POLLIN,
 	    (void *)cb) < 0) {
-		STDERR(error, log, "port_associate() failed",
+		STDERR(error, "port_associate() failed",
 		    BUNYAN_T_INT32, "fd", (int32_t)fd,
 		    BUNYAN_T_END);
 
@@ -171,7 +169,7 @@ udp_listener_socket(sa_family_t af, uint16_t port, boolean_t natt)
 	}
 
 	if ((sock = socket(af, SOCK_DGRAM, 0)) == -1) {
-		STDERR(fatal, log, "socket(af, SOCK_DGRAM) call failed",
+		STDERR(fatal, "socket(af, SOCK_DGRAM) call failed",
 		    BUNYAN_T_STRING, "af", afstr(af),
 		    BUNYAN_T_END);
 		exit(EXIT_FAILURE);
@@ -181,7 +179,7 @@ udp_listener_socket(sa_family_t af, uint16_t port, boolean_t natt)
 	/* Exploit that sin_port and sin6_port live at the same offset. */
 	sau.sau_sin->sin_port = htons(port);
 	if (bind(sock, (const struct sockaddr *)sau.sau_ss, socksize) == -1) {
-		STDERR(fatal, log, "bind(fd, addr) failed",
+		STDERR(fatal, "bind(fd, addr) failed",
 		    BUNYAN_T_INT32, "fd", (int32_t)sock,
 		    ss_bunyan(sau.sau_ss), "addr", ss_addr(sau.sau_ss),
 		    BUNYAN_T_UINT32, "port", ss_port(sau.sau_ss),

@@ -101,15 +101,6 @@ typedef enum i2sa_evt {
  * Because of the distinct sets of lookup keys, it requires two linkages.
  */
 struct ikev2_sa_s {
-			/*
-			 * Logger for this IKEv2 SA.  Set at creation time.
-			 * Nothing should add or remove keys to this.  Can
-			 * be used by any refheld pointer to the SA without
-			 * acquiring i2sa_lock (since bunyan does it's own
-			 * locking).
-			 */
-	bunyan_logger_t	*i2sa_log;
-
 			/* Protects i2sa_queue_* and i2sa_events fields */
 	mutex_t		i2sa_queue_lock;
 	i2sa_msg_t	i2sa_queue[I2SA_QUEUE_DEPTH];

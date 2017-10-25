@@ -75,7 +75,7 @@ static boolean_t prfplus_update(prfp_t *);
  */
 boolean_t
 prf(ikev2_prf_t alg, CK_OBJECT_HANDLE key, uint8_t *restrict out, size_t outlen,
-    bunyan_logger_t *restrict l, ...)
+    ...)
 {
 	CK_SESSION_HANDLE	h = p11h();
 	CK_MECHANISM		mech;
@@ -91,18 +91,18 @@ prf(ikev2_prf_t alg, CK_OBJECT_HANDLE key, uint8_t *restrict out, size_t outlen,
 	mech.ulParameterLen = 0;
 
 	if ((rc = C_SignInit(h, &mech, key)) != CKR_OK) {
-		PKCS11ERR(error, l, "C_SignInit", rc);
+		PKCS11ERR(error, "C_SignInit", rc);
 		return (B_FALSE);
 	}
 
-	va_start(ap, l);
+	va_start(ap, outlen);
 	while ((segp = va_arg(ap, uint8_t *)) != NULL) {
 		size_t seglen = va_arg(ap, size_t);
 
 		rc = C_SignUpdate(h, segp, seglen);
 		if (rc != CKR_OK) {
 			/* XXX: should we still call C_SignFinal? */
-			PKCS11ERR(error, l, "C_SignUpdate", rc);
+			PKCS11ERR(error, "C_SignUpdate", rc);
 			return (B_FALSE);
 		}
 	}
@@ -110,7 +110,7 @@ prf(ikev2_prf_t alg, CK_OBJECT_HANDLE key, uint8_t *restrict out, size_t outlen,
 
 	rc = C_SignFinal(h, out, &len);
 	if (rc != CKR_OK) {
-		PKCS11ERR(error, l, "C_SignFinal", rc,
+		PKCS11ERR(error, "C_SignFinal", rc,
 		    (rc == CKR_DATA_LEN_RANGE) ? BUNYAN_T_UINT64 : BUNYAN_T_END,
 		    "desiredlen", (uint64_t)len, BUNYAN_T_END);
 		return (B_FALSE);
@@ -123,8 +123,7 @@ prf(ikev2_prf_t alg, CK_OBJECT_HANDLE key, uint8_t *restrict out, size_t outlen,
  * Inititalize a prf+ instance for the given algorithm, key, and seed.
  */
 boolean_t
-prfplus_init(prfp_t *restrict prfp, ikev2_prf_t alg, CK_OBJECT_HANDLE key,
-    bunyan_logger_t *restrict l, ...)
+prfplus_init(prfp_t *restrict prfp, ikev2_prf_t alg, CK_OBJECT_HANDLE key, ...)
 {
 	uint8_t		*p = NULL;
 	size_t		len = 0;
@@ -136,7 +135,7 @@ prfplus_init(prfp_t *restrict prfp, ikev2_prf_t alg, CK_OBJECT_HANDLE key,
 	prfp->prfp_key = key;
 	prfp->prfp_tbuflen = ikev2_prf_outlen(alg);
 
-	va_start(ap, l);
+	va_start(ap, key);
 	while (va_arg(ap, uint8_t *) != NULL)
 		prfp->prfp_seedlen += va_arg(ap, size_t);
 	va_end(ap);
@@ -146,12 +145,12 @@ prfplus_init(prfp_t *restrict prfp, ikev2_prf_t alg, CK_OBJECT_HANDLE key,
 	prfp->prfp_seed = umem_zalloc(prfp->prfp_seedlen, UMEM_DEFAULT);
 	if (prfp->prfp_tbuf[0] == NULL || prfp->prfp_tbuf[1] == NULL ||
 	    prfp->prfp_seed == NULL) {
-		(void) bunyan_error(l, "Could not allocate memory for PRF+",
+		(void) bunyan_error(log, "Could not allocate memory for PRF+",
 		    BUNYAN_T_END);
 		goto fail;
 	}
 
-	va_start(ap, l);
+	va_start(ap, key);
 	while ((p = va_arg(ap, uint8_t *)) != NULL) {
 		size_t seglen = va_arg(ap, size_t);
 
@@ -164,10 +163,10 @@ prfplus_init(prfp_t *restrict prfp, ikev2_prf_t alg, CK_OBJECT_HANDLE key,
 	 * Per RFC7296 2.13, prf+(K, S) = T1 | T2 | T3 | T4 | ...
 	 *
 	 * where:
-	 * 	T1 = prf (K, S | 0x01)
-	 * 	T2 = prf (K, T1 | S | 0x02)
-	 * 	T3 = prf (K, T2 | S | 0x03)
-	 * 	T4 = prf (K, T3 | S | 0x04)
+	 *	T1 = prf (K, S | 0x01)
+	 *	T2 = prf (K, T1 | S | 0x02)
+	 *	T3 = prf (K, T2 | S | 0x03)
+	 *	T4 = prf (K, T3 | S | 0x04)
 	 *
 	 * Since the next iteration uses the previous iteration's output (plus
 	 * the seed and iteration number), we keep a copy of the output of the
@@ -179,14 +178,13 @@ prfplus_init(prfp_t *restrict prfp, ikev2_prf_t alg, CK_OBJECT_HANDLE key,
 
 	/*
 	 * Fill prfp->tbuf[1] with T1. T1 is defined as:
-	 * 	T1 = prf (K, S | 0x01)
+	 *	T1 = prf (K, S | 0x01)
 	 *
 	 * Note that this is different from subsequent iterations, hence
 	 * starting at prfp->prfp_arg[1], not prfp->arg[0]
 	 */
 	if (!prf(prfp->prfp_alg, prfp->prfp_key,
 	    prfp->prfp_tbuf[1], prfp->prfp_tbuflen,		/* output */
-	    prfp->prfp_log,
 	    prfp->prfp_seed, prfp->prfp_seedlen,		/* S */
 	    &prfp->prfp_n, sizeof (prfp->prfp_n), NULL))	/* 0x01 */
 		goto fail;
@@ -239,7 +237,7 @@ prfplus_update(prfp_t *prfp)
 	VERIFY3U(prfp->prfp_n, >, 0);
 
 	if (prfp->prfp_n == PRFP_ITER_MAX) {
-		bunyan_error(prfp->prfp_log,
+		bunyan_error(log,
 		    "prf+ iteration count reached max (0xff)", BUNYAN_T_END);
 		return (B_FALSE);
 	}
@@ -248,7 +246,7 @@ prfplus_update(prfp_t *prfp)
 	t = prfp->prfp_tbuf[prfp->prfp_n & 0x1];
 
 	if (!prf(prfp->prfp_alg, prfp->prfp_key,
-	    t, tlen, prfp->prfp_log,				/* out */
+	    t, tlen,						/* out */
 	    told, tlen,						/* Tn-1 */
 	    prfp->prfp_seed, prfp->prfp_seedlen,		/* S */
 	    &prfp->prfp_n, sizeof (prfp->prfp_n), NULL))	/* 0xnn */
@@ -314,7 +312,7 @@ prf_to_p11key(prfp_t *restrict prfp, const char *restrict name, int alg,
 	 * for diagnostic purposes?
 	 */
 	if (rc != CKR_OK) {
-		PKCS11ERR(error, prfp->prfp_log, "SUNW_C_KeyToObject", rc,
+		PKCS11ERR(error, "SUNW_C_KeyToObject", rc,
 		    BUNYAN_T_STRING, "objname", name);
 	}
 

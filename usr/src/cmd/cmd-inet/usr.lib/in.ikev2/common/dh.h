@@ -25,12 +25,10 @@
 extern "C" {
 #endif
 
-struct bunyan_logger;
-
 boolean_t dh_genpair(ikev2_dh_t, CK_OBJECT_HANDLE_PTR restrict,
-    CK_OBJECT_HANDLE_PTR restrict, struct bunyan_logger *restrict);
+    CK_OBJECT_HANDLE_PTR restrict);
 boolean_t dh_derivekey(CK_OBJECT_HANDLE, uint8_t *restrict, size_t,
-    CK_OBJECT_HANDLE_PTR restrict, struct bunyan_logger *restrict);
+    CK_OBJECT_HANDLE_PTR restrict);
 
 #ifdef __cplusplus
 }

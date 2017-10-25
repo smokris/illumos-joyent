@@ -86,25 +86,23 @@ pkt_in_alloc(void *restrict buf, size_t buflen)
 	first = hdr->next_payload;
 
 	if ((pkt = umem_cache_alloc(pkt_cache, UMEM_DEFAULT)) == NULL) {
-		STDERR(error, worker->w_log, "umem_cache_alloc failed");
+		STDERR(error, "umem_cache_alloc failed");
 		return (NULL);
 	}
 
-	(void) bunyan_trace(worker->w_log, "Allocated new pkt_t",
-	    BUNYAN_T_POINTER, "pkt", pkt,
-	    BUNYAN_T_END);
+	(void) bunyan_trace(log, "Allocated new pkt_t",
+	    BUNYAN_T_POINTER, "pkt", pkt, BUNYAN_T_END);
 
 	(void) memcpy(pkt->pkt_raw, buf, buflen);
 	pkt->pkt_ptr += buflen;
 
 	if (!pkt_index_payloads(pkt, pkt_start(pkt) + sizeof (ike_header_t),
-	    pkt_len(pkt) - sizeof (ike_header_t), first, worker->w_log)) {
+	    pkt_len(pkt) - sizeof (ike_header_t), first)) {
 		pkt_free(pkt);
 		return (NULL);
 	}
 
-	(void) bunyan_trace(worker->w_log, "Finished indexing payloads",
-	    BUNYAN_T_POINTER, "pkt", pkt,
+	(void) bunyan_trace(log, "Finished indexing payloads",
 	    BUNYAN_T_UINT32, "num_payloads", pkt->pkt_payload_count,
 	    BUNYAN_T_END);
 
@@ -113,7 +111,6 @@ pkt_in_alloc(void *restrict buf, size_t buflen)
 
 struct index_data {
 	pkt_t		*id_pkt;
-	bunyan_logger_t	*id_log;
 };
 
 static boolean_t
@@ -126,9 +123,8 @@ pkt_index_cb(uint8_t paytype, uint8_t resv, uint8_t *restrict ptr, size_t len,
 	pkt_t *pkt = data->id_pkt;
 
 	if (!pkt_add_index(pkt, paytype, ptr, len)) {
-		(void) bunyan_info(data->id_log,
+		(void) bunyan_info(log,
 		    "Could not add index to packet",
-		    BUNYAN_T_POINTER, "pkt", pkt,
 		    BUNYAN_T_END);
 		return (B_FALSE);
 	}
@@ -141,7 +137,7 @@ pkt_index_cb(uint8_t paytype, uint8_t resv, uint8_t *restrict ptr, size_t len,
 	uint32_t doi = 0;
 
 	if (len < sizeof (ikev2_notify_t)) {
-		bunyan_warn(data->id_log, "Notify payload is truncated",
+		(void) bunyan_warn(log, "Notify payload is truncated",
 		    BUNYAN_T_END);
 		return (B_FALSE);
 	}
@@ -153,7 +149,7 @@ pkt_index_cb(uint8_t paytype, uint8_t resv, uint8_t *restrict ptr, size_t len,
 		 * of the struct.
 		 */
 		if (len < sizeof (ikev2_notify_t) + sizeof (uint32_t)) {
-			(void) bunyan_warn(data->id_log,
+			(void) bunyan_warn(log,
 			    "Notify payload is truncated",
 			    BUNYAN_T_END);
 			return (B_FALSE);
@@ -170,7 +166,7 @@ pkt_index_cb(uint8_t paytype, uint8_t resv, uint8_t *restrict ptr, size_t len,
 
 	if (ntfy.n_spisize > 0) {
 		if (len < ntfy.n_spisize) {
-			(void) bunyan_warn(data->id_log,
+			(void) bunyan_warn(log,
 			    "Notify payload SPI length overruns payload",
 			    BUNYAN_T_UINT32, "spilen", (uint32_t)ntfy.n_spisize,
 			    BUNYAN_T_UINT32, "len", (uint32_t)len,
@@ -180,7 +176,7 @@ pkt_index_cb(uint8_t paytype, uint8_t resv, uint8_t *restrict ptr, size_t len,
 
 		/* This advances ptr for us */
 		if (!pkt_get_spi(&ptr, ntfy.n_spisize, &spi)) {
-			(void) bunyan_warn(data->id_log,
+			(void) bunyan_warn(log,
 			    "Invalid SPI length in notify payload",
 			    BUNYAN_T_UINT32, "spilen", (uint32_t)ntfy.n_spisize,
 			    BUNYAN_T_END);
@@ -205,18 +201,16 @@ pkt_index_cb(uint8_t paytype, uint8_t resv, uint8_t *restrict ptr, size_t len,
  * first embedded encrypted payload.
  */
 boolean_t
-pkt_index_payloads(pkt_t *pkt, uint8_t *buf, size_t buflen, uint8_t first,
-    bunyan_logger_t *restrict l)
+pkt_index_payloads(pkt_t *pkt, uint8_t *buf, size_t buflen, uint8_t first)
 {
 	VERIFY3P(pkt_start(pkt), <=, buf);
 	VERIFY3P(pkt->pkt_ptr, >=, buf + buflen);
 
 	struct index_data data = {
 		.id_pkt = pkt,
-		.id_log = l
 	};
 
-	return (pkt_payload_walk(buf, buflen, pkt_index_cb, first, &data, l));
+	return (pkt_payload_walk(buf, buflen, pkt_index_cb, first, &data));
 }
 
 #define	PKT_CHUNK_SZ	(8)
@@ -641,7 +635,7 @@ pkt_done(pkt_t *pkt)
  */
 boolean_t
 pkt_payload_walk(uint8_t *restrict data, size_t len, pkt_walk_fn_t cb,
-    uint8_t first, void *restrict cookie, bunyan_logger_t *restrict l)
+    uint8_t first, void *restrict cookie)
 {
 	uint8_t			*ptr = data;
 	uint8_t			paytype = first;
@@ -652,7 +646,7 @@ pkt_payload_walk(uint8_t *restrict data, size_t len, pkt_walk_fn_t cb,
 		ike_payload_t pay = { 0 };
 
 		if (len < sizeof (pay)) {
-			bunyan_info(l, "Payload header is truncated",
+			(void) bunyan_info(log, "Payload header is truncated",
 			    BUNYAN_T_UINT32, "paylen", (uint32_t)len,
 			    BUNYAN_T_END);
 			return (B_FALSE);
@@ -664,7 +658,8 @@ pkt_payload_walk(uint8_t *restrict data, size_t len, pkt_walk_fn_t cb,
 		pay.pay_length = ntohs(pay.pay_length);
 
 		if (pay.pay_length > len) {
-			bunyan_info(l, "Payload size overruns end of packet",
+			(void) bunyan_info(log,
+			    "Payload size overruns end of packet",
 			    BUNYAN_T_UINT32, "paylen", (uint32_t)pay.pay_length,
 			    BUNYAN_T_END);
 			return (B_FALSE);
@@ -681,7 +676,7 @@ pkt_payload_walk(uint8_t *restrict data, size_t len, pkt_walk_fn_t cb,
 	}
 
 	if (ret && len > 0) {
-		bunyan_info(l, "Packet contains extranenous data",
+		(void) bunyan_info(log, "Packet contains extranenous data",
 		    BUNYAN_T_UINT32, "amt", (uint32_t)len,
 		    BUNYAN_T_END);
 		return (B_FALSE);
@@ -716,13 +711,13 @@ pay_to_idx(pkt_t *pkt, pkt_payload_t *pay)
  * the first payload of the given type will be returned.  This allows for
  * iteration through payloads of a given type in a packet using code
  * similar to:
- * 	pkt_payload_t *pay;
- * 	...
- * 	for (pay = pkt_get_payload(pkt, IKEV2_PAYLOAD_CERT, NULL);
- * 	    pay != NULL;
- * 	    pay = pkt_get_payload(pkt, IKEV2_PAYLOAD_CERT, pay)) {
- * 		...
- * 	}
+ *	pkt_payload_t *pay;
+ *	...
+ *	for (pay = pkt_get_payload(pkt, IKEV2_PAYLOAD_CERT, NULL);
+ *	    pay != NULL;
+ *	    pay = pkt_get_payload(pkt, IKEV2_PAYLOAD_CERT, pay)) {
+ *		...
+ *	}
  *
  * It is a fatal error to pass a value in start that is not an existing
  * payload in pkt.

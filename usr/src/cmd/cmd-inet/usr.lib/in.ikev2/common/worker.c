@@ -153,11 +153,10 @@ again:
 	case EAGAIN:
 		goto again;
 	case ENOMEM:
-		TSTDERR(rc, warn, log, "No memory to create worker");
+		TSTDERR(rc, warn, "No memory to create worker");
 		goto fail;
 	default:
-		TSTDERR(rc, fatal, log,
-		    "Cannot create additional worker thread");
+		TSTDERR(rc, fatal, "Cannot create additional worker thread");
 		abort();
 	}
 
@@ -238,7 +237,7 @@ again:
 		 * that, something has gone wrong, so treat it as a fatal
 		 * condition.
 		 */
-		STDERR(fatal, log, "port_alert() failed");
+		STDERR(fatal, "port_alert() failed");
 		abort();
 	}
 
@@ -248,7 +247,7 @@ again:
 	worker_state = WS_SUSPENDED;
 
 	if (port_alert(wk_evport, PORT_ALERT_SET, WC_NONE, NULL) == -1) {
-		STDERR(fatal, log, "port_alert() failed");
+		STDERR(fatal, "port_alert() failed");
 		abort();
 	}
 
@@ -263,11 +262,11 @@ worker_do_suspend(worker_t *w)
 {
 	VERIFY(IS_WORKER);
 
-	(void) bunyan_debug(w->w_log, "Worker suspending", BUNYAN_T_END);
+	(void) bunyan_debug(log, "Worker suspending", BUNYAN_T_END);
 
 	mutex_enter(&worker_lock);
 	if (++wk_nsuspended == wk_nworkers) {
-		(void) bunyan_trace(w->w_log, "Last one in, signaling",
+		(void) bunyan_trace(log, "Last one in, signaling",
 		    BUNYAN_T_END);
 		VERIFY0(cond_broadcast(&worker_cv));
 	}
@@ -283,7 +282,7 @@ worker_do_suspend(worker_t *w)
 
 	mutex_exit(&worker_lock);
 
-	(void) bunyan_debug(w->w_log, "Worker resuming", BUNYAN_T_END);
+	(void) bunyan_debug(log, "Worker resuming", BUNYAN_T_END);
 }
 
 void
@@ -328,21 +327,15 @@ worker_main(void *arg)
 	worker_t *w = arg;
 
 	worker = w;
-	(void) bunyan_trace(w->w_log, "Worker starting", BUNYAN_T_END);
+	log = w->w_log;
+
+	(void) bunyan_trace(log, "Worker starting", BUNYAN_T_END);
 
 	while (!w->w_quit) {
 		port_event_t pe = { 0 };
-		char portsrc[PORT_SOURCE_STR_LEN];
+		char portsrc[PORT_SOURCE_STRLEN];
 
-		/*
-		 * Inbound processing will set these for the packet processing
-		 * as it works it's way through, so clear these if present
-		 * before we process a new event.
-		 */
-		(void) bunyan_key_remove(w->w_log, BLOG_KEY_SRC);
-		(void) bunyan_key_remove(w->w_log, BLOG_KEY_SRCPORT);
-		(void) bunyan_key_remove(w->w_log, BLOG_KEY_DEST);
-		(void) bunyan_key_remove(w->w_log, BLOG_KEY_DESTPORT);
+		log_reset_keys();
 
 		if (port_get(wk_evport, &pe, NULL) == -1) {
 			if (errno == EINTR) {
@@ -351,17 +344,17 @@ worker_main(void *arg)
 				 * we can just ignore it, but at least make note
 				 * of it.
 				 */
-				(void) bunyan_warn(w->w_log,
+				(void) bunyan_warn(log,
 				    "port_get() failed with EINTR",
 				    BUNYAN_T_END);
 				continue;
 			}
 
-			STDERR(fatal, w->w_log, "port_get() failed");
+			STDERR(fatal, "port_get() failed");
 			abort();
 		}
 
-		(void) bunyan_trace(w->w_log, "Received event",
+		(void) bunyan_trace(log, "Received event",
 		    BUNYAN_T_INT32, "evport", (int32_t)wk_evport,
 		    BUNYAN_T_STRING, "source", port_source_str(pe.portev_source,
 		    portsrc, sizeof (portsrc)),
@@ -380,7 +373,7 @@ worker_main(void *arg)
 			void (*fn)(int) = (void (*)(int))pe.portev_user;
 			int fd = (int)pe.portev_object;
 
-			(void) bunyan_trace(w->w_log,
+			(void) bunyan_trace(log,
 			    "Dispatching fd event to handler",
 			    BUNYAN_T_INT32, "fd", (int32_t)fd,
 			    BUNYAN_T_STRING, "handler",
@@ -433,7 +426,7 @@ do_user(int events, void *user)
 
 	ikev2_sa_t *sa = user;
 
-	(void) bunyan_trace(worker->w_log, "Received user event",
+	(void) bunyan_trace(log, "Received user event",
 	    BUNYAN_T_STRING, "event", worker_cmd_str(events),
 	    BUNYAN_T_POINTER, "arg", user,
 	    BUNYAN_T_END);
@@ -470,17 +463,17 @@ again:
 	switch (errno) {
 	case EAGAIN:
 		/* This shouldn't happen, but if it does, we can try again */
-		STDERR(warn, log, "port_send() failed with EAGAIN",
+		STDERR(warn, "port_send() failed with EAGAIN",
 		    BUNYAN_T_STRING, "cmd", worker_cmd_str(cmd),
 		    BUNYAN_T_POINTER, "arg", arg);
 		goto again;
 	case ENOMEM:
-		STDERR(warn, log, "Out of memory trying to send command",
+		STDERR(warn, "Out of memory trying to send command",
 		    BUNYAN_T_STRING, "cmd", worker_cmd_str(cmd),
 		    BUNYAN_T_POINTER, "arg", arg);
 		break;
 	default:
-		STDERR(fatal, log,
+		STDERR(fatal,
 		    "Unexpected error trying to send command",
 		    BUNYAN_T_STRING, "cmd", worker_cmd_str(cmd),
 		    BUNYAN_T_POINTER, "arg", arg);

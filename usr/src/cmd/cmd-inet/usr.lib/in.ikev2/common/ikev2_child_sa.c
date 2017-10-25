@@ -135,15 +135,13 @@ ikev2_create_child_sa_inbound_init(pkt_t *restrict req, pkt_t *restrict resp)
 				goto fail;
 			}
 			if (!dh_genpair(result.sar_dh, &sa->dh_pubkey,
-			    &sa->dh_privkey, sa->i2sa_log))
+			    &sa->dh_privkey))
 				goto fail;
 			if (!dh_derivekey(sa->dh_privkey,
 			    ke_i->pp_ptr + sizeof (ikev2_ke_t),
-			    ke_i->pp_len - sizeof (ikev2_ke_t), &sa->dh_key,
-			    sa->i2sa_log))
+			    ke_i->pp_len - sizeof (ikev2_ke_t), &sa->dh_key))
 				goto fail;
-			if (!ikev2_add_ke(resp, result.sar_dh,
-			    sa->dh_pubkey))
+			if (!ikev2_add_ke(resp, result.sar_dh, sa->dh_pubkey))
 				goto fail;
 		}
 	}
@@ -156,16 +154,16 @@ done:
 		goto fail;
 
 	/* Don't reuse the same DH key for additional child SAs */
-	pkcs11_destroy_obj("child dh_pubkey", &sa->dh_pubkey, sa->i2sa_log);
-	pkcs11_destroy_obj("child dh_privkey", &sa->dh_privkey, sa->i2sa_log);
-	pkcs11_destroy_obj("child gir", &sa->dh_key, sa->i2sa_log);
+	pkcs11_destroy_obj("child dh_pubkey", &sa->dh_pubkey);
+	pkcs11_destroy_obj("child dh_privkey", &sa->dh_privkey);
+	pkcs11_destroy_obj("child gir", &sa->dh_key);
 	ikev2_pkt_free(req);
 	return;
 
 fail:
-	pkcs11_destroy_obj("child dh_pubkey", &sa->dh_pubkey, sa->i2sa_log);
-	pkcs11_destroy_obj("child dh_privkey", &sa->dh_privkey, sa->i2sa_log);
-	pkcs11_destroy_obj("child gir", &sa->dh_key, sa->i2sa_log);
+	pkcs11_destroy_obj("child dh_pubkey", &sa->dh_pubkey);
+	pkcs11_destroy_obj("child dh_privkey", &sa->dh_privkey);
+	pkcs11_destroy_obj("child gir", &sa->dh_key);
 	ikev2_pkt_free(req);
 	ikev2_pkt_free(resp);
 }
@@ -244,12 +242,12 @@ create_keymat(ikev2_sa_t *restrict sa, pkt_payload_t *restrict ni,
 		rv = pkcs11_ObjectToKey(p11h(), sa->dh_key, (void **)&gir,
 		    &girlen, B_FALSE);
 		if (rv != CKR_OK) {
-			PKCS11ERR(error, sa->i2sa_log, "pkcs11_ObjectToKey",
+			PKCS11ERR(error, "pkcs11_ObjectToKey",
 			    rv, BUNYAN_T_STRING, "objname", "gir");
 			return (B_FALSE);
 		}
 
-		ret = prfplus_init(prfp, sa->prf, sa->sk_d, sa->i2sa_log,
+		ret = prfplus_init(prfp, sa->prf, sa->sk_d,
 		    gir, girlen,
 		    ni->pp_ptr, ni->pp_len,
 		    nr->pp_ptr, nr->pp_len,
@@ -258,7 +256,7 @@ create_keymat(ikev2_sa_t *restrict sa, pkt_payload_t *restrict ni,
 		explicit_bzero(gir, girlen);
 		free(gir);
 	} else {
-		ret = prfplus_init(prfp, sa->prf, sa->sk_d, sa->i2sa_log,
+		ret = prfplus_init(prfp, sa->prf, sa->sk_d,
 		    ni->pp_ptr, ni->pp_len,
 		    nr->pp_ptr, nr->pp_len,
 		    NULL);

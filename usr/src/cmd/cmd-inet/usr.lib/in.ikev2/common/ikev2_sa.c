@@ -79,15 +79,6 @@ static i2sa_bucket_t	*hash[I2SA_NUM_HASH];
 static umem_cache_t	*i2sa_cache;
 static umem_cache_t	*i2c_cache;
 
-#define	I2SA_KEY_I2SA		"i2sa"
-#define	I2SA_KEY_LADDR		"local_addr"
-#define	I2SA_KEY_LPORT		"local_port"
-#define	I2SA_KEY_RADDR		"remote_addr"
-#define	I2SA_KEY_RPORT		"remote_port"
-#define	I2SA_KEY_LSPI		"local_spi"
-#define	I2SA_KEY_RSPI		"remote_spi"
-#define	I2SA_KEY_INITIATOR	"sa_initiator"
-
 #define	IKEV2_SA_HASH_SPI(spi) \
     P2PHASE_TYPED((spi), num_buckets, uint64_t)
 
@@ -187,10 +178,10 @@ ikev2_sa_get(uint64_t l_spi, uint64_t r_spi,
  * ikev2_sa_set_rspi() should be called.
  *
  * Parameters:
- * 	initiator	Was this SA locally initiated
- * 	init_pkt	The packet that trigged the creation of the SA.
- * 	laddr,
- * 	raddr		The local and remote addresses of this SA.
+ *	initiator	Was this SA locally initiated
+ *	init_pkt	The packet that trigged the creation of the SA.
+ *	laddr,
+ *	raddr		The local and remote addresses of this SA.
  *
  * On successful create, the refheld larval IKEv2 SA is returned.  In addition,
  * the IKEv2 SA queue is locked on return.
@@ -213,9 +204,9 @@ ikev2_sa_alloc(boolean_t initiator,
 	hrtime_t	expire = 0;
 
 	(void) bunyan_trace(log, "Attempting to create new larval IKE SA",
-	    BUNYAN_T_BOOLEAN, I2SA_KEY_INITIATOR, initiator,
-	    ss_bunyan(laddr), I2SA_KEY_LADDR, ss_addr(laddr),
-	    ss_bunyan(raddr), I2SA_KEY_RADDR, ss_addr(raddr),
+	    BUNYAN_T_BOOLEAN, LOG_KEY_INITIATOR, initiator,
+	    ss_bunyan(laddr), LOG_KEY_LADDR, ss_addr(laddr),
+	    ss_bunyan(raddr), LOG_KEY_RADDR, ss_addr(raddr),
 	    BUNYAN_T_END);
 
 	cfg = config_get();
@@ -276,32 +267,6 @@ ikev2_sa_alloc(boolean_t initiator,
 
 	inc_half_open();
 
-	/* 0x + 64bit hex value + NUL */
-	char buf[19] = { 0 };
-
-	/*
-	 * For protocol processing, the SPIs are treated as opaque values,
-	 * however for debugging/diagnostic/admin purposes, we want to output
-	 * them in native byte order so the SPI values will match
-	 * what other implementations and tools (such as wireshark) display
-	 */
-	(void) snprintf(buf, sizeof (buf), "0x%016" PRIX64,
-	    ntohll(I2SA_LOCAL_SPI(i2sa)));
-
-	if (bunyan_child(log, &i2sa->i2sa_log,
-	    BUNYAN_T_POINTER, I2SA_KEY_I2SA, i2sa,
-	    BUNYAN_T_STRING, I2SA_KEY_LSPI, buf,
-	    ss_bunyan(laddr), I2SA_KEY_LADDR, ss_addr(laddr),
-	    BUNYAN_T_UINT32, I2SA_KEY_LPORT, ss_port(laddr),
-	    ss_bunyan(raddr), I2SA_KEY_RADDR, ss_addr(raddr),
-	    BUNYAN_T_UINT32, I2SA_KEY_RPORT, ss_port(raddr),
-	    BUNYAN_T_BOOLEAN, I2SA_KEY_INITIATOR, initiator,
-	    BUNYAN_T_END) != 0) {
-		bunyan_error(log, "Cannot create IKE SA logger",
-		    BUNYAN_T_END);
-		goto fail;
-	}
-
 	/*
 	 * If we're the initiator, we don't know the remote SPI until after
 	 * the remote peer responds.  However if we are the responder,
@@ -315,11 +280,7 @@ ikev2_sa_alloc(boolean_t initiator,
 	I2SA_REFHOLD(i2sa);	/* ref for periodic */
 	if (periodic_schedule(wk_periodic, expire, PERIODIC_ONESHOT,
 	    i2sa_p1_expire, i2sa, &i2sa->i2sa_p1_timer) != 0) {
-		(void) bunyan_error(i2sa->i2sa_log,
-		    "Cannot create IKEv2 SA P1 expiration timer",
-		    BUNYAN_T_STRING, "err", strerror(errno),
-		    BUNYAN_T_INT32, "errno", errno,
-		    BUNYAN_T_END);
+		STDERR(error, "Cannot create IKEv2 SA P1 expiration timer");
 		goto fail;
 	}
 	i2sa->i2sa_tid = 0;
@@ -329,9 +290,8 @@ ikev2_sa_alloc(boolean_t initiator,
 	 * Leave i2sa_queue_lock held so caller has exclusive access to SA
 	 * upon return.
 	 */
-
-	(void) bunyan_debug(i2sa->i2sa_log, "New larval IKE SA created",
-	    BUNYAN_T_POINTER, "sa", i2sa,
+	(void) bunyan_debug(log, "New larval IKE SA created",
+	    BUNYAN_T_POINTER, LOG_KEY_I2SA, i2sa,
 	    BUNYAN_T_END);
 
 	return (i2sa);
@@ -364,14 +324,17 @@ i2sa_p1_expire(void *data)
 	ikev2_sa_t *i2sa = data;
 	int rc;
 
-	(void) bunyan_info(i2sa->i2sa_log, "Larval IKE SA timeout",
-	    BUNYAN_T_END);
+	key_add_ike_spi(LOG_KEY_LSPI, I2SA_LOCAL_SPI(i2sa));
+	key_add_ike_spi(LOG_KEY_RSPI, I2SA_REMOTE_SPI(i2sa));
+	(void) bunyan_info(log, "Larval IKE SA timeout", BUNYAN_T_END);
 
 	mutex_enter(&i2sa->i2sa_queue_lock);
 	i2sa->i2sa_events |= I2SA_EVT_P1_EXPIRE;
 	ikev2_dispatch(i2sa);
 	mutex_exit(&i2sa->i2sa_queue_lock);
 
+	(void) bunyan_key_remove(log, LOG_KEY_LSPI);
+	(void) bunyan_key_remove(log, LOG_KEY_RSPI);
 	I2SA_REFRELE(i2sa);
 }
 
@@ -389,7 +352,7 @@ ikev2_sa_condemn(ikev2_sa_t *i2sa)
 	VERIFY(!MUTEX_HELD(&i2sa->i2sa_queue_lock));
 	VERIFY(MUTEX_HELD(&i2sa->i2sa_lock));
 
-	(void) bunyan_info(i2sa->i2sa_log, "Condemning IKE SA", BUNYAN_T_END);
+	(void) bunyan_info(log, "Condemning IKE SA", BUNYAN_T_END);
 	i2sa->flags |= I2SA_CONDEMNED;
 
 	I2SA_REFHOLD(i2sa);
@@ -519,7 +482,7 @@ ikev2_sa_free(ikev2_sa_t *i2sa)
 	if (!(i2sa->flags & I2SA_AUTHENTICATED))
 		dec_half_open();
 
-#define	DESTROY(x, y) pkcs11_destroy_obj(#y, &(x)->y, i2sa->i2sa_log)
+#define	DESTROY(x, y) pkcs11_destroy_obj(#y, &(x)->y)
 	DESTROY(i2sa, dh_pubkey);
 	DESTROY(i2sa, dh_privkey);
 	DESTROY(i2sa, dh_key);
@@ -534,8 +497,6 @@ ikev2_sa_free(ikev2_sa_t *i2sa)
 #undef  DESTROY
 
 	/* TODO: free child SAs */
-
-	bunyan_fini(i2sa->i2sa_log);
 
 	i2sa_dtor(i2sa, NULL);
 	(void) i2sa_ctor(i2sa, NULL, 0);
@@ -569,7 +530,7 @@ ikev2_sa_set_hashsize(uint_t newamt)
 	}
 	VERIFY(ISP2(newamt));
 
-	bunyan_debug(log, "Creating IKE SA hash buckets",
+	(void) bunyan_debug(log, "Creating IKE SA hash buckets",
 	    BUNYAN_T_UINT32, "numbuckets", (uint32_t)newamt,
 	    BUNYAN_T_BOOLEAN, "startup", startup,
 	    BUNYAN_T_END);
@@ -705,10 +666,10 @@ ikev2_sa_set_remote_spi(ikev2_sa_t *i2sa, uint64_t remote_spi)
 
 	(void) snprintf(buf, sizeof (buf), "0x%016" PRIX64,
 	    ntohll(I2SA_REMOTE_SPI(i2sa)));
-	(void) bunyan_key_add(i2sa->i2sa_log,
-	    BUNYAN_T_STRING, I2SA_KEY_RSPI, buf, BUNYAN_T_END);
+	(void) bunyan_key_add(log,
+	    BUNYAN_T_STRING, LOG_KEY_RSPI, buf, BUNYAN_T_END);
 
-	(void) bunyan_trace(i2sa->i2sa_log, "Set remote SPI", BUNYAN_T_END);
+	(void) bunyan_trace(log, "Set remote SPI", BUNYAN_T_END);
 }
 
 static i2sa_bucket_t *
@@ -735,8 +696,8 @@ i2sa_get_bucket(i2sa_hash_t hashtype, ikev2_sa_t *i2sa)
  * Add an IKEv2 SA to the given hash.
  *
  * Returns:
- * 	B_TRUE	successfully added, hash holds ref to IKEv2 SA
- * 	B_FALSE	IKEv2 SA already exists in hash, no ref held.
+ *	B_TRUE	successfully added, hash holds ref to IKEv2 SA
+ *	B_FALSE	IKEv2 SA already exists in hash, no ref held.
  *
  */
 static boolean_t
@@ -812,7 +773,7 @@ i2sa_verify(ikev2_sa_t *restrict i2sa, uint64_t rem_spi,
 	if (I2SA_REMOTE_SPI(i2sa) != 0 && I2SA_REMOTE_SPI(i2sa) != rem_spi) {
 		char spistr[19];
 		(void) snprintf(spistr, sizeof (spistr), "0x%" PRIX64, rem_spi);
-		(void) bunyan_error(i2sa->i2sa_log,
+		(void) bunyan_error(log,
 		    "Found an IKEv2 SA, but remote SPI does not match",
 		    BUNYAN_T_STRING, "spi", spistr,
 		    BUNYAN_T_END);
@@ -820,7 +781,7 @@ i2sa_verify(ikev2_sa_t *restrict i2sa, uint64_t rem_spi,
 	}
 
 	if (laddr != NULL && !SA_ADDR_EQ(laddr, &i2sa->laddr)) {
-		(void) bunyan_error(i2sa->i2sa_log,
+		(void) bunyan_error(log,
 		    "Found an IKEv2 SA, but local address does not match",
 		    ss_bunyan(laddr), "addr", ss_addr(laddr),
 		    BUNYAN_T_END);
@@ -828,7 +789,7 @@ i2sa_verify(ikev2_sa_t *restrict i2sa, uint64_t rem_spi,
 	}
 
 	if (raddr != NULL && !SA_ADDR_EQ(raddr, &i2sa->raddr)) {
-		(void) bunyan_error(i2sa->i2sa_log,
+		(void) bunyan_error(log,
 		    "Found an IKEv2 SA, but remote address does not match",
 		    ss_bunyan(raddr), "addr", ss_addr(raddr),
 		    BUNYAN_T_END);
@@ -842,8 +803,7 @@ i2sa_verify(ikev2_sa_t *restrict i2sa, uint64_t rem_spi,
 
 	/* XXX KEBE SAYS FILL IN OTHER REALITY CHECKS HERE. */
 
-	(void) bunyan_trace(i2sa->i2sa_log, "IKEv2 SA found",
-	    BUNYAN_T_STRING, "func", __func__,
+	(void) bunyan_trace(log, "IKEv2 SA found",
 	    BUNYAN_T_POINTER, "i2sa", i2sa,
 	    BUNYAN_T_END);
 
@@ -1156,13 +1116,13 @@ i2sa_key_add_addr(ikev2_sa_t *i2sa, const char *addr_key, const char *port_key,
 
 	switch (addr->ss_family) {
 	case AF_INET:
-		rc = bunyan_key_add(i2sa->i2sa_log,
+		rc = bunyan_key_add(log,
 		    BUNYAN_T_IP, addr_key, &sau.sau_sin->sin_addr,
 		    BUNYAN_T_UINT32, port_key, (uint32_t)sau.sau_sin->sin_port,
 		    BUNYAN_T_END);
 		break;
 	case AF_INET6:
-		rc = bunyan_key_add(i2sa->i2sa_log,
+		rc = bunyan_key_add(log,
 		    BUNYAN_T_IP6, addr_key, &sau.sau_sin6->sin6_addr,
 		    BUNYAN_T_UINT32, port_key,
 		    (uint32_t)sau.sau_sin6->sin6_port,

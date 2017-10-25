@@ -135,13 +135,13 @@ cookie_calc(uint8_t v, uint8_t *restrict nonce, size_t noncelen,
 
 	rc = C_DigestInit(h, &mech);
 	if (rc != CKR_OK) {
-		PKCS11ERR(error, log, "C_DigestInit", rc);
+		PKCS11ERR(error,"C_DigestInit", rc);
 		goto done;
 	}
 
 	rc = C_DigestUpdate(h, nonce, noncelen);
 	if (rc != CKR_OK) {
-		PKCS11ERR(error, log, "C_DigestUpdate", rc);
+		PKCS11ERR(error, "C_DigestUpdate", rc);
 		goto done;
 	}
 
@@ -157,25 +157,25 @@ cookie_calc(uint8_t v, uint8_t *restrict nonce, size_t noncelen,
 	}
 	rc = C_DigestUpdate(h, (CK_BYTE_PTR)ss_addr(ip), iplen);
 	if (rc != CKR_OK) {
-		PKCS11ERR(error, log, "C_DigestUpdate", rc);
+		PKCS11ERR(error, "C_DigestUpdate", rc);
 		goto done;
 	}
 
 	rc = C_DigestUpdate(h, (CK_BYTE_PTR)&spi, sizeof (spi));
 	if (rc != CKR_OK) {
-		PKCS11ERR(error, log, "C_DigestUpdate", rc);
+		PKCS11ERR(error, "C_DigestUpdate", rc);
 		goto done;
 	}
 
 	rc = C_DigestUpdate(h, SECRET(v), COOKIE_SECRET_LEN);
 	if (rc != CKR_OK) {
-		PKCS11ERR(error, log, "C_DigestUpdate", rc);
+		PKCS11ERR(error, "C_DigestUpdate", rc);
 		goto done;
 	}
 
 	rc = C_DigestFinal(h, out, &outlen);
 	if (rc != CKR_OK) {
-		PKCS11ERR(error, log, "C_DigestFinal", rc);
+		PKCS11ERR(error, "C_DigestFinal", rc);
 		goto done;
 	}
 

@@ -121,7 +121,6 @@ typedef struct algindex {
  */
 #define	SA_FULL_EQ(sa1, sa2) (SA_ADDR_EQ(sa1, sa2) && SA_PORT_EQ(sa1, sa2))
 
-#define	NOMEM assfail("Out of memory", __FILE__, __LINE__)
 #define	INVALID(var) assfail("Invalid value of " # var, __FILE__, __LINE__)
 
 #ifndef ARRAY_SIZE
@@ -133,46 +132,40 @@ int ss_bunyan(const struct sockaddr_storage *);
 uint32_t ss_port(const struct sockaddr_storage *);
 const void *ss_addr(const struct sockaddr_storage *);
 
-#define	BLOG_KEY_SRC		"src"
-#define	BLOG_KEY_SRCPORT	"srcport"
-#define	BLOG_KEY_DEST		"dest"
-#define	BLOG_KEY_DESTPORT	"destport"
+#define	LOG_KEY_ERRMSG	"err"
+#define	LOG_KEY_ERRNO	"errno"
+#define	LOG_KEY_FILE	"file"
+#define	LOG_KEY_FUNC	"func"
+#define	LOG_KEY_LINE	"line"
 
-#define	BLOG_KEY_ERRMSG		"err"
-#define	BLOG_KEY_ERRNO		"errno"
-#define	BLOG_KEY_FILE		"file"
-#define	BLOG_KEY_FUNC		"func"
-#define	BLOG_KEY_LINE		"line"
+#define	LOG_KEY_I2SA	"i2sa"
+#define	LOG_KEY_LADDR	"local_addr"
+#define	LOG_KEY_RADDR	"remote_addr"
+#define	LOG_KEY_LSPI	"local_spi"
+#define	LOG_KEY_RSPI	"remote_spi"
+#define	LOG_KEY_INITIATOR "initiator"
+
+#define	LOG_KEY_REQ	"req_pkt"
+#define	LOG_KEY_RESP	"resp_pkt"
+#define	LOG_KEY_VERSION	"ike_version"
+#define	LOG_KEY_MSGID	"msgid"
+#define	LOG_KEY_EXCHTYPE "exch_type"
 
 /* cstyle cannot handle ## __VA_ARGS */
 /* BEGIN CSTYLED */
-#define	TSTDERR(_e, _lvl, _log, _msg, ...)			\
-	(void) bunyan_##_lvl((_log), (_msg),			\
-	BUNYAN_T_STRING, BLOG_KEY_ERRMSG, strerror(_e),		\
-	BUNYAN_T_INT32, BLOG_KEY_ERRNO, (int32_t)(_e),		\
-	BUNYAN_T_STRING, BLOG_KEY_FUNC, __func__,		\
-	BUNYAN_T_STRING, BLOG_KEY_FILE, __FILE__,		\
-	BUNYAN_T_INT32, BLOG_KEY_LINE, __LINE__,		\
+#define	TSTDERR(_e, _lvl, _msg, ...)			\
+	(void) bunyan_##_lvl(log, (_msg),			\
+	BUNYAN_T_STRING, LOG_KEY_ERRMSG, strerror(_e),		\
+	BUNYAN_T_INT32, LOG_KEY_ERRNO, (int32_t)(_e),		\
+	BUNYAN_T_STRING, LOG_KEY_FUNC, __func__,		\
+	BUNYAN_T_STRING, LOG_KEY_FILE, __FILE__,		\
+	BUNYAN_T_INT32, LOG_KEY_LINE, __LINE__,		\
 	## __VA_ARGS__,						\
 	BUNYAN_T_END)
 
-#define	STDERR(_lvl, _log, _msg, ...) \
-	TSTDERR(errno, _lvl, _log, _msg, ## __VA_ARGS__)
+#define	STDERR(_lvl, _msg, ...) \
+	TSTDERR(errno, _lvl, _msg, ## __VA_ARGS__)
 
-/* END CSTYLED */
-
-/* BEGIN CSTYLED */
-#define	NETLOG(_level, _log, _msg, _src, _dest, ...)		\
-	(void) bunyan_##_level((_log), (_msg),			\
-	BUNYAN_T_STRING, BLOG_KEY_FUNC, __func__,		\
-	BUNYAN_T_STRING, BLOG_KEY_FILE, __FILE__,		\
-	BUNYAN_T_INT32, BLOG_KEY_LINE, __LINE__,		\
-	ss_bunyan(_src), BLOG_KEY_SRC, ss_addr(_src),		\
-	BUNYAN_T_UINT32, BLOG_KEY_SRCPORT, ss_port(_src),	\
-	ss_bunyan(_dest), BLOG_KEY_DEST, ss_addr(_dest),	\
-	BUNYAN_T_UINT32, BLOG_KEY_DESTPORT, ss_port(_dest),	\
-	## __VA_ARGS__,						\
-	BUNYAN_T_END)
 /* END CSTYLED */
 
 typedef enum event {
@@ -181,8 +174,14 @@ typedef enum event {
 } event_t;
 
 extern char *my_fmri;
-extern bunyan_logger_t *log;
 extern int main_port;
+/*
+ * While bunyan itself is multithreaded, since every thread runs some sort
+ * of event loop, by guaranteeing every thread it's own instance, we can
+ * build up keys as the event goes through processing, and then reset the keys
+ * before we loop around again.
+ */
+extern __thread bunyan_logger_t *log;
 
 typedef int (*bunyan_logfn_t)(bunyan_logger_t *, const char *, ...);
 bunyan_logfn_t getlog(bunyan_level_t);
@@ -192,9 +191,13 @@ const char *symstr(void *, char *, size_t);
 const char *event_str(event_t);
 
 /* Size of largest possible port source string + NUL */
-#define	PORT_SOURCE_STR_LEN	20
+#define	PORT_SOURCE_STRLEN	20
 char *port_source_str(ushort_t, char *, size_t);
 
+void log_reset_keys(void);
+void key_add_ike_version(const char *, uint8_t);
+void key_add_ike_spi(const char *, uint64_t);
+void key_add_addr(const char *, struct sockaddr_storage *);
 char *writehex(uint8_t *, size_t, char *, char *, size_t);
 
 #ifdef  __cplusplus

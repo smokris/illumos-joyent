@@ -48,12 +48,6 @@
 #include "pkt.h"
 #include "worker.h"
 
-#define	SPILOG(_level, _log, _msg, _src, _dest, _lspi, _rspi, ...)	\
-	NETLOG(_level, _log, _msg, _src, _dest,				\
-	BUNYAN_T_UINT64, "local_spi", (_lspi),				\
-	BUNYAN_T_UINT64, "remote_spi", (_rspi),				\
-	## __VA_ARGS__)
-
 static void ikev2_retransmit_cb(void *);
 static void ikev2_dispatch_pkt(pkt_t *);
 static void ikev2_dispatch_pfkey(ikev2_sa_t *restrict, parsedmsg_t *restrict);
@@ -79,8 +73,7 @@ ikev2_inbound(pkt_t *pkt, const struct sockaddr_storage *restrict src_addr,
 
 	VERIFY(IS_WORKER);
 
-	ikev2_pkt_log(pkt, worker->w_log, BUNYAN_L_TRACE,
-	    "Received packet");
+	ikev2_pkt_log(pkt, BUNYAN_L_TRACE, "Received packet");
 
 	i2sa = ikev2_sa_get(local_spi, remote_spi, dest_addr, src_addr, pkt);
 	if (i2sa == NULL) {
@@ -96,7 +89,7 @@ ikev2_inbound(pkt_t *pkt, const struct sockaddr_storage *restrict src_addr,
 			 *
 			 * For now, discard.
 			 */
-			ikev2_pkt_log(pkt, worker->w_log, BUNYAN_L_DEBUG,
+			ikev2_pkt_log(pkt, BUNYAN_L_DEBUG,
 			    "Cannot find IKE SA for packet; discarding");
 			ikev2_pkt_free(pkt);
 			return;
@@ -107,7 +100,7 @@ ikev2_inbound(pkt_t *pkt, const struct sockaddr_storage *restrict src_addr,
 		 * Discard for now.
 		 */
 		if (remote_spi == 0) {
-			ikev2_pkt_log(pkt, worker->w_log, BUNYAN_L_DEBUG,
+			ikev2_pkt_log(pkt, BUNYAN_L_DEBUG,
 			    "Received packet with a 0 remote SPI; discarding");
 			ikev2_pkt_free(pkt);
 			return;
@@ -118,7 +111,7 @@ ikev2_inbound(pkt_t *pkt, const struct sockaddr_storage *restrict src_addr,
 		 * or discard it, but shouldn't try to create a larval IKE SA.
 		 */
 		if (I2P_IS_RESPONSE(pkt)) {
-			ikev2_pkt_log(pkt, worker->w_log, BUNYAN_L_DEBUG,
+			ikev2_pkt_log(pkt, BUNYAN_L_DEBUG,
 			    "Received response to non-existant IKE SA; "
 			    "discarding");
 			ikev2_pkt_free(pkt);
@@ -143,9 +136,8 @@ ikev2_inbound(pkt_t *pkt, const struct sockaddr_storage *restrict src_addr,
 	pkt->pkt_sa = i2sa;
 
 	if (!ikev2_sa_queuemsg(i2sa, I2SA_MSG_PKT, pkt)) {
-		(void) bunyan_info(i2sa->i2sa_log,
-		    "queue full; discarding packet",
-		    BUNYAN_T_POINTER, "pkt", pkt, BUNYAN_T_END);
+		(void) bunyan_info(log, "queue full; discarding packet",
+		    BUNYAN_T_END);
 		ikev2_pkt_free(pkt);	/* Also refrele's pkt->pkt_sa */
 	}
 }
@@ -215,7 +207,7 @@ ikev2_try_new_sa(pkt_t *restrict pkt,
 
 fail:
 	if (errmsg != NULL)
-		ikev2_pkt_log(pkt, log, BUNYAN_L_DEBUG, errmsg);
+		ikev2_pkt_log(pkt, BUNYAN_L_DEBUG, errmsg);
 
 	return (NULL);
 }
@@ -261,7 +253,7 @@ ikev2_pfkey(parsedmsg_t *pmsg)
 		 */
 		if (kmc != NULL ||
 		    pmsg->pmsg_samsg->sadb_msg_type != SADB_ACQUIRE) {
-			sadb_log(log, BUNYAN_L_ERROR, "Received a pfkey "
+			sadb_log(BUNYAN_L_ERROR, "Received a pfkey "
 			    "message for a non-existant IKE SA",
 			    pmsg->pmsg_samsg);
 
@@ -283,7 +275,7 @@ ikev2_pfkey(parsedmsg_t *pmsg)
 			 * failure.
 			 */
 			pfkey_send_error(pmsg->pmsg_samsg, ENOENT);
-			sadb_log(log, BUNYAN_L_ERROR,
+			sadb_log(BUNYAN_L_ERROR,
 			    "Could not find a matching IKE rule for the "
 			    "SADB ACQUIRE request", pmsg->pmsg_samsg);
 			parsedmsg_free(pmsg);
@@ -302,7 +294,7 @@ ikev2_pfkey(parsedmsg_t *pmsg)
 			 */
 			VERIFY3S(errno, !=, 0);
 			pfkey_send_error(pmsg->pmsg_samsg, errno);
-			sadb_log(log, BUNYAN_L_ERROR,
+			sadb_log(BUNYAN_L_ERROR,
 			    "Failed to create larval IKE SA: out of memory",
 			    pmsg->pmsg_samsg);
 			parsedmsg_free(pmsg);
@@ -317,7 +309,7 @@ ikev2_pfkey(parsedmsg_t *pmsg)
 	}
 
 	if (!ikev2_sa_queuemsg(sa, I2SA_MSG_PFKEY, pmsg)) {
-		sadb_log(sa->i2sa_log, BUNYAN_L_WARN,
+		sadb_log(BUNYAN_L_WARN,
 		    "Could not queue SADB message; discarding",
 		    pmsg->pmsg_samsg);
 		parsedmsg_free(pmsg);
@@ -349,7 +341,7 @@ ikev2_sa_init_cfg(config_rule_t *rule)
 
 	if (!pfkey_inverse_acquire(susrc, sudst, isrc, idst, &pmsg)) {
 		if (pmsg == NULL) {
-			STDERR(error, worker->w_log, "Inverse acquire failed");
+			STDERR(error, "Inverse acquire failed");
 			goto fail;
 		}
 
@@ -363,7 +355,7 @@ ikev2_sa_init_cfg(config_rule_t *rule)
 				label = "<default rule>";
 
 			/* XXX: Add addresses to message? */
-			(void) bunyan_error(worker->w_log,
+			(void) bunyan_error(log,
 			    "Cannot create IKEV2 SA for host: No IPsec "
 			    "configuration found",
 			    BUNYAN_T_STRING, "ike_rule", label,
@@ -371,7 +363,7 @@ ikev2_sa_init_cfg(config_rule_t *rule)
 			goto fail;
 		}
 
-		TSTDERR(errval, error, log,
+		TSTDERR(errval, error,
 		    "Inverse acquire failed",
 		    (diag > 0) ? BUNYAN_T_UINT32 : BUNYAN_T_END,
 		    "code", diag,
@@ -382,8 +374,7 @@ ikev2_sa_init_cfg(config_rule_t *rule)
 
 	sa = ikev2_sa_alloc(B_TRUE, NULL, &src, &dst);
 	if (sa == NULL) {
-		STDERR(error, worker->w_log,
-		    "Failed to allocate larval IKE SA");
+		STDERR(error, "Failed to allocate larval IKE SA");
 		goto fail;
 	}
 
@@ -436,7 +427,7 @@ ikev2_send(pkt_t *pkt, boolean_t is_error)
 		VERIFY3P(i2sa->last_sent, ==, NULL);
 
 	char *str = ikev2_pkt_desc(pkt);
-	(void) bunyan_debug(i2sa->i2sa_log, "Sending packet",
+	(void) bunyan_debug(log, "Sending packet",
 	    BUNYAN_T_STRING, "pktdesc", str,
 	    BUNYAN_T_BOOLEAN, "response", resp,
 	    BUNYAN_T_UINT32, "nxmit", (uint32_t)pkt->pkt_xmit,
@@ -554,14 +545,14 @@ ikev2_retransmit(ikev2_sa_t *sa)
 	if (retry > retry_max)
 		retry = retry_max;
 	if (pkt->pkt_xmit > limit) {
-		(void) bunyan_info(sa->i2sa_log,
+		(void) bunyan_info(log,
 		    "Transmit timeout on packet; deleting IKE SA",
 		    BUNYAN_T_END);
 		ikev2_sa_condemn(sa);
 		return;
 	}
 
-	ikev2_pkt_log(pkt, sa->i2sa_log, BUNYAN_L_DEBUG, "Sending packet");
+	ikev2_pkt_log(pkt, BUNYAN_L_DEBUG, "Sending packet");
 
 	/*
 	 * If sendfromto() errors, it will log the error, however there's not
@@ -574,15 +565,14 @@ ikev2_retransmit(ikev2_sa_t *sa)
 	if (periodic_schedule(wk_periodic, retry, PERIODIC_ONESHOT,
 	    ikev2_retransmit_cb, sa, &sa->i2sa_xmit_timer) != 0) {
 		if (errno == ENOMEM) {
-			(void) bunyan_error(sa->i2sa_log,
+			(void) bunyan_error(log,
 			    "No memory to reschedule packet retransmit; "
 			    "deleting IKE SA", BUNYAN_T_END);
 			ikev2_sa_condemn(sa);
 			return;
 		}
 
-		STDERR(fatal, sa->i2sa_log,
-		    "Unexpected error scheduling packet retransmit");
+		STDERR(fatal, "Unexpected error scheduling packet retransmit");
 		abort();
 	}
 }
@@ -653,8 +643,7 @@ ikev2_retransmit_check(pkt_t *pkt)
 			goto done;
 		}
 
-		ikev2_pkt_log(pkt, sa->i2sa_log, BUNYAN_L_DEBUG,
-		    "Resending last response");
+		ikev2_pkt_log(pkt, BUNYAN_L_DEBUG, "Resending last response");
 
 		(void) sendfromto(select_socket(sa), pkt_start(resp),
 		    pkt_len(pkt), &sa->laddr, &sa->raddr);
@@ -662,7 +651,7 @@ ikev2_retransmit_check(pkt_t *pkt)
 	}
 
 	if (msgid != sa->inmsgid + 1) {
-		ikev2_pkt_log(pkt, sa->i2sa_log, BUNYAN_L_INFO,
+		ikev2_pkt_log(pkt, BUNYAN_L_INFO,
 		    "Message id is out of sequence");
 
 		/*
@@ -685,7 +674,7 @@ done:
 }
 
 /*
- * Dispatches any queued messages and services any events that have fired. 
+ * Dispatches any queued messages and services any events that have fired.
  * Function must be called with sa->i2sa_queue_lock held.  If another thread
  * is already processing the queue for this IKE SA, the function will return
  * without doing any processing.  In all instances, the function returns with
@@ -735,8 +724,7 @@ ikev2_dispatch(ikev2_sa_t *sa)
 	case EBUSY:
 		return;
 	default:
-		TSTDERR(rc, fatal, sa->i2sa_log,
-		    "Unexpected mutex_tryenter() failure");
+		TSTDERR(rc, fatal, "Unexpected mutex_tryenter() failure");
 		abort();
 	}
 
@@ -822,7 +810,7 @@ ikev2_dispatch(ikev2_sa_t *sa)
 		}
 
 		if (type != I2SA_MSG_NONE) {
-			(void) bunyan_debug(sa->i2sa_log,
+			(void) bunyan_debug(log,
 			    "Processing IKE SA message",
 			    BUNYAN_T_STRING, "msgtype", i2sa_msgtype_str(type),
 			    BUNYAN_T_POINTER, "msgdata", data,
@@ -884,8 +872,7 @@ ikev2_dispatch_pkt(pkt_t *pkt)
 			goto discard;
 		break;
 	default:
-		ikev2_pkt_log(pkt, pkt->pkt_sa->i2sa_log,
-		    BUNYAN_L_ERROR, "Unknown IKEv2 exchange");
+		ikev2_pkt_log(pkt, BUNYAN_L_ERROR, "Unknown IKEv2 exchange");
 		goto discard;
 	}
 
@@ -900,7 +887,7 @@ ikev2_dispatch_pkt(pkt_t *pkt)
 	case IKEV2_EXCH_INFORMATIONAL:
 	case IKEV2_EXCH_IKE_SESSION_RESUME:
 		/* TODO */
-		ikev2_pkt_log(pkt, pkt->pkt_sa->i2sa_log, BUNYAN_L_INFO,
+		ikev2_pkt_log(pkt, BUNYAN_L_INFO,
 		    "Exchange not implemented yet");
 		goto discard;
 	}
@@ -927,7 +914,7 @@ ikev2_dispatch_pfkey(ikev2_sa_t *restrict sa, parsedmsg_t *restrict pmsg)
 		    list_is_empty(&sa->i2sa_pending)) {
 			ikev2_sa_init_outbound(sa, pmsg);
 		} else {
-			sadb_log(sa->i2sa_log, BUNYAN_L_INFO,
+			sadb_log(BUNYAN_L_INFO,
 			    "CREATE_CHILD_SA not implemented yet",
 			    pmsg->pmsg_samsg);
 
@@ -938,14 +925,14 @@ ikev2_dispatch_pfkey(ikev2_sa_t *restrict sa, parsedmsg_t *restrict pmsg)
 		return;
 	case SADB_EXPIRE:
 		/* TODO */
-		sadb_log(sa->i2sa_log, BUNYAN_L_INFO,
+		sadb_log(BUNYAN_L_INFO,
 		    "SADB_EXPIRE support not implemented yet; discarding msg",
 		    samsg);
 		parsedmsg_free(pmsg);
 		I2SA_REFRELE(sa);
 		return;
 	default:
-		sadb_log(sa->i2sa_log, BUNYAN_L_ERROR,
+		sadb_log(BUNYAN_L_ERROR,
 		    "Unexpected SADB request from kernel", samsg);
 		parsedmsg_free(pmsg);
 		I2SA_REFRELE(sa);

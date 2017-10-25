@@ -148,7 +148,7 @@ union sockaddr_u_s;
 extern pthread_rwlock_t cfg_lock;
 extern config_t *config;
 
-void process_config(FILE *, boolean_t, bunyan_logger_t *);
+void process_config(FILE *, boolean_t);
 config_t *config_get(void);
 config_rule_t *config_get_rule(union sockaddr_u_s,
     union sockaddr_u_s);

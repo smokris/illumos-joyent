@@ -49,6 +49,7 @@ ikev2_pkt_new_exchange(ikev2_sa_t *i2sa, ikev2_exch_t exch_type)
 	pkt_t *pkt = NULL;
 	uint32_t msgid = 0;
 	uint8_t flags = 0;
+	char exchstr[IKEV2_ENUM_STRLEN] = { 0 };
 
 	VERIFY(MUTEX_HELD(&i2sa->i2sa_lock));
 
@@ -67,6 +68,14 @@ ikev2_pkt_new_exchange(ikev2_sa_t *i2sa, ikev2_exch_t exch_type)
 		i2sa->outmsgid--;
 		return (NULL);
 	}
+
+	(void) bunyan_key_add(log,
+	    BUNYAN_T_POINTER, LOG_KEY_REQ, pkt,
+	    BUNYAN_T_UINT32, LOG_KEY_MSGID, msgid,
+	    BUNYAN_T_STRING, LOG_KEY_EXCHTYPE,
+	    ikev2_exch_str(exch_type, exchstr, sizeof (exchstr)),
+	    BUNYAN_T_END);
+	(void) bunyan_key_remove(log, LOG_KEY_RESP);
 
 	pkt->pkt_sa = i2sa;
 	I2SA_REFHOLD(i2sa);
@@ -96,6 +105,14 @@ ikev2_pkt_new_response(const pkt_t *init)
 	if (pkt == NULL)
 		return (NULL);
 
+	/*
+	 * The other packet keys should already be set from the initiating
+	 * packet.
+	 */
+	(void) bunyan_key_add(log,
+	    BUNYAN_T_POINTER, LOG_KEY_RESP, pkt,
+	    BUNYAN_T_END);
+
 	pkt->pkt_sa = init->pkt_sa;
 	I2SA_REFHOLD(pkt->pkt_sa);
 	return (pkt);
@@ -105,6 +122,7 @@ ikev2_pkt_new_response(const pkt_t *init)
 pkt_t *
 ikev2_pkt_new_inbound(void *restrict buf, size_t buflen)
 {
+	const char		*pktkey = NULL;
 	const ike_header_t	*hdr = NULL;
 	pkt_t			*pkt = NULL;
 	size_t			*counts = NULL;
@@ -114,14 +132,24 @@ ikev2_pkt_new_inbound(void *restrict buf, size_t buflen)
 
 	VERIFY(IS_WORKER);
 
-	(void) bunyan_trace(worker->w_log, "Creating new inbound IKEV2 packet",
+	(void) bunyan_trace(log, "Creating new inbound IKEV2 packet",
 	    BUNYAN_T_END);
 
 	VERIFY(IS_P2ALIGNED(buf, sizeof (uint64_t)));
 
 	hdr = (const ike_header_t *)buf;
 
-	ASSERT(IKE_GET_MAJORV(hdr->version) == IKE_GET_MAJORV(IKEV2_VERSION));
+	VERIFY3U(IKE_GET_MAJORV(hdr->version), ==,
+	    IKE_GET_MAJORV(IKEV2_VERSION));
+
+	pktkey = (hdr->flags & IKEV2_FLAG_RESPONSE) ?
+	    LOG_KEY_RESP : LOG_KEY_REQ;
+	(void) ikev2_exch_str(hdr->exch_type, exch, sizeof (exch));
+
+	/* These are added early in case there is an error */
+	(void) bunyan_key_add(log,
+	    BUNYAN_T_STRING, LOG_KEY_EXCHTYPE, exch,
+	    BUNYAN_T_END);
 
 	switch ((ikev2_exch_t)hdr->exch_type) {
 	case IKEV2_EXCH_IKE_SA_INIT:
@@ -134,17 +162,16 @@ ikev2_pkt_new_inbound(void *restrict buf, size_t buflen)
 	case IKEV2_EXCH_GSA_REGISTRATION:
 	case IKEV2_EXCH_GSA_REKEY:
 	default:
-		(void) bunyan_info(worker->w_log,
-		    "Unknown/unsupported exchange type",
-		    BUNYAN_T_STRING, "exch_type",
-		    ikev2_exch_str(hdr->exch_type, exch, sizeof (exch)),
+		(void) bunyan_info(log, "Unknown/unsupported exchange type",
 		    BUNYAN_T_END);
 		return (NULL);
 	}
 
-	/* pkt_in_alloc() will log any errors messages */
+	/* pkt_in_alloc() will log any error messages */
 	if ((pkt = pkt_in_alloc(buf, buflen)) == NULL)
 		return (NULL);
+
+	(void) bunyan_key_add(log, BUNYAN_T_POINTER, pktkey, pkt, BUNYAN_T_END);
 
 	if (!check_payloads(pkt)) {
 		ikev2_pkt_free(pkt);
@@ -163,8 +190,7 @@ ikev2_pkt_new_inbound(void *restrict buf, size_t buflen)
  */
 boolean_t
 ikev2_walk_proposals(uint8_t *restrict start, size_t len,
-    ikev2_prop_cb_t cb, void *restrict cookie,
-    bunyan_logger_t *restrict l, boolean_t quiet)
+    ikev2_prop_cb_t cb, void *restrict cookie, boolean_t quiet)
 {
 	uint8_t *ptr = start, *end = start + len;
 	while (ptr < end) {
@@ -174,7 +200,7 @@ ikev2_walk_proposals(uint8_t *restrict start, size_t len,
 
 		if (ptr + sizeof (prop) > end) {
 			if (!quiet) {
-				(void) bunyan_error(l,
+				(void) bunyan_error(log,
 				    "Proposal length mismatch",
 				    BUNYAN_T_END);
 			}
@@ -186,7 +212,7 @@ ikev2_walk_proposals(uint8_t *restrict start, size_t len,
 
 		if (ptr + prop.proto_length > end) {
 			if (!quiet) {
-				(void) bunyan_error(l,
+				(void) bunyan_error(log,
 				    "Proposal overruns SA payload",
 				    BUNYAN_T_UINT32, "propnum",
 				    (uint32_t)prop.proto_proposalnr,
@@ -198,7 +224,7 @@ ikev2_walk_proposals(uint8_t *restrict start, size_t len,
 
 		if (sizeof (prop) + prop.proto_spisize > prop.proto_length) {
 			if (!quiet) {
-				(void) bunyan_error(l,
+				(void) bunyan_error(log,
 				    "SPI length overruns proposal length",
 				    BUNYAN_T_UINT32, "proplen",
 				    (uint32_t)prop.proto_length,
@@ -212,7 +238,7 @@ ikev2_walk_proposals(uint8_t *restrict start, size_t len,
 		if (ptr + prop.proto_length == end) {
 			if (prop.proto_more != IKEV2_PROP_LAST) {
 				if (!quiet) {
-					(void) bunyan_error(l,
+					(void) bunyan_error(log,
 					    "Last proposal does not have "
 					    "IKEV2_PROP_LAST set",
 					    BUNYAN_T_END);
@@ -222,7 +248,7 @@ ikev2_walk_proposals(uint8_t *restrict start, size_t len,
 		} else {
 			if (prop.proto_more != IKEV2_PROP_MORE) {
 				if (!quiet) {
-					(void) bunyan_error(l,
+					(void) bunyan_error(log,
 					    "Non-last proposal does not "
 					    "have IKEV2_PROP_MORE set",
 					    BUNYAN_T_END);
@@ -235,7 +261,7 @@ ikev2_walk_proposals(uint8_t *restrict start, size_t len,
 
 		if (!pkt_get_spi(&ptr, prop.proto_spisize, &spi)) {
 			if (!quiet) {
-				(void) bunyan_error(l,
+				(void) bunyan_error(log,
 				    "Unsupported SPI length",
 				    BUNYAN_T_UINT32, "spisize",
 				    (uint32_t)prop.proto_spisize,
@@ -257,7 +283,7 @@ ikev2_walk_proposals(uint8_t *restrict start, size_t len,
 
 boolean_t
 ikev2_walk_xfs(uint8_t *restrict start, size_t len, ikev2_xf_cb_t cb,
-    void *restrict cookie, bunyan_logger_t *restrict l)
+    void *restrict cookie)
 {
 	uint8_t *ptr = start, *end = start + len;
 
@@ -267,7 +293,7 @@ ikev2_walk_xfs(uint8_t *restrict start, size_t len, ikev2_xf_cb_t cb,
 		size_t attrlen = 0;
 
 		if (ptr + sizeof (xf) > end) {
-			bunyan_error(l, "Transform length mismatch",
+			(void) bunyan_error(log, "Transform length mismatch",
 			    BUNYAN_T_END);
 			return (B_FALSE);
 		}
@@ -277,20 +303,22 @@ ikev2_walk_xfs(uint8_t *restrict start, size_t len, ikev2_xf_cb_t cb,
 		xf.xf_id = ntohs(xf.xf_id);
 
 		if (ptr + xf.xf_length > end) {
-			bunyan_error(l, "Transform overruns SA payload",
-			    BUNYAN_T_END);
+			(void) bunyan_error(log,
+			    "Transform overruns SA payload", BUNYAN_T_END);
 			return (B_FALSE);
 		}
 
 		if (ptr + xf.xf_length == end) {
 			if (xf.xf_more != IKEV2_XF_LAST) {
-				bunyan_error(l, "Last transform does not have "
+				(void) bunyan_error(log,
+				    "Last transform does not have "
 				    "IKEV2_XF_LAST set", BUNYAN_T_END);
 				return (B_FALSE);
 			}
 		} else {
 			if (xf.xf_more != IKEV2_XF_MORE) {
-				bunyan_error(l, "Non-last transform does not "
+				(void) bunyan_error(log,
+				    "Non-last transform does not "
 				    "have IKEV2_XF_MORE set", BUNYAN_T_END);
 				return (B_FALSE);
 			}
@@ -311,8 +339,7 @@ ikev2_walk_xfs(uint8_t *restrict start, size_t len, ikev2_xf_cb_t cb,
 
 boolean_t
 ikev2_walk_xfattrs(uint8_t *restrict start, size_t len, ikev2_xfattr_cb_t cb,
-    ikev2_xf_type_t xftype, uint16_t xfid, void *restrict cookie,
-    bunyan_logger_t *restrict l)
+    ikev2_xf_type_t xftype, uint16_t xfid, void *restrict cookie)
 {
 	uint8_t *ptr = start, *end = start + len;
 
@@ -321,7 +348,7 @@ ikev2_walk_xfattrs(uint8_t *restrict start, size_t len, ikev2_xfattr_cb_t cb,
 		ikev2_attribute_t attr = { 0 };
 
 		if (ptr + sizeof (attr) > end) {
-			(void) bunyan_error(l,
+			(void) bunyan_error(log,
 			    "Attribute length overruns end of transform",
 			    BUNYAN_T_END);
 			return (B_FALSE);
@@ -337,7 +364,7 @@ ikev2_walk_xfattrs(uint8_t *restrict start, size_t len, ikev2_xfattr_cb_t cb,
 			amt = ntohs(attr.attr_length);
 
 		if (amt < sizeof (attr)) {
-			(void) bunyan_error(l,
+			(void) bunyan_error(log,
 			    "Attribute TLV value less than minimum",
 			    BUNYAN_T_UINT32, "val", (uint32_t)amt,
 			    BUNYAN_T_UINT32, "min", (uint32_t)sizeof (attr),
@@ -346,7 +373,7 @@ ikev2_walk_xfattrs(uint8_t *restrict start, size_t len, ikev2_xfattr_cb_t cb,
 		}
 
 		if (ptr + amt > end) {
-			(void) bunyan_error(l,
+			(void) bunyan_error(log,
 			    "Attribute value overruns end of transform",
 			    BUNYAN_T_END);
 			return (B_FALSE);
@@ -484,7 +511,6 @@ ikev2_add_xf_encr(pkt_sa_state_t *pss, ikev2_xf_encr_t encr, uint16_t minbits,
 boolean_t
 ikev2_add_ke(pkt_t *restrict pkt, ikev2_dh_t group, CK_OBJECT_HANDLE key)
 {
-	bunyan_logger_t		*l = pkt->pkt_sa->i2sa_log;
 	ikev2_ke_t		ke = { 0 };
 	CK_SESSION_HANDLE	h = p11h();
 	CK_ULONG		keylen = 0;
@@ -497,14 +523,15 @@ ikev2_add_ke(pkt_t *restrict pkt, ikev2_dh_t group, CK_OBJECT_HANDLE key)
 
 	rc = C_GetAttributeValue(h, key, &template, 1);
 	if (rc != CKR_OK) {
-		PKCS11ERR(error, l, "C_GetAttributeValue", rc);
+		PKCS11ERR(error, "C_GetAttributeValue", rc);
 		return (B_FALSE);
 	}
 	keylen = template.ulValueLen;
 
 	if (!ikev2_add_payload(pkt, IKEV2_PAYLOAD_KE, B_FALSE,
 	    sizeof (ke) + keylen)) {
-		bunyan_error(l, "Not enough space in packet for DH pubkey",
+		(void) bunyan_error(log,
+		    "Not enough space in packet for DH pubkey",
 		    BUNYAN_T_UINT64, "keylen", (uint64_t)keylen,
 		    BUNYAN_T_END);
 		return (B_FALSE);
@@ -519,7 +546,7 @@ ikev2_add_ke(pkt_t *restrict pkt, ikev2_dh_t group, CK_OBJECT_HANDLE key)
 
 	rc = C_GetAttributeValue(h, key, &template, 1);
 	if (rc != CKR_OK) {
-		PKCS11ERR(error, l, "C_GetAttributeValue", rc);
+		PKCS11ERR(error, "C_GetAttributeValue", rc);
 		return (B_FALSE);
 	}
 	pkt->pkt_ptr += keylen;
@@ -532,7 +559,7 @@ ikev2_add_id_common(pkt_t *restrict pkt, boolean_t id_i, ikev2_id_type_t idtype,
     va_list ap)
 {
 	ikev2_id_t		id = { 0 };
-	ikev2_pay_type_t 	paytype =
+	ikev2_pay_type_t	paytype =
 	    (id_i) ? IKEV2_PAYLOAD_IDi : IKEV2_PAYLOAD_IDr;
 	const uint8_t		*data;
 	size_t			len = 0;
@@ -684,8 +711,7 @@ ikev2_add_nonce(pkt_t *restrict pkt, uint8_t *restrict nonce, size_t len)
 		 */
 		CTASSERT(IKEV2_NONCE_MAX <= 256);
 		if (getentropy(pkt->pkt_ptr, len) != 0) {
-			STDERR(error, pkt->pkt_sa->i2sa_log,
-			    "error generating random nonce");
+			STDERR(error, "error generating random nonce");
 			return (B_FALSE);
 		}
 
@@ -957,13 +983,13 @@ add_iv(pkt_t *restrict pkt)
 
 	rc = C_EncryptInit(h, &mech, key);
 	if (rc != CKR_OK) {
-		PKCS11ERR(error, sa->i2sa_log, "C_EncryptInit", rc);
+		PKCS11ERR(error, "C_EncryptInit", rc);
 		return (B_FALSE);
 	}
 
 	rc = C_Encrypt(h, buf, blocklen, buf, &blocklen);
 	if (rc != CKR_OK) {
-		PKCS11ERR(error, sa->i2sa_log, "C_Encrypt", rc);
+		PKCS11ERR(error, "C_Encrypt", rc);
 		return (B_FALSE);
 	}
 
@@ -1042,7 +1068,7 @@ ikev2_pkt_encryptdecrypt(pkt_t *pkt, boolean_t encrypt)
 	} else {
 		/* Otherwise check first */
 		if (sk->pp_len != ivlen + datalen + icvlen) {
-			bunyan_info(sa->i2sa_log,
+			(void) bunyan_info(log,
 			    "Encrypted payload invalid length",
 			    BUNYAN_T_UINT32, "paylen", (uint32_t)sk->pp_len,
 			    BUNYAN_T_UINT32, "ivlen", (uint32_t)ivlen,
@@ -1105,7 +1131,7 @@ ikev2_pkt_encryptdecrypt(pkt_t *pkt, boolean_t encrypt)
 		rc = C_DecryptInit(h, &mech, key);
 	}
 	if (rc != CKR_OK) {
-		PKCS11ERR(error, sa->i2sa_log, fn, rc);
+		PKCS11ERR(error, fn, rc);
 		return (B_FALSE);
 	}
 
@@ -1117,7 +1143,7 @@ ikev2_pkt_encryptdecrypt(pkt_t *pkt, boolean_t encrypt)
 		rc = C_Decrypt(h, data, datalen, data, &outlen);
 	}
 	if (rc != CKR_OK) {
-		PKCS11ERR(error, sa->i2sa_log, "C_Encrypt", rc,
+		PKCS11ERR(error, "C_Encrypt", rc,
 		    BUNYAN_T_UINT64, "outlen", (uint64_t)outlen,
 		    BUNYAN_T_END);
 		return (B_FALSE);
@@ -1143,7 +1169,7 @@ ikev2_pkt_encryptdecrypt(pkt_t *pkt, boolean_t encrypt)
 			if (pad[i] == padlen)
 				continue;
 
-			(void) bunyan_warn(sa->i2sa_log,
+			(void) bunyan_warn(log,
 			    "Padding validation failed",
 			    BUNYAN_T_UINT32, "padlen", (uint32_t)padlen,
 			    BUNYAN_T_UINT32, "offset", (uint32_t)i,
@@ -1155,8 +1181,7 @@ ikev2_pkt_encryptdecrypt(pkt_t *pkt, boolean_t encrypt)
 
 	ike_payload_t *skpay = pkt_idx_to_payload(sk);
 
-	if (!pkt_index_payloads(pkt, data, datalen, skpay->pay_next,
-	    sa->i2sa_log))
+	if (!pkt_index_payloads(pkt, data, datalen, skpay->pay_next))
 		return (B_FALSE);
 
 	return (B_TRUE);
@@ -1196,13 +1221,13 @@ ikev2_pkt_signverify(pkt_t *pkt, boolean_t sign)
 
 	rc = C_SignInit(h, &mech, key);
 	if (rc != CKR_OK) {
-		PKCS11ERR(error, sa->i2sa_log, "C_SignInit", rc);
+		PKCS11ERR(error, "C_SignInit", rc);
 		return (B_FALSE);
 	}
 
 	rc = C_Sign(h, pkt_start(pkt), signlen, outbuf, &outlen);
 	if (rc != CKR_OK) {
-		PKCS11ERR(error, sa->i2sa_log, "C_Sign", rc);
+		PKCS11ERR(error, "C_Sign", rc);
 		return (B_FALSE);
 	}
 
@@ -1214,7 +1239,7 @@ ikev2_pkt_signverify(pkt_t *pkt, boolean_t sign)
 	if (memcmp(icv, outbuf, auth_data[sa->auth].ad_icvlen) == 0)
 		return (B_TRUE);
 
-	(void) bunyan_warn(sa->i2sa_log, "Payload signature validation failed",
+	(void) bunyan_warn(log, "Payload signature validation failed",
 	    BUNYAN_T_END);
 	return (B_FALSE);
 }
@@ -1252,7 +1277,7 @@ ikev2_pkt_done(pkt_t *pkt)
 		padlen = blocklen - ((datalen + 1) % blocklen);
 
 	if (pkt_write_left(pkt) < padlen + 1 + icvlen) {
-		bunyan_info(sa->i2sa_log, "Not enough space for packet",
+		(void) bunyan_info(log, "Not enough space for packet",
 		    BUNYAN_T_END);
 		goto done;
 	}
@@ -1320,7 +1345,7 @@ check_payloads(pkt_t *pkt)
 
 	if (pkt_header(pkt)->exch_type != IKEV2_EXCH_IKE_SA_INIT) {
 		if (PAYCOUNT(IKEV2_PAYLOAD_SK) == 0) {
-			ikev2_pkt_log(pkt, log, BUNYAN_L_INFO,
+			ikev2_pkt_log(pkt, BUNYAN_L_INFO,
 			    "Non IKE_SA_INIT exchange is missing SK payload");
 			return (B_FALSE);
 		}
@@ -1333,7 +1358,7 @@ check_payloads(pkt_t *pkt)
 	if ((pkt_header(pkt)->flags & IKEV2_FLAG_RESPONSE) &&
 	    (pkt_header(pkt)->responder_spi == 0)) {
 		if (PAYCOUNT(IKEV2_PAYLOAD_SA) > 0) {
-			ikev2_pkt_log(pkt, log, BUNYAN_L_INFO,
+			ikev2_pkt_log(pkt, BUNYAN_L_INFO,
 			    "IKE_SA_INIT error response contains SA payload");
 			return (B_FALSE);
 		}
@@ -1433,8 +1458,7 @@ static struct {
 };
 
 void
-ikev2_pkt_log(pkt_t *restrict pkt, bunyan_logger_t *restrict log,
-    bunyan_level_t level, const char *msg)
+ikev2_pkt_log(pkt_t *restrict pkt, bunyan_level_t level, const char *msg)
 {
 	ike_header_t *hdr = pkt_header(pkt);
 	char *descstr = ikev2_pkt_desc(pkt);

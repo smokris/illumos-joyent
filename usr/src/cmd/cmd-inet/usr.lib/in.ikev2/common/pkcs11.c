@@ -204,24 +204,24 @@ pkcs11_init(void)
 	    NULL));
 
 	if ((rv = C_Initialize(&args)) != CKR_OK) {
-		PKCS11ERR(fatal, log, "C_Initialize", rv);
+		PKCS11ERR(fatal, "C_Initialize", rv);
 		exit(EXIT_FAILURE);
 	}
 
 	if ((rv = C_GetInfo(&pkcs11_info)) != CKR_OK) {
-		PKCS11ERR(fatal, log, "C_Info", rv);
+		PKCS11ERR(fatal, "C_Info", rv);
 		exit(EXIT_FAILURE);
 	}
 
 	if ((rv = C_GetSlotList(CK_FALSE, NULL, &nslot)) != CKR_OK) {
-		PKCS11ERR(fatal, log, "C_GetSlotList", rv);
+		PKCS11ERR(fatal, "C_GetSlotList", rv);
 		exit(EXIT_FAILURE);
 	}
 
 	CK_SLOT_ID slots[nslot];
 
 	if ((rv = C_GetSlotList(CK_FALSE, slots, &nslot)) != CKR_OK) {
-		PKCS11ERR(fatal, log, "C_GetSlotList", rv);
+		PKCS11ERR(fatal, "C_GetSlotList", rv);
 		exit(EXIT_FAILURE);
 	}
 
@@ -265,7 +265,7 @@ log_slotinfo(CK_SLOT_ID slot)
 
 	rv = C_GetSlotInfo(slot, &info);
 	if (rv != CKR_OK) {
-		PKCS11ERR(error, log, "C_GetSlotInfo", rv);
+		PKCS11ERR(error, "C_GetSlotInfo", rv);
 		return;
 	}
 
@@ -303,7 +303,7 @@ log_slotinfo(CK_SLOT_ID slot)
 	CK_TOKEN_INFO tinfo = { 0 };
 	rv = C_GetTokenInfo(slot, &tinfo);
 	if (rv != CKR_OK)
-		PKCS11ERR(error, log, "C_GetTokenInfo", rv);
+		PKCS11ERR(error, "C_GetTokenInfo", rv);
 
 	char label[PKCS11_LABEL_LEN];
 	char model[PKCS11_MODEL_LEN];
@@ -361,7 +361,7 @@ pkcs11_fini(void)
 	for (size_t i = 0; i < pkcs11_nhandles; i++) {
 		rv = C_CloseSession(pkcs11_handles[i]);
 		if (rv != CKR_OK)
-			PKCS11ERR(error, log, "C_CloseSession", rv);
+			PKCS11ERR(error, "C_CloseSession", rv);
 	}
 	free(pkcs11_handles);
 	pkcs11_handles = NULL;
@@ -370,7 +370,7 @@ pkcs11_fini(void)
 
 	rv = C_Finalize(NULL_PTR);
 	if (rv != CKR_OK)
-		PKCS11ERR(error, log, "C_Finalize", rv);
+		PKCS11ERR(error, "C_Finalize", rv);
 }
 
 size_t
@@ -390,8 +390,7 @@ ikev2_auth_icv_size(ikev2_xf_encr_t encr, ikev2_xf_auth_t auth)
  * Destroy a PKCS#11 object with nicer error messages in case of failure.
  */
 void
-pkcs11_destroy_obj(const char *name, CK_OBJECT_HANDLE_PTR objp,
-    bunyan_logger_t *l)
+pkcs11_destroy_obj(const char *name, CK_OBJECT_HANDLE_PTR objp)
 {
 	CK_RV ret;
 
@@ -399,7 +398,7 @@ pkcs11_destroy_obj(const char *name, CK_OBJECT_HANDLE_PTR objp,
 		return;
 
 	if ((ret = C_DestroyObject(p11h(), *objp)) != CKR_OK) {
-		PKCS11ERR(error, (l == NULL) ? log : l, "C_DestroyObject", ret,
+		PKCS11ERR(error, "C_DestroyObject", ret,
 		    BUNYAN_T_STRING, "objname", name);
 	} else {
 		*objp = CK_INVALID_HANDLE;
@@ -444,7 +443,7 @@ pkcs11_session_free(CK_SESSION_HANDLE h)
 		nh = recallocarray(pkcs11_handles, pkcs11_handlesz, newamt,
 		    sizeof (CK_SESSION_HANDLE));
 		if (nh == NULL) {
-			STDERR(error, log,
+			STDERR(error,
 			    "recallocarray failed; PKCS#11 session handles"
 			    "will leak");
 			mutex_exit(&pkcs11_handle_lock);
@@ -489,7 +488,7 @@ pkcs11_new_session(void)
 	    pkcs11_callback_handler, &h);
 
 	if (ret != CKR_OK) {
-		PKCS11ERR(error, log, "C_OpenSession", ret);
+		PKCS11ERR(error, "C_OpenSession", ret);
 		return (CK_INVALID_HANDLE);
 	}
 

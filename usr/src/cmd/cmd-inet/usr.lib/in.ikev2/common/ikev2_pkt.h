@@ -102,14 +102,13 @@ typedef boolean_t (*ikev2_xfattr_cb_t)(ikev2_xf_type_t, uint16_t,
     ikev2_attribute_t *, void *);
 
 boolean_t ikev2_walk_proposals(uint8_t *restrict, size_t, ikev2_prop_cb_t,
-    void *restrict, bunyan_logger_t *restrict, boolean_t);
+    void *restrict, boolean_t);
 boolean_t ikev2_walk_xfs(uint8_t *restrict, size_t, ikev2_xf_cb_t,
-    void *restrict, bunyan_logger_t *restrict);
+    void *restrict);
 boolean_t ikev2_walk_xfattrs(uint8_t *restrict, size_t, ikev2_xfattr_cb_t,
-    ikev2_xf_type_t, uint16_t, void *restrict, bunyan_logger_t *restrict);
+    ikev2_xf_type_t, uint16_t, void *restrict);
 
-void ikev2_pkt_log(pkt_t *restrict, bunyan_logger_t *restrict, bunyan_level_t,
-    const char *);
+void ikev2_pkt_log(pkt_t *restrict, bunyan_level_t, const char *);
 
 char *ikev2_pkt_desc(pkt_t *);
 ikev2_dh_t ikev2_get_dhgrp(pkt_t *);

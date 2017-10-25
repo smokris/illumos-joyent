@@ -79,7 +79,7 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 	VERIFY(!(sa->flags & I2SA_INITIATOR));
 	VERIFY3P(ke_i, !=, NULL);
 
-	(void) bunyan_info(sa->i2sa_log,
+	(void) bunyan_info(log,
 	    "Starting new IKE_SA_INIT exchange as responder",
 	    BUNYAN_T_END);
 
@@ -138,11 +138,10 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 	 * generating them is a potentially an expensive operation, we wait
 	 * until necessary to create them.
 	 */
-	if (!dh_genpair(sa_result.sar_dh, &sa->dh_pubkey, &sa->dh_privkey,
-	    sa->i2sa_log))
+	if (!dh_genpair(sa_result.sar_dh, &sa->dh_pubkey, &sa->dh_privkey))
 		goto fail;
 	if (!dh_derivekey(sa->dh_privkey, ke_i->pp_ptr + sizeof (ikev2_ke_t),
-	    ke_i->pp_len - sizeof (ikev2_ke_t), &sa->dh_key, sa->i2sa_log))
+	    ke_i->pp_len - sizeof (ikev2_ke_t), &sa->dh_key))
 		goto fail;
 	if (!ikev2_add_ke(resp, sa_result.sar_dh, sa->dh_pubkey))
 		goto fail;
@@ -174,14 +173,14 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 	 * sent our response (a new one may optionally be created for a
 	 * CREATE_CHILD_SA exchange).
 	 */
-	pkcs11_destroy_obj("dh_pubkey", &sa->dh_pubkey, sa->i2sa_log);
-	pkcs11_destroy_obj("dh_privkey", &sa->dh_privkey, sa->i2sa_log);
-	pkcs11_destroy_obj("gir", &sa->dh_key, sa->i2sa_log);
+	pkcs11_destroy_obj("dh_pubkey", &sa->dh_pubkey);
+	pkcs11_destroy_obj("dh_privkey", &sa->dh_privkey);
+	pkcs11_destroy_obj("gir", &sa->dh_key);
 	sa->init_r = resp;
 	return;
 
 fail:
-	(void) bunyan_error(sa->i2sa_log,
+	(void) bunyan_error(log,
 	    "Could not send response in IKE_SA_INIT exchange",
 	    BUNYAN_T_END);
 
@@ -221,7 +220,7 @@ redo_init(pkt_t *pkt)
 			/*
 			 * The notification does not have the correct format
 			 */
-			(void) bunyan_info(sa->i2sa_log,
+			(void) bunyan_info(log,
 			    "INVALID_KE_PAYLOAD notification does not "
 			    "include a 16-bit DH group payload",
 			    BUNYAN_T_UINT32, "ntfylen",
@@ -257,7 +256,7 @@ ikev2_sa_init_inbound_resp(pkt_t *pkt)
 	ikev2_auth_type_t authmethod;
 
 	if (pkt_get_notify(pkt, IKEV2_N_NO_PROPOSAL_CHOSEN, NULL) != NULL) {
-		(void) bunyan_error(sa->i2sa_log,
+		(void) bunyan_error(log,
 		    "IKE_SA_INIT exchange failed, no proposal chosen",
 		    BUNYAN_T_END);
 		ikev2_sa_condemn(sa);
@@ -284,7 +283,7 @@ ikev2_sa_init_inbound_resp(pkt_t *pkt)
 	}
 
 	if (!dh_derivekey(sa->dh_privkey, ke_r->pp_ptr, ke_r->pp_len,
-	    &sa->dh_key, sa->i2sa_log))
+	    &sa->dh_key))
 		goto fail;
 	if (!ikev2_sa_keygen(&sa_result, sa->init_i, pkt))
 		goto fail;
@@ -349,7 +348,7 @@ do_sa_init_outbound(ikev2_sa_t *restrict i2sa, uint8_t *restrict cookie,
 	sockaddr_u_t raddr = { .sau_ss = &i2sa->raddr };
 
 	if (nonce == NULL) {
-		(void) bunyan_info(i2sa->i2sa_log,
+		(void) bunyan_info(log,
 		    "Starting new IKE_SA_INIT exchange as initiator",
 		    BUNYAN_T_END);
 	}
@@ -368,15 +367,14 @@ do_sa_init_outbound(ikev2_sa_t *restrict i2sa, uint8_t *restrict cookie,
 		goto fail;
 
 	/* These will do nothing if there isn't an existing key */
-	pkcs11_destroy_obj("dh_pubkey", &i2sa->dh_pubkey, i2sa->i2sa_log);
-	pkcs11_destroy_obj("dh_privkey", &i2sa->dh_privkey, i2sa->i2sa_log);
+	pkcs11_destroy_obj("dh_pubkey", &i2sa->dh_pubkey);
+	pkcs11_destroy_obj("dh_privkey", &i2sa->dh_privkey);
 
 	/* Start with the first DH group in the first rule */
 	if (dh == IKEV2_DH_NONE)
 		dh = i2sa->i2sa_rule->rule_xf[0]->xf_dh;
 
-	if (!dh_genpair(dh, &i2sa->dh_pubkey, &i2sa->dh_privkey,
-	    i2sa->i2sa_log))
+	if (!dh_genpair(dh, &i2sa->dh_pubkey, &i2sa->dh_privkey))
 		goto fail;
 
 	if (!ikev2_add_ke(pkt, dh, i2sa->dh_pubkey))
@@ -425,16 +423,16 @@ find_config(pkt_t *pkt, sockaddr_u_t laddr, sockaddr_u_t raddr)
 
 done:
 	if (RULE_IS_DEFAULT(sa->i2sa_rule)) {
-		(void) bunyan_debug(sa->i2sa_log, "Using default rule",
+		(void) bunyan_debug(log, "Using default rule",
 		    BUNYAN_T_END);
 	} else {
-		(void) bunyan_debug(sa->i2sa_log, "Found rule",
+		(void) bunyan_debug(log, "Found rule",
 		    BUNYAN_T_STRING, "label", sa->i2sa_rule->rule_label,
 		    BUNYAN_T_END);
 	}
 
 	if (sa->i2sa_rule->rule_nxf == 0) {
-		(void) bunyan_debug(sa->i2sa_log, "No transforms found",
+		(void) bunyan_debug(log, "No transforms found",
 		    BUNYAN_T_END);
 		(void) ikev2_no_proposal_chosen(pkt, IKEV2_PROTO_IKE);
 		return (B_FALSE);
@@ -452,7 +450,7 @@ done:
 /* Compute a NAT detection payload and place result into buf */
 static boolean_t
 compute_nat(uint64_t *restrict spi, struct sockaddr_storage *restrict addr,
-    uint8_t *restrict buf, size_t buflen, bunyan_logger_t *l)
+    uint8_t *restrict buf, size_t buflen)
 {
 	const char *p11f = NULL;
 	CK_SESSION_HANDLE h = p11h();
@@ -500,7 +498,7 @@ compute_nat(uint64_t *restrict spi, struct sockaddr_storage *restrict addr,
 	return (B_TRUE);
 
 fail:
-	PKCS11ERR(error, l, p11f, ret);
+	PKCS11ERR(error, p11f, ret);
 	return (B_FALSE);
 }
 
@@ -567,7 +565,7 @@ check_nats(pkt_t *pkt)
 			continue;
 
 		if (!compute_nat(pkt->pkt_raw, params[i].addr, data,
-		    sizeof (data), sa->i2sa_log))
+		    sizeof (data)))
 			return (B_FALSE);
 
 		while (n != NULL) {
@@ -580,7 +578,7 @@ check_nats(pkt_t *pkt)
 			 * entirely?
 			 */
 			if (n->pn_proto != IKEV2_PROTO_IKE) {
-				(void) bunyan_error(sa->i2sa_log,
+				(void) bunyan_error(log,
 				    "Invalid SPI protocol in notification",
 				    BUNYAN_T_STRING, "notification",
 				    ikev2_notify_str(params[i].ntype, nstr,
@@ -593,7 +591,7 @@ check_nats(pkt_t *pkt)
 				return (B_FALSE);
 			}
 			if (n->pn_spi != 0) {
-				(void) bunyan_error(sa->i2sa_log,
+				(void) bunyan_error(log,
 				    "Non-zero SPI size in NAT notification",
 				    BUNYAN_T_STRING, "notification",
 				    ikev2_notify_str(params[i].ntype, nstr,
@@ -602,7 +600,7 @@ check_nats(pkt_t *pkt)
 				return (B_FALSE);
 			}
 			if (n->pn_len != NAT_LEN) {
-				(void) bunyan_error(sa->i2sa_log,
+				(void) bunyan_error(log,
 				    "NAT notification size mismatch",
 				    BUNYAN_T_STRING, "notification",
 				    ikev2_notify_str(params[i].ntype, nstr,
@@ -625,7 +623,7 @@ check_nats(pkt_t *pkt)
 
 		if (!match) {
 			sa->flags |= params[i].flag;
-			bunyan_debug(sa->i2sa_log, params[i].msg, BUNYAN_T_END);
+			(void) bunyan_debug(log, params[i].msg, BUNYAN_T_END);
 		}
 	}
 
@@ -693,7 +691,7 @@ add_nat(pkt_t *pkt)
 
 		/* The SPIs are always at the start of the packet */
 		if (!compute_nat(pkt->pkt_raw, params[i].addr, data,
-		    sizeof (data), sa->i2sa_log))
+		    sizeof (data)))
 			return (B_FALSE);
 
 		if (!ikev2_add_notify(pkt, IKEV2_PROTO_IKE, 0, params[i].ntype,
@@ -720,7 +718,7 @@ check_vendor(pkt_t *pkt)
 
 		if (memcmp(VENDOR_STR_ILLUMOS_1, pay->pp_ptr,
 		    sizeof (VENDOR_STR_ILLUMOS_1)) == 0) {
-			(void) bunyan_debug(sa->i2sa_log,
+			(void) bunyan_debug(log,
 			    "Found illumos_1 vendor payload", BUNYAN_T_END);
 			sa->vendor = VENDOR_ILLUMOS_1;
 		}
@@ -769,8 +767,7 @@ skeyseed_noncelen(ikev2_prf_t prf, size_t len)
 /* Create a PKCS#11 object of Ni | Nr */
 static boolean_t
 create_nonceobj(ikev2_prf_t prf, pkt_payload_t *restrict ni,
-    pkt_payload_t *restrict nr, CK_OBJECT_HANDLE_PTR restrict objp,
-    bunyan_logger_t *restrict l)
+    pkt_payload_t *restrict nr, CK_OBJECT_HANDLE_PTR restrict objp)
 {
 	size_t noncelen = MAX(ni->pp_len + nr->pp_len, ikev2_prf_outlen(prf));
 	uint8_t nonce[noncelen];
@@ -786,7 +783,7 @@ create_nonceobj(ikev2_prf_t prf, pkt_payload_t *restrict ni,
 	explicit_bzero(nonce, noncelen);
 
 	if (rc != CKR_OK)
-		PKCS11ERR(error, l, "SUNW_C_KeyToObject", rc,
+		PKCS11ERR(error, "SUNW_C_KeyToObject", rc,
 		    BUNYAN_T_STRING, "objname", "Ni|Nr");
 
 	return ((rc == CKR_OK) ? B_TRUE : B_FALSE);
@@ -816,13 +813,13 @@ create_skeyseed(ikev2_sa_t *restrict sa, CK_OBJECT_HANDLE nonce,
 	rc = pkcs11_ObjectToKey(h, sa->dh_key, (void **)&dh_key, &dh_key_len,
 	    B_FALSE);
 	if (rc != CKR_OK) {
-		PKCS11ERR(error, sa->i2sa_log, "pkcs11_ObjectToKey", rc,
+		PKCS11ERR(error, "pkcs11_ObjectToKey", rc,
 		    BUNYAN_T_STRING, "objname", "dh_key");
 		goto fail;
 	}
 
-	ok = prf(sa->prf, nonce, skeyseed, skeyseed_len, sa->i2sa_log, dh_key,
-	    dh_key_len, NULL);
+	ok = prf(sa->prf, nonce, skeyseed, skeyseed_len, dh_key, dh_key_len,
+	    NULL);
 	explicit_bzero(dh_key, dh_key_len);
 	free(dh_key);
 	dh_key = NULL;
@@ -837,12 +834,12 @@ create_skeyseed(ikev2_sa_t *restrict sa, CK_OBJECT_HANDLE nonce,
 	    skeyseed_len, keyp);
 	explicit_bzero(skeyseed, skeyseed_len);
 	if (rc != CKR_OK) {
-		PKCS11ERR(error, sa->i2sa_log, "SUNW_C_KeyToObject", rc,
+		PKCS11ERR(error, "SUNW_C_KeyToObject", rc,
 		    BUNYAN_T_STRING, "objname", "skeyseed");
 		goto fail;
 	}
 
-	(void) bunyan_trace(sa->i2sa_log, "Created SKEYSEED", BUNYAN_T_END);
+	(void) bunyan_trace(log, "Created SKEYSEED", BUNYAN_T_END);
 
 	return (B_TRUE);
 
@@ -885,13 +882,13 @@ ikev2_sa_keygen(ikev2_sa_result_t *restrict result, pkt_t *restrict init,
 	sa->saltlen = encr_data[result->sar_encr].ed_saltlen;
 	sa->encr_key_len = encrlen / NBBY;
 
-	if (!create_nonceobj(sa->prf, ni, nr, &nonce, sa->i2sa_log))
+	if (!create_nonceobj(sa->prf, ni, nr, &nonce))
 		goto fail;
 	if (!create_skeyseed(sa, nonce, &skeyseed))
 		goto fail;
-	pkcs11_destroy_obj("Ni|Nr", &nonce, sa->i2sa_log);
+	pkcs11_destroy_obj("Ni|Nr", &nonce);
 
-	if (!prfplus_init(&prfp, sa->prf, skeyseed, sa->i2sa_log,
+	if (!prfplus_init(&prfp, sa->prf, skeyseed,
 	    ni->pp_ptr, (size_t)ni->pp_len,
 	    nr->pp_ptr, (size_t)nr->pp_len,
 	    pkt_start(init), sizeof (uint64_t) * 2, NULL))
@@ -917,14 +914,14 @@ ikev2_sa_keygen(ikev2_sa_result_t *restrict result, pkt_t *restrict init,
 	if (!prf_to_p11key(&prfp, "SK_pr", p11prf, prflen, &sa->sk_pr))
 		goto fail;
 
-	pkcs11_destroy_obj("Ni|Nr", &nonce, sa->i2sa_log);
-	pkcs11_destroy_obj("skeyseed", &skeyseed, sa->i2sa_log);
+	pkcs11_destroy_obj("Ni|Nr", &nonce);
+	pkcs11_destroy_obj("skeyseed", &skeyseed);
 	prfplus_fini(&prfp);
 	return (B_TRUE);
 
 fail:
-	pkcs11_destroy_obj("Ni|Nr", &nonce, sa->i2sa_log);
-	pkcs11_destroy_obj("skeyseed", &skeyseed, sa->i2sa_log);
+	pkcs11_destroy_obj("Ni|Nr", &nonce);
+	pkcs11_destroy_obj("skeyseed", &skeyseed);
 	prfplus_fini(&prfp);
 	return (B_FALSE);
 }

@@ -13,13 +13,17 @@
  * Copyright 2017 Joyent, Inc.
  */
 
+#include <arpa/inet.h>
 #include <dlfcn.h>
 #include <inttypes.h>
+#include <netinet/in.h>
 #include <port.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <thread.h>
 #include <umem.h>
+#include "ike.h"
 #include "defs.h"
 #include "ilist.h"
 
@@ -195,6 +199,99 @@ ss_addr(const struct sockaddr_storage *ss)
 		/*NOTREACHED*/
 		return (0);
 	}
+}
+
+static const char *log_keys[] = {
+	LOG_KEY_ERRMSG,
+	LOG_KEY_ERRNO,
+	LOG_KEY_FILE,
+	LOG_KEY_FUNC,
+	LOG_KEY_LINE,
+	LOG_KEY_I2SA,
+	LOG_KEY_LADDR,
+	LOG_KEY_RADDR,
+	LOG_KEY_LSPI,
+	LOG_KEY_RSPI,
+	LOG_KEY_INITIATOR,
+	LOG_KEY_REQ,
+	LOG_KEY_RESP,
+	LOG_KEY_VERSION,
+	LOG_KEY_MSGID,
+	LOG_KEY_EXCHTYPE,
+};
+
+void
+log_reset_keys(void)
+{
+	for (size_t i = 0; i < ARRAY_SIZE(log_keys); i++)
+		(void) bunyan_key_remove(log, log_keys[i]);
+}
+
+void
+key_add_ike_spi(const char *name, uint64_t spi)
+{
+	char buf[19] = { 0 };	/* 0x + 64bit hex + NUL */
+
+	(void) snprintf(buf, sizeof (buf), "0x016" PRIX64, spi);
+	(void) bunyan_key_add(log, BUNYAN_T_STRING, name, buf, BUNYAN_T_END);
+}
+
+void
+key_add_addr(const char *name, struct sockaddr_storage *addr)
+{
+	void *ptr = NULL;
+	sockaddr_u_t su = { .sau_ss = addr };
+	int af = addr->ss_family;
+	uint16_t port = 0;
+	char addrbuf[INET6_ADDRSTRLEN];
+
+	switch (af) {
+	case AF_INET:
+		ptr = &su.sau_sin->sin_addr;
+		port = ntohs(su.sau_sin->sin_port);
+		break;
+	case AF_INET6:
+		ptr = &su.sau_sin6->sin6_addr;
+		port = ntohs(su.sau_sin->sin_port);
+		break;
+	default:
+		INVALID(af);
+	}
+
+	if (inet_ntop(af, ptr, addrbuf, sizeof (addrbuf)) == NULL)
+		return;
+
+	if (port == 0) {
+		(void) bunyan_key_add(log,
+		    BUNYAN_T_STRING, name, addrbuf, BUNYAN_T_END);
+		return;
+	}
+
+	/* address + [ + ] + / + 16-bit port */
+	char buf[INET6_ADDRSTRLEN + 8];
+
+	switch (af) {
+	case AF_INET:
+		(void) snprintf(buf, sizeof (buf), "%s:%hu", addrbuf, port);
+		break;
+	case AF_INET6:
+		(void) snprintf(buf, sizeof (buf), "[%s]:%hu", addrbuf, port);
+		break;
+	default:
+		INVALID(af);
+	}
+
+	(void) bunyan_key_add(log, BUNYAN_T_STRING, name, buf, BUNYAN_T_END);
+}
+
+void
+key_add_ike_version(const char *name, uint8_t version)
+{
+	char buf[6] = { 0 }; /* NN.NN + NUL */
+
+	(void) snprintf(buf, sizeof (buf), "%hhu.%hhu", IKE_GET_MAJORV(version),
+	    IKE_GET_MINORV(version));
+	(void) bunyan_key_add(log, BUNYAN_T_STRING, name, buf, BUNYAN_T_END);
 }
 
 char *

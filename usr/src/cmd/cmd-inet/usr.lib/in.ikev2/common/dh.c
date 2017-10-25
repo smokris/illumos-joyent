@@ -341,7 +341,7 @@ dh_get_group(ikev2_dh_t id)
 
 boolean_t
 dh_genpair(ikev2_dh_t group, CK_OBJECT_HANDLE_PTR restrict pub,
-    CK_OBJECT_HANDLE_PTR restrict priv, bunyan_logger_t *restrict l)
+    CK_OBJECT_HANDLE_PTR restrict priv)
 {
 	dhgroup_t *dh;
 	CK_MECHANISM mech = { CKM_DH_PKCS_KEY_PAIR_GEN, NULL_PTR, 0 };
@@ -351,7 +351,7 @@ dh_genpair(ikev2_dh_t group, CK_OBJECT_HANDLE_PTR restrict pub,
 
 	dh = dh_get_group(group);
 	if (dh == NULL) {
-		bunyan_error(l, "Invalid DH group",
+		(void) bunyan_error(log, "Invalid DH group",
 		    BUNYAN_T_STRING, "dhgrp", ikev2_dh_str(group, buf,
 		    sizeof (buf)),
 		    BUNYAN_T_INT32, "val", (int32_t)group,
@@ -369,10 +369,10 @@ dh_genpair(ikev2_dh_t group, CK_OBJECT_HANDLE_PTR restrict pub,
 	rc = C_GenerateKeyPair(p11h(), &mech, template, ARRAY_SIZE(template),
 	    NULL_PTR, 0, pub, priv);
 	if (rc != CKR_OK) {
-		PKCS11ERR(error, l, "C_GenerateKeyPair", rc);
+		PKCS11ERR(error, "C_GenerateKeyPair", rc);
 		return (B_FALSE);
 	} else {
-		bunyan_trace(l, "Created DH keypair",
+		(void) bunyan_trace(log, "Created DH keypair",
 		    BUNYAN_T_UINT64, "pub_handle", (uint64_t)*pub,
 		    BUNYAN_T_UINT64, "priv_handle", (uint64_t)*priv,
 		    BUNYAN_T_END);
@@ -383,7 +383,7 @@ dh_genpair(ikev2_dh_t group, CK_OBJECT_HANDLE_PTR restrict pub,
 
 boolean_t
 dh_derivekey(CK_OBJECT_HANDLE privkey, uint8_t *restrict pub, size_t len,
-    CK_OBJECT_HANDLE_PTR restrict seckey, bunyan_logger_t *restrict l)
+    CK_OBJECT_HANDLE_PTR restrict seckey)
 {
 	CK_OBJECT_CLASS key_class = CKO_SECRET_KEY;
 	CK_KEY_TYPE key_type = CKK_GENERIC_SECRET;
@@ -402,7 +402,7 @@ dh_derivekey(CK_OBJECT_HANDLE privkey, uint8_t *restrict pub, size_t len,
 	rc = C_DeriveKey(p11h(), &mech, privkey, template,
 	    ARRAY_SIZE(template), seckey);
 	if (rc != CKR_OK) {
-		PKCS11ERR(error, l, "C_DeriveKey", rc);
+		PKCS11ERR(error, "C_DeriveKey", rc);
 		return (B_FALSE);
 	}
 	return (B_TRUE);

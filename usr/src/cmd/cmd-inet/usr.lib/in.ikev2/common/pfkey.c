@@ -26,7 +26,8 @@
  * Copyright 2017 Jason King.
  * Copyright (c) 2017, Joyent, Inc.
  */
-
+#include <alloca.h>
+#include <arpa/inet.h>
 #include <atomic.h>
 #include <bunyan.h>
 #include <errno.h>
@@ -37,6 +38,7 @@
 #include <sys/stropts.h>	/* For I_NREAD */
 #include <ipsec_util.h>
 #include <netdb.h>
+#include <netinet/in.h>
 #include <net/pfkeyv2.h>
 #include <port.h>
 #include <stdio.h>
@@ -79,6 +81,35 @@
  */
 #define	PFKEY_TIMEOUT	5	/* in seconds */
 
+#define	PFKEY_K_SRCADDR	"sadb_src_addr"
+#define	PFKEY_K_DSTADDR	"sadb_dst_addr"
+#define	PFKEY_K_ISRCADDR "sadb_inner_src_addr"
+#define	PFKEY_K_IDSTADDR "sadb_inner_dst_addr"
+#define	PFKEY_K_NLOC "sadb_natt_loc"
+#define	PFKEY_K_NREM "sadb_natt_rem"
+#define	PFKEY_K_SPI "sadb_sa_spi"
+#define	PFKEY_K_AUTH "sadb_sa_auth"
+#define	PFKEY_K_ENCR "sadb_sa_encr"
+
+#define	PFKEY_K_PORT "_port"
+
+static const char *pfkey_keys[] = {
+	PFKEY_K_SRCADDR,
+	PFKEY_K_DSTADDR,
+	PFKEY_K_ISRCADDR,
+	PFKEY_K_IDSTADDR,
+	PFKEY_K_NLOC,
+	PFKEY_K_NREM,
+	PFKEY_K_SRCADDR PFKEY_K_PORT,
+	PFKEY_K_DSTADDR PFKEY_K_PORT,
+	PFKEY_K_ISRCADDR PFKEY_K_PORT,
+	PFKEY_K_IDSTADDR PFKEY_K_PORT,
+	PFKEY_K_NLOC PFKEY_K_PORT,
+	PFKEY_K_NREM PFKEY_K_PORT,
+	PFKEY_K_AUTH,
+	PFKEY_K_ENCR,
+};
+
 typedef struct pfreq {
 	list_node_t	pr_node;
 	uint32_t	pr_msgid;
@@ -87,8 +118,6 @@ typedef struct pfreq {
 	sadb_msg_t	*pr_msg;
 	boolean_t	pr_recv;
 } pfreq_t;
-
-static bunyan_logger_t	*pflog;
 
 /* pfreq lock protects pfreq_list */
 static mutex_t	pfreq_lock = ERRORCHECKMUTEX;
@@ -245,7 +274,7 @@ pfkey_arm(int s)
 {
 	/* At this point, we can safely re-schedule the socket for reading. */
 	if (port_associate(pfport, PORT_SOURCE_FD, s, POLLIN, NULL) < 0) {
-		STDERR(error, pflog, "port_associate() failed",
+		STDERR(error, "port_associate() failed",
 		    BUNYAN_T_INT32, "fd", (int32_t)s, BUNYAN_T_END);
 		exit(EXIT_FAILURE);
 	}
@@ -259,16 +288,16 @@ pfkey_inbound(int s)
 	int length;
 
 	if (ioctl(s, I_NREAD, &length) < 0) {
-		STDERR(error, pflog, "ioctl(I_NREAD) failed");
+		STDERR(error, "ioctl(I_NREAD) failed");
 		pfkey_arm(s);
 		return;
 	}
 
 	if (length == 0) {
-		bunyan_info(pflog, "ioctl: zero length message",
-		    BUNYAN_T_STRING, BLOG_KEY_FUNC, __func__,
-		    BUNYAN_T_STRING, BLOG_KEY_FILE, __FILE__,
-		    BUNYAN_T_INT32, BLOG_KEY_LINE, __LINE__,
+		(void) bunyan_info(log, "ioctl: zero length message",
+		    BUNYAN_T_STRING, LOG_KEY_FUNC, __func__,
+		    BUNYAN_T_STRING, LOG_KEY_FILE, __FILE__,
+		    BUNYAN_T_INT32, LOG_KEY_LINE, __LINE__,
 		    BUNYAN_T_END);
 		pfkey_arm(s);
 		return;
@@ -276,7 +305,7 @@ pfkey_inbound(int s)
 
 	samsg = malloc(length);
 	if (samsg == NULL) {
-		bunyan_error(pflog, "No memory for pfkey message",
+		(void) bunyan_error(log, "No memory for pfkey message",
 		    BUNYAN_T_END);
 		pfkey_arm(s);
 		return;
@@ -285,7 +314,7 @@ pfkey_inbound(int s)
 	rc = read(s, samsg, length);
 	if (rc <= 0) {
 		if (rc == -1) {
-			STDERR(error, pflog, "read failed");
+			STDERR(error, "read failed");
 			/* XXX: Should I exit()? */
 		}
 		free(samsg);
@@ -296,7 +325,7 @@ pfkey_inbound(int s)
 	/* At this point, we can safely re-schedule the socket for reading. */
 	pfkey_arm(s);
 
-	sadb_log(pflog, BUNYAN_L_DEBUG, "SADB message received", samsg);
+	sadb_log(BUNYAN_L_DEBUG, "SADB message received", samsg);
 
 	/*
 	 * XXX KEBE SAYS for now don't print the full inbound message.  An
@@ -315,7 +344,7 @@ pfkey_inbound(int s)
 	 * Silently pitch the message if it's an error reply to someone else.
 	 */
 	if (samsg->sadb_msg_errno != 0) {
-		(void) bunyan_debug(pflog, "Reply not for us, dropped",
+		(void) bunyan_debug(log, "Reply not for us, dropped",
 		    BUNYAN_T_END);
 		free(samsg);
 		return;
@@ -354,7 +383,7 @@ pfkey_inbound(int s)
 		return;
 	}
 
-	bunyan_debug(pflog, "SADB message type unknown, ignored.",
+	(void) bunyan_debug(log, "SADB message type unknown, ignored.",
 	    BUNYAN_T_UINT32, "msg_type_val", (uint32_t)samsg->sadb_msg_type,
 	    BUNYAN_T_END);
 	free(samsg);
@@ -406,14 +435,14 @@ pfkey_send_msg(sadb_msg_t *msg, parsedmsg_t **pmsg, int numexts, ...)
 	list_insert_tail(&pfreq_list, &req);
 	mutex_exit(&pfreq_lock);
 
-	sadb_log(worker->w_log, BUNYAN_L_TRACE, "Sending pfkey request", msg);
+	sadb_log(BUNYAN_L_TRACE, "Sending pfkey request", msg);
 
 	n = write(pfsock, msg, len);
 	if (n != len) {
 		if (n < 0) {
-			STDERR(error, worker->w_log, "pf_key write failed");
+			STDERR(error, "pf_key write failed");
 		} else {
-			(void) bunyan_error(worker->w_log,
+			(void) bunyan_error(log,
 			    "pf_key truncated write",
 			    BUNYAN_T_UINT32, "len", len,
 			    BUNYAN_T_INT32, "n", (int32_t)n,
@@ -442,7 +471,7 @@ pfkey_send_msg(sadb_msg_t *msg, parsedmsg_t **pmsg, int numexts, ...)
 		case ETIME:
 			free(*pmsg);
 			*pmsg = NULL;
-			bunyan_error(worker->w_log, "pf_key timeout",
+			bunyan_error(log, "pf_key timeout",
 			    BUNYAN_T_UINT32, "msgid", req.pr_msgid,
 			    BUNYAN_T_END);
 
@@ -450,7 +479,7 @@ pfkey_send_msg(sadb_msg_t *msg, parsedmsg_t **pmsg, int numexts, ...)
 			ret = B_FALSE;
 			goto done;
 		default:
-			TSTDERR(rc, fatal, worker->w_log,
+			TSTDERR(rc, fatal,
 			    "cond_timedwait() unexpected failure");
 			abort();
 		}
@@ -484,7 +513,7 @@ pfkey_send_error(const sadb_msg_t *src, uint8_t reason)
 
 	n = write(pfsock, &msg, sizeof (sadb_msg_t));
 	if (n != sizeof (sadb_msg_t))
-		STDERR(error, pflog, "Unable to send PFKEY error notification");
+		STDERR(error, "Unable to send PFKEY error notification");
 }
 
 /*
@@ -535,7 +564,6 @@ pfkey_getspi(sockaddr_u_t src, sockaddr_u_t dest, uint8_t satype,
 	sadb_msg_t *samsg = (sadb_msg_t *)buffer;
 	sadb_address_t *sasrc = NULL, *sadest = NULL;
 	sadb_spirange_t *range = NULL;
-	sadb_sa_t *sa = NULL;
 	size_t len = 0;
 	boolean_t ret;
 
@@ -594,11 +622,34 @@ pfkey_getspi(sockaddr_u_t src, sockaddr_u_t dest, uint8_t satype,
 				return (B_FALSE);
 			}
 		}
-	} while (resp->pmsg_samsg->sadb_msg_errno != 0 &&
-	    resp->pmsg_samsg->sadb_msg_errno == EEXIST);
+	} while (resp->pmsg_samsg->sadb_msg_errno == EEXIST);
 
-	sa = (sadb_sa_t *)resp->pmsg_exts[SADB_EXT_SA];
-	*spi = sa->sadb_sa_spi;
+	if (resp->pmsg_samsg->sadb_msg_errno != 0) {
+		sadb_msg_t *m = resp->pmsg_samsg;
+
+		TSTDERR(m->sadb_msg_errno, error,
+		    "SADB_GETSPI failed",
+		    BUNYAN_T_STRING, "diagmsg",
+		    keysock_diag(m->sadb_x_msg_diagnostic),
+		    BUNYAN_T_UINT32, "diagcode",
+		    (uint32_t)m->sadb_x_msg_diagnostic);
+	} else {
+		sadb_sa_t *sa = (sadb_sa_t *)resp->pmsg_exts[SADB_EXT_SA];
+		char type[64] = { 0 };
+		char spistr[11] = { 0 }; /* 0x + 32-bit hex + NUL */
+
+		*spi = sa->sadb_sa_spi;
+		(void) sadb_type_str(satype, type, sizeof (type));
+
+		/* SPI values are usually displayed as hex */
+		(void) snprintf(spistr, sizeof (spistr), "0x" PRIX32, *spi);
+
+		(void) bunyan_debug(log, "Allocated larval IPsec SA",
+		    BUNYAN_T_STRING, "satype", type,
+		    BUNYAN_T_STRING, "spi", spistr,
+		    BUNYAN_T_END);
+	}
+
 	ret = (resp->pmsg_samsg->sadb_msg_errno == 0) ? B_TRUE : B_FALSE;
 	parsedmsg_free(resp);
 	return (ret);
@@ -704,7 +755,7 @@ handle_reply(sadb_msg_t *reply)
 	mutex_exit(&pfreq_lock);
 
 	if (req == NULL) {
-		sadb_log(pflog, BUNYAN_L_INFO,
+		sadb_log(BUNYAN_L_INFO,
 		    "Received a reply to an unknown request", reply);
 		free(reply);
 		return;
@@ -720,7 +771,7 @@ handle_reply(sadb_msg_t *reply)
 static void
 handle_flush(sadb_msg_t *samsg)
 {
-	bunyan_trace(pflog, "Handling SADB flush message", BUNYAN_T_END);
+	(void) bunyan_trace(log, "Handling SADB flush message", BUNYAN_T_END);
 
 	/* Return if just AH or ESP SAs are being freed. */
 	if (samsg->sadb_msg_satype != SADB_SATYPE_UNSPEC)
@@ -747,7 +798,8 @@ handle_flush(sadb_msg_t *samsg)
 static void
 handle_idle_timeout(sadb_msg_t *samsg)
 {
-	bunyan_trace(pflog, "Handling SADB idle expire message", BUNYAN_T_END);
+	(void) bunyan_trace(log, "Handling SADB idle expire message",
+	    BUNYAN_T_END);
 
 	/* XXX KEBE SAYS FILL ME IN! */
 	free(samsg);
@@ -768,7 +820,7 @@ handle_expire(sadb_msg_t *samsg)
 	 */
 
 	if (extract_exts(samsg, &pmsg, 1, SADB_EXT_LIFETIME_HARD)) {
-		bunyan_debug(pflog, "Handling SADB hard expire message",
+		(void) bunyan_debug(log, "Handling SADB hard expire message",
 		    BUNYAN_T_END);
 		handle_delete(samsg);
 		return;
@@ -789,12 +841,14 @@ handle_expire(sadb_msg_t *samsg)
 
 	if (pmsg.pmsg_exts[SADB_EXT_LIFETIME_SOFT] == NULL) {
 		/* XXX: more fields */
-		bunyan_info(pflog, "SADB EXPIRE message is missing both "
+		(void) bunyan_info(log, "SADB EXPIRE message is missing both "
 		    "hard and soft lifetimes", BUNYAN_T_END);
 		/* XXX: ignore? */
 	}
 
-	bunyan_debug(pflog, "Handling SADB soft expire message", BUNYAN_T_END);
+	(void) bunyan_debug(log, "Handling SADB soft expire message",
+	    BUNYAN_T_END);
+
 	/* XXX KEBE SAYS FILL ME IN! */
 
 	free(samsg);
@@ -817,7 +871,7 @@ handle_register(sadb_msg_t *samsg)
 static void
 handle_delete(sadb_msg_t *samsg)
 {
-	bunyan_trace(pflog, "Handling SADB delete", BUNYAN_T_END);
+	(void) bunyan_trace(log, "Handling SADB delete", BUNYAN_T_END);
 
 	/* XXX KEBE SAYS FILL ME IN! */
 	free(samsg);
@@ -838,10 +892,10 @@ handle_acquire(sadb_msg_t *samsg, boolean_t create_child_sa)
 
 	pmsg = calloc(1, sizeof (*pmsg));
 
-	bunyan_debug(pflog, "Handling SADB acquire", BUNYAN_T_END);
+	(void) bunyan_debug(log, "Handling SADB acquire", BUNYAN_T_END);
 
 	if (!extract_exts(samsg, pmsg, 1, SADB_EXT_PROPOSAL)) {
-		bunyan_info(pflog, "No proposal found in ACQUIRE message",
+		(void) bunyan_info(log, "No proposal found in ACQUIRE message",
 		    BUNYAN_T_END);
 		free(samsg);
 		free(pmsg);
@@ -860,17 +914,19 @@ pfkey_thread(void *arg)
 	port_event_t pe;
 	boolean_t stop = B_FALSE;
 
-	(void) bunyan_trace(pflog, "pfkey thread starting", BUNYAN_T_END);
+	log = arg;
+
+	(void) bunyan_trace(log, "pfkey thread starting", BUNYAN_T_END);
 
 	while (!stop) {
-		char portstr[PORT_SOURCE_STR_LEN];
+		char portstr[PORT_SOURCE_STRLEN];
 
 		if (port_get(pfport, &pe, NULL) < 0) {
-			STDERR(fatal, pflog, "port_get() failed");
+			STDERR(fatal, "port_get() failed");
 			exit(EXIT_FAILURE);
 		}
 
-		(void) bunyan_debug(pflog, "Received port event",
+		(void) bunyan_debug(log, "Received port event",
 		    BUNYAN_T_INT32, "event", pe.portev_events,
 		    BUNYAN_T_STRING, "source",
 		    port_source_str(pe.portev_source, portstr,
@@ -921,13 +977,13 @@ pfkey_register(uint8_t satype)
 			errx(EXIT_FAILURE, "pf_key register returned %s (%d).",
 			    strerror(samsg->sadb_msg_errno),
 			    samsg->sadb_msg_errno);
-		(void) bunyan_error(pflog, "Protocol not supported",
+		(void) bunyan_error(log, "Protocol not supported",
 		    BUNYAN_T_STRING, "satype",
 		    sadb_type_str(samsg->sadb_msg_satype, str, sizeof (str)),
 		    BUNYAN_T_END);
 	}
 
-	bunyan_debug(pflog, "Initial REGISTER with SADB",
+	(void) bunyan_debug(log, "Initial REGISTER with SADB",
 	    BUNYAN_T_STRING, "satype",
 	    sadb_type_str(samsg->sadb_msg_satype, str, sizeof (str)),
 	    BUNYAN_T_END);
@@ -948,14 +1004,123 @@ pfkey_msg_init(sadb_msg_t *samsg, uint8_t type, uint8_t satype)
 	samsg->sadb_msg_pid = getpid();
 }
 
-void
-sadb_log(bunyan_logger_t *restrict blog, bunyan_level_t level,
-    const char *restrict msg, sadb_msg_t *restrict samsg)
+static void
+sadb_log_addr(sadb_ext_t *ext)
 {
+	const char *name = NULL;
+	const char *portname = NULL;
+	sadb_address_t *addr = (sadb_address_t *)ext;
+	sockaddr_u_t su = { .sau_ss = (struct sockaddr_storage *)(addr + 1) };
+	void *ptr = NULL;
+	int af = su.sau_ss->ss_family;
+	char addrstr[INET6_ADDRSTRLEN + 4] = { 0 };	/* +4 for /xxx */
+
+	switch (addr->sadb_address_exttype) {
+	case SADB_EXT_ADDRESS_SRC:
+		name = PFKEY_K_SRCADDR;
+		portname = PFKEY_K_SRCADDR PFKEY_K_PORT;
+		break;
+	case SADB_EXT_ADDRESS_DST:
+		name = PFKEY_K_DSTADDR;
+		portname = PFKEY_K_DSTADDR PFKEY_K_PORT;
+		break;
+	case SADB_X_EXT_ADDRESS_INNER_SRC:
+		name = PFKEY_K_ISRCADDR;
+		portname = PFKEY_K_ISRCADDR PFKEY_K_PORT;
+		break;
+	case SADB_X_EXT_ADDRESS_INNER_DST:
+		name = PFKEY_K_IDSTADDR;
+		portname = PFKEY_K_IDSTADDR PFKEY_K_PORT;
+		break;
+	case SADB_X_EXT_ADDRESS_NATT_REM:
+		name = PFKEY_K_NLOC;
+		portname = PFKEY_K_NLOC PFKEY_K_PORT;
+		break;
+	case SADB_X_EXT_ADDRESS_NATT_LOC:
+		name = PFKEY_K_NREM;
+		portname = PFKEY_K_NREM PFKEY_K_PORT;
+		break;
+	}
+
+	switch (af) {
+	case AF_INET:
+		ptr = &su.sau_sin->sin_addr;
+		break;
+	case AF_INET6:
+		ptr = &su.sau_sin6->sin6_addr;
+		break;
+	default:
+		INVALID("ss_family");
+	}
+
+	if (inet_ntop(af, ptr, addrstr, sizeof (addrstr)) == NULL)
+		return;
+
+	if (addr->sadb_address_prefixlen != 0 &&
+	    ((af == AF_INET && addr->sadb_address_prefixlen != 32) ||
+	    (af == AF_INET6 && addr->sadb_address_prefixlen != 128))) {
+		char prefix[5] = { 0 };
+
+		(void) snprintf(prefix, sizeof (prefix), "/%hhu",
+		    addr->sadb_address_prefixlen);
+		(void) strlcat(addrstr, prefix, sizeof (addrstr));
+	}
+	(void) bunyan_key_add(log,
+	    BUNYAN_T_STRING, name, addrstr,
+	    BUNYAN_T_END);
+
+	/* Take advantage of port (sin_port/sin6_port) at the same offset */
+	if (su.sau_sin->sin_port == 0)
+		return;
+
+	struct protoent *pe = NULL;
+	char *portstr = NULL;
+	size_t portlen = 6; /* uint16_t as str + NUL */
+
+	if (addr->sadb_address_proto != 0) {
+		pe = getprotobynumber(addr->sadb_address_proto);
+		portlen += strlen(pe->p_name) + 1; /* +1 for '/' */
+	} else {
+		portlen += 4; /* 'any/' */
+	}
+
+	portstr = alloca(portlen);
+	(void) snprintf(portstr, portlen, "%s/%hu",
+	    (pe != NULL) ? pe->p_name : "any", ntohs(su.sau_sin->sin_port));
+
+	(void) bunyan_key_add(log,
+	    BUNYAN_T_STRING, portname, portstr,
+	    BUNYAN_T_END);
+}
+
+void
+sadb_log(bunyan_level_t level, const char *restrict msg,
+    sadb_msg_t *restrict samsg)
+{
+	bunyan_logfn_t logf = getlog(level);
+	sadb_ext_t *ext, *end;
 	char op[64];
 	char type[64];
 
-	getlog(level)(blog, msg,
+	end = (sadb_ext_t *)((uint64_t *)samsg + samsg->sadb_msg_len);
+	ext = (sadb_ext_t *)(samsg + 1);
+
+	while (ext < end) {
+		switch (ext->sadb_ext_type) {
+		case SADB_EXT_ADDRESS_SRC:
+		case SADB_EXT_ADDRESS_DST:
+		case SADB_X_EXT_ADDRESS_INNER_SRC:
+		case SADB_X_EXT_ADDRESS_INNER_DST:
+		case SADB_X_EXT_ADDRESS_NATT_REM:
+		case SADB_X_EXT_ADDRESS_NATT_LOC:
+			sadb_log_addr(ext);
+			break;
+		}
+
+		ext = (sadb_ext_t *)((uint64_t *)ext + ext->sadb_ext_len);
+	}
+
+	logf(log, msg,
 	    BUNYAN_T_STRING, "msg_type",
 	    sadb_op_str(samsg->sadb_msg_type, op, sizeof (op)),
 	    BUNYAN_T_STRING, "sa_type",
@@ -970,11 +1135,15 @@ sadb_log(bunyan_logger_t *restrict blog, bunyan_level_t level,
 	    keysock_diag(samsg->sadb_x_msg_diagnostic),
 	    BUNYAN_T_UINT32, "length", (uint32_t)samsg->sadb_msg_len,
 	    BUNYAN_T_END);
+
+	for (size_t i = 0; i < ARRAY_SIZE(pfkey_keys); i++)
+		(void) bunyan_key_remove(log, pfkey_keys[i]);
 }
 
 void
 pfkey_init(void)
 {
+	bunyan_logger_t *newlog = NULL;
 	int rc;
 
 	list_create(&pfreq_list, sizeof (pfreq_t), offsetof (pfreq_t, pr_node));
@@ -987,7 +1156,7 @@ pfkey_init(void)
 	if (pfsock == -1)
 		err(EXIT_FAILURE, "Unable to create pf_key socket");
 
-	rc = bunyan_child(log, &pflog,
+	rc = bunyan_child(log, &newlog,
 	    BUNYAN_T_INT32, "pfsock", (int32_t)pfsock,
 	    BUNYAN_T_END);
 
@@ -999,7 +1168,7 @@ pfkey_init(void)
 	pfkey_register(SADB_SATYPE_ESP);
 	pfkey_register(SADB_SATYPE_AH);
 
-	rc = thr_create(NULL, 0, pfkey_thread, NULL, 0, &pftid);
+	rc = thr_create(NULL, 0, pfkey_thread, newlog, 0, &pftid);
 	if (rc != 0) {
 		errx(EXIT_FAILURE, "Unable to create pfkey thread: %s",
 		    strerror(rc));

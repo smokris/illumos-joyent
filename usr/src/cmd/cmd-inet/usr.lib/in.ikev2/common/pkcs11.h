@@ -40,14 +40,14 @@
 extern "C" {
 #endif
 
-#define	PKCS11ERR(_lvl, _log, _p11f, _rv, ...)				\
-	(void) bunyan_##_lvl((_log), "PKCS#11 call failed",		\
-	BUNYAN_T_STRING, BLOG_KEY_FILE, __FILE__,			\
-	BUNYAN_T_UINT32, BLOG_KEY_LINE, (uint32_t)__LINE__,		\
-	BUNYAN_T_STRING, BLOG_KEY_FUNC, __func__,			\
+#define	PKCS11ERR(_lvl, _p11f, _rv, ...)				\
+	(void) bunyan_##_lvl(log, "PKCS#11 call failed",		\
+	BUNYAN_T_STRING, LOG_KEY_FILE, __FILE__,			\
+	BUNYAN_T_UINT32, LOG_KEY_LINE, (uint32_t)__LINE__,		\
+	BUNYAN_T_STRING, LOG_KEY_FUNC, __func__,			\
 	BUNYAN_T_STRING, "p11func", _p11f,				\
 	BUNYAN_T_UINT64, "p11err", (uint64_t)(_rv),			\
-	BUNYAN_T_STRING, BLOG_KEY_ERRMSG, pkcs11_strerror(_rv),		\
+	BUNYAN_T_STRING, LOG_KEY_ERRMSG, pkcs11_strerror(_rv),		\
 	## __VA_ARGS__,							\
 	BUNYAN_T_END)
 
@@ -102,7 +102,7 @@ boolean_t encr_keylen_allowed(ikev2_xf_encr_t);
 CK_SESSION_HANDLE p11h(void);
 CK_SESSION_HANDLE pkcs11_new_session(void);
 void pkcs11_session_free(CK_SESSION_HANDLE);
-void pkcs11_destroy_obj(const char *, CK_OBJECT_HANDLE_PTR, bunyan_logger_t *);
+void pkcs11_destroy_obj(const char *, CK_OBJECT_HANDLE_PTR);
 
 size_t ikev2_auth_icv_size(ikev2_xf_encr_t, ikev2_xf_auth_t);
 

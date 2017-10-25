@@ -60,7 +60,7 @@ static void do_immediate(void);
 static boolean_t done;
 static thread_t signal_tid;
 
-bunyan_logger_t *log = NULL;
+__thread bunyan_logger_t *log = NULL;
 int main_port = -1;
 
 static void
@@ -180,12 +180,12 @@ main(int argc, char **argv)
 	}
 
 	if ((f = fopen(cfgfile, "rF")) == NULL) {
-		STDERR(fatal, log, "cannot open config file",
+		STDERR(fatal, "cannot open config file",
 		    BUNYAN_T_STRING, "filename", cfgfile);
 		exit(EXIT_FAILURE);
 	}
 
-	process_config(f, check_cfg, log);
+	process_config(f, check_cfg);
 
 	if (fclose(f) == EOF)
 		err(EXIT_FAILURE, "fclose(\"%s\") failed", cfgfile);
@@ -199,7 +199,7 @@ main(int argc, char **argv)
 		fd = ikev2_daemonize();
 
 	if ((main_port = port_create()) < 0) {
-		STDERR(fatal, log, "main port_create() failed");
+		STDERR(fatal, "main port_create() failed");
 		exit(EXIT_FAILURE);
 	}
 
@@ -253,10 +253,10 @@ main_loop(int fd)
 
 	/*CONSTCOND*/
 	while (!done) {
-		char portsrc[PORT_SOURCE_STR_LEN];
+		char portsrc[PORT_SOURCE_STRLEN];
 
 		if (port_get(main_port, &pe, NULL) < 0) {
-			STDERR(error, log, "port_get() failed");
+			STDERR(error, "port_get() failed");
 			continue;
 		}
 
@@ -401,6 +401,8 @@ signal_thread(void *arg)
 	sigset_t sigset;
 	int signo;
 
+	log = arg;
+
 	(void) bunyan_trace(log, "signal thread awaiting signals",
 	    BUNYAN_T_END);
 
@@ -412,7 +414,7 @@ signal_thread(void *arg)
 	/*CONSTCOND*/
 	while (1) {
 		if (sigwait(&sigset, &signo) != 0) {
-			STDERR(error, log, "sigwait() failed");
+			STDERR(error, "sigwait() failed");
 			continue;
 		}
 
@@ -427,7 +429,7 @@ signal_thread(void *arg)
 
 		if (port_send(main_port, EVENT_SIGNAL,
 		    (void *)(uintptr_t)signo) < 0) {
-			STDERR(error, log, "port_send() failed");
+			STDERR(error, "port_send() failed");
 		}
 	}
 
@@ -438,8 +440,12 @@ signal_thread(void *arg)
 static void
 signal_init(void)
 {
+	bunyan_logger_t *child = NULL;
 	sigset_t nset;
 	int rc;
+
+	if (bunyan_child(log, &child, BUNYAN_T_END) != 0)
+		err(EXIT_FAILURE, "Cannot create signal thread logger");
 
 	(void) bunyan_trace(log, "Creating signal handling thread",
 	    BUNYAN_T_END);
@@ -452,10 +458,10 @@ signal_init(void)
 
 	VERIFY0(thr_sigsetmask(SIG_SETMASK, &nset, NULL));
 
-	rc = thr_create(NULL, 0, signal_thread, NULL, THR_DETACHED,
+	rc = thr_create(NULL, 0, signal_thread, child, THR_DETACHED,
 	    &signal_tid);
 	if (rc != 0) {
-		TSTDERR(rc, fatal, log,
+		TSTDERR(rc, fatal,
 		    "Signal handling thread creation failed");
 		exit(EXIT_FAILURE);
 	}

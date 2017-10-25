@@ -25,11 +25,8 @@
 extern "C" {
 #endif
 
-struct bunyan_logger;
-
 #define	PRFP_NUM_TBUF	(2)
 typedef struct prfp_s {
-	struct bunyan_logger	*prfp_log;
 	CK_OBJECT_HANDLE	prfp_key;
 	ikev2_prf_t		prfp_alg;
 	uint8_t			*prfp_tbuf[PRFP_NUM_TBUF];
@@ -40,13 +37,8 @@ typedef struct prfp_s {
 	uint8_t			prfp_n;
 } prfp_t;
 
-struct bunyan_logger;
-
-boolean_t prf(ikev2_prf_t, CK_OBJECT_HANDLE, uint8_t *restrict, size_t,
-    struct bunyan_logger *restrict, ...);
-
-boolean_t prfplus_init(prfp_t *restrict, ikev2_prf_t, CK_OBJECT_HANDLE,
-    struct bunyan_logger *restrict, ...);
+boolean_t prf(ikev2_prf_t, CK_OBJECT_HANDLE, uint8_t *restrict, size_t, ...);
+boolean_t prfplus_init(prfp_t *restrict, ikev2_prf_t, CK_OBJECT_HANDLE, ...);
 void prfplus_fini(prfp_t *);
 boolean_t prfplus(prfp_t *restrict, uint8_t *restrict, size_t);
 

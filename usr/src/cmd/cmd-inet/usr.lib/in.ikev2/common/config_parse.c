@@ -220,7 +220,6 @@ typedef struct input_cursor {
 	input_t		*ic_input;
 	char		*ic_p;
 	token_t		*ic_peek;
-	bunyan_logger_t	*ic_log;
 } input_cursor_t;
 
 static void add_str(char ***restrict, size_t *restrict, const char *restrict);
@@ -233,12 +232,11 @@ static void add_remid(config_rule_t *restrict, config_id_t *restrict);
 static token_t *tok_new(const char *, const char *, const char *, size_t,
     size_t);
 static void tok_free(token_t *);
-static void tok_log(const token_t *restrict, bunyan_logger_t *restrict,
-    bunyan_level_t, const char *restrict, const char *restrict);
-static void tok_error(const token_t *restrict, bunyan_logger_t *restrict,
+static void tok_log(const token_t *restrict, bunyan_level_t,
     const char *restrict, const char *restrict);
-static void tok_invalid(token_t *restrict, bunyan_logger_t *restrict,
-    keyword_t);
+static void tok_error(const token_t *restrict, const char *restrict,
+    const char *restrict);
+static void tok_invalid(token_t *restrict, keyword_t);
 
 static boolean_t parse_rule(input_cursor_t *restrict, const token_t *restrict,
     config_rule_t **restrict);
@@ -262,10 +260,10 @@ static boolean_t parse_ip6(const char *restrict, in6_addr_t *restrict);
 static boolean_t parse_int(const char *restrict, uint64_t *restrict);
 static boolean_t parse_fp(const char *restrict, double *restrict);
 
-static input_t *input_new(FILE *restrict, bunyan_logger_t *restrict);
+static input_t *input_new(FILE *restrict);
 static void input_free(input_t *);
 
-static void input_cursor_init(input_cursor_t *, input_t *, bunyan_logger_t *);
+static void input_cursor_init(input_cursor_t *, input_t *);
 static void input_cursor_fini(input_cursor_t *);
 static token_t *input_token(input_cursor_t *, boolean_t);
 static const token_t *input_peek(input_cursor_t *, boolean_t);
@@ -304,9 +302,9 @@ static boolean_t issep(char c, boolean_t);
  * rules.
  */
 void
-process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
+process_config(FILE *f, boolean_t check_only)
 {
-	input_t *in = input_new(f, blog);
+	input_t *in = input_new(f);
 	token_t *t = NULL, *targ = NULL;
 	config_t *cfg = NULL;
 	config_xf_t *xf = NULL;
@@ -317,11 +315,11 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 	} val;
 	size_t rule_count = 0;
 
-	bunyan_trace(log, "process_config() enter", BUNYAN_T_END);
+	(void) bunyan_trace(log, "process_config() enter", BUNYAN_T_END);
 
 	if (in == NULL) {
-		STDERR(error, blog, "failure reading input");
-		bunyan_trace(log, "process_config() exit", BUNYAN_T_END);
+		STDERR(error, "failure reading input");
+		(void) bunyan_trace(log, "process_config() exit", BUNYAN_T_END);
 		return;
 	}
 
@@ -335,7 +333,7 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 	cfg->cfg_retry_max = SEC2NSEC(30);
 	cfg->cfg_retry_limit = 5;
 
-	input_cursor_init(&ic, in, blog);
+	input_cursor_init(&ic, in);
 	while ((t = input_token(&ic, B_TRUE)) != NULL) {
 		keyword_t kw;
 
@@ -352,8 +350,7 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 		}
 
 		if (!parse_kw(t->t_str, &kw)) {
-			tok_error(t, blog,
-			    "Unrecognized configuration parameter",
+			tok_error(t, "Unrecognized configuration parameter",
 			    "parameter");
 			goto fail;
 		}
@@ -364,8 +361,7 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 		if (KW_HAS_ARG(kw)) {
 			targ = input_token(&ic, KW_USE_MINUS(kw));
 			if (targ == NULL) {
-				tok_error(t, blog,
-				    "Parameter is missing argument",
+				tok_error(t, "Parameter is missing argument",
 				    "parameter");
 				goto fail;
 			}
@@ -386,7 +382,7 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 			break;
 		case KW_EXPIRE_TIMER:
 			if (!parse_int(targ->t_str, &val.ui)) {
-				tok_invalid(t, blog, KW_EXPIRE_TIMER);
+				tok_invalid(t, KW_EXPIRE_TIMER);
 				goto fail;
 			}
 			cfg->cfg_expire_timer = val.ui * NANOSEC;
@@ -396,13 +392,13 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 			break;
 		case KW_LDAP_SERVER:
 		case KW_PKCS11_PATH:
-			tok_log(t, blog, BUNYAN_L_INFO,
+			tok_log(t, BUNYAN_L_INFO,
 			    "Ignoring deprecated configuration parameter",
 			    "parameter");
 			break;
 		case KW_RETRY_LIMIT:
 			if (!parse_int(targ->t_str, &val.ui)) {
-				tok_invalid(t, blog, KW_RETRY_LIMIT);
+				tok_invalid(t, KW_RETRY_LIMIT);
 				goto fail;
 			}
 			cfg->cfg_retry_limit = val.ui;
@@ -422,7 +418,7 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 				cfg->cfg_retry_init =
 				    (hrtime_t)(val.d * NANOSEC);
 			} else {
-				tok_invalid(targ, blog, kw);
+				tok_invalid(targ, kw);
 				goto fail;
 			}
 			break;
@@ -433,13 +429,13 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 				cfg->cfg_retry_max =
 				    (hrtime_t)(val.d * NANOSEC);
 			} else {
-				tok_invalid(targ, blog, kw);
+				tok_invalid(targ, kw);
 				goto fail;
 			}
 			break;
 		case KW_P1_SOFTLIFE_SECS:
 			if (!parse_int(targ->t_str, &val.ui)) {
-				tok_invalid(targ, blog, kw);
+				tok_invalid(targ, kw);
 				goto fail;
 			}
 			cfg->cfg_p1_softlife_secs = val.ui;
@@ -447,14 +443,14 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 		case KW_P1_HARDLIFE_SECS:
 		case KW_P1_LIFETIME_SECS:
 			if (!parse_int(targ->t_str, &val.ui)) {
-				tok_invalid(targ, blog, kw);
+				tok_invalid(targ, kw);
 				goto fail;
 			}
 			cfg->cfg_p1_hardlife_secs = val.ui;
 			break;
 		case KW_P1_NONCE_LEN:
 			if (!parse_int(targ->t_str, &val.ui)) {
-				tok_invalid(targ, blog, kw);
+				tok_invalid(targ, kw);
 				goto fail;
 			}
 			/* XXX: check size */
@@ -462,7 +458,7 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 			break;
 		case KW_P2_LIFETIME_SECS:
 			if (!parse_int(targ->t_str, &val.ui)) {
-				tok_invalid(targ, blog, kw);
+				tok_invalid(targ, kw);
 				goto fail;
 			}
 			/* XXX: check size */
@@ -470,7 +466,7 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 			break;
 		case KW_P2_SOFTLIFE_SECS:
 			if (!parse_int(targ->t_str, &val.ui)) {
-				tok_invalid(targ, blog, kw);
+				tok_invalid(targ, kw);
 				goto fail;
 			}
 			/* XXX: check size */
@@ -478,7 +474,7 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 			break;
 		case KW_P2_IDLETIME_SECS:
 			if (!parse_int(targ->t_str, &val.ui)) {
-				tok_invalid(targ, blog, kw);
+				tok_invalid(targ, kw);
 				goto fail;
 			}
 			/* XXX: check size */
@@ -486,7 +482,7 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 			break;
 		case KW_P2_LIFETIME_KB:
 			if (!parse_int(targ->t_str, &val.ui)) {
-				tok_invalid(targ, blog, kw);
+				tok_invalid(targ, kw);
 				goto fail;
 			}
 			/* XXX: check size */
@@ -494,7 +490,7 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 			break;
 		case KW_P2_SOFTLIFE_KB:
 			if (!parse_int(targ->t_str, &val.ui)) {
-				tok_invalid(targ, blog, kw);
+				tok_invalid(targ, kw);
 				goto fail;
 			}
 			/* XXX: check size */
@@ -502,7 +498,7 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 			break;
 		case KW_P2_NONCE_LEN:
 			if (!parse_int(targ->t_str, &val.ui)) {
-				tok_invalid(targ, blog, kw);
+				tok_invalid(targ, kw);
 				goto fail;
 			}
 			/* XXX: check size */
@@ -511,7 +507,7 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 		case KW_LOCAL_ID_TYPE:
 			if (!parse_p1_id_type(targ->t_str,
 			    &cfg->cfg_local_id_type)) {
-				tok_invalid(targ, blog, kw);
+				tok_invalid(targ, kw);
 				goto fail;
 			}
 			break;
@@ -521,7 +517,7 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 		case KW_P2_PFS:
 			if (!parse_p2_pfs(targ->t_str,
 			    &cfg->cfg_default.rule_p2_dh)) {
-				tok_error(targ, blog, "Invalid p2_pfs value",
+				tok_error(targ, "Invalid p2_pfs value",
 				    "value");
 				goto fail;
 			}
@@ -536,7 +532,7 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 		case KW_OAKLEY_GROUP:
 		case KW_AUTH_ALG:
 		case KW_ENCR_ALG:
-			tok_error(t, blog, "Configuration parameter cannot be "
+			tok_error(t, "Configuration parameter cannot be "
 			    "used outside of a transform definition",
 			    "parameter");
 			goto fail;
@@ -546,7 +542,7 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 		case KW_LOCAL_ID:
 		case KW_REMOTE_ID:
 		case KW_IMMEDIATE:
-			tok_error(t, blog, "Configuration parameter cannot be "
+			tok_error(t, "Configuration parameter cannot be "
 			    "used outside of a rule definition", "parameter");
 			goto fail;
 		}
@@ -562,7 +558,7 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 	input_cursor_fini(&ic);
 	input_free(in);
 
-	bunyan_info(blog, "Finished processing config",
+	(void) bunyan_info(log, "Finished processing config",
 	    BUNYAN_T_UINT32, "numrules", (uint32_t)rule_count,
 	    BUNYAN_T_END);
 
@@ -580,7 +576,7 @@ process_config(FILE *f, boolean_t check_only, bunyan_logger_t *blog)
 		if (old != NULL)
 			CONFIG_REFRELE(old);
 	}
-	bunyan_trace(log, "process_config() exit", BUNYAN_T_END);
+	(void) bunyan_trace(log, "process_config() exit", BUNYAN_T_END);
 	return;
 
 fail:
@@ -609,13 +605,14 @@ parse_xform(input_cursor_t *restrict ic, config_xf_t **restrict xfp)
 	VERIFY3P(xf, !=, NULL);
 
 	if ((start_t = input_token(ic, B_FALSE)) == NULL) {
-		bunyan_error(ic->ic_log, "Unexpected end of input processing "
-		    "transform", BUNYAN_T_END);
+		(void) bunyan_error(log,
+		    "Unexpected end of input processing transform",
+		    BUNYAN_T_END);
 		goto fail;
 	}
 
 	if (strcmp(start_t->t_str, "{") != 0) {
-		bunyan_error(ic->ic_log, "Expected '{' after p1_xform",
+		(void) bunyan_error(log, "Expected '{' after p1_xform",
 		    BUNYAN_T_STRING, "string", start_t->t_str,
 		    BUNYAN_T_END);
 		goto fail;
@@ -627,7 +624,7 @@ parse_xform(input_cursor_t *restrict ic, config_xf_t **restrict xfp)
 	while (1) {
 		t = input_token(ic, B_FALSE);
 		if (t == NULL) {
-			bunyan_error(ic->ic_log,
+			(void) bunyan_error(log,
 			    "Unexpected end of input processing transform",
 			    BUNYAN_T_END);
 			goto fail;
@@ -637,13 +634,13 @@ parse_xform(input_cursor_t *restrict ic, config_xf_t **restrict xfp)
 
 		keyword_t kw = KW_NONE;
 		if (!parse_kw(t->t_str, &kw)) {
-			tok_error(t, ic->ic_log,
-			    "Unknown configuration parameter", "parameter");
+			tok_error(t, "Unknown configuration parameter",
+			    "parameter");
 			goto fail;
 		}
 
 		if (kwcount[kw] > 0 && !KW_IS_MULTI(kw)) {
-			tok_error(t, ic->ic_log,
+			tok_error(t,
 			    "Parameter can only appear once in a transform",
 			    "parameter");
 			goto fail;
@@ -652,7 +649,7 @@ parse_xform(input_cursor_t *restrict ic, config_xf_t **restrict xfp)
 		if (KW_HAS_ARG(kw)) {
 			targ = input_token(ic, KW_USE_MINUS(kw));
 			if (targ == NULL) {
-				tok_error(t, ic->ic_log,
+				tok_error(t,
 				    "Parameter is missing an argument",
 				    "parameter");
 				goto fail;
@@ -662,7 +659,7 @@ parse_xform(input_cursor_t *restrict ic, config_xf_t **restrict xfp)
 		switch (kw) {
 		case KW_AUTH_METHOD:
 			if (!parse_auth(targ->t_str, &xf->xf_authtype)) {
-				tok_error(targ, ic->ic_log,
+				tok_error(targ,
 				    "Unknown authentication method",
 				    "authmethod");
 				goto fail;
@@ -670,7 +667,7 @@ parse_xform(input_cursor_t *restrict ic, config_xf_t **restrict xfp)
 			break;
 		case KW_OAKLEY_GROUP:
 			if (!parse_int(targ->t_str, &val)) {
-				tok_error(targ, ic->ic_log,
+				tok_error(targ,
 				    "Unknown oakley (DH) group",
 				    "group");
 				goto fail;
@@ -680,7 +677,7 @@ parse_xform(input_cursor_t *restrict ic, config_xf_t **restrict xfp)
 			break;
 		case KW_AUTH_ALG:
 			if (!parse_authalg(targ->t_str, &xf->xf_auth)) {
-				tok_error(targ, ic->ic_log,
+				tok_error(targ,
 				    "Unknown authentication algorithm",
 				    "algorithm");
 				goto fail;
@@ -688,7 +685,7 @@ parse_xform(input_cursor_t *restrict ic, config_xf_t **restrict xfp)
 			break;
 		case KW_ENCR_ALG:
 			if (!parse_encralg(targ->t_str, &xf->xf_encr)) {
-				tok_error(targ, ic->ic_log,
+				tok_error(targ,
 				    "Unknown encryption algorithm",
 				    "algorithm");
 				goto fail;
@@ -698,23 +695,21 @@ parse_xform(input_cursor_t *restrict ic, config_xf_t **restrict xfp)
 			break;
 		case KW_P1_LIFETIME_SECS:
 			if (!parse_int(targ->t_str, &val)) {
-				tok_error(targ, ic->ic_log, "Invalid value",
-				    "value");
+				tok_error(targ, "Invalid value", "value");
 				goto fail;
 			}
 			xf->xf_lifetime_secs = (uint32_t)val;
 			break;
 		case KW_P1_NONCE_LEN:
 			if (!parse_int(targ->t_str, &val)) {
-				tok_error(targ, ic->ic_log, "Invalid value",
-				    "value");
+				tok_error(targ, "Invalid value", "value");
 				goto fail;
 			}
 			/* XXX: validate length */
 			xf->xf_nonce_len = (uint32_t)val;
 			break;
 		default:
-			bunyan_error(ic->ic_log, "Parameter keyword not "
+			(void) bunyan_error(log, "Parameter keyword not "
 			    "allowed in transform definition",
 			    BUNYAN_T_STRING, "keyword", t->t_str,
 			    BUNYAN_T_END);
@@ -730,12 +725,12 @@ parse_xform(input_cursor_t *restrict ic, config_xf_t **restrict xfp)
 	}
 
 	if (kwcount[KW_ENCR_ALG] == 0) {
-		tok_error(start_t, ic->ic_log,
+		tok_error(start_t,
 		    "Transform missing encryption algorithm", NULL);
 		ok = B_FALSE;
 	}
 	if (kwcount[KW_AUTH_ALG] == 0) {
-		tok_error(start_t, ic->ic_log,
+		tok_error(start_t,
 		    "Transform missing authentication algorithm", NULL);
 		ok = B_FALSE;
 	}
@@ -816,7 +811,7 @@ parse_encrbits(input_cursor_t *restrict ic, config_xf_t *restrict xf)
 	xf->xf_maxbits = val;
 
 	if (xf->xf_maxbits < xf->xf_minbits) {
-		bunyan_error(ic->ic_log,
+		(void) bunyan_error(log,
 		    "Maximum keysize is smaller than minimum keysize",
 		    BUNYAN_T_STRING, "value", t->t_str,
 		    BUNYAN_T_UINT32, "line", t->t_line,
@@ -837,7 +832,7 @@ done:
 	return (B_TRUE);
 
 unexpected:
-	bunyan_error(ic->ic_log, "Unexpected value after key length",
+	(void) bunyan_error(log, "Unexpected value after key length",
 	    BUNYAN_T_STRING, "value", t->t_str,
 	    BUNYAN_T_UINT32, "line", t->t_line,
 	    BUNYAN_T_UINT32, "col", t->t_col,
@@ -846,7 +841,7 @@ unexpected:
 	return (B_FALSE);
 
 invalid:
-	bunyan_error(ic->ic_log, "Invalid key bitlength",
+	(void) bunyan_error(log, "Invalid key bitlength",
 	    BUNYAN_T_STRING, "bitlength", t->t_str,
 	    BUNYAN_T_UINT32, "line", t->t_line,
 	    BUNYAN_T_UINT32, "col", t->t_col,
@@ -855,7 +850,7 @@ invalid:
 	return (B_FALSE);
 
 toobig:
-	bunyan_error(ic->ic_log, "Keysize is too large",
+	(void) bunyan_error(log, "Keysize is too large",
 	    BUNYAN_T_UINT64, "keysize", val,
 	    BUNYAN_T_UINT32, "line", t->t_line,
 	    BUNYAN_T_UINT32, "col", t->t_col,
@@ -865,7 +860,7 @@ toobig:
 
 truncated:
 	tok_free(t);
-	bunyan_error(ic->ic_log, "Truncated input while reading transform",
+	bunyan_error(log, "Truncated input while reading transform",
 	    BUNYAN_T_END);
 	return (B_FALSE);
 }
@@ -896,7 +891,7 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 			break;
 
 		if (!parse_kw(t->t_str, &kw)) {
-			tok_log(t, ic->ic_log, BUNYAN_L_ERROR,
+			tok_log(t, BUNYAN_L_ERROR,
 			    "Unrecognized configuration parameter",
 			    "parameter");
 			goto fail;
@@ -905,14 +900,14 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 		if (KW_HAS_ARG(kw)) {
 			targ = input_token(ic, KW_USE_MINUS(kw));
 			if (targ == NULL) {
-				bunyan_error(ic->ic_log, "Input truncated "
+				(void) bunyan_error(log, "Input truncated "
 				    "while reading rule", BUNYAN_T_END);
 				goto fail;
 			}
 		}
 
 		if (kwcount[kw] > 0 && !KW_IS_MULTI(kw)) {
-			tok_log(t, ic->ic_log, BUNYAN_L_ERROR,
+			tok_log(t, BUNYAN_L_ERROR,
 			    "Configuration parameter can only appear once in a "
 			    "transform definition", "parameter");
 			goto fail;
@@ -926,7 +921,7 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 			break;
 		case KW_P2_PFS:
 			if (!parse_p2_pfs(targ->t_str, &rule->rule_p2_dh)) {
-				tok_invalid(targ, ic->ic_log, KW_P2_PFS);
+				tok_invalid(targ, KW_P2_PFS);
 				goto fail;
 			}
 			break;
@@ -964,7 +959,7 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 			break;
 		case KW_LOCAL_ID_TYPE:
 			if (!parse_p1_id_type(targ->t_str, &local_id_type)) {
-				tok_log(t, ic->ic_log, BUNYAN_L_ERROR,
+				tok_log(t, BUNYAN_L_ERROR,
 				    "Unable to parse local_id_type", "value");
 				goto fail;
 			}
@@ -973,7 +968,7 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 			rule->rule_immediate = B_TRUE;
 			break;
 		default:
-			tok_log(t, ic->ic_log, BUNYAN_L_ERROR, "Configuration "
+			tok_log(t, BUNYAN_L_ERROR, "Configuration "
 			    "parameter is invalid inside a rule definition",
 			    "parameter");
 			goto fail;
@@ -988,7 +983,7 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 	}
 
 	if (t == NULL) {
-		(void) bunyan_error(ic->ic_log,
+		(void) bunyan_error(log,
 		    "Input truncated while reading rule",
 		    BUNYAN_T_END);
 		goto fail;
@@ -1001,7 +996,7 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 		case CFG_AUTH_ID_IPV6:
 			break;
 		default:
-			tok_error(start, ic->ic_log,
+			tok_error(start,
 			    "Local ID type specified, but "
 			    "local ID value missing in rule", NULL);
 			goto fail;
@@ -1009,12 +1004,12 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 	} else if (kwcount[KW_LOCAL_ID_TYPE] > 0 && kwcount[KW_LOCAL_ID] > 0) {
 		if (!parse_p1_id(ic, local_id, &rule->rule_local_id)) {
 			if (errno == EINVAL)
-				tok_error(local_id, ic->ic_log,
+				tok_error(local_id,
 				    "Unable to parse local id type", "str");
 			goto fail;
 		}
 		if (local_id_type != rule->rule_local_id->cid_type) {
-			tok_error(local_id, ic->ic_log,
+			tok_error(local_id,
 			    "Local ID type in rule does not match given "
 			    "local ID", NULL);
 			goto fail;
@@ -1026,17 +1021,17 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 
 	/* Try to show as many errors as we can */
 	if (kwcount[KW_LABEL] == 0) {
-		tok_error(start, ic->ic_log, "Rule is missing a required label",
+		tok_error(start, "Rule is missing a required label",
 		    NULL);
 		ok = B_FALSE;
 	}
 	if (kwcount[KW_LOCAL_ADDR] == 0) {
-		tok_error(start, ic->ic_log,
+		tok_error(start,
 		    "Rule is missing a required local address", NULL);
 		ok = B_FALSE;
 	}
 	if (kwcount[KW_REMOTE_ADDR] == 0) {
-		tok_error(start, ic->ic_log,
+		tok_error(start,
 		    "Rule is missing a required remote address", NULL);
 		ok = B_FALSE;
 	}
@@ -1046,7 +1041,7 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 		for (size_t i = 1; rule->rule_xf[i] != NULL; i++) {
 			if (rule->rule_xf[i]->xf_authtype == authtype)
 				continue;
-			tok_error(start, ic->ic_log,
+			tok_error(start,
 			    "All transforms in rule must use the same "
 			    "authentication type", NULL);
 			ok = B_FALSE;
@@ -1055,7 +1050,7 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 
 		if (authtype != IKEV2_AUTH_SHARED_KEY_MIC &&
 		    kwcount[KW_LOCAL_ID] == 0) {
-			tok_error(start, ic->ic_log,
+			tok_error(start,
 			    "Non-preshared authentication methods require "
 			    "a local-id", NULL);
 			ok = B_FALSE;
@@ -1092,7 +1087,7 @@ parse_address(input_cursor_t *restrict ic, token_t *restrict taddr,
 
 	if (!parse_ip(t->t_str, &addrp->cfa_start4)) {
 		if (!parse_ip6(t->t_str, &addrp->cfa_start6)) {
-			tok_log(t, ic->ic_log, BUNYAN_L_ERROR,
+			tok_log(t, BUNYAN_L_ERROR,
 			    "Unable to parse address", "address");
 			return (B_FALSE);
 		}
@@ -1114,7 +1109,7 @@ parse_address(input_cursor_t *restrict ic, token_t *restrict taddr,
 		ok = ip6 ? parse_ip6(t->t_str, &addrp->cfa_end6) :
 		    parse_ip(t->t_str, &addrp->cfa_end4);
 		if (!ok) {
-			tok_log(t, ic->ic_log, BUNYAN_L_ERROR,
+			tok_log(t, BUNYAN_L_ERROR,
 			    "Unable to parse address range", "address");
 		}
 		tok_free(t);
@@ -1133,14 +1128,14 @@ parse_address(input_cursor_t *restrict ic, token_t *restrict taddr,
 			goto truncated;
 
 		if (!parse_int(t->t_str, &val)) {
-			tok_log(t, ic->ic_log, BUNYAN_L_ERROR,
+			tok_log(t, BUNYAN_L_ERROR,
 			    "Cannot parse mask length", "mask_len");
 			return (B_FALSE);
 		}
 		tok_free(t);
 		t = NULL;
 		if ((ip6 && val > 128) || (!ip6 && val > 32)) {
-			bunyan_error(ic->ic_log, "Mask length too long",
+			(void) bunyan_error(log, "Mask length too long",
 			    BUNYAN_T_UINT64, "mask", val,
 			    BUNYAN_T_END);
 			return (B_FALSE);
@@ -1155,7 +1150,7 @@ parse_address(input_cursor_t *restrict ic, token_t *restrict taddr,
 	return (B_TRUE);
 
 truncated:
-	bunyan_error(ic->ic_log, "Input truncated while parsing address",
+	(void) bunyan_error(log, "Input truncated while parsing address",
 	    BUNYAN_T_END);
 	return (B_FALSE);
 }
@@ -1326,7 +1321,7 @@ parse_p1_id(input_cursor_t *restrict ic, token_t *restrict t,
 		/* TODO */
 		INVALID("implement me!");
 	} else {
-		tok_error(t, ic->ic_log, "Unable to determine ID type", "id");
+		tok_error(t, "Unable to determine ID type", "id");
 		return (B_FALSE);
 	}
 
@@ -1393,8 +1388,8 @@ cfg_auth_id_str(config_auth_id_t id)
 #undef	STR
 
 static void
-tok_log(const token_t *restrict t, bunyan_logger_t *restrict blog,
-    bunyan_level_t level, const char *msg, const char *strname)
+tok_log(const token_t *restrict t, bunyan_level_t level, const char *msg,
+    const char *strname)
 {
 	char *linecpy = NULL;
 	const char *endp = strchr(t->t_linep, '\n');
@@ -1409,7 +1404,7 @@ tok_log(const token_t *restrict t, bunyan_logger_t *restrict blog,
 	VERIFY3P(linecpy, !=, NULL);
 	(void) strlcpy(linecpy, t->t_linep, len);
 
-	getlog(level)(blog, msg,
+	getlog(level)(log, msg,
 	    BUNYAN_T_STRING, "line", linecpy,
 	    BUNYAN_T_UINT32, "lineno", t->t_line + 1,
 	    BUNYAN_T_UINT32, "col", t->t_col + 1,
@@ -1420,23 +1415,23 @@ tok_log(const token_t *restrict t, bunyan_logger_t *restrict blog,
 }
 
 static void
-tok_error(const token_t *restrict t, bunyan_logger_t *restrict b,
-    const char *restrict msg, const char *restrict tname)
+tok_error(const token_t *restrict t, const char *restrict msg,
+    const char *restrict tname)
 {
-	tok_log(t, b, BUNYAN_L_ERROR, msg, tname);
+	tok_log(t, BUNYAN_L_ERROR, msg, tname);
 }
 
 static void
-tok_invalid(token_t *restrict t, bunyan_logger_t *restrict b, keyword_t kw)
+tok_invalid(token_t *restrict t, keyword_t kw)
 {
 	char buf[128] = { 0 };
 	(void) snprintf(buf, sizeof (buf), "Invalid %s parameter",
 	    keyword_tab[kw]);
-	tok_error(t, b, buf, "parameter");
+	tok_error(t, buf, "parameter");
 }
 
 static input_t *
-input_new(FILE *restrict f, bunyan_logger_t *restrict blog)
+input_new(FILE *restrict f)
 {
 	input_t *in = NULL;
 	char *p = NULL;
@@ -1451,7 +1446,7 @@ input_new(FILE *restrict f, bunyan_logger_t *restrict blog)
 
 	fd = fileno(f);
 	if (fstat(fd, &sb) == -1) {
-		STDERR(error, blog, "stat failed");
+		STDERR(error, "stat failed");
 		goto fail;
 	}
 
@@ -1471,14 +1466,15 @@ input_new(FILE *restrict f, bunyan_logger_t *restrict blog)
 	do {
 		n = fread(in->in_buf + cnt, 1, in->in_buflen - cnt - 1, f);
 		if (n < 0) {
-			STDERR(error, blog, "read failed");
+			STDERR(error, "read failed");
 			goto fail;
 		}
 		cnt += n;
 
 		if (cnt + 1 >= in->in_buflen) {
 			if (in->in_buflen >= CONFIG_MAX) {
-				bunyan_error(blog, "Input size exceeds limits",
+				(void) bunyan_error(log,
+				    "Input size exceeds limits",
 				    BUNYAN_T_UINT32, "size",
 				    (uint32_t)in->in_buflen,
 				    BUNYAN_T_UINT32, "limit",
@@ -1583,7 +1579,7 @@ again:
 
 		if (*end != '"') {
 			input_cursor_getpos(ic, start, &linep, &line, &col);
-			bunyan_error(ic->ic_log, "Unterminated quoted string",
+			(void) bunyan_error(log, "Unterminated quoted string",
 			    BUNYAN_T_UINT32, "line", line,
 			    BUNYAN_T_UINT32, "col", col,
 			    BUNYAN_T_END);
@@ -1627,13 +1623,11 @@ input_cursor_getpos(input_cursor_t *restrict ic, const char *restrict p,
 }
 
 static void
-input_cursor_init(input_cursor_t *restrict ic, input_t *restrict in,
-    bunyan_logger_t *blog)
+input_cursor_init(input_cursor_t *restrict ic, input_t *restrict in)
 {
 	(void) memset(ic, 0, sizeof (*ic));
 	ic->ic_input = in;
 	ic->ic_p = in->in_buf;
-	ic->ic_log = blog;
 }
 
 static void

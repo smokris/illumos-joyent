@@ -102,7 +102,7 @@ ikev2_ike_auth_inbound_init(pkt_t *req)
 			char typebuf[IKEV2_ENUM_STRLEN];
 			char idbuf[256] = { 0 };
 
-			(void) bunyan_warn(sa->i2sa_log,
+			(void) bunyan_warn(log,
 			    "Initiator requested ID other than ours",
 			    BUNYAN_T_STRING, "idtype",
 			    ikev2_id_type_str(idtype, typebuf,
@@ -198,7 +198,7 @@ ikev2_ike_auth_inbound_resp(pkt_t *resp)
 		char typebuf[IKEV2_ENUM_STRLEN];
 		char idbuf[128];
 
-		(void) bunyan_error(sa->i2sa_log, "Unknown remote ID given",
+		(void) bunyan_error(log, "Unknown remote ID given",
 		    BUNYAN_T_STRING, "idtype", ikev2_id_type_str(id->id_type,
 		    typebuf, sizeof (typebuf)),
 		    BUNYAN_T_STRING, "id", ikev2_id_str(id_r, idbuf,
@@ -240,7 +240,7 @@ ikev2_auth(pkt_t *pkt, boolean_t check)
 	 */
 	if (check &&
 	    (auth = pkt_get_payload(pkt, IKEV2_PAYLOAD_AUTH, NULL)) == NULL) {
-		ikev2_pkt_log(pkt, sa->i2sa_log, BUNYAN_L_ERROR,
+		ikev2_pkt_log(pkt, BUNYAN_L_ERROR,
 		    "Packet is missing AUTH payload");
 		goto done;
 	}
@@ -261,7 +261,7 @@ ikev2_auth(pkt_t *pkt, boolean_t check)
 	case IKEV2_AUTH_GSPM: {
 		char str[IKEV2_ENUM_STRLEN];
 
-		(void) bunyan_info(sa->i2sa_log,
+		(void) bunyan_info(log,
 		    "IKE SA Authentication method not yet implemented",
 		    BUNYAN_T_STRING, "authmethod",
 		    ikev2_auth_type_str(sa->authmethod, str, sizeof (str)),
@@ -274,7 +274,7 @@ ikev2_auth(pkt_t *pkt, boolean_t check)
 	}
 
 	if (check && buflen != auth->pp_len) {
-		(void) bunyan_error(sa->i2sa_log,
+		(void) bunyan_error(log,
 		    "AUTH payload size mismatch",
 		    BUNYAN_T_UINT32, "authlen", (uint32_t)auth->pp_len,
 		    BUNYAN_T_UINT32, "expected", (uint32_t)buflen,
@@ -282,7 +282,7 @@ ikev2_auth(pkt_t *pkt, boolean_t check)
 	}
 
 	if ((buf = umem_alloc(buflen, UMEM_DEFAULT)) == NULL) {
-		STDERR(error, sa->i2sa_log, "No memory for IKE SA AUTH");
+		STDERR(error, "No memory for IKE SA AUTH");
 		goto done;
 	}
 
@@ -299,7 +299,7 @@ ikev2_auth(pkt_t *pkt, boolean_t check)
 			VERIFY3P(id, !=, NULL);
 		} else {
 			/* XXX: Do as inbound check? */
-			ikev2_pkt_log(pkt, sa->i2sa_log, BUNYAN_L_ERROR,
+			ikev2_pkt_log(pkt, BUNYAN_L_ERROR,
 			    "packet is missing ID payload");
 			goto done;
 		}
@@ -313,12 +313,12 @@ ikev2_auth(pkt_t *pkt, boolean_t check)
 	} else {
 		/* We checked earlier that the two buffers are the same size */
 		if (memcmp(auth->pp_ptr, buf, buflen) != 0) {
-			(void) bunyan_error(sa->i2sa_log,
+			(void) bunyan_error(log,
 			    "Authentication failed", BUNYAN_T_END);
 			goto done;
 		}
 
-		(void) bunyan_info(sa->i2sa_log, "Authentication succeeded",
+		(void) bunyan_info(log, "Authentication succeeded",
 		    BUNYAN_T_END);
 		sa->flags |= I2SA_AUTHENTICATED;
 
@@ -370,12 +370,12 @@ calc_auth(ikev2_sa_t *restrict sa, boolean_t initiator,
 		mackey = sa->sk_pr;
 	}
 	/* MACedIDFor{R|I} */
-	if (!prf(sa->prf, mackey, mac, maclen, sa->i2sa_log, id, idlen, NULL))
+	if (!prf(sa->prf, mackey, mac, maclen, id, idlen, NULL))
 		goto done;
 
 	switch (sa->authmethod) {
 	case IKEV2_AUTH_SHARED_KEY_MIC:
-		ret = prf(sa->prf, sa->psk, out, outlen, sa->i2sa_log,
+		ret = prf(sa->prf, sa->psk, out, outlen,
 		    pkt_start(init), pkt_len(init),	/* RealMessage{1|2} */
 		    nonce->pp_ptr, nonce->pp_len,	/* Nonce{R|I}Data */
 		    mac, maclen, NULL);			/* MACedIDFor{I|R} */
@@ -388,7 +388,7 @@ calc_auth(ikev2_sa_t *restrict sa, boolean_t initiator,
 	case IKEV2_AUTH_GSPM: {
 		char str[IKEV2_ENUM_STRLEN];
 
-		(void) bunyan_info(sa->i2sa_log,
+		(void) bunyan_info(log,
 		    "IKE SA Authentication method not yet implemented",
 		    BUNYAN_T_STRING, "authmethod",
 		    ikev2_auth_type_str(sa->authmethod, str, sizeof (str)),
@@ -438,7 +438,7 @@ create_psk(ikev2_sa_t *sa)
 	}
 
 	if (pe == NULL) {
-		(void) bunyan_error(sa->i2sa_log,
+		(void) bunyan_error(log,
 		    "No matching preshared key found", BUNYAN_T_END);
 		return (B_FALSE);
 	}
@@ -450,25 +450,25 @@ create_psk(ikev2_sa_t *sa)
 	rc = SUNW_C_KeyToObject(h, mechtype, pe->pe_keybuf, pe->pe_keybuf_bytes,
 	    &psktemp);
 	if (rc != CKR_OK) {
-		PKCS11ERR(error, sa->i2sa_log, "SUNW_C_KeyToObject", rc,
+		PKCS11ERR(error, "SUNW_C_KeyToObject", rc,
 		    BUNYAN_T_STRING, "objname", "psktemp", BUNYAN_T_END);
 		goto done;
 	}
 
-	if (!prf(sa->prf, psktemp, buf, outlen, sa->i2sa_log,
+	if (!prf(sa->prf, psktemp, buf, outlen,
 	    IKEV2_KEYPAD, sizeof (IKEV2_KEYPAD), NULL))
 		goto done;
 
 	rc = SUNW_C_KeyToObject(h, mechtype, buf, outlen, &sa->psk);
 	if (rc != CKR_OK) {
-		PKCS11ERR(error, sa->i2sa_log, "SUNW_C_KeyToObject", rc,
+		PKCS11ERR(error, "SUNW_C_KeyToObject", rc,
 		    BUNYAN_T_STRING, "objname", "psk", BUNYAN_T_END);
 		goto done;
 	}
 	ret = B_TRUE;
 
 done:
-	pkcs11_destroy_obj("psktemp", &psktemp, sa->i2sa_log);
+	pkcs11_destroy_obj("psktemp", &psktemp);
 	explicit_bzero(buf, outlen);
 	return (ret);
 }
