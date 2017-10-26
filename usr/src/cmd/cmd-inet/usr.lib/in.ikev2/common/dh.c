@@ -345,7 +345,11 @@ dh_genpair(ikev2_dh_t group, CK_OBJECT_HANDLE_PTR restrict pub,
 {
 	dhgroup_t *dh;
 	CK_MECHANISM mech = { CKM_DH_PKCS_KEY_PAIR_GEN, NULL_PTR, 0 };
-	CK_ATTRIBUTE template[2];
+	CK_BBOOL trueval = CK_TRUE;
+	CK_ATTRIBUTE pub_template[2];
+	CK_ATTRIBUTE priv_template[1] = {
+	    CKA_DERIVE, &trueval, sizeof (trueval)
+	};
 	CK_RV rc;
 	char buf[IKEV2_ENUM_STRLEN];
 
@@ -359,20 +363,24 @@ dh_genpair(ikev2_dh_t group, CK_OBJECT_HANDLE_PTR restrict pub,
 		return (B_FALSE);
 	}
 
-	template[0].type = CKA_PRIME;
-	template[0].pValue = dh->prime;
-	template[0].ulValueLen = dh->bits / 8;
-	template[1].type = CKA_BASE;
-	template[1].pValue = dh->generator;
-	template[1].ulValueLen = dh->genbits / 8;
+	pub_template[0].type = CKA_PRIME;
+	pub_template[0].pValue = dh->prime;
+	pub_template[0].ulValueLen = dh->bits / 8;
+	pub_template[1].type = CKA_BASE;
+	pub_template[1].pValue = dh->generator;
+	pub_template[1].ulValueLen = dh->genbits / 8;
 
-	rc = C_GenerateKeyPair(p11h(), &mech, template, ARRAY_SIZE(template),
-	    NULL_PTR, 0, pub, priv);
+	rc = C_GenerateKeyPair(p11h(), &mech,
+	    pub_template, ARRAY_SIZE(pub_template),
+	    priv_template, ARRAY_SIZE(priv_template), pub, priv);
 	if (rc != CKR_OK) {
 		PKCS11ERR(error, "C_GenerateKeyPair", rc);
 		return (B_FALSE);
 	} else {
+		char buf[IKEV2_ENUM_STRLEN] = { 0 };
 		(void) bunyan_trace(log, "Created DH keypair",
+		    BUNYAN_T_STRING, "group",
+		    ikev2_dh_str(group, buf, sizeof (buf)),
 		    BUNYAN_T_UINT64, "pub_handle", (uint64_t)*pub,
 		    BUNYAN_T_UINT64, "priv_handle", (uint64_t)*priv,
 		    BUNYAN_T_END);
@@ -387,13 +395,11 @@ dh_derivekey(CK_OBJECT_HANDLE privkey, uint8_t *restrict pub, size_t len,
 {
 	CK_OBJECT_CLASS key_class = CKO_SECRET_KEY;
 	CK_KEY_TYPE key_type = CKK_GENERIC_SECRET;
-	CK_ULONG key_len = 0;
 	CK_BBOOL trueval = CK_TRUE;
 	CK_MECHANISM mech = { CKM_DH_PKCS_DERIVE, pub, len };
 	CK_ATTRIBUTE template[] = {
 		{ CKA_CLASS, &key_class, sizeof (key_class) },
 		{ CKA_KEY_TYPE, &key_type, sizeof (key_type) },
-		{ CKA_VALUE_LEN, &key_len, sizeof (key_len) },
 		{ CKA_ENCRYPT, &trueval, sizeof (trueval) },
 		{ CKA_DECRYPT, &trueval, sizeof (trueval) }
 	};

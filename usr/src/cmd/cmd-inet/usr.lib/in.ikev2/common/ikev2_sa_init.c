@@ -817,6 +817,16 @@ create_nonceobj(ikev2_prf_t prf, pkt_payload_t *restrict ni,
 	(void) memset(nonce, 0, noncelen);
 	(void) memcpy(nonce, ni->pp_ptr, ni_len);
 	(void) memcpy(nonce + ni_len, nr->pp_ptr, nr_len);
+
+	{
+		char *outbuf = NULL;
+		size_t buflen = noncelen * 2 + 1;
+
+		outbuf = umem_zalloc(buflen, UMEM_NOFAIL);
+		fprintf(stderr, "Ni|Nr: %s\n", writehex(nonce, noncelen, NULL, outbuf, buflen));
+		umem_free(outbuf, buflen);
+	}
+
 	rc = SUNW_C_KeyToObject(p11h(), ikev2_prf_to_p11(prf), nonce, noncelen,
 	    objp);
 	explicit_bzero(nonce, noncelen);
@@ -857,6 +867,15 @@ create_skeyseed(ikev2_sa_t *restrict sa, CK_OBJECT_HANDLE nonce,
 		goto fail;
 	}
 
+	{
+		char *outbuf = NULL;
+		size_t buflen = dh_key_len * 2 + 1;
+
+		outbuf = umem_zalloc(buflen, UMEM_NOFAIL);
+		fprintf(stderr, "g^ir: %s\n", writehex(dh_key, dh_key_len, NULL, outbuf, buflen));
+		umem_free(outbuf, buflen);
+	}
+
 	ok = prf(sa->prf, nonce, skeyseed, skeyseed_len, dh_key, dh_key_len,
 	    NULL);
 	explicit_bzero(dh_key, dh_key_len);
@@ -867,6 +886,16 @@ create_skeyseed(ikev2_sa_t *restrict sa, CK_OBJECT_HANDLE nonce,
 	if (!ok) {
 		explicit_bzero(skeyseed, skeyseed_len);
 		goto fail;
+	}
+
+	{
+		char *outbuf = NULL;
+		size_t buflen = skeyseed_len * 2 + 1;
+
+		outbuf = umem_zalloc(buflen, UMEM_NOFAIL);
+		writehex(skeyseed, skeyseed_len, NULL, outbuf, buflen);
+		fprintf(stderr, "SKEYSEED: %s\n", outbuf);
+		umem_free(outbuf, buflen);
 	}
 
 	rc = SUNW_C_KeyToObject(h, ikev2_prf_to_p11(sa->prf), skeyseed,
