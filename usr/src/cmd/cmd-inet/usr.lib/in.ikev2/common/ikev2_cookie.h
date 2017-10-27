@@ -23,7 +23,13 @@ extern "C" {
 #endif
 
 #define	IKEV2_COOKIE_OFF_ADJ	(5)	/* XXX: Better name? */
+/* How many larval IKEv2 SAs before enabling cookies */
 extern size_t ikev2_cookie_threshold;
+
+/* Lifetime of cookie secret in seconds */
+extern uint_t ikev2_cookie_secret_lifetime;
+/* How long after a cookie expires do we still accept it in seconds */
+extern uint_t ikev2_cookie_secret_grace;
 
 struct sockaddr_storage;
 struct pkt_s;

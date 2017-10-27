@@ -33,12 +33,14 @@
 #include "worker.h"
 
 #define	COOKIE_MECH		CKM_SHA_1
-#define	COOKIE_SECRET_LEN	(64)
+#define	COOKIE_SECRET_LEN	64
 #define	COOKIE_LEN		(16 + 1)
-#define	COOKIE_SECRET_LIFETIME	SEC2NSEC(60)
-#define	COOKIE_GRACE		SEC2NSEC(5)
+#define	COOKIE_SECRET_LIFETIME	60
+#define	COOKIE_GRACE		5
 
 size_t ikev2_cookie_threshold = 128;
+uint_t ikev2_cookie_secret_lifetime = COOKIE_SECRET_LIFETIME;
+uint_t ikev2_cookie_secret_grace = COOKIE_GRACE;
 
 /*
  * For cookies, we follow the guidance in RFC7296 2.6 and generate cookies
@@ -97,6 +99,8 @@ static struct secret_s {
 #define	SECRET(v) i2c_secret[(v) & 0x1].s_val
 #define	SECRET_BIRTH(v) i2c_secret[(v) & 0x1].s_birth
 #define	SECRET_AGE(v) (gethrtime() - SECRET_BIRTH(v))
+
+static hrtime_t grace_ns;	/* Only set at startup */
 
 static rwlock_t i2c_lock = DEFAULTRWLOCK;
 static volatile uint8_t i2c_version;
@@ -256,7 +260,7 @@ ikev2_cookie_check(pkt_t *restrict pkt,
 
 	if (cookie->pn_ptr[0] != i2c_version &&
 	    (cookie->pn_ptr[0] != i2c_version - 1 ||
-	    SECRET_AGE(i2c_version - 1) > COOKIE_GRACE)) {
+	    SECRET_AGE(i2c_version - 1) > grace_ns)) {
 		ok = B_FALSE;
 		goto done;
 	}
@@ -294,9 +298,12 @@ cookie_update_secret(void *dummy)
 void
 ikev2_cookie_init(void)
 {
+	hrtime_t interval = SEC2NSEC(ikev2_cookie_secret_lifetime);
+
+	grace_ns = SEC2NSEC(ikev2_cookie_secret_grace);
 	cookie_update_secret(NULL);
 
-	if (periodic_schedule(wk_periodic, COOKIE_SECRET_LIFETIME, 0,
+	if (periodic_schedule(wk_periodic, interval, 0,
 	    cookie_update_secret, NULL, &cookie_timer_id) != 0) {
 		err(EXIT_FAILURE, "Could not schedule cookie periodic");
 	}
