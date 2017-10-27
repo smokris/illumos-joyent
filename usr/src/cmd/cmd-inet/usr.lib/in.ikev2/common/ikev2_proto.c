@@ -109,7 +109,7 @@ ikev2_inbound(pkt_t *pkt, const struct sockaddr_storage *restrict src_addr,
 		 * If we received a response, we should either have an IKE SA
 		 * or discard it, but shouldn't try to create a larval IKE SA.
 		 */
-		if (I2P_IS_RESPONSE(pkt)) {
+		if (I2P_RESPONSE(pkt)) {
 			ikev2_pkt_log(pkt, BUNYAN_L_DEBUG,
 			    "Received response to non-existant IKE SA; "
 			    "discarding");
@@ -123,6 +123,7 @@ ikev2_inbound(pkt_t *pkt, const struct sockaddr_storage *restrict src_addr,
 			ikev2_pkt_free(pkt);
 			return;
 		}
+		key_add_ike_spi(LOG_KEY_LSPI, I2SA_LOCAL_SPI(i2sa));
 	} else {
 		mutex_enter(&i2sa->i2sa_queue_lock);
 	}
@@ -301,6 +302,7 @@ ikev2_pfkey(parsedmsg_t *pmsg)
 		}
 
 		mutex_enter(&sa->i2sa_lock);
+		key_add_ike_spi(LOG_KEY_LSPI, I2SA_LOCAL_SPI(sa));
 		sa->i2sa_rule = rule;
 		mutex_exit(&sa->i2sa_lock);
 	} else {
@@ -652,8 +654,12 @@ ikev2_retransmit_check(pkt_t *pkt)
 		goto done;
 	}
 
-	/* New exchange, free last response and get going */
-	ikev2_pkt_free(sa->last_resp_sent);
+	/*
+	 * New exchange, free last response (unless it's our init response
+	 * which we need to keep around for the IKE_AUTH exchange)
+	 */
+	if (sa->last_resp_sent != sa->init_r)
+		ikev2_pkt_free(sa->last_resp_sent);
 	sa->last_resp_sent = NULL;
 	sa->inmsgid++;
 	discard = B_FALSE;

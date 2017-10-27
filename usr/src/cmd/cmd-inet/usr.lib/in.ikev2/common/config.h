@@ -156,6 +156,12 @@ void cfg_rule_free(config_rule_t *);
 void cfg_free(config_t *);
 
 boolean_t config_addr_to_ss(config_addr_t *, union sockaddr_u_s);
+
+config_auth_id_t ikev2_id_to_cfg(ikev2_id_type_t);
+config_id_t *config_id_new(config_auth_id_t, const void *, size_t);
+config_id_t *config_id_copy(const config_id_t *);
+int config_id_cmp(const config_id_t *, const config_id_t *);
+const char *config_id_type_str(config_auth_id_t);
 char *config_id_str(const config_id_t *, char *, size_t);
 void config_id_free(config_id_t *);
 

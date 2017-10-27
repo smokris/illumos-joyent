@@ -1325,12 +1325,8 @@ parse_p1_id(input_cursor_t *restrict ic, token_t *restrict t,
 		return (B_FALSE);
 	}
 
-	if ((id = calloc(1, sizeof (*id) + len)) == NULL)
+	if ((id = config_id_new(idtype, ptr, len)) == NULL)
 		return (B_FALSE);
-
-	id->cid_type = idtype;
-	id->cid_len = len;
-	(void) memcpy(id->cid_data, ptr, len);
 
 	*idp = id;
 	return (B_TRUE);

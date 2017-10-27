@@ -35,12 +35,16 @@
 static void ikev2_ike_auth_inbound_init(pkt_t *);
 static void ikev2_ike_auth_inbound_resp(pkt_t *);
 static boolean_t ikev2_auth_failed(const pkt_t *);
-static boolean_t ikev2_auth(pkt_t *, boolean_t);
 static boolean_t create_psk(ikev2_sa_t *);
 static boolean_t calc_auth(ikev2_sa_t *restrict, boolean_t,
-    const uint8_t *restrict, size_t, uint8_t *restrict, size_t);
+    pkt_payload_t *restrict, uint8_t *restrict, size_t);
 static boolean_t add_id(pkt_t *, config_id_t *id, boolean_t);
-static boolean_t i2id_is_equal(const pkt_payload_t *, const config_id_t *);
+static boolean_t add_auth(pkt_t *);
+static boolean_t check_auth(pkt_t *);
+static boolean_t check_remote_id(pkt_t *, config_id_t **);
+
+static config_id_t *i2id_to_cid(pkt_payload_t *);
+static size_t get_authlen(const ikev2_sa_t *);
 
 void
 ikev2_ike_auth_inbound(pkt_t *pkt)
@@ -67,8 +71,15 @@ ikev2_ike_auth_inbound_init(pkt_t *req)
 	config_rule_t *rule = sa->i2sa_rule;
 	pkt_t *resp = NULL;
 	pkt_payload_t *id_r = NULL;
+	config_id_t *cid_i = NULL;
+	const char *mstr = NULL;
+	char mbuf[IKEV2_ENUM_STRLEN] = { 0 };
+
+	(void) bunyan_debug(log, "Responding to IKE_AUTH request",
+	    BUNYAN_T_END);
 
 	resp = ikev2_pkt_new_response(req);
+
 	/*
 	 * If we're out of memory, instead of just condemning the IKE SA
 	 * we'll wait for the P1 timeout.  It may be possible we can
@@ -76,33 +87,57 @@ ikev2_ike_auth_inbound_init(pkt_t *req)
 	 */
 	if (resp == NULL)
 		goto fail;
+
 	if (!ikev2_add_sk(resp))
 		goto fail;
+
+	if (!check_remote_id(req, &cid_i))
+		goto authfail;
+	key_add_id(LOG_KEY_REMOTE_ID, LOG_KEY_REMOTE_ID_TYPE, cid_i);
+
+	mstr = ikev2_auth_type_str(sa->authmethod, mbuf, sizeof (mbuf));
 
 	/*
 	 * RFC7296 2.21.2 - We must first authenticate before we can
 	 * possibly send errors related to the piggybacked child SA
 	 * creation.
 	 */
-	if (!ikev2_auth(req, B_TRUE)) {
-		ikev2_auth_failed(req);	/* XXX: return value ! */
-		ikev2_sa_condemn(sa);
-		goto fail;
+	if (!check_auth(req)) {
+		(void) bunyan_warn(log, "Authentication failed",
+		    BUNYAN_T_STRING, "authmethod", mstr,
+		    BUNYAN_T_END);
+		goto authfail;
 	}
 
-	/* The initiator may optionally equest we send a specific ID */
+	sa->remote_id = cid_i;
+	cid_i = NULL;
+
+	sa->remote_id = cid_i;
+	sa->flags |= I2SA_AUTHENTICATED;
+	if (ikev2_sa_disarm_timer(sa, I2SA_EVT_P1_EXPIRE))
+		I2SA_REFRELE(sa);
+
+	(void) bunyan_info(log, "Authentication successful",
+	    BUNYAN_T_STRING, "authmethod", mstr,
+	    BUNYAN_T_END);
+
+	/* The initiator may optionally request we send a specific ID */
 	if ((id_r = pkt_get_payload(req, IKEV2_PAYLOAD_IDr, NULL)) != NULL) {
 		/*
 		 * If the initiator is requesting an ID that is not the one
 		 * specified in the rule, for now we'll note the difference
 		 * and still respond, using our configured id.
 		 */
-		if (!i2id_is_equal(id_r, rule->rule_local_id)) {
+		config_id_t *cid_r = NULL;
+
+		/* If this fails, we just ignore the whole payload */
+		if ((cid_r = i2id_to_cid(id_r)) != NULL &&
+		    config_id_cmp(cid_r, rule->rule_local_id) != 0) {
 			uint8_t idtype = *id_r->pp_ptr;
 			char typebuf[IKEV2_ENUM_STRLEN];
 			char idbuf[256] = { 0 };
 
-			(void) bunyan_warn(log,
+			(void) bunyan_info(log,
 			    "Initiator requested ID other than ours",
 			    BUNYAN_T_STRING, "idtype",
 			    ikev2_id_type_str(idtype, typebuf,
@@ -111,20 +146,39 @@ ikev2_ike_auth_inbound_init(pkt_t *req)
 			    ikev2_id_str(id_r, idbuf, sizeof (idbuf)),
 			    BUNYAN_T_END);
 		}
+		config_id_free(cid_r);
 	}
 
 	if (!add_id(resp, rule->rule_local_id, B_FALSE))
 		goto fail;
 	/* XXX: Add CERT payloads */
-	if (!ikev2_auth(req, B_FALSE))
+	if (!add_auth(resp))
 		goto fail;
 
+#if 0
 	ikev2_create_child_sa_inbound(req, resp);
+#else
+	ikev2_send(resp, B_FALSE);
+	ikev2_pkt_free(req);
+#endif
 	return;
 
 fail:
 	ikev2_pkt_free(resp);
 	ikev2_pkt_free(req);
+	return;
+
+authfail:
+	config_id_free(cid_i);
+	ikev2_pkt_free(resp);
+
+	if (!ikev2_add_notify(resp, IKEV2_PROTO_IKE, 0,
+	    IKEV2_N_AUTHENTICATION_FAILED, NULL, 0)) {
+		ikev2_pkt_free(resp);
+	} else {
+		ikev2_send(resp, B_TRUE);
+	}
+	ikev2_sa_condemn(sa);
 }
 
 /*
@@ -143,10 +197,14 @@ ikev2_ike_auth_outbound(ikev2_sa_t *sa)
 	/* We should have at least one ACQUIRE pending if we got this far */
 	VERIFY(!list_is_empty(&sa->i2sa_pending));
 
+	(void) bunyan_debug(log, "Starting IKE_AUTH exchange", BUNYAN_T_END);
+
 	if (req == NULL)
 		goto fail;
-	if (!ikev2_add_sk(req))
-		goto fail;
+
+	/* First payload, this should always fit */
+	VERIFY(ikev2_add_sk(req));
+
 	if (!add_id(req, rule->rule_local_id, B_TRUE))
 		goto fail;
 
@@ -156,9 +214,10 @@ ikev2_ike_auth_outbound(ikev2_sa_t *sa)
 	 * XXX: We can optionally add _1_ IDr payload to indicate a preferred
 	 * ID for the responder to use.  Since we currently support multiple
 	 * remote ids in a rule, not sure there's any benefit to do this.
-	 * For now, we will elect to no do this.
+	 * For now, we will elect not to do this.
 	 */
-	if (!ikev2_auth(req, B_FALSE))
+
+	if (!add_auth(req))
 		goto fail;
 
 #if 0
@@ -183,157 +242,204 @@ ikev2_ike_auth_inbound_resp(pkt_t *resp)
 	VERIFY(MUTEX_HELD(&resp->pkt_sa->i2sa_lock));
 
 	ikev2_sa_t *sa = resp->pkt_sa;
-	config_id_t **remote_ids = sa->i2sa_rule->rule_remote_id;
-	pkt_payload_t *id_r = NULL;
-	boolean_t match = B_FALSE;
+	config_id_t *cid_r = NULL;
+	const char *mstr = NULL;
+	char mbuf[IKEV2_ENUM_STRLEN] = { 0 };
 
-	/* XXX: check for error NOTIFICATIONS */
+	(void) bunyan_debug(log, "Received IKE_AUTH response",
+	    BUNYAN_T_END);
 
-	if (ikev2_auth(resp, B_TRUE))
+	/*
+	 * RFC 7296 2.21.2 -- If authentication fails, the IKE SA is not
+	 * established.  However, authentication can successfully complete
+	 * while the included child SA request can fail, which does not
+	 * necessairly cause the IKE SA to be deleted -- if we wish to
+	 * delete the IKE SA, or if we (the initiator) reject the IKE SA
+	 * (as opposed to the responder), it all must be done in a separate
+	 * exchange.  All of that to say, that this is the only notification
+	 * we check for doing the authentication portion of the processing.
+	 */
+	if (pkt_get_notify(resp, IKEV2_N_AUTHENTICATION_FAILED, NULL) != NULL) {
+		(void) bunyan_warn(log,
+		    "Remote rejected our authentication attempt",
+		    BUNYAN_T_END);
+		ikev2_pkt_free(resp);
+		ikev2_sa_condemn(sa);
+		return;
+	}
+
+	if (!check_remote_id(resp, &cid_r))
 		goto fail;
 
-	for (size_t i = 0; remote_ids != NULL && remote_ids[i] != NULL; i++) {
-		if (i2id_is_equal(id_r, remote_ids[i])) {
-			match = B_TRUE;
-			break;
-		}
-	}
-	if (!match && remote_ids != NULL) {
-		ikev2_id_t *id = (ikev2_id_t *)id_r->pp_ptr;
-		char typebuf[IKEV2_ENUM_STRLEN];
-		char idbuf[128];
+	mstr = ikev2_auth_type_str(sa->authmethod, mbuf, sizeof (mbuf));
 
-		(void) bunyan_error(log, "Unknown remote ID given",
-		    BUNYAN_T_STRING, "idtype", ikev2_id_type_str(id->id_type,
-		    typebuf, sizeof (typebuf)),
-		    BUNYAN_T_STRING, "id", ikev2_id_str(id_r, idbuf,
-		    sizeof (idbuf)),
+	key_add_id(LOG_KEY_REMOTE_ID, LOG_KEY_REMOTE_ID_TYPE, cid_r);
+
+	if (!check_auth(resp)) {
+		(void) bunyan_warn(log, "Authentication failed",
+		    BUNYAN_T_STRING, "authmethod", mstr,
 		    BUNYAN_T_END);
-
-		/* XXX: Create new informational exchange to delete IKE SA */
+		goto fail;
 	}
+
+	(void) bunyan_info(log, "Authentication successful",
+	    BUNYAN_T_STRING, "authmethod", mstr,
+	    BUNYAN_T_END);
+
+	sa->remote_id = cid_r;
+	sa->flags |= I2SA_AUTHENTICATED;
+	if (ikev2_sa_disarm_timer(sa, I2SA_EVT_P1_EXPIRE))
+		I2SA_REFRELE(sa);
 
 #if 0
 	ikev2_create_child_sa_inbound(resp, NULL);
+#else
+	ikev2_pkt_free(resp);
+	return;
 #endif
 
 fail:
 	/* TODO */
+	config_id_free(cid_r);
 	ikev2_pkt_free(resp);
 }
 
-/*
- * Calculate what the AUTH payload value should be. If check is B_FALSE,
- * add calculated value to packet in IKEV2_PAYLOAD_AUTH payload and return.
- * Otherwise the calculated value is compared to the existing value in pkt,
- * if they match, the SA is marked as authenticated and the P1 timer is
- * cancelled.
- */
 static boolean_t
-ikev2_auth(pkt_t *pkt, boolean_t check)
+add_auth(pkt_t *pkt)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
-	pkt_payload_t *id = NULL;
-	pkt_payload_t *auth = NULL;
-	uint8_t *buf = NULL;
-	size_t buflen = 0;
-	boolean_t initiator =
-	    pkt_header(pkt)->flags & IKEV2_FLAG_INITIATOR ? B_TRUE : B_FALSE;
+	pkt_payload_t *payid = NULL;
+	config_id_t *cid = NULL;
+	uint8_t *auth = NULL;
+	size_t authlen = get_authlen(sa);
+	boolean_t initiator = I2P_INITIATOR(pkt);
 	boolean_t ret = B_FALSE;
 
-	/*
-	 * XXX: Maybe move this check as part of post-decrypt validation
-	 * checks?
-	 */
-	if (check &&
-	    (auth = pkt_get_payload(pkt, IKEV2_PAYLOAD_AUTH, NULL)) == NULL) {
-		ikev2_pkt_log(pkt, BUNYAN_L_ERROR,
-		    "Packet is missing AUTH payload");
-		goto done;
+	if (authlen == 0)
+		return (B_FALSE);
+
+	payid = pkt_get_payload(pkt,
+	    initiator ? IKEV2_PAYLOAD_IDi : IKEV2_PAYLOAD_IDr, NULL);
+
+	/* We're constructing the pkt, so we've messed up badly if missing */
+	VERIFY3P(payid, !=, NULL);
+
+	if ((auth = umem_zalloc(authlen, UMEM_DEFAULT)) == NULL) {
+		(void) bunyan_error(log, "No memory for AUTH creation",
+		    BUNYAN_T_END);
+		return (B_FALSE);
 	}
 
-	switch (sa->authmethod) {
-	case IKEV2_AUTH_SHARED_KEY_MIC:
-		if (sa->psk == CK_INVALID_HANDLE && !create_psk(sa)) {
-			/* XXX: error */
-			goto done;
-		}
-		buflen = ikev2_prf_outlen(sa->prf);
-		break;
-	case IKEV2_AUTH_RSA_SIG:
-	case IKEV2_AUTH_DSS_SIG:
-	case IKEV2_AUTH_ECDSA_256:
-	case IKEV2_AUTH_ECDSA_384:
-	case IKEV2_AUTH_ECDSA_512:
-	case IKEV2_AUTH_GSPM: {
-		char str[IKEV2_ENUM_STRLEN];
+	if (!calc_auth(sa, initiator, payid, auth, authlen))
+		goto done;
 
-		(void) bunyan_info(log,
-		    "IKE SA Authentication method not yet implemented",
-		    BUNYAN_T_STRING, "authmethod",
-		    ikev2_auth_type_str(sa->authmethod, str, sizeof (str)),
+	(void) bunyan_trace(log, "Adding AUTH payload to packet", BUNYAN_T_END);
+
+	if (!ikev2_add_auth(pkt, sa->authmethod, auth, authlen)) {
+		(void) bunyan_error(log, "No space for AUTH payload in packet",
 		    BUNYAN_T_END);
 		goto done;
 	}
-	case IKEV2_AUTH_NONE:
-		INVALID("sa->authmethod");
-		break;
+	ret = B_TRUE;
+
+done:
+	explicit_bzero(auth, authlen);
+	umem_free(auth, authlen);
+	return (ret);
+}
+
+static boolean_t
+check_auth(pkt_t *pkt)
+{
+	ikev2_sa_t *sa = pkt->pkt_sa;
+	pkt_payload_t *payid = NULL;
+	pkt_payload_t *payauth = NULL;
+	uint8_t *auth = NULL, *buf = NULL;
+	size_t authlen = 0, buflen = 0;
+	boolean_t initiator = I2P_INITIATOR(pkt);
+	boolean_t ret = B_FALSE;
+
+	(void) bunyan_trace(log, "Checking AUTH payload", BUNYAN_T_END);
+
+	buflen = get_authlen(sa);
+	payauth = pkt_get_payload(pkt, IKEV2_PAYLOAD_AUTH, NULL);
+
+	/* XXX: Move these to inbound packet checks? */
+	payid = pkt_get_payload(pkt,
+	    initiator ? IKEV2_PAYLOAD_IDi : IKEV2_PAYLOAD_IDr, NULL);
+
+	if (payid == NULL) {
+		(void) bunyan_warn(log, "Packet is missing it's ID payload",
+		    BUNYAN_T_END);
+		return (B_FALSE);
 	}
 
-	if (check && buflen != auth->pp_len) {
-		(void) bunyan_error(log,
-		    "AUTH payload size mismatch",
-		    BUNYAN_T_UINT32, "authlen", (uint32_t)auth->pp_len,
+	if (payauth == NULL) {
+		(void) bunyan_warn(log, "Packet is missing AUTH payload",
+		    BUNYAN_T_END);
+		return (B_FALSE);
+	}
+
+	if (payauth->pp_len < sizeof (ikev2_auth_t)) {
+		uint32_t len = payauth->pp_len + sizeof (ikev2_payload_t);
+		uint32_t minlen = sizeof (ikev2_auth_t) +
+		    sizeof (ikev2_payload_t);
+
+		(void) bunyan_warn(log, "AUTH payload is truncated",
+		    BUNYAN_T_UINT32, "len", len,
+		    BUNYAN_T_UINT32, "minlen", minlen,
+		    BUNYAN_T_END);
+		return (B_FALSE);
+	}
+
+	/*
+	 * XXX: It seems that in theory (at least) we could support different
+	 * authentication methods in each direction.  It seems like this
+	 * could invite troubleshooting headaches though. For now at least,
+	 * we will require both ends to use the same method.
+	 */
+	if (payauth->pp_ptr[0] != sa->authmethod) {
+		const char *l_meth = NULL, *r_meth = NULL;
+		char lbuf[IKEV2_ENUM_STRLEN] = { 0 };
+		char rbuf[IKEV2_ENUM_STRLEN] = { 0 };
+
+		l_meth = ikev2_auth_type_str(sa->authmethod, lbuf,
+		    sizeof (lbuf));
+		r_meth = ikev2_auth_type_str(payauth->pp_ptr[0], rbuf,
+		    sizeof (rbuf));
+
+		(void) bunyan_warn(log,
+		    "Authentication method mismatch with remote peer",
+		    BUNYAN_T_STRING, "local_method", l_meth,
+		    BUNYAN_T_STRING, "remote_method", r_meth,
+		    BUNYAN_T_END);
+		return (B_FALSE);
+	}
+
+	auth = payauth->pp_ptr + sizeof (ikev2_auth_t);
+	authlen = payauth->pp_len - sizeof (ikev2_auth_t);
+
+	if (authlen != buflen) {
+		(void) bunyan_warn(log,
+		    "AUTH size mismatch",
+		    BUNYAN_T_UINT32, "authlen", (uint32_t)authlen,
 		    BUNYAN_T_UINT32, "expected", (uint32_t)buflen,
 		    BUNYAN_T_END);
+		return (B_FALSE);
 	}
 
-	if ((buf = umem_alloc(buflen, UMEM_DEFAULT)) == NULL) {
-		STDERR(error, "No memory for IKE SA AUTH");
-		goto done;
+	if ((buf = umem_zalloc(buflen, UMEM_DEFAULT)) == NULL) {
+		(void) bunyan_error(log,
+		    "No memory to validate AUTH payload", BUNYAN_T_END);
+		return (B_FALSE);
 	}
 
-	id = pkt_get_payload(pkt,
-	    initiator ? IKEV2_PAYLOAD_IDi : IKEV2_PAYLOAD_IDr, NULL);
-	if (id == NULL) {
-		/*
-		 * If we're adding (i.e. constructing) the packet, something is
-		 * wrong if we've not added the proper ID payload.  However
-		 * if we're authenticating the peer, just fail the
-		 * authentication check due to a missing id.
-		 */
-		if (!check) {
-			VERIFY3P(id, !=, NULL);
-		} else {
-			/* XXX: Do as inbound check? */
-			ikev2_pkt_log(pkt, BUNYAN_L_ERROR,
-			    "packet is missing ID payload");
-			goto done;
-		}
-	}
-
-	if (!calc_auth(sa, initiator, id->pp_ptr, id->pp_len, buf, buflen))
+	if (!calc_auth(sa, initiator, payid, buf, buflen))
 		goto done;
 
-	if (!check) {
-		ret = ikev2_add_auth(pkt, sa->authmethod, buf, buflen);
-	} else {
-		/* We checked earlier that the two buffers are the same size */
-		if (memcmp(auth->pp_ptr, buf, buflen) != 0) {
-			(void) bunyan_error(log,
-			    "Authentication failed", BUNYAN_T_END);
-			goto done;
-		}
-
-		(void) bunyan_info(log, "Authentication succeeded",
-		    BUNYAN_T_END);
-		sa->flags |= I2SA_AUTHENTICATED;
-
-		(void) periodic_cancel(wk_periodic, sa->i2sa_p1_timer);
-		sa->i2sa_p1_timer = 0;
-
+	/* We previously verified authlen == buflen */
+	if (memcmp(auth, buf, buflen) == 0)
 		ret = B_TRUE;
-	}
 
 done:
 	explicit_bzero(buf, buflen);
@@ -343,8 +449,7 @@ done:
 
 static boolean_t
 calc_auth(ikev2_sa_t *restrict sa, boolean_t initiator,
-    const uint8_t *restrict id, size_t idlen, uint8_t *restrict out,
-    size_t outlen)
+    pkt_payload_t *restrict id, uint8_t *restrict out, size_t outlen)
 {
 	pkt_t *init = NULL;
 	pkt_payload_t *nonce = NULL;
@@ -376,12 +481,16 @@ calc_auth(ikev2_sa_t *restrict sa, boolean_t initiator,
 		nonce = pkt_get_payload(sa->init_i, IKEV2_PAYLOAD_NONCE, NULL);
 		mackey = sa->sk_pr;
 	}
+
 	/* MACedIDFor{R|I} */
-	if (!prf(sa->prf, mackey, mac, maclen, id, idlen, NULL))
+	if (!prf(sa->prf, mackey, mac, maclen, id->pp_ptr, id->pp_len, NULL))
 		goto done;
 
 	switch (sa->authmethod) {
 	case IKEV2_AUTH_SHARED_KEY_MIC:
+		if (sa->psk == CK_INVALID_HANDLE && !create_psk(sa))
+			goto done;
+
 		ret = prf(sa->prf, sa->psk, out, outlen,
 		    pkt_start(init), pkt_len(init),	/* RealMessage{1|2} */
 		    nonce->pp_ptr, nonce->pp_len,	/* Nonce{R|I}Data */
@@ -392,18 +501,13 @@ calc_auth(ikev2_sa_t *restrict sa, boolean_t initiator,
 	case IKEV2_AUTH_ECDSA_256:
 	case IKEV2_AUTH_ECDSA_384:
 	case IKEV2_AUTH_ECDSA_512:
-	case IKEV2_AUTH_GSPM: {
-		char str[IKEV2_ENUM_STRLEN];
-
+	case IKEV2_AUTH_GSPM:
 		(void) bunyan_info(log,
 		    "IKE SA Authentication method not yet implemented",
-		    BUNYAN_T_STRING, "authmethod",
-		    ikev2_auth_type_str(sa->authmethod, str, sizeof (str)),
 		    BUNYAN_T_END);
 		goto done;
-	}
 	case IKEV2_AUTH_NONE:
-		INVALID("sa->authmethod");
+		INVALID(sa->authmethod);
 		break;
 	}
 
@@ -440,6 +544,7 @@ create_psk(ikev2_sa_t *sa)
 	case AF_INET6:
 		pe = lookup_ps_by_in6_addr(&laddr.sau_sin6->sin6_addr,
 		    &raddr.sau_sin6->sin6_addr);
+		break;
 	default:
 		INVALID("ss_family");
 	}
@@ -484,18 +589,22 @@ static boolean_t
 add_id(pkt_t *pkt, config_id_t *id, boolean_t initiator)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
+	config_auth_id_t cid_type = 0;
 	ikev2_id_type_t id_type = IKEV2_ID_FQDN; /* set default to quiet GCC */
 	size_t idlen = 0;
 	void *ptr = NULL;
 
+	/* Default to IP if no id was specified */
 	if (id == NULL) {
 		switch (sa->laddr.ss_family) {
 		case AF_INET:
+			cid_type = CFG_AUTH_ID_IPV4;
 			id_type = IKEV2_ID_IPV4_ADDR;
 			idlen = sizeof (in_addr_t);
 			ptr = &((struct sockaddr_in *)&sa->laddr)->sin_addr;
 			break;
 		case AF_INET6:
+			cid_type = CFG_AUTH_ID_IPV6;
 			id_type = IKEV2_ID_IPV6_ADDR;
 			idlen = sizeof (in6_addr_t);
 			ptr = &((struct sockaddr_in6 *)&sa->laddr)->sin6_addr;
@@ -505,7 +614,7 @@ add_id(pkt_t *pkt, config_id_t *id, boolean_t initiator)
 		}
 	} else if (id->cid_len == 0) {
 		/* parsing should prevent this */
-		INVALID("id->cid_len");
+		INVALID(id->cid_len);
 	} else {
 		idlen = id->cid_len;
 		ptr = id->cid_data;
@@ -538,80 +647,157 @@ add_id(pkt_t *pkt, config_id_t *id, boolean_t initiator)
 			idlen--;
 			break;
 		}
+		cid_type = id->cid_type;
 	}
 
 	/*
 	 * The same as !(initiator ^ (sa->flags & I2SA_INITIATOR)) but hopefully
-	 * clearer -- if we're adding our own ID, save it to sa.
+	 * clearer -- if we're adding our own ID, save it to IKEv2 SA.
 	 */
 	if ((initiator && (sa->flags & I2SA_INITIATOR)) ||
 	    (!initiator && !(sa->flags & I2SA_INITIATOR))) {
-		config_id_t *copy;
-
-		if ((copy = calloc(1, sizeof (*copy) + idlen)) == NULL)
+		sa->local_id = config_id_new(cid_type, ptr, idlen);
+		if (sa->local_id == NULL) {
+			(void) bunyan_error(log, "No memory to create IKE id",
+			    BUNYAN_T_END);
 			return (B_FALSE);
-
-		copy->cid_type = id_type;
-		copy->cid_len = idlen;
-		(void) memcpy(copy->cid_data, ptr, idlen);
-		sa->local_id = copy;
+		}
+		key_add_id(LOG_KEY_LOCAL_ID, LOG_KEY_LOCAL_ID_TYPE,
+		    sa->local_id);
 	}
+
+	(void) bunyan_trace(log, "Setting IKEv2 ID", BUNYAN_T_END);
 
 	return (ikev2_add_id(pkt, initiator, id_type, ptr, idlen));
 }
 
 static boolean_t
-i2id_is_equal(const pkt_payload_t *i2id, const config_id_t *cid)
+check_remote_id(pkt_t *pkt, config_id_t **pcid)
 {
-	ikev2_id_t *i2idp = (ikev2_id_t *)i2id->pp_ptr;
-	void *id = (void *)(i2idp + 1);
-	size_t cidlen = cid->cid_len;
-	size_t idlen = i2id->pp_len - sizeof (*i2idp);
+	config_id_t **remote_ids = NULL;
+	pkt_payload_t *pid = NULL;
+	boolean_t match = B_FALSE;
 
-	if (cid == NULL && i2id == NULL)
-		return (B_TRUE);
-	else if (cid == NULL)
+	*pcid = NULL;
+
+	pid = pkt_get_payload(pkt,
+	    I2P_INITIATOR(pkt) ? IKEV2_PAYLOAD_IDi : IKEV2_PAYLOAD_IDr, NULL);
+	if (pid == NULL) {
+		(void) bunyan_warn(log, "IKE_AUTH packet is missing ID",
+		    BUNYAN_T_END);
 		return (B_FALSE);
-
-	switch (cid->cid_type) {
-	case CFG_AUTH_ID_DNS:
-		if (i2idp->id_type != IKEV2_ID_FQDN)
-			return (B_FALSE);
-		/* Exclude trailing NUL in comparison */
-		cidlen--;
-		break;
-	case CFG_AUTH_ID_EMAIL:
-		if (i2idp->id_type != IKEV2_ID_RFC822_ADDR)
-			return (B_FALSE);
-		/* Exclude trailing NUL in comparison */
-		cidlen--;
-		break;
-	case CFG_AUTH_ID_GN:
-		if (i2idp->id_type != IKEV2_ID_DER_ASN1_GN)
-			return (B_FALSE);
-		break;
-	case CFG_AUTH_ID_DN:
-		if (i2idp->id_type != IKEV2_ID_DER_ASN1_DN)
-			return (B_FALSE);
-		break;
-	case CFG_AUTH_ID_IPV4:
-	case CFG_AUTH_ID_IPV4_PREFIX:
-	case CFG_AUTH_ID_IPV4_RANGE:
-		if (i2idp->id_type != IKEV2_ID_IPV4_ADDR)
-			return (B_FALSE);
-		break;
-	case CFG_AUTH_ID_IPV6:
-	case CFG_AUTH_ID_IPV6_PREFIX:
-	case CFG_AUTH_ID_IPV6_RANGE:
-		if (i2idp->id_type != IKEV2_ID_IPV6_ADDR)
-			return (B_FALSE);
 	}
-	if (cid->cid_len != idlen)
-		return (B_FALSE);
-	if (memcmp(id, cid->cid_data, idlen) != 0)
+
+	if ((*pcid = i2id_to_cid(pid)) == NULL)
 		return (B_FALSE);
 
-	return (B_TRUE);
+	/* If no remote id given, accept all IDs */
+	remote_ids = pkt->pkt_sa->i2sa_rule->rule_remote_id;
+	if (remote_ids == NULL)
+		return (B_TRUE);
+
+	for (size_t i = 0; remote_ids[i] != NULL; i++) {
+		if (config_id_cmp(*pcid, remote_ids[i]) == 0) {
+			match = B_TRUE;
+			break;
+		}
+	}
+
+	return (match);
+}
+
+/*
+ * Convert an IKEv2 ID to a config_id_t and return the config_id_t.
+ * Returns NULL on failure.
+ */
+static config_id_t *
+i2id_to_cid(pkt_payload_t *i2id)
+{
+	config_id_t *cid = NULL;
+	config_auth_id_t cidtype = 0;
+	void *data = NULL;
+	uint32_t datalen = 0;
+	char *buf = NULL;
+	const char *idtstr = NULL;
+	char idtbuf[IKEV2_ENUM_STRLEN] = { 0 };
+
+	if (i2id->pp_len <= sizeof (ikev2_id_t)) {
+		(void) bunyan_error(log, "ID payload is truncated",
+		    BUNYAN_T_UINT32, "len",
+		    (uint32_t)(i2id->pp_len + sizeof (ikev2_payload_t)),
+		    BUNYAN_T_UINT32, "expected",
+		    (uint32_t)(sizeof (ikev2_payload_t) + sizeof (ikev2_id_t)),
+		    BUNYAN_T_END);
+		return (NULL);
+	}
+
+	idtstr = ikev2_id_type_str(i2id->pp_ptr[0], idtbuf, sizeof (idtbuf));
+
+	data = i2id->pp_ptr + sizeof (ikev2_id_t);
+	datalen = i2id->pp_len - sizeof (ikev2_id_t);
+
+	switch ((ikev2_id_type_t)i2id->pp_ptr[0]) {
+	case IKEV2_ID_IPV4_ADDR:
+		cidtype = CFG_AUTH_ID_IPV4;
+		if (datalen != sizeof (in_addr_t)) {
+			(void) bunyan_warn(log, "ID payload length mismatch",
+			    BUNYAN_T_STRING, "idtype", idtstr,
+			    BUNYAN_T_UINT32, "len", datalen,
+			    BUNYAN_T_UINT32, "expected",
+			    (uint32_t)sizeof (in_addr_t), BUNYAN_T_END);
+			return (NULL);
+		}
+		break;
+	case IKEV2_ID_FQDN:
+		cidtype = CFG_AUTH_ID_DNS;
+		if ((buf = umem_zalloc(datalen + 1, UMEM_DEFAULT)) == NULL) {
+			(void) bunyan_error(log, "No memory for IKE ID",
+			    BUNYAN_T_END);
+			return (NULL);
+		}
+		(void) memcpy(buf, data, datalen++);
+		data = buf;
+		break;
+	case IKEV2_ID_RFC822_ADDR:
+		cidtype = CFG_AUTH_ID_EMAIL;
+		if ((buf = umem_zalloc(datalen + 1, UMEM_DEFAULT)) == NULL) {
+			(void) bunyan_error(log, "No memory for IKE ID",
+			    BUNYAN_T_END);
+			return (NULL);
+		}
+		(void) memcpy(buf, data, datalen++);
+		data = buf;
+		break;
+	case IKEV2_ID_IPV6_ADDR:
+		cidtype = CFG_AUTH_ID_IPV6;
+		if (datalen != sizeof (in6_addr_t)) {
+			(void) bunyan_warn(log, "ID payload length mismatch",
+			    BUNYAN_T_STRING, "idtype", idtstr,
+			    BUNYAN_T_UINT32, "len", datalen,
+			    BUNYAN_T_UINT32, "expected",
+			    (uint32_t)sizeof (in6_addr_t), BUNYAN_T_END);
+			return (NULL);
+		}
+		break;
+	case IKEV2_ID_DER_ASN1_DN:
+		cidtype = CFG_AUTH_ID_DN;
+		break;
+	case IKEV2_ID_DER_ASN1_GN:
+		cidtype = CFG_AUTH_ID_GN;
+		break;
+	case IKEV2_ID_KEY_ID:
+	case IKEV2_ID_FC_NAME:
+		(void) bunyan_warn(log, "Unsupported IKE ID type",
+		    BUNYAN_T_STRING, "idtype", idtstr,
+		    BUNYAN_T_END);
+		return (NULL);
+	}
+
+	cid = config_id_new(cidtype, data, datalen);
+	if (buf != NULL)
+		umem_free(buf, datalen);
+
+	return (cid);
 }
 
 static boolean_t
@@ -637,4 +823,31 @@ ikev2_auth_failed(const pkt_t *src)
 	}
 
 	return (ikev2_send(msg, resp));
+}
+
+static size_t
+get_authlen(const ikev2_sa_t *sa)
+{
+	char str[IKEV2_ENUM_STRLEN] = { 0 };
+	const char *authstr = ikev2_auth_type_str(sa->authmethod, str,
+	    sizeof (str));
+
+	switch (sa->authmethod) {
+	case IKEV2_AUTH_NONE:
+		return (0);
+	case IKEV2_AUTH_SHARED_KEY_MIC:
+		return (ikev2_prf_outlen(sa->prf));
+	case IKEV2_AUTH_RSA_SIG:
+	case IKEV2_AUTH_DSS_SIG:
+	case IKEV2_AUTH_ECDSA_256:
+	case IKEV2_AUTH_ECDSA_384:
+	case IKEV2_AUTH_ECDSA_512:
+	case IKEV2_AUTH_GSPM:
+		(void) bunyan_error(log,
+		    "IKE SA authentication method not yet implemented",
+		    BUNYAN_T_STRING, "authmethod", authstr,
+		    BUNYAN_T_END);
+		return (0);
+	}
+	return (0);
 }

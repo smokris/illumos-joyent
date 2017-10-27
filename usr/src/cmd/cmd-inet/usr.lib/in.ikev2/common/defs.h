@@ -138,12 +138,16 @@ const void *ss_addr(const struct sockaddr_storage *);
 #define	LOG_KEY_FUNC	"func"
 #define	LOG_KEY_LINE	"line"
 
-#define	LOG_KEY_I2SA	"i2sa"
-#define	LOG_KEY_LADDR	"local_addr"
-#define	LOG_KEY_RADDR	"remote_addr"
-#define	LOG_KEY_LSPI	"local_spi"
-#define	LOG_KEY_RSPI	"remote_spi"
-#define	LOG_KEY_INITIATOR "initiator"
+#define	LOG_KEY_I2SA		"i2sa"
+#define	LOG_KEY_LADDR		"local_addr"
+#define	LOG_KEY_RADDR		"remote_addr"
+#define	LOG_KEY_LSPI		"local_spi"
+#define	LOG_KEY_RSPI		"remote_spi"
+#define	LOG_KEY_INITIATOR	"initiator"
+#define	LOG_KEY_LOCAL_ID	"local_id"
+#define	LOG_KEY_LOCAL_ID_TYPE	LOG_KEY_LOCAL_ID "_type"
+#define	LOG_KEY_REMOTE_ID	"remote_id"
+#define	LOG_KEY_REMOTE_ID_TYPE	LOG_KEY_REMOTE_ID "_type"
 
 #define	LOG_KEY_REQ	"req_pkt"
 #define	LOG_KEY_RESP	"resp_pkt"
@@ -198,6 +202,8 @@ void log_reset_keys(void);
 void key_add_ike_version(const char *, uint8_t);
 void key_add_ike_spi(const char *, uint64_t);
 void key_add_addr(const char *, struct sockaddr_storage *);
+struct config_id_s;
+void key_add_id(const char *, const char *, struct config_id_s *);
 char *writehex(uint8_t *, size_t, char *, char *, size_t);
 
 #ifdef  __cplusplus

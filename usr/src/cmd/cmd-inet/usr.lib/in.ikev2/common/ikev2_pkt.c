@@ -49,7 +49,8 @@ ikev2_pkt_new_exchange(ikev2_sa_t *i2sa, ikev2_exch_t exch_type)
 	pkt_t *pkt = NULL;
 	uint32_t msgid = 0;
 	uint8_t flags = 0;
-	char exchstr[IKEV2_ENUM_STRLEN] = { 0 };
+	const char *exchstr = NULL;
+	char exchbuf[IKEV2_ENUM_STRLEN] = { 0 };
 
 	VERIFY(MUTEX_HELD(&i2sa->i2sa_lock));
 
@@ -58,12 +59,19 @@ ikev2_pkt_new_exchange(ikev2_sa_t *i2sa, ikev2_exch_t exch_type)
 	if (i2sa->flags & I2SA_INITIATOR)
 		flags |= IKEV2_FLAG_INITIATOR;
 
+	exchstr = ikev2_exch_str(exch_type, exchbuf, sizeof (exchbuf));
+	(void) bunyan_key_add(log,
+	    BUNYAN_T_STRING, LOG_KEY_EXCHTYPE, exchstr,
+	    BUNYAN_T_END);
+
 	pkt = pkt_out_alloc(I2SA_LOCAL_SPI(i2sa),
 	    I2SA_REMOTE_SPI(i2sa),
 	    IKEV2_VERSION,
 	    exch_type, msgid, flags);
 
 	if (pkt == NULL) {
+		(void) bunyan_error(log, "No memory for new exchange",
+		    BUNYAN_T_END);
 		i2sa->outmsgid--;
 		return (NULL);
 	}
@@ -71,8 +79,6 @@ ikev2_pkt_new_exchange(ikev2_sa_t *i2sa, ikev2_exch_t exch_type)
 	(void) bunyan_key_add(log,
 	    BUNYAN_T_POINTER, LOG_KEY_REQ, pkt,
 	    BUNYAN_T_UINT32, LOG_KEY_MSGID, msgid,
-	    BUNYAN_T_STRING, LOG_KEY_EXCHTYPE,
-	    ikev2_exch_str(exch_type, exchstr, sizeof (exchstr)),
 	    BUNYAN_T_END);
 	(void) bunyan_key_remove(log, LOG_KEY_RESP);
 
@@ -101,8 +107,11 @@ ikev2_pkt_new_response(const pkt_t *init)
 	    IKEV2_VERSION,
 	    hdr->exch_type,
 	    ntohl(hdr->msgid), flags);
-	if (pkt == NULL)
+	if (pkt == NULL) {
+		(void) bunyan_error(log, "No memory for response packet",
+		    BUNYAN_T_END);
 		return (NULL);
+	}
 
 	/*
 	 * The other packet keys should already be set from the initiating
@@ -1045,7 +1054,7 @@ ikev2_pkt_encryptdecrypt(pkt_t *pkt, boolean_t encrypt)
 	VERIFY(MUTEX_HELD(&sa->i2sa_lock));
 	VERIFY3U(ivlen + sa->saltlen, <=, noncelen);
 
-	if (sa->flags & I2SA_INITIATOR) {
+	if (pkt_header(pkt)->flags & IKEV2_FLAG_INITIATOR) {
 		key = sa->sk_ei;
 		salt = sa->salt_i;
 	} else {
@@ -1064,7 +1073,7 @@ ikev2_pkt_encryptdecrypt(pkt_t *pkt, boolean_t encrypt)
 		(void) memcpy(nonce + ivlen, salt, sa->saltlen);
 
 	if (encrypt) {
-		/* If we're creating it, it better be correct */
+		/* If we're creating it, lengths should match */
 		VERIFY3U(sk->pp_len, ==, ivlen + datalen + icvlen);
 	} else {
 		/* Otherwise check first */
@@ -1211,7 +1220,7 @@ ikev2_pkt_signverify(pkt_t *pkt, boolean_t sign)
 	CK_BYTE outbuf[outlen];
 	CK_RV rc;
 
-	if (sa->flags & I2SA_INITIATOR)
+	if (pkt_header(pkt)->flags & IKEV2_FLAG_INITIATOR)
 		key = sa->sk_ai;
 	else
 		key = sa->sk_ar;
@@ -1219,6 +1228,8 @@ ikev2_pkt_signverify(pkt_t *pkt, boolean_t sign)
 	icvlen = ikev2_auth_icv_size(sa->encr, sa->auth);
 	signlen = pkt_len(pkt) - icvlen;
 	icv = pkt->pkt_ptr - icvlen;
+
+	VERIFY3U(icvlen, <=, outlen);
 
 	rc = C_SignInit(h, &mech, key);
 	if (rc != CKR_OK) {
@@ -1229,16 +1240,20 @@ ikev2_pkt_signverify(pkt_t *pkt, boolean_t sign)
 	rc = C_Sign(h, pkt_start(pkt), signlen, outbuf, &outlen);
 	if (rc != CKR_OK) {
 		PKCS11ERR(error, "C_Sign", rc);
+		explicit_bzero(outbuf, outlen);
 		return (B_FALSE);
 	}
 
 	if (sign) {
-		(void) memcpy(icv, outbuf, auth_data[sa->auth].ad_icvlen);
+		(void) memcpy(icv, outbuf, icvlen);
+		explicit_bzero(outbuf, outlen);
 		return (B_TRUE);
 	}
 
-	if (memcmp(icv, outbuf, auth_data[sa->auth].ad_icvlen) == 0)
+	if (memcmp(icv, outbuf, icvlen) == 0) {
+		explicit_bzero(outbuf, outlen);
 		return (B_TRUE);
+	}
 
 	(void) bunyan_warn(log, "Payload signature validation failed",
 	    BUNYAN_T_END);
@@ -1552,7 +1567,7 @@ ikev2_no_proposal_chosen(pkt_t *pkt, ikev2_spi_proto_t proto)
 {
 	pkt_t *resp = NULL;
 
-	if (I2P_IS_RESPONSE(pkt))
+	if (I2P_RESPONSE(pkt))
 		resp = pkt;
 	else
 		resp = ikev2_pkt_new_response(pkt);
@@ -1580,7 +1595,7 @@ ikev2_invalid_ke(pkt_t *pkt, ikev2_spi_proto_t proto, uint64_t spi,
 	pkt_t *resp = NULL;
 	uint16_t val = htons(dh);
 
-	if (I2P_IS_RESPONSE(pkt))
+	if (I2P_RESPONSE(pkt))
 		resp = pkt;
 	else
 		resp = ikev2_pkt_new_response(pkt);

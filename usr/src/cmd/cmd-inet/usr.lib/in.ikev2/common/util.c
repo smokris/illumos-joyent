@@ -23,6 +23,7 @@
 #include <sys/types.h>
 #include <thread.h>
 #include <umem.h>
+#include "config.h"
 #include "ike.h"
 #include "defs.h"
 #include "ilist.h"
@@ -218,6 +219,10 @@ static const char *log_keys[] = {
 	LOG_KEY_VERSION,
 	LOG_KEY_MSGID,
 	LOG_KEY_EXCHTYPE,
+	LOG_KEY_LOCAL_ID,
+	LOG_KEY_LOCAL_ID_TYPE,
+	LOG_KEY_REMOTE_ID,
+	LOG_KEY_REMOTE_ID_TYPE,
 };
 
 void
@@ -234,6 +239,39 @@ key_add_ike_spi(const char *name, uint64_t spi)
 
 	(void) snprintf(buf, sizeof (buf), "0x%016" PRIX64, spi);
 	(void) bunyan_key_add(log, BUNYAN_T_STRING, name, buf, BUNYAN_T_END);
+}
+
+void
+key_add_id(const char *name, const char *typename, config_id_t *id)
+{
+	bunyan_type_t btype = BUNYAN_T_END;
+
+	switch (id->cid_type) {
+	case CFG_AUTH_ID_DNS:
+	case CFG_AUTH_ID_EMAIL:
+		btype = BUNYAN_T_STRING;
+		break;
+	case CFG_AUTH_ID_IPV4:
+	case CFG_AUTH_ID_IPV4_PREFIX:
+	case CFG_AUTH_ID_IPV4_RANGE:
+		btype = BUNYAN_T_IP;
+		break;
+	case CFG_AUTH_ID_IPV6:
+	case CFG_AUTH_ID_IPV6_PREFIX:
+	case CFG_AUTH_ID_IPV6_RANGE:
+		btype = BUNYAN_T_IP6;
+		break;
+	case CFG_AUTH_ID_DN:
+	case CFG_AUTH_ID_GN:
+		/*NOTYET*/
+		INVALID(id->cid_type);
+		break;
+	}
+
+	(void) bunyan_key_add(log,
+	    BUNYAN_T_STRING, typename, config_id_type_str(id->cid_type),
+	    btype, name, id->cid_data,
+	    BUNYAN_T_END);
 }
 
 void

@@ -178,6 +178,37 @@ cfg_addr_match(const sockaddr_u_t l, const config_addr_t *restrict r)
 	return (B_FALSE);
 }
 
+const char *
+config_id_type_str(config_auth_id_t type)
+{
+	switch (type) {
+	case CFG_AUTH_ID_DNS:
+		return ("dns");
+	case CFG_AUTH_ID_EMAIL:
+		return ("email");
+	case CFG_AUTH_ID_DN:
+		return ("dn");
+	case CFG_AUTH_ID_GN:
+		return ("gn");
+	case CFG_AUTH_ID_IPV4:
+		return ("ipv4");
+	case CFG_AUTH_ID_IPV4_PREFIX:
+		return ("ipv4_prefix");
+	case CFG_AUTH_ID_IPV4_RANGE:
+		return ("ipv4_range");
+	case CFG_AUTH_ID_IPV6:
+		return ("ipv6");
+	case CFG_AUTH_ID_IPV6_PREFIX:
+		return ("ipv6_prefix");
+	case CFG_AUTH_ID_IPV6_RANGE:
+		return ("ipv6_range");
+	}
+
+	INVALID(id->cid_type);
+	/*NOTREACHED*/
+	return (NULL);
+}
+
 char *
 config_id_str(const config_id_t *id, char *buf, size_t buflen)
 {
@@ -212,12 +243,69 @@ config_id_str(const config_id_t *id, char *buf, size_t buflen)
 	return (buf);
 }
 
+config_auth_id_t
+ikev2_id_to_cfg(ikev2_id_type_t i2id)
+{
+	switch (i2id) {
+	case IKEV2_ID_IPV4_ADDR:
+		return (CFG_AUTH_ID_IPV4);
+	case IKEV2_ID_FQDN:
+		return (CFG_AUTH_ID_DNS);
+	case IKEV2_ID_RFC822_ADDR:
+		return (CFG_AUTH_ID_EMAIL);
+	case IKEV2_ID_IPV6_ADDR:
+		return (CFG_AUTH_ID_IPV6);
+	case IKEV2_ID_DER_ASN1_DN:
+		return (CFG_AUTH_ID_DN);
+	case IKEV2_ID_DER_ASN1_GN:
+		return (CFG_AUTH_ID_GN);
+	case IKEV2_ID_KEY_ID:
+		INVALID(i2id);
+		/*NOTREACHED*/
+		return (0);
+	case IKEV2_ID_FC_NAME:
+		INVALID(i2id);
+		/*NOTREACHED*/
+		return (0);
+	}
+	return (0);
+}
+
+config_id_t *
+config_id_new(config_auth_id_t type, const void *data, size_t len)
+{
+	config_id_t *cid = NULL;
+
+	if ((cid = umem_zalloc(sizeof (*cid) + len, UMEM_DEFAULT)) == NULL)
+		return (NULL);
+
+	cid->cid_type = type;
+	cid->cid_len = len;
+	(void) memcpy(cid->cid_data, data, len);
+	return (cid);
+}
+
+config_id_t *
+config_id_copy(const config_id_t *src)
+{
+	return (config_id_new(src->cid_type, src->cid_data, src->cid_len));
+}
+
+int
+config_id_cmp(const config_id_t *l, const config_id_t *r)
+{
+	if (l->cid_type != r->cid_type)
+		return (l->cid_type - r->cid_type);
+	return (memcmp(l->cid_data, r->cid_data, MIN(l->cid_len, r->cid_len)));
+}
+
 void
 config_id_free(config_id_t *id)
 {
 	if (id == NULL)
 		return;
-	free(id);
+	size_t len = id->cid_len + sizeof (config_id_t);
+	umem_free(id, len);
 }
 
 void

@@ -30,7 +30,8 @@ extern "C" {
 struct ikev2_sa_s;
 struct bunyan_logger;
 
-#define	I2P_IS_RESPONSE(p) (!!(pkt_header(p)->flags & IKEV2_FLAG_RESPONSE))
+#define	I2P_RESPONSE(p) (!!(pkt_header(p)->flags & IKEV2_FLAG_RESPONSE))
+#define	I2P_INITIATOR(p) (pkt_header(p)->flags & IKEV2_FLAG_INITIATOR)
 
 #define	INBOUND_LOCAL_SPI(hdr) \
 	(((hdr)->flags == IKEV2_FLAG_INITIATOR) ? \

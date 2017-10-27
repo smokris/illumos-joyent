@@ -243,27 +243,7 @@ redo_init(pkt_t *pkt)
 	sa->init_i = sa->last_sent = NULL;
 	sa->outmsgid = 0;
 
-	/*
-	 * The callback for the retransmit timer acquires i2sa_queue_lock to
-	 * post the event.  We will deadlock if it fires in another thread
-	 * while attempting to cancel it if we hold i2sa_queue_lock.
-	 */
-	VERIFY(!MUTEX_HELD(&sa->i2sa_queue_lock));
-	(void) periodic_cancel(wk_periodic, sa->i2sa_xmit_timer);
-
-	/*
-	 * We should be pinned, so we should be able to reacquire queue and
-	 * i2sa locks.  We explicitly clear the retransmit flag in i2sa_events
-	 * in case it happened to fire while we are in the process of
-	 * reattempting the IKE_SA_INIT exchange with new parameters.
-	 */
-	VERIFY3U(sa->i2sa_tid, ==, thr_self());
-	mutex_exit(&sa->i2sa_lock);
-	mutex_enter(&sa->i2sa_queue_lock);
-	mutex_enter(&sa->i2sa_lock);
-	sa->i2sa_xmit_timer = 0;
-	sa->flags &= ~(I2SA_EVT_PKT_XMIT);
-	mutex_exit(&sa->i2sa_queue_lock);
+	(void) ikev2_sa_disarm_timer(sa, I2SA_EVT_PKT_XMIT);
 
 	(void) bunyan_debug(log,
 	    "Response requested new parameters; restarting exchange",
@@ -321,8 +301,8 @@ ikev2_sa_init_inbound_resp(pkt_t *pkt)
 		return (B_FALSE);
 	}
 
-	if (!dh_derivekey(sa->dh_privkey, ke_r->pp_ptr, ke_r->pp_len,
-	    &sa->dh_key))
+	if (!dh_derivekey(sa->dh_privkey, ke_r->pp_ptr + sizeof (ikev2_ke_t),
+	    ke_r->pp_len - sizeof (ikev2_ke_t), &sa->dh_key))
 		goto fail;
 	if (!ikev2_sa_keygen(&sa_result, sa->init_i, pkt))
 		goto fail;
@@ -818,15 +798,6 @@ create_nonceobj(ikev2_prf_t prf, pkt_payload_t *restrict ni,
 	(void) memcpy(nonce, ni->pp_ptr, ni_len);
 	(void) memcpy(nonce + ni_len, nr->pp_ptr, nr_len);
 
-	{
-		char *outbuf = NULL;
-		size_t buflen = noncelen * 2 + 1;
-
-		outbuf = umem_zalloc(buflen, UMEM_NOFAIL);
-		fprintf(stderr, "Ni|Nr: %s\n", writehex(nonce, noncelen, NULL, outbuf, buflen));
-		umem_free(outbuf, buflen);
-	}
-
 	rc = SUNW_C_KeyToObject(p11h(), ikev2_prf_to_p11(prf), nonce, noncelen,
 	    objp);
 	explicit_bzero(nonce, noncelen);
@@ -867,15 +838,6 @@ create_skeyseed(ikev2_sa_t *restrict sa, CK_OBJECT_HANDLE nonce,
 		goto fail;
 	}
 
-	{
-		char *outbuf = NULL;
-		size_t buflen = dh_key_len * 2 + 1;
-
-		outbuf = umem_zalloc(buflen, UMEM_NOFAIL);
-		fprintf(stderr, "g^ir: %s\n", writehex(dh_key, dh_key_len, NULL, outbuf, buflen));
-		umem_free(outbuf, buflen);
-	}
-
 	ok = prf(sa->prf, nonce, skeyseed, skeyseed_len, dh_key, dh_key_len,
 	    NULL);
 	explicit_bzero(dh_key, dh_key_len);
@@ -886,16 +848,6 @@ create_skeyseed(ikev2_sa_t *restrict sa, CK_OBJECT_HANDLE nonce,
 	if (!ok) {
 		explicit_bzero(skeyseed, skeyseed_len);
 		goto fail;
-	}
-
-	{
-		char *outbuf = NULL;
-		size_t buflen = skeyseed_len * 2 + 1;
-
-		outbuf = umem_zalloc(buflen, UMEM_NOFAIL);
-		writehex(skeyseed, skeyseed_len, NULL, outbuf, buflen);
-		fprintf(stderr, "SKEYSEED: %s\n", outbuf);
-		umem_free(outbuf, buflen);
 	}
 
 	rc = SUNW_C_KeyToObject(h, ikev2_prf_to_p11(sa->prf), skeyseed,
