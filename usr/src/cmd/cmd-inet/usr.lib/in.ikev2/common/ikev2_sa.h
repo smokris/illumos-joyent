@@ -201,12 +201,12 @@ struct ikev2_child_sa {
 	hrtime_t		i2c_birth;
 	ikev2_spi_proto_t	i2c_satype;
 	uint32_t		i2c_spi;
+	boolean_t		i2c_inbound;
 
-	/*A subset of the child SAs state duplicated for observability */
+	/* A subset of the child SAs state duplicated for observability */
 	ikev2_xf_encr_t		i2c_encr;
 	size_t			i2c_encr_key_len;
 	ikev2_xf_auth_t		i2c_auth;
-	ikev2_dh_t		i2c_dh;
 
 	/* XXX: More to come.  Traffic selectors perhaps? */
 };
@@ -269,6 +269,9 @@ boolean_t ikev2_sa_arm_timer(ikev2_sa_t *, i2sa_evt_t, hrtime_t);
 boolean_t ikev2_sa_disarm_timer(ikev2_sa_t *, i2sa_evt_t);
 boolean_t ikev2_sa_queuemsg(ikev2_sa_t *, i2sa_msg_type_t, void *);
 const char *i2sa_msgtype_str(i2sa_msg_type_t);
+
+ikev2_child_sa_t *ikev2_child_sa_alloc(ikev2_sa_t *, ikev2_spi_proto_t,
+    uint32_t, boolean_t);
 
 #ifdef  __cplusplus
 }

@@ -50,7 +50,7 @@ ikev2_xf_encr_t ikev2_pfkey_to_encr(int);
 boolean_t ikev2_sa_from_acquire(struct pkt_s *restrict,
     struct parsedmsg_s *restrict, uint32_t, ikev2_dh_t);
 boolean_t ikev2_sa_add_result(struct pkt_s *restrict,
-    const ikev2_sa_result_t *restrict);
+    const ikev2_sa_result_t *restrict, uint64_t);
 boolean_t ikev2_sa_from_rule(struct pkt_s *restrict,
     const struct config_rule_s *restrict, uint64_t);
 

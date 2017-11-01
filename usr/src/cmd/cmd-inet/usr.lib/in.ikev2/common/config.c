@@ -243,6 +243,35 @@ config_id_str(const config_id_t *id, char *buf, size_t buflen)
 	return (buf);
 }
 
+size_t
+config_id_strlen(const config_id_t *id)
+{
+	switch (id->cid_type) {
+	case CFG_AUTH_ID_DNS:
+	case CFG_AUTH_ID_EMAIL:
+		return (id->cid_len + 1);
+	case CFG_AUTH_ID_DN:
+	case CFG_AUTH_ID_GN:
+		/*TODO*/
+		INVALID(id->cid_type);
+		break;
+	case CFG_AUTH_ID_IPV4:
+		return (INET_ADDRSTRLEN);
+	case CFG_AUTH_ID_IPV4_PREFIX:
+		return (INET_ADDRSTRLEN + 3);
+	case CFG_AUTH_ID_IPV4_RANGE:
+		return (2 * INET_ADDRSTRLEN + 1);
+	case CFG_AUTH_ID_IPV6:
+		return (INET6_ADDRSTRLEN);
+	case CFG_AUTH_ID_IPV6_PREFIX:
+		return (INET6_ADDRSTRLEN + 4);
+	case CFG_AUTH_ID_IPV6_RANGE:
+		return (2 * INET6_ADDRSTRLEN + 1);
+	}
+
+	/*NOTREACHED*/
+	return (0);
+}
 config_auth_id_t
 ikev2_id_to_cfg(ikev2_id_type_t i2id)
 {

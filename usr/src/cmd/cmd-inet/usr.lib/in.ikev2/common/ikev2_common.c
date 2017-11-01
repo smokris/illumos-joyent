@@ -277,14 +277,13 @@ add_rule_xform(pkt_sa_state_t *restrict pss, const config_xf_t *restrict xf)
 
 boolean_t
 ikev2_sa_add_result(pkt_t *restrict pkt,
-    const ikev2_sa_result_t *restrict result)
+    const ikev2_sa_result_t *restrict result, uint64_t spi)
 {
 	boolean_t ok;
 	pkt_sa_state_t pss;
 
 	ok = ikev2_add_sa(pkt, &pss);
-	ok &= ikev2_add_prop(&pss, result->sar_propnum, result->sar_proto,
-	    result->sar_spi);
+	ok &= ikev2_add_prop(&pss, result->sar_propnum, result->sar_proto, spi);
 
 	if (SA_RESULT_HAS(result, IKEV2_XF_ENCR)) {
 		ok &= ikev2_add_xform(&pss, IKEV2_XF_ENCR, result->sar_encr);

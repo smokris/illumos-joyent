@@ -25,14 +25,24 @@
 extern "C" {
 #endif
 
+struct ikev2_sa_s;
+struct ikev2_sa_result_s;
+
 void pfkey_msg_init(sadb_msg_t *, uint8_t, uint8_t);
-size_t pfkey_add_address(sadb_address_t *, sockaddr_u_t, void *);
 void pfkey_send_error(const sadb_msg_t *, uint8_t);
 boolean_t pfkey_getspi(sockaddr_u_t, sockaddr_u_t, uint8_t, uint32_t *);
 boolean_t pfkey_inverse_acquire(sockaddr_u_t, sockaddr_u_t, sockaddr_u_t,
     sockaddr_u_t, parsedmsg_t **);
+boolean_t pfkey_sadb_add_update(struct ikev2_sa_s *, struct ikev2_sa_result_s *,
+    sockaddr_u_t, sockaddr_u_t, sockaddr_u_t, sockaddr_u_t, const uint8_t *,
+    size_t, const uint8_t *, size_t, uint32_t, boolean_t, boolean_t);
+boolean_t pfkey_delete(uint32_t, sockaddr_u_t, sockaddr_u_t, boolean_t);
+
 ikev2_spi_proto_t satype_to_ikev2(uint8_t);
 void sadb_log(bunyan_level_t, const char *restrict, sadb_msg_t *restrict);
+
+ikev2_spi_proto_t satype_to_ikev2(uint8_t);
+uint8_t ikev2_to_satype(ikev2_spi_proto_t);
 
 #ifdef __cplusplus
 }

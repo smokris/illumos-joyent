@@ -163,6 +163,7 @@ config_id_t *config_id_copy(const config_id_t *);
 int config_id_cmp(const config_id_t *, const config_id_t *);
 const char *config_id_type_str(config_auth_id_t);
 char *config_id_str(const config_id_t *, char *, size_t);
+size_t config_id_strlen(const config_id_t *);
 void config_id_free(config_id_t *);
 
 #ifdef __cplusplus

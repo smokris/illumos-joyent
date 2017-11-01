@@ -36,6 +36,7 @@
 #include <sys/list.h>
 #include <sys/types.h>
 #include <sys/stropts.h>	/* For I_NREAD */
+#include <sys/sysmacros.h>
 #include <ipsec_util.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -45,9 +46,10 @@
 #include <string.h>
 #include <synch.h>
 #include <time.h>
-
+#include "config.h"
 #include "defs.h"
 #include "ikev2.h"
+#include "ikev2_common.h"
 #include "ikev2_pkt.h"
 #include "ikev2_sa.h"
 #include "inbound.h"
@@ -110,6 +112,9 @@ static const char *pfkey_keys[] = {
 	PFKEY_K_ENCR,
 };
 
+#define	PFKEY_MSG_LEN(msg, ext) \
+    SADB_8TO64((size_t)((uint8_t *)ext - (uint8_t *)msg))
+
 typedef struct pfreq {
 	list_node_t	pr_node;
 	uint32_t	pr_msgid;
@@ -140,6 +145,9 @@ static void handle_flush(sadb_msg_t *);
 static void handle_expire(sadb_msg_t *);
 static void handle_acquire(sadb_msg_t *, boolean_t);
 static void handle_register(sadb_msg_t *);
+
+int ikev2_auth_to_pfkey(ikev2_xf_auth_t);
+int ikev2_encr_to_pfkey(ikev2_xf_encr_t);
 
 /* Deal with algorithm name lookups */
 
@@ -526,33 +534,341 @@ pfkey_send_error(const sadb_msg_t *src, uint8_t reason)
  * address.  It also sets *endp to just after the end of the address (i.e.
  * where the next extension would go).
  */
-size_t
-pfkey_add_address(sadb_address_t *saaddr, sockaddr_u_t addr, void *endp)
+sadb_ext_t *
+pfkey_add_address(sadb_ext_t *restrict ext, uint16_t type, sockaddr_u_t su)
 {
+	sadb_address_t *addr = (sadb_address_t *)ext;
 	sockaddr_u_t msgaddr = {
-		.sau_ss = (struct sockaddr_storage *)(saaddr + 1)
+		.sau_ss = (struct sockaddr_storage *)(addr + 1)
 	};
+	size_t len = 0;
 
-	switch (addr.sau_ss->ss_family) {
-	case AF_INET:
-		(void) memcpy(msgaddr.sau_sin, addr.sau_sin,
-		    sizeof (struct sockaddr_in));
-		break;
-	case AF_INET6:
-		(void) memcpy(msgaddr.sau_sin6, addr.sau_sin6,
-		    sizeof (struct sockaddr_in6));
+	switch (type) {
+	case SADB_EXT_ADDRESS_SRC:
+	case SADB_EXT_ADDRESS_DST:
+	case SADB_X_EXT_ADDRESS_NATT_LOC:
+	case SADB_X_EXT_ADDRESS_NATT_REM:
+	case SADB_X_EXT_ADDRESS_INNER_SRC:
+	case SADB_X_EXT_ADDRESS_INNER_DST:
 		break;
 	default:
-		INVALID("ss_family");
+		INVALID(type);
 	}
 
-	saaddr->sadb_address_len = SADB_8TO64(sizeof (*saaddr) +
+	switch (su.sau_ss->ss_family) {
+	case AF_INET:
+		(void) memcpy(msgaddr.sau_sin, su.sau_sin,
+		    sizeof (struct sockaddr_in));
+		len = P2ROUNDUP(sizeof (struct sockaddr_in),
+		    sizeof (uint64_t));
+		break;
+	case AF_INET6:
+		(void) memcpy(msgaddr.sau_sin6, su.sau_sin6,
+		    sizeof (struct sockaddr_in6));
+		len = P2ROUNDUP(sizeof (struct sockaddr_in6),
+		    sizeof (uint64_t));
+		break;
+	default:
+		INVALID(su.sau_ss->ss_family);
+	}
+
+	len += sizeof (*addr);
+	addr->sadb_address_len = SADB_8TO64(len);
+	addr->sadb_address_exttype = type;
+
+	addr->sadb_address_len = SADB_8TO64(sizeof (*addr) +
 	    sizeof (struct sockaddr_storage));
 
-	if (endp != NULL)
-		(*(void **)endp) = msgaddr.sau_ss + 1;
+	return ((sadb_ext_t *)((uint8_t *)ext + len));
+}
 
-	return (sizeof (*saaddr) + sizeof (struct sockaddr_storage));
+sadb_ext_t *
+pfkey_add_sa(sadb_ext_t *restrict ext, const ikev2_sa_result_t *restrict res)
+{
+	sadb_sa_t *sa = (sadb_sa_t *)ext;
+	int auth = ikev2_auth_to_pfkey(res->sar_auth);
+	int encr = ikev2_encr_to_pfkey(res->sar_encr);
+
+	/* We shouldn't negotiate anything we don't support */
+	VERIFY3S(auth, >=, 0);
+	VERIFY3S(encr, >=, 0);
+
+	sa->sadb_sa_len = SADB_8TO64(sizeof (*sa));
+	sa->sadb_sa_exttype = SADB_EXT_SA;
+	sa->sadb_sa_spi = res->sar_spi;
+	sa->sadb_sa_auth = (uint8_t)auth;
+	sa->sadb_sa_encrypt = (uint8_t)encr;
+	return ((sadb_ext_t *)(sa + 1));
+}
+
+sadb_ext_t *
+pfkey_add_range(sadb_ext_t *restrict ext, uint32_t min, uint32_t max)
+{
+	sadb_spirange_t *r = (sadb_spirange_t *)ext;
+
+	r->sadb_spirange_len = SADB_8TO64(sizeof (*r));
+	r->sadb_spirange_exttype = SADB_EXT_SPIRANGE;
+	r->sadb_spirange_min = min;
+	r->sadb_spirange_max = max;
+	return ((sadb_ext_t *)(r + 1));
+}
+
+sadb_ext_t *
+pfkey_add_identity(sadb_ext_t *restrict ext, uint16_t type,
+    const config_id_t *cid)
+{
+	sadb_ident_t *id = (sadb_ident_t *)ext;
+	size_t len = sizeof (*id) +
+	    P2ROUNDUP(config_id_strlen(cid), sizeof (uint64_t));
+
+	switch (type) {
+	case SADB_EXT_IDENTITY_SRC:
+	case SADB_EXT_IDENTITY_DST:
+		id->sadb_ident_exttype = type;
+		break;
+	default:
+		INVALID(type);
+	}
+
+	id->sadb_ident_len = SADB_8TO64(len);
+
+	switch (cid->cid_type) {
+	case CFG_AUTH_ID_DN:
+		id->sadb_ident_type = SADB_X_IDENTTYPE_DN;
+		break;
+	case CFG_AUTH_ID_DNS:
+		id->sadb_ident_type = SADB_IDENTTYPE_FQDN;
+		break;
+	case CFG_AUTH_ID_GN:
+		id->sadb_ident_type = SADB_X_IDENTTYPE_GN;
+		break;
+	case CFG_AUTH_ID_IPV4:
+	case CFG_AUTH_ID_IPV4_RANGE:
+	case CFG_AUTH_ID_IPV6:
+	case CFG_AUTH_ID_IPV6_RANGE:
+		id->sadb_ident_type = SADB_X_IDENTTYPE_ADDR_RANGE;
+		break;
+	case CFG_AUTH_ID_IPV4_PREFIX:
+	case CFG_AUTH_ID_IPV6_PREFIX:
+		id->sadb_ident_type = SADB_IDENTTYPE_PREFIX;
+		break;
+	case CFG_AUTH_ID_EMAIL:
+		id->sadb_ident_type = SADB_IDENTTYPE_USER_FQDN;
+		break;
+	}
+
+	id->sadb_ident_len = SADB_8TO64(len);
+	(void) config_id_str(cid, (char *)(id + 1), len);
+
+	return ((sadb_ext_t *)((uint8_t *)ext + len));
+}
+
+sadb_ext_t *
+pfkey_add_key(sadb_ext_t *restrict ext, uint16_t type, const uint8_t *key,
+    size_t keylen)
+{
+	sadb_key_t *skey = (sadb_key_t *)ext;
+	size_t len = sizeof (sadb_key_t) +
+	    P2ROUNDUP(keylen, sizeof (uint64_t));
+
+	switch (type) {
+	case SADB_EXT_KEY_AUTH:
+	case SADB_EXT_KEY_ENCRYPT:
+		break;
+	default:
+		INVALID(type);
+	}
+
+	skey->sadb_key_len = SADB_8TO64(len);
+	skey->sadb_key_exttype = type;
+	skey->sadb_key_bits = SADB_1TO8(keylen);
+	(void) memcpy(skey + 1, key, keylen);
+	return ((sadb_ext_t *)((uint8_t *)ext + len));
+}
+
+sadb_ext_t *
+pfkey_add_pair(sadb_ext_t *ext, uint32_t spi)
+{
+	sadb_x_pair_t *pair = (sadb_x_pair_t *)ext;
+
+	pair->sadb_x_pair_len = SADB_8TO64(sizeof (*pair));
+	pair->sadb_x_pair_exttype = SADB_X_EXT_PAIR;
+	pair->sadb_x_pair_spi = spi;
+	return ((sadb_ext_t *)(pair + 1));
+}
+
+sadb_ext_t *
+pfkey_add_lifetime(sadb_ext_t *restrict ext)
+{
+	config_t *cfg = config_get();
+	sadb_lifetime_t *life = (sadb_lifetime_t *)ext;
+
+	if (cfg->cfg_p2_lifetime_secs > 0 ||
+	    cfg->cfg_p2_lifetime_kb > 0) {
+		life->sadb_lifetime_len = SADB_8TO64(sizeof (*life));
+		life->sadb_lifetime_exttype = SADB_EXT_LIFETIME_HARD;
+		life->sadb_lifetime_addtime = cfg->cfg_p2_lifetime_secs;
+		life->sadb_lifetime_bytes = cfg->cfg_p2_lifetime_kb * 1024;
+		life++;
+	}
+
+	if (cfg->cfg_p2_softlife_secs > 0 ||
+	    cfg->cfg_p2_softlife_kb > 0) {
+		life->sadb_lifetime_len = SADB_8TO64(sizeof (*life));
+		life->sadb_lifetime_exttype = SADB_EXT_LIFETIME_SOFT;
+		life->sadb_lifetime_addtime = cfg->cfg_p2_softlife_secs;
+		life->sadb_lifetime_bytes = cfg->cfg_p2_softlife_kb * 1024;
+		life++;
+	}
+
+	if (cfg->cfg_p2_idletime_secs > 0) {
+		life->sadb_lifetime_len = SADB_8TO64(sizeof (*life));
+		life->sadb_lifetime_exttype = SADB_X_EXT_LIFETIME_IDLE;
+		life->sadb_lifetime_addtime = cfg->cfg_p2_idletime_secs;
+		life++;
+	}
+
+	CONFIG_REFRELE(cfg);
+	return ((sadb_ext_t *)life);
+}
+
+boolean_t
+pfkey_sadb_add_update(ikev2_sa_t *sa, ikev2_sa_result_t *sar,
+    sockaddr_u_t isrc, sockaddr_u_t idst,
+    sockaddr_u_t nsrc, sockaddr_u_t ndst,
+    const uint8_t *encrkey, size_t encrlen,
+    const uint8_t *authkey, size_t authlen,
+    uint32_t pair, boolean_t initiator, boolean_t add)
+{
+	parsedmsg_t *pmsg = NULL;
+	sadb_msg_t *msg = NULL;
+	sadb_ext_t *ext = NULL;
+	sadb_sa_t *pfsa = NULL;
+	sockaddr_u_t src, dst;
+	size_t msglen = 0;
+	uint8_t satype;
+	boolean_t ret = B_FALSE;
+
+	/*
+	 * Worst case msg length:
+	 *	base, SA, lifetime(HSI), address(SD), address(Is, Id),
+	 *	address(Nl, Nr), key(AE), identity(SD), pair
+	 *
+	 * The sadb_* types are already including padding for 64-bit alignment.
+	 */
+	msglen = sizeof (*msg) + sizeof (sadb_sa_t) +
+	    3 * sizeof (sadb_lifetime_t) +
+	    6 * (sizeof (sadb_address_t) + sizeof (struct sockaddr_storage)) +
+	    sizeof (sadb_key_t) +
+	    P2ROUNDUP(SADB_8TO1(encrlen), sizeof (uint64_t)) +
+	    sizeof (sadb_key_t) +
+	    P2ROUNDUP(SADB_8TO1(authlen), sizeof (uint64_t)) +
+	    sizeof (sadb_ident_t) +
+	    P2ROUNDUP(config_id_strlen(sa->local_id), sizeof (uint64_t)) +
+	    sizeof (sadb_ident_t) +
+	    P2ROUNDUP(config_id_strlen(sa->remote_id), sizeof (uint64_t)) +
+	    sizeof (sadb_x_pair_t);
+
+	msg = umem_alloc(msglen, UMEM_DEFAULT);
+	if (msg == NULL) {
+		(void) bunyan_error(log, "No memory for pfkey request",
+		    BUNYAN_T_END);
+		return (B_FALSE);
+	}
+
+	satype = ikev2_to_satype(sar->sar_proto);
+	pfkey_msg_init(msg, add ? SADB_ADD : SADB_UPDATE, satype);
+
+	ext = (sadb_ext_t *)(msg + 1);
+	pfsa = (sadb_sa_t *)ext;
+	ext = pfkey_add_sa(ext, sar);
+	ext = pfkey_add_lifetime(ext);
+
+	if (initiator) {
+		src.sau_ss = &sa->laddr;
+		dst.sau_ss = &sa->raddr;
+		pfsa->sadb_sa_flags |= SADB_X_SAFLAGS_OUTBOUND;
+	} else {
+		src.sau_ss = &sa->raddr;
+		src.sau_ss = &sa->raddr;
+		pfsa->sadb_sa_flags |= SADB_X_SAFLAGS_INBOUND;
+	}
+	ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_SRC, src);
+	ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_DST, dst);
+	if (isrc.sau_ss != NULL) {
+		ext = pfkey_add_address(ext, SADB_X_EXT_ADDRESS_INNER_SRC,
+		   isrc);
+		ext = pfkey_add_address(ext, SADB_X_EXT_ADDRESS_INNER_DST,
+		   idst);
+		pfsa->sadb_sa_flags |= SADB_X_SAFLAGS_TUNNEL;
+	}
+	if (nsrc.sau_ss != NULL) {
+		uint8_t type = initiator ?
+		    SADB_X_EXT_ADDRESS_NATT_LOC : SADB_X_EXT_ADDRESS_NATT_REM;
+
+		ext = pfkey_add_address(ext, type, nsrc);
+		pfsa->sadb_sa_flags |= initiator ?
+		    SADB_X_SAFLAGS_NATT_LOC : SADB_X_SAFLAGS_NATT_REM;
+	}
+	if (ndst.sau_ss != NULL) {
+		uint8_t type = initiator ?
+		    SADB_X_EXT_ADDRESS_NATT_REM : SADB_X_EXT_ADDRESS_NATT_LOC;
+
+		ext = pfkey_add_address(ext, type, ndst);
+		pfsa->sadb_sa_flags |= initiator ?
+		    SADB_X_SAFLAGS_NATT_REM : SADB_X_SAFLAGS_NATT_LOC;
+	}
+	if (authkey != NULL)
+		ext = pfkey_add_key(ext, SADB_EXT_KEY_AUTH, authkey, authlen);
+	if (encrkey != NULL) {
+		ext = pfkey_add_key(ext, SADB_EXT_KEY_ENCRYPT, encrkey,
+		    encrlen);
+	}
+	ext = pfkey_add_identity(ext, SADB_EXT_IDENTITY_SRC, sa->remote_id);
+	ext = pfkey_add_identity(ext, SADB_EXT_IDENTITY_DST, sa->local_id);
+	if (pair != 0)
+		ext = pfkey_add_pair(ext, pair);
+
+	VERIFY(IS_P2ALIGNED(ext, sizeof (uint64_t)));
+	msg->sadb_msg_len = PFKEY_MSG_LEN(msg, ext);
+
+	if (!pfkey_send_msg(msg, &pmsg, 1, SADB_EXT_SA) ||
+	    pmsg->pmsg_samsg == NULL) {
+		parsedmsg_free(pmsg);
+		umem_free(msg, msglen);
+		return (B_FALSE);
+	}
+
+	if (pmsg->pmsg_samsg->sadb_msg_errno != 0) {
+		sadb_msg_t *m = pmsg->pmsg_samsg;
+
+		TSTDERR(m->sadb_msg_errno, error,
+		    "SADB_ADD failed",
+		    BUNYAN_T_STRING, "diagmsg",
+		    keysock_diag(m->sadb_x_msg_diagnostic),
+		    BUNYAN_T_UINT32, "diagcode",
+		    (uint32_t)m->sadb_x_msg_diagnostic);
+	} else {
+		pfsa = (sadb_sa_t *)pmsg->pmsg_exts[SADB_EXT_SA];
+		char type[64] = { 0 };
+		char spistr[11] = { 0 }; /* 0x + 32bit hix + NUL */
+
+		(void) sadb_type_str(pmsg->pmsg_samsg->sadb_msg_type, type,
+		    sizeof (type));
+		(void) snprintf(spistr, sizeof (spistr), "0x%" PRIX32,
+		    pfsa->sadb_sa_spi);
+
+		(void) bunyan_debug(log, "Added IPsec SA",
+		    BUNYAN_T_STRING, "satype", type,
+		    BUNYAN_T_STRING, "spi", spistr,
+		    BUNYAN_T_END);
+
+		ret = B_TRUE;
+	}
+
+	umem_free(msg, msglen);
+	parsedmsg_free(pmsg);
+	return (ret);
 }
 
 boolean_t
@@ -562,9 +878,7 @@ pfkey_getspi(sockaddr_u_t src, sockaddr_u_t dest, uint8_t satype,
 	parsedmsg_t *resp = NULL;
 	uint64_t buffer[128];
 	sadb_msg_t *samsg = (sadb_msg_t *)buffer;
-	sadb_address_t *sasrc = NULL, *sadest = NULL;
-	sadb_spirange_t *range = NULL;
-	size_t len = 0;
+	sadb_ext_t *ext = NULL;
 	boolean_t ret;
 
 	/*
@@ -572,8 +886,8 @@ pfkey_getspi(sockaddr_u_t src, sockaddr_u_t dest, uint8_t satype,
 	 * for compile time check
 	 */
 	CTASSERT(sizeof (buffer) >= sizeof (*samsg) +
-	    2 * (sizeof (*sasrc) + sizeof (struct sockaddr_storage)) +
-	    sizeof (*range));
+	    2 * (sizeof (sadb_address_t) + sizeof (struct sockaddr_storage)) +
+	    sizeof (sadb_spirange_t));
 
 	*spi = 0;
 
@@ -594,26 +908,13 @@ pfkey_getspi(sockaddr_u_t src, sockaddr_u_t dest, uint8_t satype,
 		(void) memset(buffer, 0, sizeof (buffer));
 
 		pfkey_msg_init(samsg, SADB_GETSPI, satype);
-		len += sizeof (*samsg);
+		ext = (sadb_ext_t *)(samsg + 1);
 
-		sasrc = (sadb_address_t *)(samsg + 1);
-		sasrc->sadb_address_exttype = SADB_EXT_ADDRESS_SRC;
-		sasrc->sadb_address_proto = 0;		/* XXX: fill me in? */
-		sasrc->sadb_address_prefixlen = 0;	/* XXX: fill me in? */
-		len += pfkey_add_address(sasrc, src, &sadest);
+		ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_SRC, src);
+		ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_DST, dest);
+		ext = pfkey_add_range(ext, 1, UINT32_MAX);
 
-		sadest->sadb_address_exttype = SADB_EXT_ADDRESS_DST;
-		sadest->sadb_address_proto = 0;		/* XXX: fill me in? */
-		sadest->sadb_address_prefixlen = 0;	/* XXX: fill me in? */
-		len += pfkey_add_address(sadest, dest, &range);
-
-		range->sadb_spirange_len = SADB_8TO64(sizeof (*range));
-		range->sadb_spirange_exttype = SADB_EXT_SPIRANGE;
-		range->sadb_spirange_min = 1;
-		range->sadb_spirange_max = UINT32_MAX;
-		len += sizeof (*range);
-
-		samsg->sadb_msg_len = SADB_8TO64(len);
+		samsg->sadb_msg_len = PFKEY_MSG_LEN(samsg, ext);
 
 		errno = 0;
 		if (pfkey_send_msg(samsg, &resp, 1, SADB_EXT_SA)) {
@@ -661,15 +962,7 @@ pfkey_inverse_acquire(sockaddr_u_t src, sockaddr_u_t dest,
 {
 	uint64_t buffer[128] = { 0 };
 	sadb_msg_t *msg = (sadb_msg_t *)buffer;
-	sadb_address_t *addr[4] = { 0 };
-	sockaddr_u_t suaddr[4] = { src, dest, isrc, idest };
-	uint16_t exttype[4] = {
-		SADB_EXT_ADDRESS_SRC,
-		SADB_EXT_ADDRESS_DST,
-		SADB_X_EXT_ADDRESS_INNER_SRC,
-		SADB_X_EXT_ADDRESS_INNER_DST
-	};
-	size_t len = 0;
+	sadb_ext_t *ext = (sadb_ext_t *)(msg + 1);
 
 	/* This also guarantees src and dest aren't NULL */
 	VERIFY3U(src.sau_ss->ss_family, ==, dest.sau_ss->ss_family);
@@ -683,60 +976,58 @@ pfkey_inverse_acquire(sockaddr_u_t src, sockaddr_u_t dest,
 		VERIFY3U(isrc.sau_ss->ss_family, ==, idest.sau_ss->ss_family);
 
 	pfkey_msg_init(msg, SADB_X_INVERSE_ACQUIRE, SADB_SATYPE_UNSPEC);
-	len += sizeof (*msg);
 
-	addr[0] = (sadb_address_t *)(msg + 1);
-	for (size_t i = 0; i < 4; i++) {
-		/*
-		 * The early verify guarantees ADDRESS_SRC and ADDRESS_DEST
-		 * are present.  However INNSER_{SRC,DEST} are optional.  If
-		 * not present, we're done.
-		 */
-		if (suaddr[i].sau_ss == NULL)
-			break;
-		addr[i]->sadb_address_exttype = exttype[i];
-		addr[i]->sadb_address_proto = 0;	/* XXX: Fill in? */
-		addr[i]->sadb_address_prefixlen = 0;	/* XXX: Fill in? */
-		len += pfkey_add_address(addr[i], suaddr[i],
-		    (i < 3) ? &addr[i + 1] : NULL);
+	ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_SRC, src);
+	ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_DST, dest);
+	if (isrc.sau_ss != NULL) {
+		ext = pfkey_add_address(ext, SADB_X_EXT_ADDRESS_INNER_SRC,
+		    isrc);
+		ext = pfkey_add_address(ext, SADB_X_EXT_ADDRESS_INNER_DST,
+		    idest);
 	}
 
-	msg->sadb_msg_len = SADB_8TO64(len);
+	msg->sadb_msg_len = PFKEY_MSG_LEN(msg, ext);
 	errno = 0;
 	return (pfkey_send_msg(msg, resp, 1, SADB_X_EXT_EPROP));
 }
 
-static boolean_t
-pfkey_get(uint8_t satype, uint32_t spi, sockaddr_u_t src, sockaddr_u_t dest,
-    parsedmsg_t **resp)
+boolean_t
+pfkey_delete(uint32_t spi, sockaddr_u_t src, sockaddr_u_t dst, boolean_t pair)
 {
-	uint64_t buffer[128] = { 0 };
-	sadb_msg_t *msg = (sadb_msg_t *)buffer;
-	sadb_sa_t *sa = NULL;
-	sadb_address_t *sasrc = NULL, *sadest = NULL;
-	size_t len = 0;
+	uint64_t buf[128] = { 0 };
+	sadb_msg_t *msg = (sadb_msg_t *)buf;
+	sadb_ext_t *ext = (sadb_ext_t *)(msg + 1);
+	parsedmsg_t *pmsg = NULL;
+	boolean_t ret = B_FALSE;
 
-	pfkey_msg_init(msg, SADB_GET, satype);
+	pfkey_msg_init(msg, pair ? SADB_X_DELPAIR : SADB_DELETE,
+	    SADB_SATYPE_UNSPEC);
 
-	sa = (sadb_sa_t *)(msg + 1);
-	sa->sadb_sa_len = SADB_8TO64(sizeof (*sa));
-	sa->sadb_sa_exttype = SADB_EXT_SA;
-	sa->sadb_sa_spi = spi;
-	len += sizeof (*sa);
+	ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_SRC, src);
+	ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_DST, dst);
 
-	sasrc = (sadb_address_t *)(sa + 1);
-	sasrc->sadb_address_exttype = SADB_EXT_ADDRESS_SRC;
-	sasrc->sadb_address_proto = 0;		/* XXX: Fill in? */
-	sasrc->sadb_address_prefixlen = 0;	/* XXX: Fill in? */
-	len += pfkey_add_address(sasrc, src, &sadest);
+	if (!pfkey_send_msg(msg, &pmsg, 1, SADB_EXT_SA) ||
+	    (pmsg->pmsg_samsg != NULL &&
+	    pmsg->pmsg_samsg->sadb_msg_errno != 0)) {
+		sadb_msg_t *resp = pmsg->pmsg_samsg;
 
-	sadest->sadb_address_exttype = SADB_EXT_ADDRESS_DST;
-	sadest->sadb_address_proto = 0;
-	sadest->sadb_address_prefixlen = 0;
-	len += pfkey_add_address(sadest, dest, NULL);
+		if (resp != NULL) {
+			TSTDERR(resp->sadb_msg_errno, warn,
+			    "Error deleting IPsec SA",
+			    BUNYAN_T_STRING, "diagmsg",
+			    keysock_diag(resp->sadb_x_msg_diagnostic),
+			    BUNYAN_T_UINT32, "diagcode",
+			    (uint32_t)resp->sadb_x_msg_diagnostic);
+		} else {
+			(void) bunyan_warn(log, "Error deleting IPsec SA",
+			    BUNYAN_T_END);
+		}
+	} else {
+		ret = B_TRUE;
+	}
 
-	msg->sadb_msg_len = SADB_8TO64(len);
-	return (pfkey_send_msg(msg, resp, 1, SADB_EXT_SA));
+	parsedmsg_free(pmsg);
+	return (ret);
 }
 
 static void
@@ -1208,4 +1499,86 @@ satype_to_ikev2(uint8_t satype)
 	}
 	/*NOTREACHED*/
 	return (0);
+}
+
+uint8_t
+ikev2_to_satype(ikev2_spi_proto_t proto)
+{
+	switch (proto) {
+	case IKEV2_PROTO_NONE:
+	case IKEV2_PROTO_AH:
+	case IKEV2_PROTO_ESP:
+		return ((uint8_t)proto);
+	case IKEV2_PROTO_IKE:
+	case IKEV2_PROTO_FC_ESP_HEADER:
+	case IKEV2_PROTO_FC_CT_AUTH:
+		INVALID(proto);
+	}
+	/*NOTREACHED*/
+	return (0);
+}
+
+int
+ikev2_encr_to_pfkey(ikev2_xf_encr_t encr)
+{
+	switch (encr) {
+	/* These all correspond */
+	case IKEV2_ENCR_NONE:
+	case IKEV2_ENCR_DES:
+	case IKEV2_ENCR_3DES:
+	case IKEV2_ENCR_BLOWFISH:
+	case IKEV2_ENCR_NULL:
+	case IKEV2_ENCR_AES_CBC:
+	case IKEV2_ENCR_AES_CCM_8:
+	case IKEV2_ENCR_AES_CCM_12:
+	case IKEV2_ENCR_AES_CCM_16:
+	case IKEV2_ENCR_AES_GCM_8:
+	case IKEV2_ENCR_AES_GCM_12:
+	case IKEV2_ENCR_AES_GCM_16:
+		return (encr);
+	case IKEV2_ENCR_AES_CTR:
+	case IKEV2_ENCR_NULL_AES_GMAC:
+	case IKEV2_ENCR_CAMELLIA_CBC:
+	case IKEV2_ENCR_CAMELLIA_CTR:
+	case IKEV2_ENCR_CAMELLIA_CCM_8:
+	case IKEV2_ENCR_CAMELLIA_CCM_12:
+	case IKEV2_ENCR_CAMELLIA_CCM_16:
+	case IKEV2_ENCR_DES_IV64:
+	case IKEV2_ENCR_DES_IV32:
+	case IKEV2_ENCR_XTS_AES:
+	case IKEV2_ENCR_RC5:
+	case IKEV2_ENCR_IDEA:
+	case IKEV2_ENCR_CAST:
+	case IKEV2_ENCR_3IDEA:
+	case IKEV2_ENCR_RC4:
+		return (-1);
+	}
+	return (-1);
+}
+
+int
+ikev2_auth_to_pfkey(ikev2_xf_auth_t auth)
+{
+	switch (auth) {
+	case IKEV2_XF_AUTH_NONE:
+	case IKEV2_XF_AUTH_HMAC_SHA2_256_128:
+	case IKEV2_XF_AUTH_HMAC_SHA2_384_192:
+	case IKEV2_XF_AUTH_HMAC_SHA2_512_256:
+		return (auth);
+	case IKEV2_XF_AUTH_HMAC_MD5_96:
+		return (SADB_AALG_MD5HMAC);
+	case IKEV2_XF_AUTH_HMAC_SHA1_96:
+		return (SADB_AALG_SHA1HMAC);
+	case IKEV2_XF_AUTH_AES_CMAC_96:
+	case IKEV2_XF_AUTH_AES_128_GMAC:
+	case IKEV2_XF_AUTH_AES_192_GMAC:
+	case IKEV2_XF_AUTH_AES_256_GMAC:
+	case IKEV2_XF_AUTH_DES_MAC:
+	case IKEV2_XF_AUTH_KPDK_MD5:
+	case IKEV2_XF_AUTH_AES_XCBC_96:
+	case IKEV2_XF_AUTH_HMAC_MD5_128:
+	case IKEV2_XF_AUTH_HMAC_SHA1_160:
+		return (-1);
+	}
+	return (-1);
 }

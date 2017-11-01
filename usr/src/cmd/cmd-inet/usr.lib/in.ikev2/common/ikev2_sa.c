@@ -1123,6 +1123,31 @@ ikev2_sa_queuemsg(ikev2_sa_t *sa, i2sa_msg_type_t type, void *data)
 	return (B_TRUE);
 }
 
+ikev2_child_sa_t *ikev2_child_sa_alloc(ikev2_sa_t *i2sa,
+    ikev2_spi_proto_t proto, uint32_t spi, boolean_t inbound)
+{
+	ikev2_child_sa_t *csa = NULL;
+
+	if ((csa = umem_cache_alloc(i2c_cache, UMEM_DEFAULT)) == NULL)
+		return (NULL);
+
+	csa->i2c_birth = gethrtime();
+	csa->i2c_satype = proto;
+	csa->i2c_spi = spi;
+	csa->i2c_inbound = inbound;
+	list_insert_tail(&i2sa->i2sa_pending, csa);
+	return (csa);
+}
+
+static void
+ikev2_child_sa_free(ikev2_child_sa_t *csa)
+{
+	if (csa == NULL)
+		return;
+	VERIFY(!list_link_active(&csa->i2c_node));
+	umem_cache_free(i2c_cache, csa);
+}
+
 static int
 i2sa_ctor(void *buf, void *dummy, int flags)
 {
