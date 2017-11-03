@@ -29,8 +29,15 @@ extern "C" {
 #define	IKEV2_KEYPAD		"Key Pad for IKEv2"	/* don't change! */
 
 /* RFC7296 3.9 - Nonce size must be between 16 and 256 octets (inclusive) */
-#define	IKEV2_NONCE_MIN		(16)
-#define	IKEV2_NONCE_MAX		(256)
+#define	IKEV2_NONCE_MIN		16
+#define	IKEV2_NONCE_MAX		256
+
+/* Half of the largest keysize of all the PRF functions we currently support */
+#define	IKEV2_NONCE_DEFAULT	32
+
+/* RFC7296 2.6 -- cookies are betwee 1 and 64 octets in length */
+#define	IKEV2_COOKIE_MIN	1
+#define	IKEV2_COOKIE_MAX	64
 
 #ifndef __packed
 #define	__packed __attribute__((packed))

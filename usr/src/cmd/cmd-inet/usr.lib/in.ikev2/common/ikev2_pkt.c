@@ -1583,7 +1583,7 @@ ikev2_no_proposal_chosen(pkt_t *pkt, ikev2_spi_proto_t proto)
 	}
 
 	if (pkt != resp)
-		(void) ikev2_send(resp, B_TRUE);
+		(void) ikev2_send_resp(resp);
 
 	return (B_TRUE);
 }
@@ -1611,7 +1611,7 @@ ikev2_invalid_ke(pkt_t *pkt, ikev2_spi_proto_t proto, uint64_t spi,
 	}
 
 	if (pkt != resp)
-		(void) ikev2_send(resp, B_TRUE);
+		(void) ikev2_send_resp(resp);
 
 	return (B_TRUE);
 }

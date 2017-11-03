@@ -35,16 +35,22 @@ void ikev2_inbound(struct pkt_s *, const struct sockaddr_storage *,
 void ikev2_pfkey(struct parsedmsg_s *);
 void ikev2_sa_init_cfg(struct config_rule_s *);
 
-boolean_t ikev2_send(struct pkt_s *, boolean_t);
+typedef void (*ikev2_send_cb_t)(struct ikev2_sa_s *restrict,
+    struct pkt_s *restrict, void *restrict);
+boolean_t ikev2_send_req(struct pkt_s *restrict, ikev2_send_cb_t,
+    void *restrict);
+boolean_t ikev2_send_resp(struct pkt_s *restrict);
+
 void ikev2_dispatch(struct ikev2_sa_s *);
 void ikev2_retransmit_cb(void *);
 
-void ikev2_sa_init_inbound(struct pkt_s *);
-void ikev2_sa_init_outbound(struct ikev2_sa_s *restrict,
-    struct parsedmsg_s *restrict);
+void ikev2_sa_init_init(struct ikev2_sa_s *restrict,
+    struct parsedmsg_s *restrict, void *restrict);
+void ikev2_sa_init_resp(struct pkt_s *);
 
-void ikev2_ike_auth_inbound(struct pkt_s *);
-void ikev2_ike_auth_outbound(struct ikev2_sa_s *);
+void ikev2_ike_auth_init(struct ikev2_sa_s *restrict,
+    struct parsedmsg_s *restrict);
+void ikev2_ike_auth_resp(struct pkt_s *);
 
 void ikev2_create_child_sa_inbound(struct pkt_s *restrict,
     struct pkt_s *restrict);

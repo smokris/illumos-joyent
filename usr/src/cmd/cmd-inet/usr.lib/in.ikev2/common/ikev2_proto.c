@@ -399,85 +399,125 @@ fail:
 	CONFIG_REFRELE(rule->rule_config);
 }
 
-/*
- * Sends a packet out.  If pkt is an error reply, is_error should be
- * set so that it is not saved for possible retransmission.
- */
-boolean_t
-ikev2_send(pkt_t *pkt, boolean_t is_error)
+static boolean_t
+ikev2_send_common(pkt_t *pkt)
 {
-	ikev2_sa_t *i2sa = pkt->pkt_sa;
+	ikev2_sa_t *sa = pkt->pkt_sa;
 	ike_header_t *hdr = pkt_header(pkt);
+	char *desc = NULL;
 	ssize_t len = 0;
 	int s = -1;
-	boolean_t resp = !!(hdr->flags & IKEV2_FLAG_RESPONSE);
+
+	s = select_socket(sa);
+
+	desc = ikev2_pkt_desc(pkt);
+	(void) bunyan_debug(log, "Sending packet",
+	    BUNYAN_T_UINT32, "msgid", ntohll(hdr->msgid),
+	    BUNYAN_T_BOOLEAN, "response", I2P_RESPONSE(pkt),
+	    BUNYAN_T_STRING, "pktdesc", desc,
+	    BUNYAN_T_UINT32, "nxmit", (uint32_t)pkt->pkt_xmit,
+	    BUNYAN_T_END);
+	free(desc);
+	desc = NULL;
+
+	len = sendfromto(s, pkt_start(pkt), pkt_len(pkt), &sa->laddr,
+	    &sa->raddr);
+	return ((len == -1) ? B_FALSE : B_TRUE);
+}
+
+/*
+ * Send a request (i.e. initiate the exchange).  All requests MUST include
+ * a callback function.  When a response is received (see
+ * ikev2_handle_response), the callback given here is invoked with the IKEv2 SA,
+ * the response packet, and the value of arg given here.  arg is merely an
+ * opaque pointer that can be used to pass context/state from the initiating
+ * function to the request callback (and may be NULL if not needed).
+ * If the request times out, or the IKEv2 SA is condemned, the callback will be
+ * invokved with the response packet parameter set to NULL (to allow for any
+ * cleanup -- include of 'arg' if necessary).
+ */
+boolean_t
+ikev2_send_req(pkt_t *restrict req, ikev2_send_cb_t cb, void *restrict arg)
+{
+	ikev2_sa_t *i2sa = req->pkt_sa;
+	i2sa_req_t *i2req = &i2sa->last_req;
+	config_t *cfg = config_get();
+	hrtime_t retry = cfg->cfg_retry_init;
+	int s = -1;
 
 	VERIFY(IS_WORKER);
 	VERIFY(!MUTEX_HELD(&i2sa->i2sa_queue_lock));
 	VERIFY(MUTEX_HELD(&i2sa->i2sa_lock));
+	VERIFY(!I2P_RESPONSE(req));
+	VERIFY3P(cb, !=, NULL);
 
-	if (!ikev2_pkt_done(pkt)) {
-		ikev2_pkt_free(pkt);
+	CONFIG_REFRELE(cfg);
+
+	if (!ikev2_pkt_done(req)) {
+		ikev2_pkt_free(req);
 		return (B_FALSE);
 	}
 
 	/*
-	 * We should not send out a new exchange while still waiting
-	 * on a response from a previous request
+	 * Shouldn't try to start a new exchange when one is already in
+	 * progress.
 	 */
-	if (!resp)
-		VERIFY3P(i2sa->last_sent, ==, NULL);
+	VERIFY3P(i2sa->last_sent, ==, NULL);
+	VERIFY3P(i2req->i2r_pkt, ==, NULL);
 
-	char *str = ikev2_pkt_desc(pkt);
-	(void) bunyan_debug(log, "Sending packet",
-	    BUNYAN_T_STRING, "pktdesc", str,
-	    BUNYAN_T_BOOLEAN, "response", resp,
-	    BUNYAN_T_UINT32, "nxmit", (uint32_t)pkt->pkt_xmit,
-	    BUNYAN_T_END);
-	free(str);
-	str = NULL;
-
-	VERIFY3U(ntohl(pkt_header(pkt)->length), ==, pkt_len(pkt));
-	s = select_socket(i2sa);
-	len = sendfromto(s, pkt_start(pkt), pkt_len(pkt), &i2sa->laddr,
-	    &i2sa->raddr);
-	if (len == -1) {
-		if (pkt != i2sa->init_i && pkt != i2sa->init_r) {
-			/*
-			 * If the send failed, should we still save it and let
-			 * ikev2_retransmit attempt?  For now, no.
-			 *
-			 * Note: sendfromto() should have logged any relevant
-			 * errors
-			 */
-			ikev2_pkt_free(pkt);
-		}
+	if (!ikev2_send_common(req)) {
+		/*
+		 * XXX: For now at least, we don't bother with attempting to
+		 * retransmit a packet if the original transmission failed.
+		 */
+		if (req != i2sa->init_i)
+			ikev2_pkt_free(req);
 		return (B_FALSE);
 	}
 
-	/*
-	 * For error messages, don't expect a response, so also don't try
-	 * to retransmit
-	 */
-	if (is_error) {
-		ikev2_pkt_free(pkt);
-		return (B_TRUE);
+	i2sa->last_sent = req;
+	i2req->i2r_pkt = req;
+	i2req->i2r_msgid = ntohll(pkt_header(req)->msgid);
+	i2req->i2r_cb = cb;
+	i2req->i2r_arg = arg;
+
+	if (!ikev2_sa_arm_timer(i2sa, I2SA_EVT_PKT_XMIT, retry)) {
+		/*
+		 * XXX: If this fails, we could check for timeout on our
+		 * next attempt to send a request and fail if we never
+		 * received a response.
+		 */
+		STDERR(error, "Could not arm packet retransmit timer");
+		return (B_FALSE);
 	}
 
-	if (!resp) {
-		config_t *cfg = config_get();
-		hrtime_t retry = cfg->cfg_retry_init;
+	return (B_TRUE);
+}
 
-		CONFIG_REFRELE(cfg);
-		i2sa->last_sent = pkt;
-		if (!ikev2_sa_arm_timer(i2sa, I2SA_EVT_PKT_XMIT, retry)) {
-			STDERR(error, "Could not arm packet retransmit timer");
-			return (B_FALSE);
-		}
-		return (B_TRUE);
+/* Send a response */
+boolean_t
+ikev2_send_resp(pkt_t *restrict resp)
+{
+	ikev2_sa_t *i2sa = resp->pkt_sa;
+	ike_header_t *hdr = pkt_header(resp);
+
+	VERIFY(IS_WORKER);
+	VERIFY(i2sa == NULL || !MUTEX_HELD(&i2sa->i2sa_queue_lock));
+	VERIFY(i2sa == NULL || MUTEX_HELD(&i2sa->i2sa_lock));
+	VERIFY(I2P_RESPONSE(resp));
+
+	if (!ikev2_pkt_done(resp)) {
+		ikev2_pkt_free(resp);
+		return (B_FALSE);
 	}
 
-	/*
+	if (!ikev2_send_common(resp)) {
+		if (resp != i2sa->init_r)
+			ikev2_pkt_free(resp);
+		return (B_FALSE);
+	}
+
+        /*
 	 * Normally, we save the last repsonse packet we've sent in order to
 	 * re-send the last response in case the remote system retransmits
 	 * the last exchange it initiated.  However for IKE_SA_INIT exchanges,
@@ -487,10 +527,10 @@ ikev2_send(pkt_t *pkt, boolean_t is_error)
 	 * want to process the resulting reply (which, if it happens, should
 	 * be a restart of the IKE_SA_INIT exchange with the updated
 	 * parameters).
-	 */
+         */
 	if (hdr->exch_type != IKEV2_EXCH_IKE_SA_INIT ||
 	    hdr->responder_spi != 0) {
-		i2sa->last_resp_sent = pkt;
+		i2sa->last_resp_sent = resp;
 	}
 
 	return (B_TRUE);
@@ -517,6 +557,7 @@ ikev2_retransmit(ikev2_sa_t *sa)
 {
 	pkt_t *pkt = sa->last_sent;
 	ike_header_t *hdr = pkt_header(pkt);
+	i2sa_req_t *req = &sa->last_req;
 	hrtime_t retry = 0, retry_init = 0, retry_max = 0;
 	size_t limit = 0;
 
@@ -525,6 +566,7 @@ ikev2_retransmit(ikev2_sa_t *sa)
 	VERIFY(MUTEX_HELD(&sa->i2sa_lock));
 
 	if (pkt == NULL) {
+		VERIFY3P(req->i2r_pkt, ==, NULL);
 		/* already acknowledged */
 		return;
 	}
@@ -539,7 +581,12 @@ ikev2_retransmit(ikev2_sa_t *sa)
 	retry = retry_init * (1ULL << ++pkt->pkt_xmit);
 	if (retry > retry_max)
 		retry = retry_max;
+
 	if (pkt->pkt_xmit > limit) {
+		ikev2_send_cb_t cb = req->i2r_cb;
+
+		cb(sa, NULL, req->i2r_arg);
+
 		(void) bunyan_info(log,
 		    "Transmit timeout on packet; deleting IKE SA",
 		    BUNYAN_T_END);
@@ -547,15 +594,12 @@ ikev2_retransmit(ikev2_sa_t *sa)
 		return;
 	}
 
-	ikev2_pkt_log(pkt, BUNYAN_L_DEBUG, "Sending packet");
-
 	/*
 	 * If sendfromto() errors, it will log the error, however there's not
 	 * much that can be done if it fails, other than just wait to try
 	 * again, so we ignore the return value.
 	 */
-	(void) sendfromto(select_socket(sa), pkt_start(pkt), pkt_len(pkt),
-	    &sa->laddr, &sa->raddr);
+	(void) ikev2_send_common(pkt);
 
 	if (!ikev2_sa_arm_timer(sa, I2SA_EVT_PKT_XMIT, retry)) {
 		(void) bunyan_error(log,
@@ -566,106 +610,92 @@ ikev2_retransmit(ikev2_sa_t *sa)
 }
 
 /*
- * Determine if inbound packet is a retransmit. If so, retransmit our last
- * response and discard pkt.  Otherwise return B_FALSE to allow processing to
- * continue.
- *
- * XXX better function name?
+ * Handle the instance where an inbound request is a retransmit by sending
+ * out last response.  Returns B_TRUE if packet was processed.
  */
 static boolean_t
-ikev2_retransmit_check(pkt_t *pkt)
+ikev2_handle_retransmit(pkt_t *req)
 {
-	ikev2_sa_t *sa = pkt->pkt_sa;
-	ike_header_t *hdr = pkt_header(pkt);
-	uint32_t msgid = ntohl(hdr->msgid);
-	boolean_t discard = B_TRUE;
+	ikev2_sa_t *i2sa = req->pkt_sa;
+	uint32_t msgid = ntohl(pkt_header(req)->msgid);
 
-	VERIFY(!MUTEX_HELD(&sa->i2sa_queue_lock));
-	VERIFY(MUTEX_HELD(&sa->i2sa_lock));
+	VERIFY(!MUTEX_HELD(&i2sa->i2sa_queue_lock));
+	VERIFY(MUTEX_HELD(&i2sa->i2sa_lock));
 
-	if (sa->flags & I2SA_CONDEMNED)
-		goto done;
+	if (I2P_RESPONSE(req))
+		return (B_FALSE);
 
-	if (hdr->flags & IKEV2_FLAG_RESPONSE) {
-		pkt_t *last = sa->last_sent;
-
-		if (sa->outmsgid == 0 || msgid != sa->outmsgid - 1) {
-			/*
-			 * Not a response to our last message.
-			 *
-			 * XXX: Send INVALID_MESSAGE_ID notification in
-			 * certain circumstances.  Drop for now.
-			 */
-			goto done;
-		}
-
-		/*
-		 * A response to our last message, ignore if the timer happened
-		 * to fire as we processed the reply.
-		 */
-		(void) ikev2_sa_disarm_timer(sa, I2SA_EVT_PKT_XMIT);
-
-		/*
-		 * Corner case: this isn't the actual response in the
-		 * IKE_SA_INIT exchange, but a request to either use
-		 * cookies or a different DH group.  In that case we don't
-		 * want to treat it like a response (ending the exchange
-		 * and resetting sa->last_sent).
-		 */
-		if (hdr->exch_type != IKEV2_EXCH_IKE_SA_INIT ||
-		    hdr->responder_spi != 0)
-			sa->last_sent = NULL;
-
-		/* Keep IKE_SA_INIT packets until we've authed or time out */
-		if (last != sa->init_i && last != sa->init_r)
-			ikev2_pkt_free(last);
-
-		discard = B_FALSE;
-		goto done;
+	if (i2sa->inmsgid == msgid) {
+		(void) bunyan_debug(log, "Resending last response",
+		    BUNYAN_T_END);
+		ikev2_send_common(i2sa->last_resp_sent);
+		ikev2_pkt_free(req);
+		return (B_TRUE);
 	}
 
-	VERIFY(hdr->flags & IKEV2_FLAG_INITIATOR);
-
-	if (msgid == sa->inmsgid) {
-		pkt_t *resp = sa->last_resp_sent;
-
-		if (resp == NULL) {
-			discard = B_FALSE;
-			goto done;
-		}
-
-		ikev2_pkt_log(pkt, BUNYAN_L_DEBUG, "Resending last response");
-
-		(void) sendfromto(select_socket(sa), pkt_start(resp),
-		    pkt_len(pkt), &sa->laddr, &sa->raddr);
-		goto done;
+	/* New request, no longer need previous response for retransmitting */
+	if (i2sa->inmsgid + 1 == msgid) {
+		if (i2sa->last_resp_sent != i2sa->init_r)
+			ikev2_pkt_free(i2sa->last_resp_sent);
+		i2sa->last_resp_sent = NULL;
+		i2sa->inmsgid++;
+		return (B_FALSE);
 	}
 
-	if (msgid != sa->inmsgid + 1) {
-		ikev2_pkt_log(pkt, BUNYAN_L_INFO,
-		    "Message id is out of sequence");
+	/* Otherwise received something with an out of sequence ID */
+	(void) bunyan_info(log, "IKEv2 packet message ID out of sequence",
+	    BUNYAN_T_END);
 
+	/* TODO: Send INVALID_MESSAGE_ID in a new informational exchange if
+	 * authentiated (RFC7296 2.3) w/ rate limiting.
+	 *
+	 * For now, discard.
+	 */
+	ikev2_pkt_free(req);
+	return (B_TRUE);
+}
+
+/* Returns B_TRUE if resp was processed */
+static boolean_t
+ikev2_handle_response(pkt_t *resp)
+{
+	ikev2_sa_t *i2sa = resp->pkt_sa;
+	i2sa_req_t *i2req = &i2sa->last_req;
+	pkt_t *last = i2sa->last_sent;
+	ikev2_send_cb_t cb = i2req->i2r_cb;
+	uint32_t msgid = ntohl(pkt_header(resp)->msgid);
+
+	VERIFY(!MUTEX_HELD(&i2sa->i2sa_queue_lock));
+	VERIFY(MUTEX_HELD(&i2sa->i2sa_lock));
+
+	if (!I2P_RESPONSE(resp))
+		return (B_FALSE);
+
+	if (msgid != i2req->i2r_msgid) {
 		/*
-		 * TODO: Create in informational exchange & send
-		 * INVALID_MESSAGE_ID if this is a fully-formed IKE SA
+		 * Not a response to an outstanding request.
 		 *
-		 * For now, just discard.
+		 * XXX: Send INVALID_MESSAGE_ID notification in certain
+		 * circumstances.  For now, drop.
 		 */
-		goto done;
+		ikev2_pkt_free(resp);
+		return (B_TRUE);
 	}
+
+	(void) ikev2_sa_disarm_timer(i2sa, I2SA_EVT_PKT_XMIT);
+
+	i2sa->last_sent = NULL;
+	i2req->i2r_pkt = NULL;
 
 	/*
-	 * New exchange, free last response (unless it's our init response
-	 * which we need to keep around for the IKE_AUTH exchange)
+	 * The IKE_SA_INIT packets need to be retained for the IKE_AUTH
+	 * exchange.
 	 */
-	if (sa->last_resp_sent != sa->init_r)
-		ikev2_pkt_free(sa->last_resp_sent);
-	sa->last_resp_sent = NULL;
-	sa->inmsgid++;
-	discard = B_FALSE;
+	if (last != i2sa->init_r)
+		ikev2_pkt_free(last);
 
-done:
-	return (discard);
+	cb(i2sa, resp, i2req->i2r_arg);
+	return (B_TRUE);
 }
 
 /*
@@ -844,10 +874,17 @@ ikev2_dispatch(ikev2_sa_t *sa)
 static void
 ikev2_dispatch_pkt(pkt_t *pkt)
 {
-	VERIFY(!MUTEX_HELD(&pkt->pkt_sa->i2sa_queue_lock));
-	VERIFY(MUTEX_HELD(&pkt->pkt_sa->i2sa_lock));
+	ikev2_sa_t *sa = pkt->pkt_sa;
+	VERIFY(!MUTEX_HELD(&sa->i2sa_queue_lock));
+	VERIFY(MUTEX_HELD(&sa->i2sa_lock));
 
-	if (ikev2_retransmit_check(pkt)) {
+	if (ikev2_handle_retransmit(pkt))
+		return;
+
+	if (ikev2_handle_response(pkt))
+		return;
+
+	if (sa->flags & I2SA_CONDEMNED) {
 		ikev2_pkt_free(pkt);
 		return;
 	}
@@ -876,10 +913,10 @@ ikev2_dispatch_pkt(pkt_t *pkt)
 
 	switch (pkt_header(pkt)->exch_type) {
 	case IKEV2_EXCH_IKE_SA_INIT:
-		ikev2_sa_init_inbound(pkt);
+		ikev2_sa_init_resp(pkt);
 		break;
 	case IKEV2_EXCH_IKE_AUTH:
-		ikev2_ike_auth_inbound(pkt);
+		ikev2_ike_auth_resp(pkt);
 		break;
 	case IKEV2_EXCH_CREATE_CHILD_SA:
 	case IKEV2_EXCH_INFORMATIONAL:
@@ -902,15 +939,8 @@ ikev2_dispatch_pfkey(ikev2_sa_t *restrict sa, parsedmsg_t *restrict pmsg)
 
 	switch (samsg->sadb_msg_type) {
 	case SADB_ACQUIRE:
-		/*
-		 * The first SADB_ACQUIRE message will call
-		 * ikev2_sa_init_outbound() which not only starts the
-		 * IKE_SA_INIT exchange, but also adds the message to
-		 * i2sa->i2sa_pending.
-		 */
-		if (!(sa->flags & I2SA_AUTHENTICATED) &&
-		    list_is_empty(&sa->i2sa_pending)) {
-			ikev2_sa_init_outbound(sa, pmsg);
+		if (!(sa->flags & I2SA_AUTHENTICATED)) {
+			ikev2_sa_init_init(sa, pmsg, NULL);
 		} else {
 			sadb_log(BUNYAN_L_INFO,
 			    "CREATE_CHILD_SA not implemented yet",

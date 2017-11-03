@@ -211,7 +211,7 @@ send_cookie(pkt_t *restrict pkt,
 		return;
 	}
 
-	(void) ikev2_send(resp, B_TRUE);
+	(void) ikev2_send_resp(resp);
 }
 
 static boolean_t

@@ -27,35 +27,88 @@
 #include "prf.h"
 #include "worker.h"
 
-static void ikev2_create_child_sa_inbound_init(pkt_t *restrict,
-    pkt_t *restrict);
-static void ikev2_create_child_sa_inbound_resp(pkt_t *);
+static void ikev2_create_child_sa_init_resp(ikev2_sa_t *restrict,
+    pkt_t *restrict, void *restrict);
 static uint8_t get_satype(parsedmsg_t *);
 
+/* We are the initiator */
 void
-ikev2_create_child_sa_inbound(pkt_t *restrict pkt, pkt_t *restrict resp)
+ikev2_create_child_sa_init(ikev2_sa_t *restrict sa, pkt_t *restrict req)
 {
 	VERIFY(IS_WORKER);
-	VERIFY(MUTEX_HELD(&pkt->pkt_sa->i2sa_lock));
+	VERIFY(!MUTEX_HELD(&sa->i2sa_queue_lock));
+	VERIFY(MUTEX_HELD(&sa->i2sa_lock));
 
-	if (pkt_header(pkt)->flags & IKEV2_FLAG_INITIATOR) {
-		ikev2_create_child_sa_inbound_init(pkt, resp);
+	parsedmsg_t *pmsg = list_head(&sa->i2sa_pending);
+	ikev2_child_sa_t *csa = NULL;
+	sockaddr_u_t src = { .sau_ss = &sa->laddr };
+	sockaddr_u_t dest = { .sau_ss = &sa->raddr };
+	ikev2_dh_t dh = IKEV2_DH_NONE;
+	ikev2_spi_proto_t proto =
+	    satype_to_ikev2(pmsg->pmsg_samsg->sadb_msg_satype);
+	uint32_t spi = 0;
+	uint8_t satype;
+	boolean_t transport_mode = B_FALSE;
+
+	if (pmsg->pmsg_isau.sau_ss == NULL)
+		transport_mode = B_TRUE;
+
+	if (req != NULL) {
+		VERIFY3U(pkt_header(req)->exch_type, ==, IKEV2_EXCH_IKE_AUTH);
 	} else {
-		VERIFY3P(resp, ==, NULL);
-		ikev2_create_child_sa_inbound_resp(pkt);
+		req = ikev2_pkt_new_exchange(sa, IKEV2_EXCH_CREATE_CHILD_SA);
+		if (req == NULL)
+			return;
+
+		dh = sa->i2sa_rule->rule_p2_dh;
+		if (!ikev2_add_sk(req))
+			goto fail;
 	}
+
+	satype = get_satype(pmsg);
+
+	if (!pfkey_getspi(src, dest, satype, &spi))
+		goto fail;
+	if ((csa = ikev2_child_sa_alloc(sa, proto, spi, B_FALSE)) == NULL)
+		goto fail;
+	/* XXX: IPcomp (when we add support) */
+	if (transport_mode && !ikev2_add_notify(req, proto, spi,
+	    IKEV2_N_USE_TRANSPORT_MODE, NULL, 0))
+		goto fail;
+	if (!ikev2_add_notify(req, proto, spi,
+	    IKEV2_N_ESP_TFC_PADDING_NOT_SUPPORTED, NULL, 0))
+		goto fail;
+	if (!ikev2_add_notify(req, proto, spi,
+	    IKEV2_N_NON_FIRST_FRAGMENTS_ALSO, NULL, 0))
+		goto fail;
+	if (!ikev2_sa_from_acquire(req, pmsg, spi, dh))
+		goto fail;
+	if (!ikev2_send_req(req, ikev2_create_child_sa_init_resp, NULL))
+		goto fail;
+
+fail:
+	/*
+	 * If we've allocated a child SA, ikev2_sa_condemn() will take care
+	 * of cleaning it up (including deleteing the SPI from the IPsec
+	 * SADB
+	 */
+	if (csa == NULL)
+		(void) pfkey_delete(spi, src, dest, B_FALSE);
+
+	ikev2_pkt_free(req);
 }
 
 /*
  * We are the responder.
  */
 static void
-ikev2_create_child_sa_inbound_init(pkt_t *restrict req, pkt_t *restrict resp)
+ikev2_create_child_sa_resp(pkt_t *restrict req, pkt_t *restrict resp)
 {
 	ikev2_sa_t *sa = req->pkt_sa;
 	parsedmsg_t *pmsg = NULL;
 	pkt_payload_t *ts_i = NULL;
 	pkt_payload_t *ts_r = NULL;
+	ikev2_child_sa_t *csa = NULL;
 	sockaddr_u_t src, dest, isrc, idest;
 	ikev2_sa_result_t result = { 0 };
 	uint32_t spi = 0;
@@ -91,7 +144,11 @@ ikev2_create_child_sa_inbound_init(pkt_t *restrict req, pkt_t *restrict resp)
 
 	if (!pfkey_inverse_acquire(src, dest, isrc, idest, &pmsg))
 		goto fail;
-
+	if (!pfkey_getspi(src, dest, get_satype(pmsg), &spi))
+		goto fail;
+	csa = ikev2_child_sa_alloc(sa, result.sar_proto, spi, B_TRUE);
+	if (csa == NULL)
+		goto fail;
 	if (!ikev2_sa_match_acquire(pmsg, dh, req, &result)) {
 		if (!ikev2_no_proposal_chosen(resp, result.sar_proto))
 			goto fail;
@@ -104,17 +161,17 @@ ikev2_create_child_sa_inbound_init(pkt_t *restrict req, pkt_t *restrict resp)
 		goto done;
 	}
 
-	if (transport_mode && !ikev2_add_notify(resp, result.sar_proto,
-	    result.sar_spi, IKEV2_N_USE_TRANSPORT_MODE, NULL, 0))
+	if (transport_mode && !ikev2_add_notify(resp, result.sar_proto, spi,
+	    IKEV2_N_USE_TRANSPORT_MODE, NULL, 0))
 		goto fail;
-	/* We currently never support this */
-	if (!ikev2_add_notify(resp, result.sar_proto, result.sar_spi,
+	/* We currently don't support TFC PADDING */
+	if (!ikev2_add_notify(resp, result.sar_proto, spi,
 	    IKEV2_N_ESP_TFC_PADDING_NOT_SUPPORTED, NULL, 0))
 		goto fail;
-	if (!ikev2_add_notify(resp, result.sar_proto, result.sar_spi,
+	if (!ikev2_add_notify(resp, result.sar_proto, spi,
 	    IKEV2_N_NON_FIRST_FRAGMENTS_ALSO, NULL, 0))
 		goto fail;
-	if (!ikev2_sa_add_result(resp, &result))
+	if (!ikev2_sa_add_result(resp, &result, spi))
 		goto fail;
 
 	if (pkt_header(resp)->exch_type != IKEV2_EXCH_IKE_AUTH) {
@@ -150,7 +207,7 @@ ikev2_create_child_sa_inbound_init(pkt_t *restrict req, pkt_t *restrict resp)
 	/* XXX: Create IPsec SA */
 
 done:
-	if (!ikev2_send(resp, B_FALSE))
+	if (!ikev2_send_resp(resp))
 		goto fail;
 
 	/* Don't reuse the same DH key for additional child SAs */
@@ -168,65 +225,32 @@ fail:
 	ikev2_pkt_free(resp);
 }
 
-void
-ikev2_create_child_sa_outbound(ikev2_sa_t *restrict sa, pkt_t *restrict req)
+static void
+ikev2_create_child_sa_init_resp(ikev2_sa_t *restrict i2sa,
+    pkt_t *restrict resp, void *restrict arg)
 {
-	VERIFY(IS_WORKER);
-	VERIFY(!MUTEX_HELD(&sa->i2sa_queue_lock));
-	VERIFY(MUTEX_HELD(&sa->i2sa_lock));
+	ikev2_sa_result_t result = { 0 };
 
-	parsedmsg_t *pmsg = list_head(&sa->i2sa_pending);
-	sockaddr_u_t src = { .sau_ss = &sa->laddr };
-	sockaddr_u_t dest = { .sau_ss = &sa->raddr };
-	ikev2_dh_t dh = IKEV2_DH_NONE;
-	ikev2_spi_proto_t proto =
-	    satype_to_ikev2(pmsg->pmsg_samsg->sadb_msg_satype);
-	uint32_t spi = 0;
-	uint8_t satype;
-	boolean_t transport_mode = B_FALSE;
+	if (pkt_get_notify(resp, IKEV2_N_NO_PROPOSAL_CHOSEN, NULL) != NULL) {
+		/* XXX: Delete larval IPsec SA */
 
-	if (pmsg->pmsg_isau.sau_ss == NULL)
-		transport_mode = B_TRUE;
-
-	if (req != NULL) {
-		VERIFY3U(pkt_header(req)->exch_type, ==, IKEV2_EXCH_IKE_AUTH);
-	} else {
-		req = ikev2_pkt_new_exchange(sa, IKEV2_EXCH_CREATE_CHILD_SA);
-		if (req == NULL)
-			return;
-
-		dh = sa->i2sa_rule->rule_p2_dh;
-		if (!ikev2_add_sk(req))
-			goto fail;
+		/*
+		 * Since we don't need to kick off a new exchange to tear
+		 * things down, we can do both steps now.
+		 */
+		ikev2_sa_condemn(resp->pkt_sa);
+		ikev2_sa_condemn(resp->pkt_sa);
+		ikev2_pkt_free(resp);
+		return;
+	}
+	if (pkt_get_notify(resp, IKEV2_N_TS_UNACCEPTABLE, NULL) != NULL) {
+		/* TODO */
+		ikev2_sa_condemn(resp->pkt_sa);
+		ikev2_sa_condemn(resp->pkt_sa);
+		ikev2_pkt_free(resp);
+		return;
 	}
 
-	satype = get_satype(pmsg);
-
-	if (!pfkey_getspi(src, dest, satype, &spi))
-		goto fail;
-	/* XXX: IPcomp (when we add support) */
-	if (transport_mode && !ikev2_add_notify(req, proto, spi,
-	    IKEV2_N_USE_TRANSPORT_MODE, NULL, 0))
-		goto fail;
-	if (!ikev2_add_notify(req, proto, spi,
-	    IKEV2_N_ESP_TFC_PADDING_NOT_SUPPORTED, NULL, 0))
-		goto fail;
-	if (!ikev2_add_notify(req, proto, spi,
-	    IKEV2_N_NON_FIRST_FRAGMENTS_ALSO, NULL, 0))
-		goto fail;
-	if (!ikev2_sa_from_acquire(req, pmsg, spi, dh))
-		goto fail;
-	if (!ikev2_send(req, B_FALSE))
-		goto fail;
-
-fail:
-	/* XXX: Delete larval IPsec SA */
-	ikev2_pkt_free(req);
-}
-
-static void
-ikev2_create_child_sa_inbound_resp(pkt_t *resp)
-{
 }
 
 static boolean_t

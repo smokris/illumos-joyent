@@ -32,8 +32,9 @@
 #include "prf.h"
 #include "worker.h"
 
-static void ikev2_ike_auth_inbound_init(pkt_t *);
-static void ikev2_ike_auth_inbound_resp(pkt_t *);
+static void ikev2_ike_auth_init_resp(ikev2_sa_t *restrict, pkt_t *restrict,
+    void *restrict);
+
 static boolean_t ikev2_auth_failed(const pkt_t *);
 static boolean_t create_psk(ikev2_sa_t *);
 static boolean_t calc_auth(ikev2_sa_t *restrict, boolean_t,
@@ -47,22 +48,53 @@ static config_id_t *i2id_to_cid(pkt_payload_t *);
 static size_t get_authlen(const ikev2_sa_t *);
 
 void
-ikev2_ike_auth_inbound(pkt_t *pkt)
+ikev2_ike_auth_init(ikev2_sa_t *restrict sa, parsedmsg_t *restrict pmsg)
 {
 	VERIFY(IS_WORKER);
-	VERIFY(MUTEX_HELD(&pkt->pkt_sa->i2sa_lock));
+	VERIFY(!MUTEX_HELD(&sa->i2sa_queue_lock));
+	VERIFY(MUTEX_HELD(&sa->i2sa_lock));
 
-	if (pkt_header(pkt)->flags & IKEV2_FLAG_INITIATOR)
-		ikev2_ike_auth_inbound_init(pkt);
-	else
-		ikev2_ike_auth_inbound_resp(pkt);
+	config_rule_t *rule = sa->i2sa_rule;
+	pkt_t *req = ikev2_pkt_new_exchange(sa, IKEV2_EXCH_IKE_AUTH);
+
+	(void) bunyan_debug(log, "Starting IKE_AUTH exchange", BUNYAN_T_END);
+
+	if (req == NULL)
+		goto fail;
+
+	/* First payload, this should always fit */
+	VERIFY(ikev2_add_sk(req));
+
+	if (!add_id(req, rule->rule_local_id, B_TRUE))
+		goto fail;
+
+	/* XXX: Add any CERT or CERTREQ payloads */
+
+	/*
+	 * XXX: We can optionally add _1_ IDr payload to indicate a preferred
+	 * ID for the responder to use.  Since we currently support multiple
+	 * remote ids in a rule, not sure there's any benefit to do this.
+	 * For now, we will elect not to do this.
+	 */
+
+	if (!add_auth(req))
+		goto fail;
+
+#if 0
+	ikev2_create_child_sa_outbound(sa, req);
+#else
+	ikev2_send_req(req, ikev2_ike_auth_init_resp, pmsg);
+#endif
+	return;
+
+fail:
+	ikev2_pkt_free(req);
+	ikev2_sa_condemn(sa);
 }
 
-/*
- * We are the responder
- */
-static void
-ikev2_ike_auth_inbound_init(pkt_t *req)
+/* We are the responder */
+void
+ikev2_ike_auth_resp(pkt_t *req)
 {
 	VERIFY(IS_WORKER);
 	VERIFY(MUTEX_HELD(&req->pkt_sa->i2sa_lock));
@@ -151,14 +183,16 @@ ikev2_ike_auth_inbound_init(pkt_t *req)
 
 	if (!add_id(resp, rule->rule_local_id, B_FALSE))
 		goto fail;
+
 	/* XXX: Add CERT payloads */
+
 	if (!add_auth(resp))
 		goto fail;
 
 #if 0
 	ikev2_create_child_sa_inbound(req, resp);
 #else
-	ikev2_send(resp, B_FALSE);
+	ikev2_send_resp(resp);
 	ikev2_pkt_free(req);
 #endif
 	return;
@@ -176,59 +210,8 @@ authfail:
 	    IKEV2_N_AUTHENTICATION_FAILED, NULL, 0)) {
 		ikev2_pkt_free(resp);
 	} else {
-		ikev2_send(resp, B_TRUE);
+		ikev2_send_resp(resp);
 	}
-	ikev2_sa_condemn(sa);
-}
-
-/*
- * We are the initiator
- */
-void
-ikev2_ike_auth_outbound(ikev2_sa_t *sa)
-{
-	VERIFY(IS_WORKER);
-	VERIFY(!MUTEX_HELD(&sa->i2sa_queue_lock));
-	VERIFY(MUTEX_HELD(&sa->i2sa_lock));
-
-	config_rule_t *rule = sa->i2sa_rule;
-	pkt_t *req = ikev2_pkt_new_exchange(sa, IKEV2_EXCH_IKE_AUTH);
-
-	/* We should have at least one ACQUIRE pending if we got this far */
-	VERIFY(!list_is_empty(&sa->i2sa_pending));
-
-	(void) bunyan_debug(log, "Starting IKE_AUTH exchange", BUNYAN_T_END);
-
-	if (req == NULL)
-		goto fail;
-
-	/* First payload, this should always fit */
-	VERIFY(ikev2_add_sk(req));
-
-	if (!add_id(req, rule->rule_local_id, B_TRUE))
-		goto fail;
-
-	/* XXX: Add any CERT or CERTREQ payloads */
-
-	/*
-	 * XXX: We can optionally add _1_ IDr payload to indicate a preferred
-	 * ID for the responder to use.  Since we currently support multiple
-	 * remote ids in a rule, not sure there's any benefit to do this.
-	 * For now, we will elect not to do this.
-	 */
-
-	if (!add_auth(req))
-		goto fail;
-
-#if 0
-	ikev2_create_child_sa_outbound(sa, req);
-#else
-	ikev2_send(req, B_FALSE);
-#endif
-	return;
-
-fail:
-	ikev2_pkt_free(req);
 	ikev2_sa_condemn(sa);
 }
 
@@ -236,12 +219,13 @@ fail:
  * We are the initiator, this is the response
  */
 static void
-ikev2_ike_auth_inbound_resp(pkt_t *resp)
+ikev2_ike_auth_init_resp(ikev2_sa_t *restrict sa, pkt_t *restrict resp,
+    void *restrict arg)
 {
 	VERIFY(IS_WORKER);
 	VERIFY(MUTEX_HELD(&resp->pkt_sa->i2sa_lock));
 
-	ikev2_sa_t *sa = resp->pkt_sa;
+	parsedmsg_t *restrict pmsg = arg;
 	config_id_t *cid_r = NULL;
 	const char *mstr = NULL;
 	char mbuf[IKEV2_ENUM_STRLEN] = { 0 };
@@ -800,6 +784,14 @@ i2id_to_cid(pkt_payload_t *i2id)
 	return (cid);
 }
 
+static void
+ikev2_auth_failed_resp(ikev2_sa_t *restrict i2sa, pkt_t *restrict resp,
+    void *arg)
+{
+	ikev2_pkt_free(resp);
+	ikev2_sa_condemn(i2sa);
+}
+
 static boolean_t
 ikev2_auth_failed(const pkt_t *src)
 {
@@ -822,7 +814,8 @@ ikev2_auth_failed(const pkt_t *src)
 		return (B_FALSE);
 	}
 
-	return (ikev2_send(msg, resp));
+	return (resp ? ikev2_send_resp(msg) :
+	    ikev2_send_req(msg, ikev2_auth_failed_resp, NULL));
 }
 
 static size_t

@@ -80,6 +80,14 @@ typedef struct i2sa_msg {
 } i2sa_msg_t;
 #define	I2SA_QUEUE_DEPTH	8	/* How many messages we'll queue */
 
+/* Outbound requests */
+typedef struct i2sa_req {
+	struct pkt_s	*i2r_pkt;
+	uint32_t	i2r_msgid;
+	void		*i2r_cb;
+	void		*i2r_arg;
+} i2sa_req_t;
+
 /* Timer events */
 typedef enum i2sa_evt {
 	I2SA_EVT_NONE		= 0x00,
@@ -168,6 +176,7 @@ struct ikev2_sa_s {
 	struct pkt_s	*last_resp_sent;
 	struct pkt_s	*last_sent;
 	struct pkt_s	*last_recvd;
+	i2sa_req_t	last_req;
 
 	time_t		birth;		/* When was AUTH completed */
 	hrtime_t	softexpire;

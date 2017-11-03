@@ -27,15 +27,24 @@
 #include "ikev2_pkt.h"
 #include "ikev2_proto.h"
 #include "ikev2_sa.h"
+#include "pfkey.h"
 #include "pkcs11.h"
 #include "pkt.h"
 #include "prf.h"
 #include "worker.h"
 
-static void ikev2_sa_init_inbound_init(pkt_t *);
-static boolean_t ikev2_sa_init_inbound_resp(pkt_t *);
-static void do_sa_init_outbound(ikev2_sa_t *restrict, uint8_t *restrict,
-    size_t, ikev2_dh_t, uint8_t *restrict, size_t);
+struct sa_init_args {
+	parsedmsg_t	*sia_pmsg;
+	ikev2_dh_t	sia_dh;
+	uint8_t		sia_cookie[IKEV2_COOKIE_MAX];
+	size_t		sia_cookielen;
+	uint8_t		sia_nonce[IKEV2_NONCE_MAX];
+	size_t		sia_noncelen;
+};
+
+static void ikev2_sa_init_init_resp(ikev2_sa_t *restrict, pkt_t *restrict,
+    void *restrict);
+static boolean_t redo_init(pkt_t *restrict, struct sa_init_args *restrict);
 
 static boolean_t find_config(pkt_t *, sockaddr_u_t, sockaddr_u_t);
 static boolean_t add_nat(pkt_t *);
@@ -46,27 +55,107 @@ static boolean_t add_cookie(pkt_t *restrict, void *restrict, size_t len);
 static boolean_t ikev2_sa_keygen(ikev2_sa_result_t *restrict, pkt_t *restrict,
     pkt_t *restrict);
 
+/* New IKE_SA_INIT exchange, we are initiator */
 void
-ikev2_sa_init_inbound(pkt_t *pkt)
+ikev2_sa_init_init(ikev2_sa_t *restrict i2sa, parsedmsg_t *restrict pmsg,
+    void *restrict arg)
 {
-	VERIFY(IS_WORKER);
-	VERIFY(!MUTEX_HELD(&pkt->pkt_sa->i2sa_queue_lock));
-	VERIFY(MUTEX_HELD(&pkt->pkt_sa->i2sa_lock));
+	struct sa_init_args *sa_args = arg;
+	pkt_t *pkt = NULL;
+	uint8_t *nonce = NULL;
+	size_t noncelen = 0;
+	sockaddr_u_t laddr = { .sau_ss = &i2sa->laddr };
+	sockaddr_u_t raddr = { .sau_ss = &i2sa->raddr };
 
-	if (pkt_header(pkt)->flags & IKEV2_FLAG_INITIATOR) {
-		ikev2_sa_init_inbound_init(pkt);
-	} else {
-		if (!ikev2_sa_init_inbound_resp(pkt))
+	VERIFY(MUTEX_HELD(&i2sa->i2sa_lock));
+	VERIFY(!(i2sa->flags & I2SA_AUTHENTICATED));
+	VERIFY(i2sa->flags & I2SA_INITIATOR);
+	VERIFY((pmsg != NULL && arg == NULL) || (pmsg == NULL && arg != NULL));
+
+	if (sa_args == NULL) {
+		sa_args = umem_zalloc(sizeof (*sa_args), UMEM_DEFAULT);
+		if (sa_args == NULL) {
+			(void) bunyan_error(log,
+			    "No memory to perform IKE_SA_INIT exchange",
+			    BUNYAN_T_END);
+			ikev2_sa_condemn(i2sa);
+
+			/*
+			 * Inform kernel of failure if it originated the
+			 * request that led to IKEv2 SA creation.
+			 */
+			if (pmsg->pmsg_samsg->sadb_msg_pid == 0)
+				pfkey_send_error(pmsg->pmsg_samsg, ENOMEM);
+
+			parsedmsg_free(pmsg);
 			return;
-		ikev2_ike_auth_outbound(pkt->pkt_sa);
+		}
+
+		sa_args->sia_pmsg = pmsg;
+
+		(void) bunyan_info(log,
+		    "Starting new IKE_SA_INIT exchange as initiator",
+		    BUNYAN_T_END);
 	}
+
+	if (!find_config(pkt, laddr, raddr))
+		goto fail;
+
+	if (!add_cookie(pkt, sa_args->sia_cookie, sa_args->sia_cookielen))
+		goto fail;
+
+	if (!ikev2_sa_from_rule(pkt, i2sa->i2sa_rule, 0))
+		goto fail;
+
+	/* Start with the first DH group in the first rule */
+	if (sa_args->sia_dh == IKEV2_DH_NONE)
+		sa_args->sia_dh = i2sa->i2sa_rule->rule_xf[0]->xf_dh;
+
+	if (i2sa->dh_pubkey == CK_INVALID_HANDLE &&
+	    !dh_genpair(sa_args->sia_dh, &i2sa->dh_pubkey, &i2sa->dh_privkey))
+		goto fail;
+
+	if (!ikev2_add_ke(pkt, sa_args->sia_dh, i2sa->dh_pubkey))
+		goto fail;
+
+	if (sa_args->sia_noncelen == 0) {
+		nonce = NULL;
+		noncelen = IKEV2_NONCE_DEFAULT;
+	} else {
+		nonce = sa_args->sia_nonce;
+		noncelen = sa_args->sia_noncelen;
+	}
+	if (!ikev2_add_nonce(pkt, nonce, noncelen))
+		goto fail;
+
+	if (!add_nat(pkt))
+		goto fail;
+
+	if (!add_vendor(pkt))
+		goto fail;
+
+	/* XXX: CERTREQ */
+
+	i2sa->init_i = pkt;
+
+	if (!ikev2_send_req(pkt, ikev2_sa_init_init_resp, sa_args))
+		goto fail;
+
+	I2SA_REFRELE(i2sa);
+	return;
+
+fail:
+	parsedmsg_free(pmsg);
+	umem_free(sa_args, sizeof (*sa_args));
+	i2sa->init_i = NULL;
+	ikev2_sa_condemn(i2sa);
+	ikev2_pkt_free(pkt);
+	I2SA_REFRELE(i2sa);
 }
 
-/*
- * New inbound IKE_SA_INIT exchange, we are the responder.
- */
-static void
-ikev2_sa_init_inbound_init(pkt_t *pkt)
+/* We are responder */
+void
+ikev2_sa_init_resp(pkt_t *pkt)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
 	pkt_t *resp = NULL;
@@ -132,7 +221,7 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 	 */
 	pkt_header(resp)->responder_spi = I2SA_LOCAL_SPI(sa);
 
-	if (!ikev2_sa_add_result(resp, &sa_result))
+	if (!ikev2_sa_add_result(resp, &sa_result, 0))
 		goto fail;
 	/*
 	 * While premissible, we do not currently reuse DH exponentials.  Since
@@ -166,7 +255,7 @@ ikev2_sa_init_inbound_init(pkt_t *pkt)
 
 	if (!ikev2_sa_keygen(&sa_result, pkt, resp))
 		goto fail;
-	if (!ikev2_send(resp, B_FALSE))
+	if (!ikev2_send_resp(resp))
 		goto fail;
 
 	/*
@@ -194,25 +283,127 @@ fail:
 }
 
 /*
+ * We initiated the IKE_SA_INIT exchange, this is the remote response
+ */
+static void
+ikev2_sa_init_init_resp(ikev2_sa_t *restrict sa, pkt_t *restrict pkt,
+    void *restrict arg)
+{
+	pkt_payload_t *ke_r = pkt_get_payload(pkt, IKEV2_PAYLOAD_KE, NULL);
+	struct sa_init_args *sa_args = arg;
+	parsedmsg_t *pmsg = sa_args->sia_pmsg;
+	ikev2_sa_result_t sa_result = { 0 };
+	ikev2_auth_type_t authmethod;
+
+	VERIFY(!MUTEX_HELD(&sa->i2sa_queue_lock));
+	VERIFY(MUTEX_HELD(&sa->i2sa_lock));
+
+	if (pkt == NULL) {
+		/*
+		 * Timeout on IKE_SA_INIT packet send.  Timeout handler will
+		 * condemn the larval IKE SA, so only need to clean up
+		 * sa_args.
+		 */
+		parsedmsg_free(sa_args->sia_pmsg);
+		umem_free(sa_args, sizeof (*sa_args));
+		return;
+	}
+
+	(void) bunyan_debug(log, "Processing IKE_SA_INIT response",
+	     BUNYAN_T_END);
+
+	if (pkt_get_notify(pkt, IKEV2_N_NO_PROPOSAL_CHOSEN, NULL) != NULL) {
+		(void) bunyan_error(log,
+		    "IKE_SA_INIT exchange failed, no proposal chosen",
+		    BUNYAN_T_END);
+		ikev2_sa_condemn(sa);
+		ikev2_pkt_free(pkt);
+		return;
+	}
+
+	/* Did we get a request for cookies or a new DH group? */
+	if (redo_init(pkt, sa_args))
+		return;
+	if (!check_nats(pkt))
+		goto fail;
+	check_vendor(pkt);
+
+	if (!ikev2_sa_match_rule(sa->i2sa_rule, pkt, &sa_result, &authmethod)) {
+		/*
+		 * XXX: Tried to send back something that wasn't in the propsals
+		 * we sent.  What should we do?  Just destroy the IKE SA?
+		 * Ignore?  For now ignore and hope a valid answer comes
+		 * back before we timeout.
+		 */
+		ikev2_pkt_free(pkt);
+		return;
+	}
+
+	if (!dh_derivekey(sa->dh_privkey, ke_r->pp_ptr + sizeof (ikev2_ke_t),
+	    ke_r->pp_len - sizeof (ikev2_ke_t), &sa->dh_key))
+		goto fail;
+	if (!ikev2_sa_keygen(&sa_result, sa->init_i, pkt))
+		goto fail;
+
+	ikev2_sa_set_remote_spi(sa, INBOUND_REMOTE_SPI(pkt_header(pkt)));
+	sa->authmethod = authmethod;
+	sa->init_r = pkt;
+	umem_free(sa_args, sizeof (*sa_args));
+	ikev2_ike_auth_init(sa, pmsg);
+	return;
+
+fail:
+	umem_free(sa_args, sizeof (*sa_args));
+	ikev2_sa_condemn(sa);
+	ikev2_pkt_free(pkt);
+	/* XXX: Anything else? */
+	return;
+}
+
+/*
  * If we get a cookie request or a new DH group in response to our
- * initiated IKE_SA_INIT exchange, restart with the new parameters.
+ * initiated IKE_SA_INIT exchange, restart with the new parameters.  Returns
+ * B_TRUE if it has consumed pkt and further processing by caller of packet
+ * should stop, B_FALSE if caller should continue processing pkt.
+ *
+ * Since this packet is sent to us unprotected, it's treated mostly as advisory.
+ * If something's wrong with the packet, or if it is trying to get us to use
+ * a DH group our policy doesn't allow, we merely ignore the packet.  The
+ * worst case is that the larval IKE SA will timeout and be deleted.
  *
  * XXX: Better name?
  */
 static boolean_t
-redo_init(pkt_t *pkt)
+redo_init(pkt_t *restrict pkt, struct sa_init_args *restrict sa_args)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
 	pkt_notify_t *cookie = pkt_get_notify(pkt, IKEV2_N_COOKIE, NULL);
 	pkt_notify_t *invalid_ke = pkt_get_notify(pkt,
 	    IKEV2_N_INVALID_KE_PAYLOAD, NULL);
+	pkt_t *out = sa->init_i;
+	pkt_payload_t *nonce = pkt_get_payload(out, IKEV2_PAYLOAD_NONCE, NULL);
 
 	if (cookie == NULL && invalid_ke == NULL)
 		return (B_FALSE);
 
-	pkt_t *out = sa->init_i;
-	pkt_payload_t *nonce = pkt_get_payload(out, IKEV2_PAYLOAD_NONCE, NULL);
-	ikev2_dh_t dh = IKEV2_DH_NONE;
+	VERIFY3U(nonce->pp_len, <=, IKEV2_NONCE_MAX);
+	(void) memcpy(sa_args->sia_nonce, nonce->pp_ptr, nonce->pp_len);
+
+	if (cookie != NULL) {
+		if (cookie->pn_len > IKEV2_COOKIE_MAX) {
+			(void) bunyan_info(log,
+			    "Received IKEV2 COOKIE notification with oversized "
+			    "cookie value; ignoring",
+			    BUNYAN_T_UINT32, "cookielen",
+			    (uint32_t)cookie->pn_len,
+			    BUNYAN_T_END);
+			ikev2_pkt_free(pkt);
+			return (B_TRUE);
+		}
+		sa_args->sia_cookielen = cookie->pn_len;
+		(void) memcpy(sa_args->sia_cookie, cookie->pn_ptr,
+		    cookie->pn_len);
+	}
 
 	if (invalid_ke != NULL) {
 		if (invalid_ke->pn_len != sizeof (uint16_t)) {
@@ -227,11 +418,39 @@ redo_init(pkt_t *pkt)
 
 			/* We will just ignore it for now */
 			ikev2_pkt_free(pkt);
-			return (B_FALSE);
+			return (B_TRUE);
 		}
 
+		config_rule_t *rule = sa->i2sa_rule;
 		uint16_t val = BE_IN16(invalid_ke->pn_ptr);
-		dh = val;
+		boolean_t match = B_FALSE;
+
+		for (size_t i = 0; i < rule->rule_nxf; i++) {
+			config_xf_t *xf = rule->rule_xf[i];
+
+			if (val == xf->xf_dh) {
+				match = B_TRUE;
+				break;
+			}
+		}
+
+		if (!match) {
+			char dhstr[IKEV2_ENUM_STRLEN] = { 0 };
+
+			(void) bunyan_info(log,
+			    "Received INVALID_KE_PAYLOAD notification with "
+			    "unacceptable group; ignoring",
+			    BUNYAN_T_UINT32, "groupval", (uint32_t)val,
+			    BUNYAN_T_STRING, "group",
+			    ikev2_dh_str(val, dhstr, sizeof (dhstr)),
+			    BUNYAN_T_END);
+			ikev2_pkt_free(pkt);
+			return (B_TRUE);
+		}
+
+		pkcs11_destroy_obj("dh_pubkey", &sa->dh_pubkey);
+		pkcs11_destroy_obj("dh_privkey", &sa->dh_privkey);
+		sa_args->sia_dh = val;
 	}
 
 	/*
@@ -243,191 +462,20 @@ redo_init(pkt_t *pkt)
 	sa->init_i = sa->last_sent = NULL;
 	sa->outmsgid = 0;
 
+	/*
+	 * Stop trying to resend old IKE_SA_INIT packet, but keep the P1 timer
+	 * going.
+	 */
 	(void) ikev2_sa_disarm_timer(sa, I2SA_EVT_PKT_XMIT);
 
 	(void) bunyan_debug(log,
 	    "Response requested new parameters; restarting exchange",
 	    BUNYAN_T_END);
 
-	do_sa_init_outbound(sa, cookie->pn_ptr, cookie->pn_len,
-	    dh, nonce->pp_ptr, nonce->pp_len);
-
+	ikev2_sa_init_init(sa, NULL, sa_args);
 	ikev2_pkt_free(pkt);
 	ikev2_pkt_free(out);
 	return (B_TRUE);
-}
-
-/*
- * We initiated the IKE_SA_INIT exchange, this is the remote response
- */
-static boolean_t
-ikev2_sa_init_inbound_resp(pkt_t *pkt)
-{
-	ikev2_sa_t *sa = pkt->pkt_sa;
-	pkt_payload_t *ke_r = pkt_get_payload(pkt, IKEV2_PAYLOAD_KE, NULL);
-	ikev2_sa_result_t sa_result = { 0 };
-	ikev2_auth_type_t authmethod;
-
-	VERIFY(!MUTEX_HELD(&sa->i2sa_queue_lock));
-	VERIFY(MUTEX_HELD(&sa->i2sa_lock));
-
-	(void) bunyan_debug(log, "Processing IKE_SA_INIT response",
-	     BUNYAN_T_END);
-
-	if (pkt_get_notify(pkt, IKEV2_N_NO_PROPOSAL_CHOSEN, NULL) != NULL) {
-		(void) bunyan_error(log,
-		    "IKE_SA_INIT exchange failed, no proposal chosen",
-		    BUNYAN_T_END);
-		ikev2_sa_condemn(sa);
-		ikev2_pkt_free(pkt);
-		return (B_FALSE);
-	}
-
-	/* Did we get a request for cookies or a new DH group? */
-	if (redo_init(pkt))
-		return (B_FALSE);
-	if (!check_nats(pkt))
-		goto fail;
-	check_vendor(pkt);
-
-	if (!ikev2_sa_match_rule(sa->i2sa_rule, pkt, &sa_result, &authmethod)) {
-		/*
-		 * XXX: Tried to send back something that wasn't in the propsals
-		 * we sent.  What should we do?  Just destroy the IKE SA?
-		 * Ignore?  For now ignore and hope a valid answer comes
-		 * back before we timeout.
-		 */
-		ikev2_pkt_free(pkt);
-		return (B_FALSE);
-	}
-
-	if (!dh_derivekey(sa->dh_privkey, ke_r->pp_ptr + sizeof (ikev2_ke_t),
-	    ke_r->pp_len - sizeof (ikev2_ke_t), &sa->dh_key))
-		goto fail;
-	if (!ikev2_sa_keygen(&sa_result, sa->init_i, pkt))
-		goto fail;
-
-	ikev2_sa_set_remote_spi(sa, INBOUND_REMOTE_SPI(pkt_header(pkt)));
-	sa->authmethod = authmethod;
-	sa->init_r = pkt;
-	return (B_TRUE);
-
-fail:
-	ikev2_sa_condemn(sa);
-	ikev2_pkt_free(pkt);
-	/* XXX: Anything else? */
-	return (B_FALSE);
-}
-
-static void
-cfg_addr_to_sockaddr(config_addr_t *c, sockaddr_u_t s)
-{
-	switch (c->cfa_type) {
-	case CFG_ADDR_IPV4:
-	case CFG_ADDR_IPV4_PREFIX:
-	case CFG_ADDR_IPV4_RANGE:
-		s.sau_sin->sin_family = AF_INET;
-		s.sau_sin->sin_port = htons(IPPORT_IKE);
-		(void) memcpy(&s.sau_sin->sin_addr, &c->cfa_start4,
-		    sizeof (in_addr_t));
-		break;
-	case CFG_ADDR_IPV6:
-	case CFG_ADDR_IPV6_PREFIX:
-	case CFG_ADDR_IPV6_RANGE:
-		s.sau_sin6->sin6_family = AF_INET6;
-		s.sau_sin6->sin6_port = htons(IPPORT_IKE);
-		(void) memcpy(&s.sau_sin6->sin6_addr, &c->cfa_start6,
-		    sizeof (in6_addr_t));
-		break;
-	}
-}
-
-void
-ikev2_sa_init_outbound(ikev2_sa_t *restrict sa, parsedmsg_t *restrict pmsg)
-{
-	VERIFY(MUTEX_HELD(&sa->i2sa_lock));
-	VERIFY(list_is_empty(&sa->i2sa_pending));
-	VERIFY(!(sa->flags & I2SA_AUTHENTICATED));
-
-	list_insert_tail(&sa->i2sa_pending, pmsg);
-	do_sa_init_outbound(sa, NULL, 0, IKEV2_DH_NONE, NULL, 0);
-}
-
-/*
- * Start a new IKE_SA_INIT using the given larval refheld IKE SA.
- * The other parameters are normally NULL / 0 and are used when the response
- * requests a cookie or a new DH group.
- */
-static void
-do_sa_init_outbound(ikev2_sa_t *restrict i2sa, uint8_t *restrict cookie,
-    size_t cookielen, ikev2_dh_t dh, uint8_t *restrict nonce, size_t noncelen)
-{
-	pkt_t *pkt = NULL;
-	sockaddr_u_t laddr = { .sau_ss = &i2sa->laddr };
-	sockaddr_u_t raddr = { .sau_ss = &i2sa->raddr };
-
-	if (nonce == NULL) {
-		(void) bunyan_info(log,
-		    "Starting new IKE_SA_INIT exchange as initiator",
-		    BUNYAN_T_END);
-	}
-
-	VERIFY(i2sa->flags & I2SA_INITIATOR);
-
-	pkt = ikev2_pkt_new_exchange(i2sa, IKEV2_EXCH_IKE_SA_INIT);
-
-	if (!find_config(pkt, laddr, raddr))
-		goto fail;
-
-	if (!add_cookie(pkt, cookie, cookielen))
-		goto fail;
-
-	if (!ikev2_sa_from_rule(pkt, i2sa->i2sa_rule, 0))
-		goto fail;
-
-	/* These will do nothing if there isn't an existing key */
-	pkcs11_destroy_obj("dh_pubkey", &i2sa->dh_pubkey);
-	pkcs11_destroy_obj("dh_privkey", &i2sa->dh_privkey);
-
-	/* Start with the first DH group in the first rule */
-	if (dh == IKEV2_DH_NONE)
-		dh = i2sa->i2sa_rule->rule_xf[0]->xf_dh;
-
-	if (!dh_genpair(dh, &i2sa->dh_pubkey, &i2sa->dh_privkey))
-		goto fail;
-
-	if (!ikev2_add_ke(pkt, dh, i2sa->dh_pubkey))
-		goto fail;
-
-	/*
-	 * XXX: This is half the largest keysize of all the PRF functions
-	 * we support.
-	 */
-	if (noncelen == 0)
-		noncelen = 32;
-
-	if (!ikev2_add_nonce(pkt, nonce, noncelen))
-		goto fail;
-	if (!add_nat(pkt))
-		goto fail;
-	if (!add_vendor(pkt))
-		goto fail;
-
-	/* XXX: CERTREQ */
-
-	i2sa->init_i = pkt;
-
-	if (!ikev2_send(pkt, B_FALSE))
-		goto fail;
-
-	I2SA_REFRELE(i2sa);
-	return;
-
-fail:
-	i2sa->init_i = NULL;
-	ikev2_sa_condemn(i2sa);
-	ikev2_pkt_free(pkt);
-	I2SA_REFRELE(i2sa);
 }
 
 static boolean_t
