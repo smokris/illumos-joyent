@@ -27,6 +27,12 @@
 #include "prf.h"
 #include "worker.h"
 
+struct create_child_sa_args {
+	parsedmsg_t	*ccsa_acquire;
+	ikev2_child_sa_t *ccsa_i2sa_child;
+	uint32_t	ccsa_spi;
+};
+
 static void ikev2_create_child_sa_init_resp(ikev2_sa_t *restrict,
     pkt_t *restrict, void *restrict);
 static uint8_t get_satype(parsedmsg_t *);
@@ -225,6 +231,7 @@ fail:
 	ikev2_pkt_free(resp);
 }
 
+/* We are initiator, this is the response from the peer */
 static void
 ikev2_create_child_sa_init_resp(ikev2_sa_t *restrict i2sa,
     pkt_t *restrict resp, void *restrict arg)
