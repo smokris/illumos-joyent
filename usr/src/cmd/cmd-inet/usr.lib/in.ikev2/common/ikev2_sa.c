@@ -1139,12 +1139,13 @@ ikev2_child_sa_t *ikev2_child_sa_alloc(ikev2_sa_t *i2sa,
 	return (csa);
 }
 
-static void
+void
 ikev2_child_sa_free(ikev2_child_sa_t *csa)
 {
 	if (csa == NULL)
 		return;
 	VERIFY(!list_link_active(&csa->i2c_node));
+	(void) memset(csa, 0, sizeof (*csa));
 	umem_cache_free(i2c_cache, csa);
 }
 

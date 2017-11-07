@@ -89,6 +89,8 @@ typedef struct parsedmsg_s {
 #define	pmsg_nrsin6 pmsg_nrau.sau_sin6
 void parsedmsg_free(parsedmsg_t *);
 
+#define	PMSG_FROM_KERNEL(pmsg) ((pmsg)->pmsg_samsg->sadb_msg_pid == 0)
+
 typedef struct algindex {
 	const char *desc;
 	int doi_num;

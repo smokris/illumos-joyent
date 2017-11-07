@@ -919,6 +919,8 @@ ikev2_dispatch_pkt(pkt_t *pkt)
 		ikev2_ike_auth_resp(pkt);
 		break;
 	case IKEV2_EXCH_CREATE_CHILD_SA:
+		ikev2_create_child_sa_resp(pkt, NULL);
+		break;
 	case IKEV2_EXCH_INFORMATIONAL:
 	case IKEV2_EXCH_IKE_SESSION_RESUME:
 		/* TODO */

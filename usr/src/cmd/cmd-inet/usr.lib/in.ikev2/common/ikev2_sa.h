@@ -207,6 +207,7 @@ struct ikev2_sa_s {
 
 struct ikev2_child_sa {
 	list_node_t		i2c_node;
+	ikev2_child_sa_t	*i2c_pair;
 	hrtime_t		i2c_birth;
 	ikev2_spi_proto_t	i2c_satype;
 	uint32_t		i2c_spi;
@@ -216,7 +217,6 @@ struct ikev2_child_sa {
 	ikev2_xf_encr_t		i2c_encr;
 	size_t			i2c_encr_key_len;
 	ikev2_xf_auth_t		i2c_auth;
-
 	/* XXX: More to come.  Traffic selectors perhaps? */
 };
 
@@ -281,6 +281,7 @@ const char *i2sa_msgtype_str(i2sa_msg_type_t);
 
 ikev2_child_sa_t *ikev2_child_sa_alloc(ikev2_sa_t *, ikev2_spi_proto_t,
     uint32_t, boolean_t);
+void ikev2_child_sa_free(ikev2_child_sa_t *);
 
 #ifdef  __cplusplus
 }
