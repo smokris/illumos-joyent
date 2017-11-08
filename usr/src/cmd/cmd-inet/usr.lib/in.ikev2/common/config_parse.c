@@ -199,6 +199,34 @@ static struct {
 	{ IKEV2_ENCR_AES_GCM_16, "aes-gcm" }
 };
 
+static struct {
+	ikev2_dh_t xfd_id;
+	const char *xfd_str;
+} xf_dh_tab[] = {
+	{ IKEV2_DH_MODP_768, "modp768" },
+	{ IKEV2_DH_MODP_1024, "modp1024" },
+	{ IKEV2_DH_EC2N_155, "ec2n155" },
+	{ IKEV2_DH_EC2N_185, "ec2n185" },
+	{ IKEV2_DH_MODP_1536, "modp1536" },
+	{ IKEV2_DH_MODP_2048, "modp2048" },
+	{ IKEV2_DH_MODP_3072, "modp3072" },
+	{ IKEV2_DH_MODP_4096, "modp4096" },
+	{ IKEV2_DH_MODP_6144, "modp6144" },
+	{ IKEV2_DH_MODP_8192, "modp8192" },
+	{ IKEV2_DH_ECP_256, "ecp256" },
+	{ IKEV2_DH_ECP_384, "ecp384" },
+	{ IKEV2_DH_ECP_521, "ecp521" },
+	{ IKEV2_DH_MODP_1024_160, "modp1024_160" },
+	{ IKEV2_DH_MODP_2048_224, "modp2048_224" },
+	{ IKEV2_DH_MODP_2048_256, "modp2048_256" },
+	{ IKEV2_DH_ECP_192, "ecp192" },
+	{ IKEV2_DH_ECP_224, "ecp224" },
+	{ IKEV2_DH_BRAINPOOL_P224R1, "brainpoolp224r1" },
+	{ IKEV2_DH_BRAINPOOL_P256R1, "brainpoolp256r1" },
+	{ IKEV2_DH_BRAINPOOL_P384R1, "brainpoolp384r1" },
+	{ IKEV2_DH_BRAINPOOL_P512R1, "brainpoolp512r1" },
+};
+
 /*
  * size_t would be a more appropriate type for t_{line,col}, but using
  * uint32_t makes it cleaner for logging with bunyan
@@ -254,7 +282,7 @@ static boolean_t parse_authalg(const char *restrict, ikev2_xf_auth_t *restrict);
 static boolean_t parse_encralg(const char *restrict, ikev2_xf_encr_t *restrict);
 static boolean_t parse_p1_id_type(const char *restrict,
     config_auth_id_t *restrict);
-static boolean_t parse_p2_pfs(const char *restrict, ikev2_dh_t *restrict);
+static boolean_t parse_dh(const char *restrict, ikev2_dh_t *restrict);
 static boolean_t parse_ip(const char *restrict, in_addr_t *restrict);
 static boolean_t parse_ip6(const char *restrict, in6_addr_t *restrict);
 static boolean_t parse_int(const char *restrict, uint64_t *restrict);
@@ -515,7 +543,7 @@ process_config(FILE *f, boolean_t check_only)
 			cfg->cfg_use_http = B_TRUE;
 			break;
 		case KW_P2_PFS:
-			if (!parse_p2_pfs(targ->t_str,
+			if (!parse_dh(targ->t_str,
 			    &cfg->cfg_default.rule_p2_dh)) {
 				tok_error(targ, "Invalid p2_pfs value",
 				    "value");
@@ -666,14 +694,12 @@ parse_xform(input_cursor_t *restrict ic, config_xf_t **restrict xfp)
 			}
 			break;
 		case KW_OAKLEY_GROUP:
-			if (!parse_int(targ->t_str, &val)) {
+			if (!parse_dh(targ->t_str, &xf->xf_dh)) {
 				tok_error(targ,
 				    "Unknown oakley (DH) group",
 				    "group");
 				goto fail;
 			}
-			/* XXX: Should have a way to validate the value */
-			xf->xf_dh = (ikev2_dh_t)val;
 			break;
 		case KW_AUTH_ALG:
 			if (!parse_authalg(targ->t_str, &xf->xf_auth)) {
@@ -920,7 +946,7 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 				goto fail;
 			break;
 		case KW_P2_PFS:
-			if (!parse_p2_pfs(targ->t_str, &rule->rule_p2_dh)) {
+			if (!parse_dh(targ->t_str, &rule->rule_p2_dh)) {
 				tok_invalid(targ, KW_P2_PFS);
 				goto fail;
 			}
@@ -1156,18 +1182,56 @@ truncated:
 }
 
 static boolean_t
-parse_p2_pfs(const char *restrict str, ikev2_dh_t *dhp)
+parse_dh(const char *restrict str, ikev2_dh_t *dhp)
 {
 	uint64_t val = 0;
+	boolean_t found = B_FALSE;
 
-	if (!parse_int(str, &val))
+	for (size_t i = 0; i < ARRAY_SIZE(xf_dh_tab); i++) {
+		if (strcmp(xf_dh_tab[i].xfd_str, str) == 0) {
+			val = xf_dh_tab[i].xfd_id;
+			found = B_TRUE;
+			break;
+		}
+	}
+
+	if (!found && !parse_int(str, &val))
 		return (B_FALSE);
 
-	/* XXX: validate value */
+	/*
+	 * NOTE: a default case is explicitly avoided so that the addition
+	 * of newer values in ikev2.h will cause a compilation error if they
+	 * are not added here.
+	 */
+	switch ((ikev2_dh_t)val) {
+	case IKEV2_DH_NONE:
+	case IKEV2_DH_MODP_768:
+	case IKEV2_DH_MODP_1024:
+	case IKEV2_DH_EC2N_155:
+	case IKEV2_DH_EC2N_185:
+	case IKEV2_DH_MODP_1536:
+	case IKEV2_DH_MODP_2048:
+	case IKEV2_DH_MODP_3072:
+	case IKEV2_DH_MODP_4096:
+	case IKEV2_DH_MODP_6144:
+	case IKEV2_DH_MODP_8192:
+	case IKEV2_DH_ECP_256:
+	case IKEV2_DH_ECP_384:
+	case IKEV2_DH_ECP_521:
+	case IKEV2_DH_MODP_1024_160:
+	case IKEV2_DH_MODP_2048_224:
+	case IKEV2_DH_MODP_2048_256:
+	case IKEV2_DH_ECP_192:
+	case IKEV2_DH_ECP_224:
+	case IKEV2_DH_BRAINPOOL_P224R1:
+	case IKEV2_DH_BRAINPOOL_P256R1:
+	case IKEV2_DH_BRAINPOOL_P384R1:
+	case IKEV2_DH_BRAINPOOL_P512R1:
+		*dhp = (ikev2_dh_t)val;
+		return (B_TRUE);
+	}
 
-	if (dhp != NULL)
-		*dhp = (int)val;
-	return (B_TRUE);
+	return (B_FALSE);
 }
 
 static boolean_t
