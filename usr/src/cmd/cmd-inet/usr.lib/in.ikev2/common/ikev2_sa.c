@@ -47,6 +47,7 @@
 #include <umem.h>
 #include "config.h"
 #include "defs.h"
+#include "ike.h"
 #include "ikev2_cookie.h"
 #include "ikev2_pkt.h"
 #include "ikev2_proto.h"
@@ -514,6 +515,29 @@ ikev2_sa_post_event(ikev2_sa_t *i2sa, i2sa_evt_t event)
 	mutex_exit(&i2sa->i2sa_queue_lock);
 
 	I2SA_REFRELE(i2sa);
+}
+
+/*
+ * Get the existing response for this packet if we have it, otherwise
+ * return NULL
+ */
+pkt_t *
+ikev2_sa_get_response(ikev2_sa_t *restrict i2sa, const pkt_t *req)
+{
+	VERIFY(MUTEX_HELD(&i2sa->i2sa_lock));
+	VERIFY(!I2P_RESPONSE(req));
+
+	const ike_header_t *req_hdr = pkt_header(req);
+	ike_header_t *resp_hdr = NULL;
+
+	if (i2sa->last_resp_sent == NULL)
+		return (NULL);
+
+	resp_hdr = pkt_header(i2sa->last_resp_sent);
+	if (resp_hdr->msgid == req_hdr->msgid)
+		return (i2sa->last_resp_sent);
+
+	return (NULL);
 }
 
 /*

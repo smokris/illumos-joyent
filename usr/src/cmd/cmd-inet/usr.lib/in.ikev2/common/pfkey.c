@@ -598,9 +598,6 @@ pfkey_add_address(sadb_ext_t *restrict ext, uint16_t type,
 	addr->sadb_address_len = SADB_8TO64(len);
 	addr->sadb_address_exttype = type;
 
-	addr->sadb_address_len = SADB_8TO64(sizeof (*addr) +
-	    sizeof (struct sockaddr_storage));
-
 	return ((sadb_ext_t *)((uint8_t *)ext + len));
 }
 

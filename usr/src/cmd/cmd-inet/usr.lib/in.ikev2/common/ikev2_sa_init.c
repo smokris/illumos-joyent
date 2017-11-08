@@ -72,6 +72,8 @@ ikev2_sa_init_init(ikev2_sa_t *restrict i2sa, parsedmsg_t *restrict pmsg,
 	VERIFY(i2sa->flags & I2SA_INITIATOR);
 	VERIFY((pmsg != NULL && arg == NULL) || (pmsg == NULL && arg != NULL));
 
+	pkt = ikev2_pkt_new_exchange(i2sa, IKEV2_EXCH_IKE_SA_INIT);
+
 	if (sa_args == NULL) {
 		sa_args = umem_zalloc(sizeof (*sa_args), UMEM_DEFAULT);
 		if (sa_args == NULL) {

@@ -634,10 +634,7 @@ add_id(pkt_t *pkt, config_id_t *id, boolean_t initiator)
 		cid_type = id->cid_type;
 	}
 
-	/*
-	 * The same as !(initiator ^ (sa->flags & I2SA_INITIATOR)) but hopefully
-	 * clearer -- if we're adding our own ID, save it to IKEv2 SA.
-	 */
+	/* If we're adding our own (local) id, save it to the IKEv2 SA */
 	if ((initiator && (sa->flags & I2SA_INITIATOR)) ||
 	    (!initiator && !(sa->flags & I2SA_INITIATOR))) {
 		sa->local_id = config_id_new(cid_type, ptr, idlen);

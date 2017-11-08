@@ -128,6 +128,16 @@ ikev2_inbound(pkt_t *pkt, const struct sockaddr_storage *restrict src_addr,
 		mutex_enter(&i2sa->i2sa_queue_lock);
 	}
 
+	/* These never change once set */
+	if (i2sa->local_id != NULL) {
+		key_add_id(LOG_KEY_LOCAL_ID, LOG_KEY_LOCAL_ID_TYPE,
+		    i2sa->local_id);
+	}
+	if (i2sa->remote_id != NULL) {
+		key_add_id(LOG_KEY_REMOTE_ID, LOG_KEY_REMOTE_ID_TYPE,
+		    i2sa->remote_id);
+	}
+
 	VERIFY(MUTEX_HELD(&i2sa->i2sa_queue_lock));
 	/*
 	 * ikev2_sa_get and ikev2_try_new_sa both return refheld ikev2_sa_t's
@@ -477,7 +487,7 @@ ikev2_send_req(pkt_t *restrict req, ikev2_send_cb_t cb, void *restrict arg)
 
 	i2sa->last_sent = req;
 	i2req->i2r_pkt = req;
-	i2req->i2r_msgid = ntohll(pkt_header(req)->msgid);
+	i2req->i2r_msgid = ntohl(pkt_header(req)->msgid);
 	i2req->i2r_cb = cb;
 	i2req->i2r_arg = arg;
 
@@ -617,6 +627,7 @@ static boolean_t
 ikev2_handle_retransmit(pkt_t *req)
 {
 	ikev2_sa_t *i2sa = req->pkt_sa;
+	pkt_t *resp = NULL;
 	uint32_t msgid = ntohl(pkt_header(req)->msgid);
 
 	VERIFY(!MUTEX_HELD(&i2sa->i2sa_queue_lock));
@@ -625,16 +636,16 @@ ikev2_handle_retransmit(pkt_t *req)
 	if (I2P_RESPONSE(req))
 		return (B_FALSE);
 
-	if (i2sa->inmsgid == msgid) {
+	if ((resp = ikev2_sa_get_response(i2sa, req)) != NULL) {
 		(void) bunyan_debug(log, "Resending last response",
 		    BUNYAN_T_END);
-		ikev2_send_common(i2sa->last_resp_sent);
+		ikev2_send_common(resp);
 		ikev2_pkt_free(req);
 		return (B_TRUE);
 	}
 
 	/* New request, no longer need previous response for retransmitting */
-	if (i2sa->inmsgid + 1 == msgid) {
+	if (i2sa->inmsgid == msgid) {
 		if (i2sa->last_resp_sent != i2sa->init_r)
 			ikev2_pkt_free(i2sa->last_resp_sent);
 		i2sa->last_resp_sent = NULL;
@@ -678,8 +689,18 @@ ikev2_handle_response(pkt_t *resp)
 		 * XXX: Send INVALID_MESSAGE_ID notification in certain
 		 * circumstances.  For now, drop.
 		 */
-		ikev2_pkt_free(resp);
-		return (B_TRUE);
+		goto discard;
+	}
+
+	if (pkt_get_payload(resp, IKEV2_PAYLOAD_SK, NULL) != NULL) {
+		if (!ikev2_pkt_signverify(resp, B_FALSE))
+			goto discard;
+		/*
+		 * This also indexes and verifies the sizes of the decrypted
+		 * payloads.
+		 */
+		if (!ikev2_pkt_encryptdecrypt(resp, B_FALSE))
+			goto discard;
 	}
 
 	(void) ikev2_sa_disarm_timer(i2sa, I2SA_EVT_PKT_XMIT);
@@ -691,10 +712,14 @@ ikev2_handle_response(pkt_t *resp)
 	 * The IKE_SA_INIT packets need to be retained for the IKE_AUTH
 	 * exchange.
 	 */
-	if (last != i2sa->init_r)
+	if (last != i2sa->init_i)
 		ikev2_pkt_free(last);
 
 	cb(i2sa, resp, i2req->i2r_arg);
+	return (B_TRUE);
+
+discard:
+	ikev2_pkt_free(resp);
 	return (B_TRUE);
 }
 
