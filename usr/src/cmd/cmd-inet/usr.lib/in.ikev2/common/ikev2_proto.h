@@ -54,9 +54,13 @@ void ikev2_ike_auth_resp(struct pkt_s *);
 
 void ikev2_create_child_sa_init(struct ikev2_sa_s *restrict,
     struct parsedmsg_s *restrict);
-void ikev2_create_child_sa_init_auth(struct ikev2_sa_s *restrict,
+void *ikev2_create_child_sa_init_auth(struct ikev2_sa_s *restrict,
     struct pkt_s *restrict, struct parsedmsg_s *restrict);
-void ikev2_create_child_sa_resp(struct pkt_s *restrict, struct pkt_s *restrict);
+void ikev2_create_child_sa_resp(struct pkt_s *restrict);
+void ikev2_create_child_sa_resp_auth(struct pkt_s *restrict,
+    struct pkt_s *restrict);
+void ikev2_create_child_sa_init_resp(struct ikev2_sa_s *restrict,
+    struct pkt_s *restrict, void *restrict);
 
 #ifdef __cplusplus
 }

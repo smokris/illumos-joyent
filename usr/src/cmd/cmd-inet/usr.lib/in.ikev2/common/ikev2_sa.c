@@ -527,14 +527,12 @@ ikev2_sa_get_response(ikev2_sa_t *restrict i2sa, const pkt_t *req)
 	VERIFY(MUTEX_HELD(&i2sa->i2sa_lock));
 	VERIFY(!I2P_RESPONSE(req));
 
-	const ike_header_t *req_hdr = pkt_header(req);
-	ike_header_t *resp_hdr = NULL;
+	uint32_t req_id = pkt_header(req)->msgid;
 
 	if (i2sa->last_resp_sent == NULL)
 		return (NULL);
 
-	resp_hdr = pkt_header(i2sa->last_resp_sent);
-	if (resp_hdr->msgid == req_hdr->msgid)
+	if (pkt_header(i2sa->last_resp_sent)->msgid == req_id)
 		return (i2sa->last_resp_sent);
 
 	return (NULL);
@@ -1147,8 +1145,9 @@ ikev2_sa_queuemsg(ikev2_sa_t *sa, i2sa_msg_type_t type, void *data)
 	return (B_TRUE);
 }
 
-ikev2_child_sa_t *ikev2_child_sa_alloc(ikev2_sa_t *i2sa,
-    ikev2_spi_proto_t proto, uint32_t spi, boolean_t inbound)
+ikev2_child_sa_t *
+ikev2_child_sa_alloc(ikev2_sa_t *i2sa, ikev2_spi_proto_t proto, uint32_t spi,
+    boolean_t inbound)
 {
 	ikev2_child_sa_t *csa = NULL;
 

@@ -1014,7 +1014,8 @@ pfkey_inverse_acquire(sockaddr_u_t src, sockaddr_u_t dest,
 }
 
 boolean_t
-pfkey_delete(uint32_t spi, sockaddr_u_t src, sockaddr_u_t dst, boolean_t pair)
+pfkey_delete(uint8_t satype, uint32_t spi, sockaddr_u_t src, sockaddr_u_t dst,
+    boolean_t pair)
 {
 	uint64_t buf[128] = { 0 };
 	sadb_msg_t *msg = (sadb_msg_t *)buf;
@@ -1022,8 +1023,7 @@ pfkey_delete(uint32_t spi, sockaddr_u_t src, sockaddr_u_t dst, boolean_t pair)
 	parsedmsg_t *pmsg = NULL;
 	boolean_t ret = B_FALSE;
 
-	pfkey_msg_init(NULL, msg, pair ? SADB_X_DELPAIR : SADB_DELETE,
-	    SADB_SATYPE_UNSPEC);
+	pfkey_msg_init(NULL, msg, pair ? SADB_X_DELPAIR : SADB_DELETE, satype);
 
 	ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_SRC, src);
 	ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_DST, dst);

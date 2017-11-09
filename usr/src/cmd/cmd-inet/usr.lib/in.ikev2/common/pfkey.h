@@ -38,7 +38,8 @@ boolean_t pfkey_sadb_add_update(const struct ikev2_sa_s *restrict, uint32_t,
     const struct ikev2_sa_result_s *restrict,
     const struct parsedmsg_s *, const uint8_t *,
     size_t, const uint8_t *, size_t, uint32_t, boolean_t, boolean_t);
-boolean_t pfkey_delete(uint32_t, sockaddr_u_t, sockaddr_u_t, boolean_t);
+boolean_t pfkey_delete(uint8_t, uint32_t, sockaddr_u_t, sockaddr_u_t,
+    boolean_t);
 
 ikev2_spi_proto_t satype_to_ikev2(uint8_t);
 void sadb_log(bunyan_level_t, const char *restrict, sadb_msg_t *restrict);

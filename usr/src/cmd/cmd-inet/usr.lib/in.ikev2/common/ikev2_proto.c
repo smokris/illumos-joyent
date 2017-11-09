@@ -636,32 +636,11 @@ ikev2_handle_retransmit(pkt_t *req)
 	if (I2P_RESPONSE(req))
 		return (B_FALSE);
 
-	if ((resp = ikev2_sa_get_response(i2sa, req)) != NULL) {
-		(void) bunyan_debug(log, "Resending last response",
-		    BUNYAN_T_END);
-		ikev2_send_common(resp);
-		ikev2_pkt_free(req);
-		return (B_TRUE);
-	}
-
-	/* New request, no longer need previous response for retransmitting */
-	if (i2sa->inmsgid == msgid) {
-		if (i2sa->last_resp_sent != i2sa->init_r)
-			ikev2_pkt_free(i2sa->last_resp_sent);
-		i2sa->last_resp_sent = NULL;
-		i2sa->inmsgid++;
+	if ((resp = ikev2_sa_get_response(i2sa, req)) == NULL)
 		return (B_FALSE);
-	}
 
-	/* Otherwise received something with an out of sequence ID */
-	(void) bunyan_info(log, "IKEv2 packet message ID out of sequence",
-	    BUNYAN_T_END);
-
-	/* TODO: Send INVALID_MESSAGE_ID in a new informational exchange if
-	 * authentiated (RFC7296 2.3) w/ rate limiting.
-	 *
-	 * For now, discard.
-	 */
+	(void) bunyan_debug(log, "Resending last response", BUNYAN_T_END);
+	ikev2_send_common(resp);
 	ikev2_pkt_free(req);
 	return (B_TRUE);
 }
@@ -899,9 +878,11 @@ ikev2_dispatch(ikev2_sa_t *sa)
 static void
 ikev2_dispatch_pkt(pkt_t *pkt)
 {
-	ikev2_sa_t *sa = pkt->pkt_sa;
-	VERIFY(!MUTEX_HELD(&sa->i2sa_queue_lock));
-	VERIFY(MUTEX_HELD(&sa->i2sa_lock));
+	ikev2_sa_t *i2sa = pkt->pkt_sa;
+	uint32_t msgid = ntohl(pkt_header(pkt)->msgid);
+
+	VERIFY(!MUTEX_HELD(&i2sa->i2sa_queue_lock));
+	VERIFY(MUTEX_HELD(&i2sa->i2sa_lock));
 
 	if (ikev2_handle_retransmit(pkt))
 		return;
@@ -909,9 +890,22 @@ ikev2_dispatch_pkt(pkt_t *pkt)
 	if (ikev2_handle_response(pkt))
 		return;
 
-	if (sa->flags & I2SA_CONDEMNED) {
+	if (i2sa->flags & I2SA_CONDEMNED) {
 		ikev2_pkt_free(pkt);
 		return;
+	}
+
+	if (i2sa->inmsgid != msgid) {
+		(void) bunyan_info(log,
+		    "IKEv2 packet message ID out of sequence", BUNYAN_T_END);
+
+		/*
+		 * TODO: Send INVALID_MESSAGE_ID in a new informational
+		 * exchange if authentiated (RFC7296 2.3) w/ rate limiting.
+		 *
+		 * For now, discard.
+		 */
+		goto discard;
 	}
 
 	switch (pkt_header(pkt)->exch_type) {
@@ -936,6 +930,12 @@ ikev2_dispatch_pkt(pkt_t *pkt)
 		goto discard;
 	}
 
+	/* New request, no longer need previous response for retransmitting */
+	if (i2sa->last_resp_sent != i2sa->init_r)
+		ikev2_pkt_free(i2sa->last_resp_sent);
+	i2sa->last_resp_sent = NULL;
+	i2sa->inmsgid++;
+
 	switch (pkt_header(pkt)->exch_type) {
 	case IKEV2_EXCH_IKE_SA_INIT:
 		ikev2_sa_init_resp(pkt);
@@ -944,7 +944,7 @@ ikev2_dispatch_pkt(pkt_t *pkt)
 		ikev2_ike_auth_resp(pkt);
 		break;
 	case IKEV2_EXCH_CREATE_CHILD_SA:
-		ikev2_create_child_sa_resp(pkt, NULL);
+		ikev2_create_child_sa_resp(pkt);
 		break;
 	case IKEV2_EXCH_INFORMATIONAL:
 	case IKEV2_EXCH_IKE_SESSION_RESUME:

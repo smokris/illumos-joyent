@@ -38,24 +38,31 @@ struct child_sa_args {
 	uint32_t		csa_remote_spi;
 	ikev2_dh_t		csa_dh;
 	ikev2_sa_result_t	csa_results;
+	struct sockaddr_storage	csa_nat_local;
+	struct sockaddr_storage csa_nat_remote;
 	boolean_t		csa_is_auth;
+	boolean_t		csa_transport_mode;
 };
 
-static void ikev2_create_child_sa_init_common(ikev2_sa_t *restrict,
+static boolean_t ikev2_create_child_sa_init_common(ikev2_sa_t *restrict,
     pkt_t *restrict req, struct child_sa_args *restrict);
-static void ikev2_create_child_sa_init_resp(ikev2_sa_t *restrict,
-    pkt_t *restrict, void *restrict);
+static void save_p1_nonces(ikev2_sa_t *restrict,
+    struct child_sa_args *restrict);
 static boolean_t create_keymat(ikev2_sa_t *restrict, uint8_t *restrict, size_t,
     uint8_t *restrict, size_t, prfp_t *restrict);
 static uint8_t get_satype(parsedmsg_t *);
+static boolean_t ikev2_create_child_sas(ikev2_sa_t *restrict,
+    struct child_sa_args *restrict, boolean_t);
+static boolean_t add_ts_init(pkt_t *restrict, parsedmsg_t *restrict);
+static boolean_t resp_inv_acquire(pkt_t *restrict,
+    struct child_sa_args *restrict);
+static void check_natt_addrs(pkt_t *restrict, boolean_t);
 
-void
+void *
 ikev2_create_child_sa_init_auth(ikev2_sa_t *restrict sa, pkt_t *restrict req,
     parsedmsg_t *pmsg)
 {
 	struct child_sa_args *csa = NULL;
-	pkt_payload_t *ni = NULL;
-	pkt_payload_t *nr = NULL;
 
 	VERIFY(IS_WORKER);
 	VERIFY(!MUTEX_HELD(&sa->i2sa_queue_lock));
@@ -69,24 +76,22 @@ ikev2_create_child_sa_init_auth(ikev2_sa_t *restrict sa, pkt_t *restrict req,
 		    BUNYAN_T_END);
 		pfkey_send_error(pmsg->pmsg_samsg, ENOMEM);
 		parsedmsg_free(pmsg);
-		return;
+		return (NULL);
 	}
 
-	ni = pkt_get_payload(sa->init_i, IKEV2_PAYLOAD_NONCE, NULL);
-	nr = pkt_get_payload(sa->init_r, IKEV2_PAYLOAD_NONCE, NULL);
 	csa->csa_is_auth = B_TRUE;
 	csa->csa_pmsg = pmsg;
+	csa->csa_srcmsg = PMSG_FROM_KERNEL(pmsg) ? pmsg->pmsg_samsg : NULL;
 
-	/* Use this msg for the seq value in SADB_{GETSPI,ADD,UPDATE} */
-	if (PMSG_FROM_KERNEL(csa->csa_pmsg))
-		csa->csa_srcmsg = pmsg->pmsg_samsg;
+	save_p1_nonces(sa, csa);
 
-	(void) memcpy(csa->csa_nonce_i, ni->pp_ptr, ni->pp_len);
-	csa->csa_nonce_i_len = ni->pp_len;
-	(void) memcpy(csa->csa_nonce_r, nr->pp_ptr, nr->pp_len);
-	csa->csa_nonce_r_len = nr->pp_len;
+	if (!ikev2_create_child_sa_init_common(sa, req, csa)) {
+		explicit_bzero(csa, sizeof (*csa));
+		umem_free(csa, sizeof (*csa));
+		return (NULL);
+	}
 
-	ikev2_create_child_sa_init_common(sa, req, csa);
+	return (csa);
 }
 
 void
@@ -99,6 +104,15 @@ ikev2_create_child_sa_init(ikev2_sa_t *restrict sa, parsedmsg_t *restrict pmsg)
 	VERIFY(!MUTEX_HELD(&sa->i2sa_queue_lock));
 	VERIFY(MUTEX_HELD(&sa->i2sa_lock));
 
+	/*
+	 * This entry point into CREATE_CHILD_SA should only be for kernel
+	 * originated ACQUIRES.
+	 */
+	VERIFY(PMSG_FROM_KERNEL(pmsg));
+
+	(void) bunyan_debug(log, "Starting CREATE_CHILD_SA exchange",
+	    BUNYAN_T_END);
+
 	csa = umem_zalloc(sizeof (*csa), UMEM_DEFAULT);
 	if (csa == NULL) {
 		(void) bunyan_error(log,
@@ -108,8 +122,7 @@ ikev2_create_child_sa_init(ikev2_sa_t *restrict sa, parsedmsg_t *restrict pmsg)
 	}
 
 	csa->csa_pmsg = pmsg;
-	if (pmsg->pmsg_samsg->sadb_msg_pid != getpid())
-		csa->csa_srcmsg = pmsg->pmsg_samsg;
+	csa->csa_srcmsg = pmsg->pmsg_samsg;
 	csa->csa_dh = sa->i2sa_rule->rule_p2_dh;
 
 	req = ikev2_pkt_new_exchange(sa, IKEV2_EXCH_CREATE_CHILD_SA);
@@ -118,7 +131,11 @@ ikev2_create_child_sa_init(ikev2_sa_t *restrict sa, parsedmsg_t *restrict pmsg)
 
 	/* This is the first payload, there should always be space for it */
 	VERIFY(ikev2_add_sk(req));
-	ikev2_create_child_sa_init_common(sa, req, csa);
+
+	if (!ikev2_create_child_sa_init_common(sa, req, csa))
+		goto fail;
+	if (!ikev2_send_req(req, ikev2_create_child_sa_init_resp, csa))
+		goto fail;
 	return;
 
 fail:
@@ -131,7 +148,7 @@ fail:
 }
 
 /* We are the initiator */
-static void
+static boolean_t
 ikev2_create_child_sa_init_common(ikev2_sa_t *restrict sa, pkt_t *restrict req,
     struct child_sa_args *restrict csa)
 {
@@ -144,7 +161,7 @@ ikev2_create_child_sa_init_common(ikev2_sa_t *restrict sa, pkt_t *restrict req,
 	boolean_t transport_mode = B_FALSE;
 
 	if (pmsg->pmsg_isau.sau_ss == NULL)
-		transport_mode = B_TRUE;
+		csa->csa_transport_mode = transport_mode = B_TRUE;
 
 	satype = get_satype(pmsg);
 	if (!pfkey_getspi(csa->csa_srcmsg, src, dest, satype,
@@ -181,112 +198,103 @@ ikev2_create_child_sa_init_common(ikev2_sa_t *restrict sa, pkt_t *restrict req,
 		csa->csa_nonce_i_len = nonce->pp_len;
 	}
 
-	/* TSi / TSr */
-
-	if (!ikev2_send_req(req, ikev2_create_child_sa_init_resp, csa))
+	if (!add_ts_init(req, pmsg))
 		goto fail;
 
+	return (B_TRUE);
+
 fail:
-	(void) pfkey_delete(csa->csa_local_spi, src, dest, B_FALSE);
-	explicit_bzero(csa, sizeof (*csa));
-	umem_free(csa, sizeof (*csa));
-	ikev2_pkt_free(req);
+	(void) pfkey_delete(satype, csa->csa_local_spi, src, dest, B_FALSE);
+	return (B_FALSE);
+}
+
+static void ikev2_create_child_sa_resp_common(pkt_t *restrict, pkt_t *restrict,
+    struct child_sa_args *restrict);
+
+void
+ikev2_create_child_sa_resp_auth(pkt_t *restrict req, pkt_t *restrict resp)
+{
+	struct child_sa_args csa = { .csa_is_auth = B_TRUE };
+
+	VERIFY3U(pkt_header(resp)->exch_type, ==, IKEV2_EXCH_IKE_AUTH);
+
+	save_p1_nonces(req->pkt_sa, &csa);
+	ikev2_create_child_sa_resp_common(req, resp, &csa);
+}
+
+void
+ikev2_create_child_sa_resp(pkt_t *restrict req)
+{
+	struct child_sa_args csa = { 0 };
+	pkt_t *resp = ikev2_pkt_new_response(req);
+
+	if (resp == NULL) {
+		ikev2_pkt_free(req);
+		return;
+	}
+
+	/* It's the first payload, it should fit */
+	VERIFY(ikev2_add_sk(resp));
+	csa.csa_dh = req->pkt_sa->i2sa_rule->rule_p2_dh;
+	ikev2_create_child_sa_resp_common(req, resp, &csa);
 }
 
 /*
  * We are the responder.
  */
-void
-ikev2_create_child_sa_resp(pkt_t *restrict req, pkt_t *restrict resp)
+static void
+ikev2_create_child_sa_resp_common(pkt_t *restrict req, pkt_t *restrict resp,
+    struct child_sa_args *restrict csa)
 {
 	ikev2_sa_t *sa = req->pkt_sa;
 	parsedmsg_t *pmsg = NULL;
-	pkt_payload_t *ts_i = NULL;
-	pkt_payload_t *ts_r = NULL;
-	struct child_sa_args csa = { 0 };
-	sockaddr_u_t src = { 0 };
-	sockaddr_u_t dest = { 0 };
-	sockaddr_u_t isrc = { 0 };
-	sockaddr_u_t idest = { 0 };
-	boolean_t transport_mode = B_FALSE;
 
-	if (resp != NULL) {
-		pkt_payload_t *ni = NULL;
-		pkt_payload_t *nr = NULL;
+	if (pkt_get_notify(req, IKEV2_N_USE_TRANSPORT_MODE, NULL) != NULL)
+		csa->csa_transport_mode = B_TRUE;
 
-		VERIFY3U(pkt_header(resp)->exch_type, ==, IKEV2_EXCH_IKE_AUTH);
+	if (!resp_inv_acquire(req, csa))
+		goto fail;
+	pmsg = csa->csa_pmsg;
 
-		ni = pkt_get_payload(sa->init_i, IKEV2_PAYLOAD_NONCE, NULL);
-		nr = pkt_get_payload(sa->init_r, IKEV2_PAYLOAD_NONCE, NULL);
-
-		(void) memcpy(csa.csa_nonce_i, ni->pp_ptr, ni->pp_len);
-		csa.csa_nonce_i_len = ni->pp_len;
-		(void) memcpy(csa.csa_nonce_r, nr->pp_ptr, nr->pp_len);
-		csa.csa_nonce_r_len = nr->pp_len;
-		csa.csa_is_auth = B_TRUE;
-	} else {
-		resp = ikev2_pkt_new_response(req);
-		if (resp == NULL)
-			goto fail;
-		if (!ikev2_add_sk(resp))
-			goto fail;
-
-		csa.csa_dh = sa->i2sa_rule->rule_p2_dh;
-	}
-
-	ts_i = pkt_get_payload(req, IKEV2_PAYLOAD_TSi, NULL);
-	ts_r = pkt_get_payload(req, IKEV2_PAYLOAD_TSr, NULL);
-
-	/* We are the responder, so source is the initiator, dest is us */
-	src.sau_ss = &sa->raddr;
-	dest.sau_ss = &sa->laddr;
-
-	if (pkt_get_notify(req, IKEV2_N_USE_TRANSPORT_MODE, NULL) != NULL) {
-		transport_mode = B_TRUE;
-	} else {
-		/* XXX: Extract inner src/dest from TS payloads */
-	}
-
-	if (!pfkey_inverse_acquire(src, dest, isrc, idest, &pmsg))
+	if (!pfkey_getspi(NULL, pmsg->pmsg_sau, pmsg->pmsg_dau,
+	    get_satype(pmsg), &csa->csa_local_spi))
 		goto fail;
 
-	if (!pfkey_getspi(NULL, src, dest, get_satype(pmsg),
-	    &csa.csa_local_spi))
-		goto fail;
-
-	if (!ikev2_sa_match_acquire(pmsg, csa.csa_dh, req, &csa.csa_results)) {
-		if (!ikev2_no_proposal_chosen(resp, csa.csa_results.sar_proto))
+	if (!ikev2_sa_match_acquire(pmsg, csa->csa_dh, req,
+	    &csa->csa_results)) {
+		if (!ikev2_no_proposal_chosen(resp, csa->csa_results.sar_proto))
 			goto fail;
 		goto done;
 	}
-	csa.csa_remote_spi = csa.csa_results.sar_spi;
+	csa->csa_remote_spi = csa->csa_results.sar_spi;
 
-	if (!csa.csa_is_auth && ikev2_get_dhgrp(req) !=
-	    csa.csa_results.sar_dh) {
-		if (!ikev2_invalid_ke(resp, csa.csa_results.sar_proto, 0,
-		    csa.csa_results.sar_dh))
+	if (!csa->csa_is_auth && ikev2_get_dhgrp(req) !=
+	    csa->csa_results.sar_dh) {
+		if (!ikev2_invalid_ke(resp, csa->csa_results.sar_proto, 0,
+		    csa->csa_results.sar_dh))
 			goto fail;
 		goto done;
 	}
 
-	if (transport_mode && !ikev2_add_notify(resp, csa.csa_results.sar_proto,
-	    csa.csa_local_spi, IKEV2_N_USE_TRANSPORT_MODE, NULL, 0))
+	if (csa->csa_transport_mode &&
+	    !ikev2_add_notify(resp, csa->csa_results.sar_proto,
+	    csa->csa_local_spi, IKEV2_N_USE_TRANSPORT_MODE, NULL, 0))
 		goto fail;
 
 	/* We currently don't support TFC PADDING */
-	if (!ikev2_add_notify(resp, csa.csa_results.sar_proto,
-	    csa.csa_local_spi, IKEV2_N_ESP_TFC_PADDING_NOT_SUPPORTED, NULL, 0))
+	if (!ikev2_add_notify(resp, csa->csa_results.sar_proto,
+	    csa->csa_local_spi, IKEV2_N_ESP_TFC_PADDING_NOT_SUPPORTED, NULL, 0))
 		goto fail;
 
 	/* and we always include non-first fragments */
-	if (!ikev2_add_notify(resp, csa.csa_results.sar_proto,
-	    csa.csa_local_spi, IKEV2_N_NON_FIRST_FRAGMENTS_ALSO, NULL, 0))
+	if (!ikev2_add_notify(resp, csa->csa_results.sar_proto,
+	    csa->csa_local_spi, IKEV2_N_NON_FIRST_FRAGMENTS_ALSO, NULL, 0))
 		goto fail;
 
-	if (!ikev2_sa_add_result(resp, &csa.csa_results, csa.csa_local_spi))
+	if (!ikev2_sa_add_result(resp, &csa->csa_results, csa->csa_local_spi))
 		goto fail;
 
-	if (!csa.csa_is_auth) {
+	if (!csa->csa_is_auth) {
 		pkt_payload_t *ni = NULL, *nr = NULL;
 		size_t noncelen = ikev2_prf_outlen(sa->prf) / 2;
 
@@ -296,13 +304,13 @@ ikev2_create_child_sa_resp(pkt_t *restrict req, pkt_t *restrict resp)
 		ni = pkt_get_payload(req, IKEV2_PAYLOAD_NONCE, NULL);
 		nr = pkt_get_payload(resp, IKEV2_PAYLOAD_NONCE, NULL);
 
-		(void) memcpy(csa.csa_nonce_i, ni->pp_ptr, ni->pp_len);
-		csa.csa_nonce_i_len = ni->pp_len;
-		(void) memcpy(csa.csa_nonce_r, nr->pp_ptr, nr->pp_len);
-		csa.csa_nonce_r_len = nr->pp_len;
+		bcopy(ni->pp_ptr, csa->csa_nonce_i, ni->pp_len);
+		bcopy(nr->pp_ptr, csa->csa_nonce_r, nr->pp_len);
+		csa->csa_nonce_i_len = ni->pp_len;
+		csa->csa_nonce_r_len = nr->pp_len;
 	}
 
-	if (!csa.csa_is_auth && csa.csa_results.sar_dh != IKEV2_DH_NONE) {
+	if (!csa->csa_is_auth && csa->csa_results.sar_dh != IKEV2_DH_NONE) {
 		pkt_payload_t *ke_i = NULL;
 		uint8_t *ke = NULL;
 		size_t kelen = 0;
@@ -326,12 +334,12 @@ ikev2_create_child_sa_resp(pkt_t *restrict req, pkt_t *restrict resp)
 		ke = ke_i->pp_ptr + sizeof (ikev2_ke_t);
 		kelen = ke_i->pp_len - sizeof (ikev2_ke_t);
 
-		if (!dh_genpair(csa.csa_results.sar_dh, &sa->dh_pubkey,
+		if (!dh_genpair(csa->csa_results.sar_dh, &sa->dh_pubkey,
 		    &sa->dh_privkey))
 			goto fail;
 		if (!dh_derivekey(sa->dh_privkey, ke, kelen, &sa->dh_key))
 			goto fail;
-		if (!ikev2_add_ke(resp, csa.csa_results.sar_dh, sa->dh_pubkey))
+		if (!ikev2_add_ke(resp, csa->csa_results.sar_dh, sa->dh_pubkey))
 			goto fail;
 	}
 
@@ -358,8 +366,14 @@ fail:
 	ikev2_pkt_free(resp);
 }
 
-/* We are initiator, this is the response from the peer */
-static void
+/*
+ * We are initiator, this is the response from the peer.
+ *
+ * NOTE: Unlike the analogous functions in other exchanges, this one is
+ * not static since in the case of an IKE_AUTH exchange, we chain this
+ * function after doing the IKE_AUTH specific handling.
+ */
+void
 ikev2_create_child_sa_init_resp(ikev2_sa_t *restrict i2sa,
     pkt_t *restrict resp, void *restrict arg)
 {
@@ -425,8 +439,10 @@ ikev2_create_child_sa_init_resp(ikev2_sa_t *restrict i2sa,
 			goto fail;
 	}
 
-	/* TODO: Create child SA */
+	if (!ikev2_create_child_sas(i2sa, csa, B_TRUE))
+		goto fail;
 
+	ikev2_pkt_free(resp);
 	return;
 
 fail:
@@ -450,6 +466,293 @@ remote_fail:
 	ikev2_pkt_free(resp);
 }
 
+/*
+ * This takes a pf_key(7P) sadb_address extension and converts it into
+ * an IKEv2 traffic selector that is added to the TS{i,r} payload being
+ * constructed using tstate.
+ *
+ * An sadb_address consists of an IPv4 or IPv6 address and port, a protocol
+ * (TCP, UDP, etc.), and a prefix length. There currently is no way to express
+ * a range of ports -- either a specific port is given or 0 for any.  To
+ * translate to an IKEv2 traffic selector, we merely use the prefix length to
+ * map the address into a subnet range, and then either use the single port
+ * or 0-UINT16_MAX for the port range (if 0 was given for the port).
+ */
+static boolean_t
+add_sadb_address(ikev2_pkt_ts_state_t *restrict tstate,
+    const sadb_address_t *restrict addr)
+{
+	struct sockaddr_storage ss_start = { 0 };
+	struct sockaddr_storage ss_end = { 0 };
+	sockaddr_u_t start = { .sau_ss = &ss_end };
+	sockaddr_u_t end = { .sau_ss = &ss_end };
+	uint8_t proto = addr->sadb_address_proto;
+
+	net_to_range((struct sockaddr_storage *)(addr + 1),
+	    addr->sadb_address_prefixlen, &ss_start, &ss_end);
+
+	/*
+	 * Take advantage of sin_port and sin6_port residing at the same
+	 * offset, and that htons(UINT16_MAX) == UINT16_MAX for both
+	 * big and little endian machines.
+	 */
+	if (start.sau_sin->sin_port == 0)
+		end.sau_sin->sin_port = UINT16_MAX;
+
+	return (ikev2_add_ts(tstate, proto, start.sau_ss, end.sau_ss));
+}
+
+static boolean_t
+add_ts_init(pkt_t *restrict req, parsedmsg_t *restrict pmsg)
+{
+	ikev2_pkt_ts_state_t tstate = { 0 };
+	sadb_address_t *addr = NULL;
+
+	if (!ikev2_add_ts_i(req, &tstate))
+		return (B_FALSE);
+
+#ifdef notyet
+	addr = (sadb_address_t *)pmsg->pmsg_exts[SADB_X_EXT_ADDRESS_OPS];
+	if (addr != NULL && !add_sadb_address(&tstate, addr))
+		return (B_FALSE);
+#endif
+
+	addr = (sadb_address_t *)pmsg->pmsg_exts[SADB_X_EXT_ADDRESS_INNER_SRC];
+	if (addr == NULL)
+		addr = (sadb_address_t *)pmsg->pmsg_exts[SADB_EXT_ADDRESS_SRC];
+
+	if (!add_sadb_address(&tstate, addr))
+		return (B_FALSE);
+
+
+	(void) memset(&tstate, 0, sizeof (tstate));
+	if (!ikev2_add_ts_r(req, &tstate))
+		return (B_FALSE);
+
+#ifdef notyet
+	addr = (sadb_address_t *)pmsg->pmsg_exts[SADB_X_EXT_ADDRESS_OPD];
+	if (addr != NULL && !add_sadb_address(&tstate, addr))
+		return (B_FALSE);
+#endif
+
+	addr = (sadb_address_t *)pmsg->pmsg_exts[SADB_X_EXT_ADDRESS_INNER_DST];
+	if (addr == NULL)
+		addr = (sadb_address_t *)pmsg->pmsg_exts[SADB_EXT_ADDRESS_DST];
+
+	if (!add_sadb_address(&tstate, addr))
+		return (B_FALSE);
+
+	return (B_TRUE);
+}
+
+static boolean_t
+add_ts_resp(pkt_t *restrict req, pkt_t *restrict resp,
+    parsedmsg_t *restrict pmsg)
+{
+	return (B_FALSE);
+}
+
+static boolean_t
+resp_inv_acquire(pkt_t *restrict pkt, struct child_sa_args *restrict csa)
+{
+	ikev2_sa_t *i2sa = pkt->pkt_sa;
+	pkt_payload_t *ts_ip = pkt_get_payload(pkt, IKEV2_PAYLOAD_TSi, NULL);
+	pkt_payload_t *ts_rp = pkt_get_payload(pkt, IKEV2_PAYLOAD_TSr, NULL);
+	struct sockaddr_storage ss_src = { 0 };
+	struct sockaddr_storage ss_dst = { 0 };
+	struct sockaddr_storage ss_isrc = { 0 };
+	struct sockaddr_storage ss_idst = { 0 };
+	sockaddr_u_t src = { .sau_ss = &ss_src };
+	sockaddr_u_t dst = { .sau_ss = &ss_dst };
+	sockaddr_u_t isrc = { .sau_ss = &ss_isrc };
+	sockaddr_u_t idst = { .sau_ss = &ss_idst };
+	ikev2_ts_iter_t iter_i = { 0 };
+	ikev2_ts_iter_t iter_r = { 0 };
+	ikev2_ts_t *ts_i = NULL;
+	ikev2_ts_t *ts_r = NULL;
+
+	if (csa->csa_transport_mode) {
+		ts_i = ikev2_ts_iter(ts_ip, &iter_i, &ss_src, NULL);
+		ts_r = ikev2_ts_iter(ts_rp, &iter_r, &ss_dst, NULL);
+		isrc.sau_ss = NULL;
+		idst.sau_ss = NULL;
+
+		if (!SA_ADDR_EQ(&i2sa->raddr, &ss_src)) {
+			sockaddr_copy(&i2sa->raddr, &csa->csa_nat_remote,
+			    B_TRUE);
+		}
+		if (!SA_ADDR_EQ(&i2sa->laddr, &ss_dst)) {
+			sockaddr_copy(&i2sa->laddr, &csa->csa_nat_local,
+			    B_TRUE);
+		}
+	} else {
+		sockaddr_copy(&i2sa->raddr, &ss_src, B_FALSE);
+		sockaddr_copy(&i2sa->laddr, &ss_dst, B_FALSE);
+		ts_i = ikev2_ts_iter(ts_ip, &iter_i, &ss_isrc, NULL);
+		ts_r = ikev2_ts_iter(ts_rp, &iter_r, &ss_idst, NULL);
+	}
+
+	return (pfkey_inverse_acquire(src, dst, isrc, idst, &csa->csa_pmsg));
+}
+
+static void
+resp_ts_negotiate_one(struct sockaddr_storage *restrict res_start,
+    struct sockaddr_storage *restrict res_end, pkt_payload_t *restrict ts_pay,
+    const struct sockaddr_storage *restrict acq_addr, uint8_t acq_mask)
+{
+	ikev2_ts_t *ts = NULL;
+	ikev2_ts_iter_t iter = { 0 };
+	struct sockaddr_storage start = { 0 };
+	struct sockaddr_storage end = { 0 };
+	struct sockaddr_storage acq_start = { 0 };
+	struct sockaddr_storage acq_end = { 0 };
+
+	bzero(res_start, sizeof (*res_start));
+	bzero(res_end, sizeof (*res_end));
+
+	/*
+	 * The first traffic selector is what is used during the
+	 * INVERSE_ACQUIRE request, however what we get back from the kernel
+	 * is a network address + netmask e.g. 192.168.1.0/24 or 10.1.2.3/32
+	 * and not an address range (with arbitrary start and ending addresses
+	 * as with the traffic selectors).
+	 *
+	 * This is possibly more permissive than what the peer is proposing.
+	 * Therefore, we first constrain the two ranges (TS[0] and ACQUIRE
+	 * address) to the intersection of the two.  However, if the original
+	 * packet selector was sent, it is sent as the first traffic selector
+	 * and the result can be too narrow (i.e. the result will be a single
+	 * IP address).  If this is the case, there should be at least one
+	 * more traffic selector present, and we should attempt to widen our
+	 * range, however the result should never be wider (but may be narrower
+	 * than the range given from the ACQUIRE response from the kernel).
+	 * As such, we look through the subsequent selectors looking for the
+	 * largest intersection between a given traffic selector and the ACQUIRE
+	 * address range.
+	 *
+	 * Some examples to illustrate:
+	 *
+	 * Assume our local policy returns an address of 192.168.5.0/24
+	 * This could be a source or destination address, the logic is the
+	 * same.
+	 *
+	 * If the initiator sends:
+	 *	192.168.5.0 - 192.168.5.255
+	 *
+	 * We should respond with:
+	 *	192.168.5.0 - 192.168.5.255
+	 *
+	 * If the initiator sends:
+	 *	192.168.5.15 - 192.168.5.15
+	 *	192.168.5.0 - 192.168.5.255
+	 *
+	 * We should respond with:
+	 *	192.168.5.0 - 192.168.5.255
+	 *
+	 * If the initiator sends:
+	 *	192.168.5.15 - 192.168.5.15
+	 *	192.168.4.0 - 192.168.4.255
+	 *
+	 * We should respond with:
+	 *	192.168.5.0 - 192.168.5.255
+	 *
+	 *	TBD: Should we check to see if there is a policy for
+	 *	192.168.4.0/24 and return ADDITIONAL_TS_POSSIBLE w/ our
+	 *	response?
+	 *
+	 * If the initiator sends:
+	 *	192.168.5.0 - 192.168.5.127
+	 *
+	 * We should respond with:
+	 *	192.168.5.0 - 192.168.5.127
+	 *
+	 */
+
+	net_to_range(acq_addr, acq_mask, &acq_start, &acq_end);
+	ts = ikev2_ts_iter(ts_pay, &iter, &start, &end);
+	range_intersection(res_start, res_end, &start, &end, &acq_start,
+	    &acq_end);
+
+	while ((ts = ikev2_ts_iter_next(&iter, &start, &end)) != NULL) {
+		struct sockaddr_storage cmp_start = { 0 };
+		struct sockaddr_storage cmp_end = { 0 };
+		int cmp;
+
+		range_intersection(&cmp_start, &cmp_end, res_start, res_end,
+		    &acq_start, &acq_end);
+
+		if (range_is_zero(&cmp_start, &cmp_end))
+			continue;
+
+		cmp = range_cmp_size(&cmp_start, &cmp_end, res_start, res_end);
+
+		if (cmp > 0) {
+			bcopy(&cmp_start, res_start, sizeof (*res_start));
+			bcopy(&cmp_end, res_end, sizeof (*res_end));
+		}
+	}
+
+	/*
+	 * As the kernel cannot deal with arbitrary ranges in it's policy,
+	 * we must potentially again narrow the result until range (without
+	 * changing the starting address) can be expressed as start_addr/mask
+	 */
+	range_clamp(res_start, res_end);
+}
+
+static void
+resp_ts_negotiate(pkt_t *restrict req, pkt_t *restrict resp,
+    struct child_sa_args *restrict csa)
+{
+	pkt_payload_t *ts_ip = pkt_get_payload(req, IKEV2_PAYLOAD_TSi, NULL);
+	pkt_payload_t *ts_rp = pkt_get_payload(req, IKEV2_PAYLOAD_TSr, NULL);
+	struct sockaddr_storage start = { 0 };
+	struct sockaddr_storage end = { 0 };
+}
+
+static void
+check_natt_addrs(pkt_t *restrict pkt, boolean_t transport_mode)
+{
+	ikev2_sa_t *i2sa = pkt->pkt_sa;
+
+	if (transport_mode) {
+		pkt_payload_t *ts_ip = NULL;
+		pkt_payload_t *ts_rp = NULL;
+		ikev2_ts_t *ts_i = NULL;
+		ikev2_ts_t *ts_r = NULL;
+		ikev2_ts_iter_t iter_i = { 0 };
+		ikev2_ts_iter_t iter_r = { 0 };
+		struct sockaddr_storage loc = { 0 };
+		struct sockaddr_storage rem = { 0 };
+		boolean_t init = !!(i2sa->flags & I2SA_INITIATOR);
+
+		ts_ip = pkt_get_payload(pkt, IKEV2_PAYLOAD_TSi, NULL);
+		ts_rp = pkt_get_payload(pkt, IKEV2_PAYLOAD_TSr, NULL);
+
+		ts_i = ikev2_ts_iter(ts_ip, &iter_i, init ? &loc : &rem, NULL);
+		ts_r = ikev2_ts_iter(ts_rp, &iter_r, init ? &rem : &loc, NULL);
+
+		/*
+		 * XXX: The results here should match the NAT_DETECTION_*
+		 * notification checks (but those can't tell us the actual
+		 * internal IPs).  What to do if there's a mismatch?
+		 */
+		if (!SA_ADDR_EQ(&i2sa->laddr, &loc)) {
+			if (!(i2sa->flags & I2SA_NAT_LOCAL)) {
+				/* TODO: log */
+			}
+			sockaddr_copy(&loc, &i2sa->lnatt, B_TRUE);
+		}
+		if (!SA_ADDR_EQ(&i2sa->raddr, &rem)) {
+			if (!(i2sa->flags & I2SA_NAT_REMOTE)) {
+				/* TODO: log */
+			}
+			sockaddr_copy(&rem, &i2sa->rnatt, B_TRUE);
+		}
+	}
+}
+
+/* Sends the pf_key(7P) messages to establish the IPsec SAs */
 static boolean_t
 ikev2_create_child_sas(ikev2_sa_t *restrict sa,
     struct child_sa_args *restrict csa, boolean_t initiator)
@@ -565,6 +868,21 @@ create_keymat(ikev2_sa_t *restrict sa, uint8_t *restrict ni, size_t ni_len,
 		    ni, ni_len, nr, nr_len, NULL);
 	}
 	return (ret);
+}
+
+static void
+save_p1_nonces(ikev2_sa_t *restrict i2sa, struct child_sa_args *restrict csa)
+{
+	pkt_payload_t *ni = NULL;
+	pkt_payload_t *nr = NULL;
+
+	ni = pkt_get_payload(i2sa->init_i, IKEV2_PAYLOAD_NONCE, NULL);
+	nr = pkt_get_payload(i2sa->init_r, IKEV2_PAYLOAD_NONCE, NULL);
+
+	bcopy(ni->pp_ptr, csa->csa_nonce_i, ni->pp_len);
+	bcopy(nr->pp_ptr, csa->csa_nonce_r, nr->pp_len);
+	csa->csa_nonce_i_len = ni->pp_len;
+	csa->csa_nonce_r_len = nr->pp_len;
 }
 
 /*

@@ -56,6 +56,7 @@ ikev2_ike_auth_init(ikev2_sa_t *restrict sa, parsedmsg_t *restrict pmsg)
 
 	config_rule_t *rule = sa->i2sa_rule;
 	pkt_t *req = ikev2_pkt_new_exchange(sa, IKEV2_EXCH_IKE_AUTH);
+	void *arg = NULL;
 
 	(void) bunyan_debug(log, "Starting IKE_AUTH exchange", BUNYAN_T_END);
 
@@ -80,11 +81,13 @@ ikev2_ike_auth_init(ikev2_sa_t *restrict sa, parsedmsg_t *restrict pmsg)
 	if (!add_auth(req))
 		goto fail;
 
-#if 0
-	ikev2_create_child_sa_outbound(sa, req);
-#else
-	ikev2_send_req(req, ikev2_ike_auth_init_resp, pmsg);
-#endif
+	arg = ikev2_create_child_sa_init_auth(sa, req, pmsg);
+	if (arg == NULL)
+		goto fail;
+
+	if (!ikev2_send_req(req, ikev2_ike_auth_init_resp, arg))
+		goto fail;
+
 	return;
 
 fail:
@@ -189,12 +192,12 @@ ikev2_ike_auth_resp(pkt_t *req)
 	if (!add_auth(resp))
 		goto fail;
 
-#if 0
-	ikev2_create_child_sa_inbound(req, resp);
-#else
-	ikev2_send_resp(resp);
+	ikev2_create_child_sa_resp_auth(req, resp);
+
+	if (!ikev2_send_resp(resp))
+		goto fail;
+
 	ikev2_pkt_free(req);
-#endif
 	return;
 
 fail:
@@ -225,13 +228,18 @@ ikev2_ike_auth_init_resp(ikev2_sa_t *restrict sa, pkt_t *restrict resp,
 	VERIFY(IS_WORKER);
 	VERIFY(MUTEX_HELD(&resp->pkt_sa->i2sa_lock));
 
-	parsedmsg_t *restrict pmsg = arg;
 	config_id_t *cid_r = NULL;
 	const char *mstr = NULL;
 	char mbuf[IKEV2_ENUM_STRLEN] = { 0 };
 
 	(void) bunyan_debug(log, "Received IKE_AUTH response",
 	    BUNYAN_T_END);
+
+	if (resp == NULL) {
+		ikev2_create_child_sa_init_resp(sa, NULL, arg);
+		ikev2_sa_condemn(sa);
+		return;
+	}
 
 	/*
 	 * RFC 7296 2.21.2 -- If authentication fails, the IKE SA is not
@@ -275,8 +283,8 @@ ikev2_ike_auth_init_resp(ikev2_sa_t *restrict sa, pkt_t *restrict resp,
 	if (ikev2_sa_disarm_timer(sa, I2SA_EVT_P1_EXPIRE))
 		I2SA_REFRELE(sa);
 
-#if 0
-	ikev2_create_child_sa_inbound(resp, NULL);
+#if 1
+	ikev2_create_child_sa_init_resp(sa, resp, arg);
 #else
 	ikev2_pkt_free(resp);
 	return;

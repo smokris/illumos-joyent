@@ -144,6 +144,8 @@ struct ikev2_sa_s {
 
 	struct sockaddr_storage laddr;  /* Local address & port. */
 	struct sockaddr_storage raddr;  /* Remote address & port. */
+	struct sockaddr_storage lnatt;	/* Local NAT-Ted address */
+	struct sockaddr_storage rnatt;	/* Remote NAT-Ted address */
 
 			/*
 			 * What IKEv2 daemon are we talking to.

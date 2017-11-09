@@ -384,9 +384,9 @@ struct ikev2_delete {
  * ID payload
  */
 struct ikev2_id {
-	uint8_t	 id_type;		/* Id type */
-	uint8_t	 id_reserved[3];	/* Reserved */
-	/* Followed by the identification data */
+	uint8_t	id_type;		/* Id type */
+	uint8_t	id_reserved[3];		/* Reserved */
+	uint8_t	id_data[];		/* Identification data */
 } __packed;
 
 typedef enum ikev2_id_type {

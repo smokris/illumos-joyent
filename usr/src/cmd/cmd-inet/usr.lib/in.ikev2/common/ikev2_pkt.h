@@ -29,6 +29,7 @@ extern "C" {
 
 struct ikev2_sa_s;
 struct bunyan_logger;
+struct sockaddr_storage;
 
 #define	I2P_RESPONSE(p) (!!(pkt_header(p)->flags & IKEV2_FLAG_RESPONSE))
 #define	I2P_INITIATOR(p) (pkt_header(p)->flags & IKEV2_FLAG_INITIATOR)
@@ -40,6 +41,20 @@ struct bunyan_logger;
 #define	INBOUND_REMOTE_SPI(hdr) \
 	(((hdr)->flags == IKEV2_FLAG_INITIATOR) ? \
 	    (hdr)->initiator_spi : (hdr)->responder_spi)
+
+typedef struct ikev2_pkt_ts_state {
+	pkt_t		*i2ts_pkt;
+	uint16_t	*i2ts_lenp;
+	pkt_payload_t	*i2ts_idx;
+	uint8_t		*i2ts_countp;
+	uint16_t	i2ts_len;
+} ikev2_pkt_ts_state_t;
+
+typedef struct ikev2_ts_iter_s {
+	ikev2_tsp_t	*i2ti_tsp;
+	ikev2_ts_t	*i2ti_ts;
+	size_t		i2ti_n;
+} ikev2_ts_iter_t;
 
 pkt_t *ikev2_pkt_new_inbound(void *restrict, size_t);
 pkt_t *ikev2_pkt_new_exchange(struct ikev2_sa_s *, ikev2_exch_t);
@@ -74,13 +89,16 @@ boolean_t ikev2_add_delete_spi(pkt_t *, uint64_t);
 boolean_t ikev2_add_vendor(pkt_t *restrict, const void *restrict,
     size_t);
 
-#if 0
-boolean_t ikev2_add_ts_i(pkt_t *);
-boolean_t ikev2_add_ts_r(pkt_t *);
-boolean_t ikev2_add_ts(pkt_t *restrict, ikev2_ts_type_t, uint8_t,
-    const sockaddr_u_t restrict,
-    const sockaddr_u_t restrict);
-#endif
+boolean_t ikev2_add_ts_i(pkt_t *restrict, ikev2_pkt_ts_state_t *restrict);
+boolean_t ikev2_add_ts_r(pkt_t *restrict, ikev2_pkt_ts_state_t *restrict);
+boolean_t ikev2_add_ts(ikev2_pkt_ts_state_t *restrict, uint8_t,
+    const struct sockaddr_storage *restrict,
+    const struct sockaddr_storage *restrict);
+
+ikev2_ts_t *ikev2_ts_iter(pkt_payload_t *restrict, ikev2_ts_iter_t *restrict,
+    struct sockaddr_storage *restrict, struct sockaddr_storage *restrict);
+ikev2_ts_t *ikev2_ts_iter_next(ikev2_ts_iter_t *restrict,
+    struct sockaddr_storage *restrict, struct sockaddr_storage *restrict);
 
 boolean_t ikev2_add_sk(pkt_t *);
 

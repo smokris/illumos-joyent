@@ -208,6 +208,25 @@ struct config_id_s;
 void key_add_id(const char *, const char *, struct config_id_s *);
 char *writehex(uint8_t *, size_t, char *, char *, size_t);
 
+void sockaddr_copy(const struct sockaddr_storage *, struct sockaddr_storage *,
+    boolean_t);
+void net_to_range(const struct sockaddr_storage *, uint8_t,
+    struct sockaddr_storage *, struct sockaddr_storage *);
+void range_intersection(struct sockaddr_storage *restrict,
+    struct sockaddr_storage *restrict,
+    const struct sockaddr_storage *restrict,
+    const struct sockaddr_storage *restrict,
+    const struct sockaddr_storage *restrict,
+    const struct sockaddr_storage *restrict);
+int range_cmp_size(const struct sockaddr_storage *,
+    const struct sockaddr_storage *restrict,
+    const struct sockaddr_storage *restrict,
+    const struct sockaddr_storage *restrict);
+void range_clamp(struct sockaddr_storage *restrict,
+    struct sockaddr_storage *restrict);
+boolean_t range_is_zero(const struct sockaddr_storage *,
+    const struct sockaddr_storage *);
+
 #ifdef  __cplusplus
 }
 #endif

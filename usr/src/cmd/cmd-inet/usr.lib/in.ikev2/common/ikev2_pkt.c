@@ -19,6 +19,7 @@
 #include <assert.h>
 #include <umem.h>
 #include <string.h>
+#include <strings.h>
 #include <errno.h>
 #include <netinet/in.h>
 #include <security/cryptoki.h>
@@ -775,130 +776,205 @@ ikev2_add_vendor(pkt_t *restrict pkt, const void *restrict vid, size_t len)
 	return (B_TRUE);
 }
 
-/*
- * This will need to be adjusted once we have a better idea how we will
- * obtain the traffic selectors to better tailor the interface for adding
- * them to the IKE datagram.  For now, we'll just leave them out.
- */
-#if 0
-static boolean_t add_ts_common(pkt_t *, boolean_t);
+static boolean_t add_ts_common(pkt_t *restrict, ikev2_pkt_ts_state_t *restrict,
+    boolean_t);
 
 boolean_t
-ikev2_add_ts_i(pkt_t *restrict pkt)
+ikev2_add_ts_i(pkt_t *restrict pkt, ikev2_pkt_ts_state_t *restrict tstate)
 {
-	return (add_ts_common(pkt, B_TRUE));
+	return (add_ts_common(pkt, tstate, B_TRUE));
 }
 
 boolean_t
-ikev2_add_ts_r(pkt_t *restrict pkt)
+ikev2_add_ts_r(pkt_t *restrict pkt, ikev2_pkt_ts_state_t *restrict tstate)
 {
-	return (add_ts_common(pkt, B_FALSE));
+	return (add_ts_common(pkt, tstate, B_FALSE));
 }
-
-static boolean_t ts_finish(pkt_t *restrict, uint8_t *restrict, uintptr_t,
-    size_t);
 
 static boolean_t
-add_ts_common(pkt_t *pkt, boolean_t ts_i)
+add_ts_common(pkt_t *restrict pkt, ikev2_pkt_ts_state_t *restrict tstate,
+    boolean_t ts_i)
 {
-	ikev2_ts_t ts = { 0 };
+	ikev2_tsp_t *tsp = NULL;
+	ikev2_payload_t *payp = (ikev2_payload_t *)pkt->pkt_ptr;
+	ikev2_pay_type_t ptype;
 
-	if (pkt_write_left(pkt) < sizeof (ikev2_payload_t) +
-	    sizeof (ikev2_ts_t))
+	ptype = ts_i ? IKEV2_PAYLOAD_TSi : IKEV2_PAYLOAD_TSr;
+
+	if (!ikev2_add_payload(pkt, ptype, B_FALSE, sizeof (*tsp)))
 		return (B_FALSE);
+	tsp = (ikev2_tsp_t *)pkt->pkt_ptr;
 
-	ikev2_add_payload(pkt, (ts_i) ? IKEV2_PAYLOAD_TSi : IKEV2_PAYLOAD_TSr,
-	    B_FALSE);
-	pkt_stack_push(pkt, PSI_TSP, ts_finish, 0);
-	PKT_APPEND_STRUCT(pkt, ts);
-	return (B_TRUE);
-}
+	tstate->i2ts_pkt = pkt;
+	tstate->i2ts_len = sizeof (ikev2_payload_t);
+	tstate->i2ts_lenp = &payp->pld_length;
+	tstate->i2ts_idx = pkt_get_payload(pkt, ptype, NULL);
+	tstate->i2ts_countp = &tsp->tsp_count;
 
-static boolean_t
-ts_finish(pkt_t *restrict pkt, uint8_t *restrict buf, uintptr_t swaparg,
-    size_t numts)
-{
-	ikev2_tsp_t	ts = { 0 };
+	VERIFY3P(tstate->i2ts_idx, !=, NULL);
 
-	ASSERT3U(numts, <, 0x100);
+	/* Skip over the TS header -- we update the count as we add TSes */
+	pkt->pkt_ptr += sizeof (*tsp);
+	tstate->i2ts_len += sizeof (*tsp);
+	tstate->i2ts_idx->pp_len += sizeof (*tsp);
+	BE_OUT16(tstate->i2ts_lenp, tstate->i2ts_len);
 
-	(void) memcpy(&ts, buf, sizeof (ts));
-	ts.tsp_count = (uint8_t)numts;
-	(void) memcpy(buf, &ts, sizeof (ts));
 	return (B_TRUE);
 }
 
 boolean_t
-ikev2_add_ts(pkt_t *restrict pkt, ikev2_ts_type_t type, uint8_t ip_proto,
-    const sockaddr_u_t *restrict start, const sockaddr_u_t *restrict end)
+ikev2_add_ts(ikev2_pkt_ts_state_t *restrict tstate, uint8_t ip_proto,
+    const struct sockaddr_storage *restrict ss_start,
+    const struct sockaddr_storage *restrict ss_end)
 {
 	ikev2_ts_t	ts = { 0 };
-	void		*startptr = NULL, *endptr = NULL;
+	sockaddr_u_t start = { .sau_ss = (struct sockaddr_storage *)ss_start };
+	sockaddr_u_t end = { .sau_ss = (struct sockaddr_storage *)ss_end };
+	const void *startptr = NULL;
+	const void *endptr = NULL;
 	size_t		len = 0;
+	size_t		addrlen = 0;
 
-	ASSERT3U(ip_proto, <, 0x100);
-	ASSERT3U(start->sau_ss->ss_family, ==, end->sau_ss->ss_family);
+	VERIFY3U(start.sau_ss->ss_family, ==, end.sau_ss->ss_family);
 
-	pkt_stack_push(pkt, PSI_TS, 0, NULL);
-
-	ts.ts_length = sizeof (ts);
-	ts.ts_type = (uint8_t)type;
-
-	switch (type) {
-	case IKEV2_TS_IPV4_ADDR_RANGE:
-		ASSERT3U(start->sau_ss->ss_family, ==, AF_INET);
-		ASSERT3U(end->sau_ss->ss_family, ==, AF_INET);
-		ts.ts_startport = start->sau_sin->sin_port;
-		ts.ts_endport = end->sau_sin->sin_port;
-		startptr = &start->sau_sin->sin_addr;
-		endptr = &end->sau_sin->sin_addr;
-		len = sizeof (in_addr_t);
-		ts.ts_length += 2 * len;
-		break;
-	case IKEV2_TS_IPV6_ADDR_RANGE:
-		ASSERT3U(start->sau_ss->ss_family, ==, AF_INET6);
-		ASSERT3U(end->sau_ss->ss_family, ==, AF_INET6);
-		ts.ts_startport = start->sau_sin6->sin6_port;
-		ts.ts_endport = end->sau_sin6->sin6_port;
-		startptr = &start->sau_sin6->sin6_addr;
-		endptr = &end->sau_sin6->sin6_addr;
-		len = sizeof (in6_addr_t);
-		ts.ts_length += 2 * len;
-		break;
-	case IKEV2_TS_FC_ADDR_RANGE:
-		INVALID("type");
+	if (*tstate->i2ts_countp == UINT8_MAX) {
+		(void) bunyan_error(log,
+		    "Tried to add >255 traffic selectors in packet",
+		    BUNYAN_T_END);
+		return (B_FALSE);
 	}
 
-	if (pkt_write_left(pkt) < ts.ts_length)
-		return (B_FALSE);
+	ts.ts_protoid = ip_proto;
+	startptr = ss_addr(ss_start);
+	endptr = ss_addr(ss_end);
+	addrlen = ss_addrlen(ss_start);
+	ts.ts_startport = htons(ss_port(ss_start));
+	ts.ts_endport = htons(ss_port(ss_end));
+
+	switch (start.sau_ss->ss_family) {
+	case AF_INET:
+		ts.ts_type = IKEV2_TS_IPV4_ADDR_RANGE;
+		break;
+	case AF_INET6:
+		ts.ts_type = IKEV2_TS_IPV6_ADDR_RANGE;
+		break;
+	default:
+		INVALID(start.sau_ss->ss_family);
+	}
+
+	len = sizeof (ts) + 2 * addrlen;
 
 	ts.ts_protoid = ip_proto;
-	ts.ts_length = htons(ts.ts_length);
-	PKT_APPEND_STRUCT(pkt, ts);
-	VERIFY(pkt_append_data(pkt, startptr, len));
-	VERIFY(pkt_append_data(pkt, endptr, len));
+	ts.ts_length = htons(len);
+
+	if (pkt_write_left(tstate->i2ts_pkt) < len ||
+	    tstate->i2ts_len + len > UINT16_MAX) {
+		(void) bunyan_error(log,
+		    "Ran out of space to write traffic selectors",
+		    BUNYAN_T_END);
+		return (B_FALSE);
+	}
+
+	PKT_APPEND_STRUCT(tstate->i2ts_pkt, ts);
+	VERIFY(pkt_append_data(tstate->i2ts_pkt, startptr, addrlen));
+	VERIFY(pkt_append_data(tstate->i2ts_pkt, endptr, addrlen));
+
+	tstate->i2ts_len += len;
+
+	/* Update TS count in payload */
+	(*tstate->i2ts_countp)++;
+
+	/* Update payload index length */
+	tstate->i2ts_idx->pp_len += len;
+
+	/* Update payload length in packet */
+	BE_OUT16(tstate->i2ts_lenp, tstate->i2ts_len);
+
 	return (B_TRUE);
 }
-#else
-/* Placeholders */
-boolean_t
-ikev2_add_ts_i(pkt_t *restrict pkt)
+
+static void
+ts_get_addrs(ikev2_ts_t *restrict ts,
+    struct sockaddr_storage *restrict ss_start,
+    struct sockaddr_storage *restrict ss_end)
 {
-	return (B_FALSE);
+	sockaddr_u_t start = { .sau_ss = ss_start };
+	sockaddr_u_t end = { .sau_ss = ss_end };
+	uint8_t *p = (uint8_t *)(ts + 1);
+	size_t len = 0;
+
+	if (ss_start != NULL)
+		bzero(ss_start, sizeof (*ss_start));
+	if (ss_end != NULL)
+		bzero(ss_end, sizeof (*ss_end));
+
+	switch (ts->ts_type) {
+	case IKEV2_TS_IPV4_ADDR_RANGE:
+		len = sizeof (in_addr_t);
+		if (ss_start != NULL) {
+			ss_start->ss_family = AF_INET;
+			(void) memcpy(&start.sau_sin->sin_addr, p, len);
+			(void) memcpy(&start.sau_sin->sin_port,
+			    &ts->ts_startport, sizeof (uint16_t));
+		}
+		if (ss_end != NULL) {
+			ss_end->ss_family = AF_INET;
+			(void) memcpy(&end.sau_sin->sin_addr, p + len, len);
+			(void) memcpy(&end.sau_sin->sin_port, &ts->ts_endport,
+			    sizeof (uint16_t));
+		}
+		break;
+	case IKEV2_TS_IPV6_ADDR_RANGE:
+		len = sizeof (in6_addr_t);
+		if (ss_start != NULL) {
+			ss_start->ss_family = AF_INET6;
+			(void) memcpy(&start.sau_sin6->sin6_addr, p, len);
+			(void) memcpy(&start.sau_sin6->sin6_port,
+			    &ts->ts_startport, sizeof (uint16_t));
+		}
+		if (ss_end != NULL) {
+			ss_end->ss_family = AF_INET6;
+			(void) memcpy(&end.sau_sin6->sin6_addr, p + len, len);
+			(void) memcpy(&end.sau_sin6->sin6_port, &ts->ts_endport,
+			    sizeof (uint16_t));
+		}
+		break;
+	case IKEV2_TS_FC_ADDR_RANGE:
+		break;
+	}
 }
 
-boolean_t
-ikev2_add_ts_r(pkt_t *restrict pkt)
+ikev2_ts_t *
+ikev2_ts_iter(pkt_payload_t *restrict tsp, ikev2_ts_iter_t *restrict iter,
+    struct sockaddr_storage *restrict start,
+    struct sockaddr_storage *restrict end)
 {
-	return (B_FALSE);
+	iter->i2ti_tsp = (ikev2_tsp_t *)tsp->pp_ptr;
+	iter->i2ti_ts = (ikev2_ts_t *)(iter->i2ti_tsp + 1);
+	iter->i2ti_n = 0;
+
+	if (iter->i2ti_n >= iter->i2ti_tsp->tsp_count)
+		return (NULL);
+
+	ts_get_addrs(iter->i2ti_ts, start, end);
+	return (iter->i2ti_ts);
 }
-boolean_t
-ikev2_add_ts(pkt_t *restrict pkt, ikev2_ts_type_t type, uint8_t ip_proto,
-    const sockaddr_u_t *restrict start, const sockaddr_u_t *restrict end)
+
+ikev2_ts_t *
+ikev2_ts_iter_next(ikev2_ts_iter_t *restrict iter,
+    struct sockaddr_storage *restrict start,
+    struct sockaddr_storage *restrict end)
 {
-	return (B_FALSE);
+	if (++iter->i2ti_n > iter->i2ti_tsp->tsp_count)
+		return (NULL);
+
+	uint8_t *p = (uint8_t *)iter->i2ti_ts;
+
+	p += BE_IN16(&iter->i2ti_ts->ts_length);
+	iter->i2ti_ts = (ikev2_ts_t *)p;
+	ts_get_addrs(iter->i2ti_ts, start, end);
+	return (iter->i2ti_ts);
 }
-#endif
 
 static boolean_t add_iv(pkt_t *restrict pkt);
 
@@ -988,8 +1064,8 @@ add_iv(pkt_t *restrict pkt)
 	}
 	CK_BYTE buf[blocklen];
 
-	(void) memset(buf, 0, blocklen);
-	(void) memcpy(buf, &msgid, sizeof (msgid));
+	bzero(buf, blocklen);
+	bcopy(&msgid, buf, sizeof (msgid));
 
 	rc = C_EncryptInit(h, &mech, key);
 	if (rc != CKR_OK) {
@@ -1003,7 +1079,7 @@ add_iv(pkt_t *restrict pkt)
 		return (B_FALSE);
 	}
 
-	(void) memcpy(pkt->pkt_ptr, buf, MIN(len, blocklen));
+	bcopy(buf, pkt->pkt_ptr, MIN(len, blocklen));
 	explicit_bzero(buf, blocklen);
 	pkt->pkt_ptr += MIN(len, blocklen);
 	return (B_TRUE);
@@ -1068,9 +1144,9 @@ ikev2_pkt_encryptdecrypt(pkt_t *pkt, boolean_t encrypt)
 	outlen = pkt_write_left(pkt) + icvlen;
 	icv = data + datalen;
 
-	(void) memcpy(nonce, iv, ivlen);
+	bcopy(iv, nonce, ivlen);
 	if (sa->saltlen > 0)
-		(void) memcpy(nonce + ivlen, salt, sa->saltlen);
+		bcopy(salt, nonce + ivlen, sa->saltlen);
 
 	if (encrypt) {
 		/* If we're creating it, lengths should match */
@@ -1245,18 +1321,18 @@ ikev2_pkt_signverify(pkt_t *pkt, boolean_t sign)
 	}
 
 	if (sign) {
-		(void) memcpy(icv, outbuf, icvlen);
+		bcopy(outbuf, icv, icvlen);
 		explicit_bzero(outbuf, outlen);
 		return (B_TRUE);
-	}
-
-	if (memcmp(icv, outbuf, icvlen) == 0) {
+	} else if (memcmp(icv, outbuf, icvlen) == 0) {
 		explicit_bzero(outbuf, outlen);
 		return (B_TRUE);
 	}
 
 	(void) bunyan_warn(log, "Payload signature validation failed",
 	    BUNYAN_T_END);
+
+	explicit_bzero(outbuf, outlen);
 	return (B_FALSE);
 }
 
