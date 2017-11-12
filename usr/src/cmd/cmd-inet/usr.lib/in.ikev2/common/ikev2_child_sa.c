@@ -13,6 +13,7 @@
  * Copyright (c) 2017 Joyent, Inc.
  */
 
+#include <ipsec_util.h>
 #include <strings.h>
 #include <sys/debug.h>
 #include "config.h"
@@ -38,8 +39,6 @@ struct child_sa_args {
 	uint32_t		csa_remote_spi;
 	ikev2_dh_t		csa_dh;
 	ikev2_sa_result_t	csa_results;
-	struct sockaddr_storage	csa_nat_local;
-	struct sockaddr_storage csa_nat_remote;
 	boolean_t		csa_is_auth;
 	boolean_t		csa_transport_mode;
 };
@@ -50,13 +49,16 @@ static void save_p1_nonces(ikev2_sa_t *restrict,
     struct child_sa_args *restrict);
 static boolean_t create_keymat(ikev2_sa_t *restrict, uint8_t *restrict, size_t,
     uint8_t *restrict, size_t, prfp_t *restrict);
-static uint8_t get_satype(parsedmsg_t *);
 static boolean_t ikev2_create_child_sas(ikev2_sa_t *restrict,
     struct child_sa_args *restrict, boolean_t);
 static boolean_t add_ts_init(pkt_t *restrict, parsedmsg_t *restrict);
+static boolean_t add_ts_resp(pkt_t *restrict, pkt_t *restrict,
+    parsedmsg_t *restrict);
 static boolean_t resp_inv_acquire(pkt_t *restrict,
     struct child_sa_args *restrict);
 static void check_natt_addrs(pkt_t *restrict, boolean_t);
+static uint8_t get_satype(parsedmsg_t *);
+static sadb_address_t *get_sadb_addr(parsedmsg_t *, boolean_t);
 
 void *
 ikev2_create_child_sa_init_auth(ikev2_sa_t *restrict sa, pkt_t *restrict req,
@@ -164,8 +166,8 @@ ikev2_create_child_sa_init_common(ikev2_sa_t *restrict sa, pkt_t *restrict req,
 		csa->csa_transport_mode = transport_mode = B_TRUE;
 
 	satype = get_satype(pmsg);
-	if (!pfkey_getspi(csa->csa_srcmsg, src, dest, satype,
-	    &csa->csa_local_spi)) {
+	if (!pfkey_getspi(csa->csa_srcmsg, pmsg->pmsg_sau, pmsg->pmsg_dau,
+	    satype, &csa->csa_local_spi)) {
 		goto fail;
 	}
 
@@ -204,7 +206,9 @@ ikev2_create_child_sa_init_common(ikev2_sa_t *restrict sa, pkt_t *restrict req,
 	return (B_TRUE);
 
 fail:
-	(void) pfkey_delete(satype, csa->csa_local_spi, src, dest, B_FALSE);
+	(void) pfkey_delete(satype, csa->csa_local_spi, pmsg->pmsg_sau,
+	    pmsg->pmsg_dau, B_FALSE);
+
 	return (B_FALSE);
 }
 
@@ -252,13 +256,22 @@ ikev2_create_child_sa_resp_common(pkt_t *restrict req, pkt_t *restrict resp,
 	if (pkt_get_notify(req, IKEV2_N_USE_TRANSPORT_MODE, NULL) != NULL)
 		csa->csa_transport_mode = B_TRUE;
 
+	if (csa->csa_is_auth)
+		check_natt_addrs(req, csa->csa_transport_mode);
+
 	if (!resp_inv_acquire(req, csa))
 		goto fail;
-	pmsg = csa->csa_pmsg;
 
-	if (!pfkey_getspi(NULL, pmsg->pmsg_sau, pmsg->pmsg_dau,
-	    get_satype(pmsg), &csa->csa_local_spi))
-		goto fail;
+	if ((pmsg = csa->csa_pmsg) == NULL) {
+		/*
+		 * XXX: Should we pick off the protocol from the SA payload and
+		 * use that instead?
+		 */
+		if (!ikev2_add_notify(resp, IKEV2_PROTO_IKE, 0,
+		    IKEV2_N_TS_UNACCEPTABLE, NULL, 0))
+			goto fail;
+		goto done;
+	}
 
 	if (!ikev2_sa_match_acquire(pmsg, csa->csa_dh, req,
 	    &csa->csa_results)) {
@@ -275,6 +288,10 @@ ikev2_create_child_sa_resp_common(pkt_t *restrict req, pkt_t *restrict resp,
 			goto fail;
 		goto done;
 	}
+
+	if (!pfkey_getspi(NULL, pmsg->pmsg_sau, pmsg->pmsg_dau,
+	    csa->csa_results.sar_proto, &csa->csa_local_spi))
+		goto fail;
 
 	if (csa->csa_transport_mode &&
 	    !ikev2_add_notify(resp, csa->csa_results.sar_proto,
@@ -343,14 +360,14 @@ ikev2_create_child_sa_resp_common(pkt_t *restrict req, pkt_t *restrict resp,
 			goto fail;
 	}
 
-	/* XXX: TSi & TSr payloads */
-
-	/* XXX: Create IPsec SA */
-
-done:
-	if (!ikev2_send_resp(resp))
+	if (!add_ts_resp(req, resp, pmsg))
 		goto fail;
 
+	if (!ikev2_create_child_sas(sa, csa, B_FALSE))
+		goto fail;
+
+done:
+	(void) ikev2_send_resp(resp);
 	/* Don't reuse the same DH key for additional child SAs */
 	pkcs11_destroy_obj("child dh_pubkey", &sa->dh_pubkey);
 	pkcs11_destroy_obj("child dh_privkey", &sa->dh_privkey);
@@ -395,6 +412,7 @@ ikev2_create_child_sa_init_resp(ikev2_sa_t *restrict i2sa,
 		    BUNYAN_T_END);
 		goto remote_fail;
 	}
+
 	if (pkt_get_notify(resp, IKEV2_N_TS_UNACCEPTABLE, NULL) != NULL) {
 		(void) bunyan_info(log,
 		    "Remote peer responded to TS_UNACCEPTABLE",
@@ -405,6 +423,7 @@ ikev2_create_child_sa_init_resp(ikev2_sa_t *restrict i2sa,
 	if (!ikev2_sa_match_acquire(pmsg, csa->csa_dh, resp,
 	    &csa->csa_results)) {
 		/* TODO: log */
+		(void) bunyan_warn(log, "SA no likey", BUNYAN_T_END);
 		goto fail;
 	}
 
@@ -414,6 +433,8 @@ ikev2_create_child_sa_init_resp(ikev2_sa_t *restrict i2sa,
 		nr = pkt_get_payload(resp, IKEV2_PAYLOAD_NONCE, NULL);
 		if (nr == NULL) {
 			/* TODO: log */
+			(void) bunyan_warn(log, "No nonce is here",
+			    BUNYAN_T_END);
 			goto fail;
 		}
 
@@ -429,6 +450,8 @@ ikev2_create_child_sa_init_resp(ikev2_sa_t *restrict i2sa,
 		ke = pkt_get_payload(resp, IKEV2_PAYLOAD_KE, NULL);
 		if (ke == NULL || ke->pp_len <= sizeof (ikev2_ke_t)) {
 			/* TODO: log */
+			(void) bunyan_warn(log, "Where's the KE?",
+			    BUNYAN_T_END);
 			goto fail;
 		}
 
@@ -446,23 +469,12 @@ ikev2_create_child_sa_init_resp(ikev2_sa_t *restrict i2sa,
 	return;
 
 fail:
-	if (PMSG_FROM_KERNEL(pmsg))
-		pfkey_send_error(pmsg->pmsg_samsg, EINVAL);
-
 	/* TODO: Information exchange to delete child SAs */
-	ikev2_pkt_free(resp);
-	return;
+	;
 
 remote_fail:
 	if (PMSG_FROM_KERNEL(pmsg))
 		pfkey_send_error(pmsg->pmsg_samsg, EINVAL);
-
-	/*
-	 * Since we don't need to kick off a new exchange to tear
-	 * things down, we can do both steps now.
-	 */
-	ikev2_sa_condemn(resp->pkt_sa);
-	ikev2_sa_condemn(resp->pkt_sa);
 	ikev2_pkt_free(resp);
 }
 
@@ -487,17 +499,27 @@ add_sadb_address(ikev2_pkt_ts_state_t *restrict tstate,
 	sockaddr_u_t start = { .sau_ss = &ss_end };
 	sockaddr_u_t end = { .sau_ss = &ss_end };
 	uint8_t proto = addr->sadb_address_proto;
+	uint8_t prefixlen = addr->sadb_address_prefixlen;
 
-	net_to_range((struct sockaddr_storage *)(addr + 1),
-	    addr->sadb_address_prefixlen, &ss_start, &ss_end);
+	const char *msg = (tstate->i2ts_idx->pp_type == IKEV2_PAYLOAD_TSi) ?
+	    "Adding to TSi payload" : "Adding to TSr payload";
 
 	/*
-	 * Take advantage of sin_port and sin6_port residing at the same
-	 * offset, and that htons(UINT16_MAX) == UINT16_MAX for both
-	 * big and little endian machines.
+	 * pf_key uses a mask of 0 for single addresses (instead of /32 or /128)
 	 */
-	if (start.sau_sin->sin_port == 0)
-		end.sau_sin->sin_port = UINT16_MAX;
+	if (prefixlen == 0)
+		prefixlen = ss_addrbits((struct sockaddr_storage *)(addr + 1));
+
+	net_to_range((struct sockaddr_storage *)(addr + 1), prefixlen,
+	    &ss_start, &ss_end);
+
+	(void) bunyan_debug(log, msg,
+	    BUNYAN_T_UINT32, "proto", (uint32_t)proto,
+	    ss_bunyan(&ss_start), "start", ss_addr(&ss_start),
+	    BUNYAN_T_UINT32, "startport", ss_port(&ss_start),
+	    ss_bunyan(&ss_end), "end", ss_addr(&ss_end),
+	    BUNYAN_T_UINT32, "endport", ss_port(&ss_end),
+	    BUNYAN_T_END);
 
 	return (ikev2_add_ts(tstate, proto, start.sau_ss, end.sau_ss));
 }
@@ -516,14 +538,9 @@ add_ts_init(pkt_t *restrict req, parsedmsg_t *restrict pmsg)
 	if (addr != NULL && !add_sadb_address(&tstate, addr))
 		return (B_FALSE);
 #endif
-
-	addr = (sadb_address_t *)pmsg->pmsg_exts[SADB_X_EXT_ADDRESS_INNER_SRC];
-	if (addr == NULL)
-		addr = (sadb_address_t *)pmsg->pmsg_exts[SADB_EXT_ADDRESS_SRC];
-
+	addr = get_sadb_addr(pmsg, B_TRUE);
 	if (!add_sadb_address(&tstate, addr))
 		return (B_FALSE);
-
 
 	(void) memset(&tstate, 0, sizeof (tstate));
 	if (!ikev2_add_ts_r(req, &tstate))
@@ -535,64 +552,70 @@ add_ts_init(pkt_t *restrict req, parsedmsg_t *restrict pmsg)
 		return (B_FALSE);
 #endif
 
-	addr = (sadb_address_t *)pmsg->pmsg_exts[SADB_X_EXT_ADDRESS_INNER_DST];
-	if (addr == NULL)
-		addr = (sadb_address_t *)pmsg->pmsg_exts[SADB_EXT_ADDRESS_DST];
-
+	addr = get_sadb_addr(pmsg, B_FALSE);
 	if (!add_sadb_address(&tstate, addr))
 		return (B_FALSE);
 
 	return (B_TRUE);
 }
 
+static void resp_ts_negotiate_one(struct sockaddr_storage *restrict,
+    struct sockaddr_storage *restrict, pkt_payload_t *restrict,
+    const struct sockaddr_storage *restrict, uint8_t);
+
 static boolean_t
 add_ts_resp(pkt_t *restrict req, pkt_t *restrict resp,
     parsedmsg_t *restrict pmsg)
 {
-	return (B_FALSE);
-}
+	pkt_payload_t *tspay = NULL;
+	sadb_address_t *addr = NULL;
+	struct sockaddr_storage *acq_addr = NULL;
+	ikev2_pkt_ts_state_t tstate = { 0 };
+	struct sockaddr_storage start = { 0 };
+	struct sockaddr_storage end = { 0 };
+	uint8_t proto = 0;
+	uint8_t prefixlen = 0;
 
-static boolean_t
-resp_inv_acquire(pkt_t *restrict pkt, struct child_sa_args *restrict csa)
-{
-	ikev2_sa_t *i2sa = pkt->pkt_sa;
-	pkt_payload_t *ts_ip = pkt_get_payload(pkt, IKEV2_PAYLOAD_TSi, NULL);
-	pkt_payload_t *ts_rp = pkt_get_payload(pkt, IKEV2_PAYLOAD_TSr, NULL);
-	struct sockaddr_storage ss_src = { 0 };
-	struct sockaddr_storage ss_dst = { 0 };
-	struct sockaddr_storage ss_isrc = { 0 };
-	struct sockaddr_storage ss_idst = { 0 };
-	sockaddr_u_t src = { .sau_ss = &ss_src };
-	sockaddr_u_t dst = { .sau_ss = &ss_dst };
-	sockaddr_u_t isrc = { .sau_ss = &ss_isrc };
-	sockaddr_u_t idst = { .sau_ss = &ss_idst };
-	ikev2_ts_iter_t iter_i = { 0 };
-	ikev2_ts_iter_t iter_r = { 0 };
-	ikev2_ts_t *ts_i = NULL;
-	ikev2_ts_t *ts_r = NULL;
+	tspay = pkt_get_payload(req, IKEV2_PAYLOAD_TSr, NULL);
 
-	if (csa->csa_transport_mode) {
-		ts_i = ikev2_ts_iter(ts_ip, &iter_i, &ss_src, NULL);
-		ts_r = ikev2_ts_iter(ts_rp, &iter_r, &ss_dst, NULL);
-		isrc.sau_ss = NULL;
-		idst.sau_ss = NULL;
+	addr = get_sadb_addr(pmsg, B_FALSE);
+	proto = addr->sadb_address_proto;
+	acq_addr = (struct sockaddr_storage *)(addr + 1);
+	prefixlen = addr->sadb_address_prefixlen;
+	if (prefixlen == 0)
+		prefixlen = ss_addrbits(acq_addr);
+	resp_ts_negotiate_one(&start, &end, tspay, acq_addr, prefixlen);
 
-		if (!SA_ADDR_EQ(&i2sa->raddr, &ss_src)) {
-			sockaddr_copy(&i2sa->raddr, &csa->csa_nat_remote,
-			    B_TRUE);
-		}
-		if (!SA_ADDR_EQ(&i2sa->laddr, &ss_dst)) {
-			sockaddr_copy(&i2sa->laddr, &csa->csa_nat_local,
-			    B_TRUE);
-		}
-	} else {
-		sockaddr_copy(&i2sa->raddr, &ss_src, B_FALSE);
-		sockaddr_copy(&i2sa->laddr, &ss_dst, B_FALSE);
-		ts_i = ikev2_ts_iter(ts_ip, &iter_i, &ss_isrc, NULL);
-		ts_r = ikev2_ts_iter(ts_rp, &iter_r, &ss_idst, NULL);
-	}
+	/*
+	 * If the INVERSE_ACQUIRE returns successfully, there must be some
+	 * non-NULL intersection between the proposed addresses and our
+	 * policy, even if it's just a single IP.
+	 */
+	VERIFY(!range_is_zero(&start, &end));
 
-	return (pfkey_inverse_acquire(src, dst, isrc, idst, &csa->csa_pmsg));
+	if (!ikev2_add_ts_r(resp, &tstate))
+		return (B_FALSE);
+	if (!ikev2_add_ts(&tstate, proto, &start, &end))
+		return (B_FALSE);
+
+	tspay = pkt_get_payload(req, IKEV2_PAYLOAD_TSi, NULL);
+	addr = get_sadb_addr(pmsg, B_TRUE);
+	proto = addr->sadb_address_proto;
+	acq_addr = (struct sockaddr_storage *)(addr + 1);
+	prefixlen = addr->sadb_address_prefixlen;
+	if (prefixlen == 0)
+		prefixlen = ss_addrbits(acq_addr);
+	resp_ts_negotiate_one(&start, &end, tspay, acq_addr, prefixlen);
+
+	/* Same argument as above */
+	VERIFY(!range_is_zero(&start, &end));
+
+	if (!ikev2_add_ts_i(resp, &tstate))
+		return (B_FALSE);
+	if (!ikev2_add_ts(&tstate, proto, &start, &end))
+		return (B_FALSE);
+
+	return (B_TRUE);
 }
 
 static void
@@ -700,14 +723,71 @@ resp_ts_negotiate_one(struct sockaddr_storage *restrict res_start,
 	range_clamp(res_start, res_end);
 }
 
-static void
-resp_ts_negotiate(pkt_t *restrict req, pkt_t *restrict resp,
-    struct child_sa_args *restrict csa)
+/*
+ * Queries kernel for IPsec policy for IPs in TS{i,r} payloads and
+ * saves result in csa (may be NULL if no policy found).
+ *
+ * Return B_FALSE if there was an error looking up the policy (note: no policy
+ * found is not considered an error), B_TRUE otherwise.
+ */
+static boolean_t
+resp_inv_acquire(pkt_t *restrict pkt, struct child_sa_args *restrict csa)
 {
-	pkt_payload_t *ts_ip = pkt_get_payload(req, IKEV2_PAYLOAD_TSi, NULL);
-	pkt_payload_t *ts_rp = pkt_get_payload(req, IKEV2_PAYLOAD_TSr, NULL);
-	struct sockaddr_storage start = { 0 };
-	struct sockaddr_storage end = { 0 };
+	ikev2_sa_t *i2sa = pkt->pkt_sa;
+	pkt_payload_t *ts_ip = pkt_get_payload(pkt, IKEV2_PAYLOAD_TSi, NULL);
+	pkt_payload_t *ts_rp = pkt_get_payload(pkt, IKEV2_PAYLOAD_TSr, NULL);
+	struct sockaddr_storage ss_src = { 0 };
+	struct sockaddr_storage ss_dst = { 0 };
+	struct sockaddr_storage ss_isrc = { 0 };
+	struct sockaddr_storage ss_idst = { 0 };
+	sockaddr_u_t src = { .sau_ss = &ss_src };
+	sockaddr_u_t dst = { .sau_ss = &ss_dst };
+	sockaddr_u_t isrc = { .sau_ss = &ss_isrc };
+	sockaddr_u_t idst = { .sau_ss = &ss_idst };
+	ikev2_ts_iter_t iter_i = { 0 };
+	ikev2_ts_iter_t iter_r = { 0 };
+	ikev2_ts_t *ts_i = NULL;
+	ikev2_ts_t *ts_r = NULL;
+
+	sockaddr_copy(&i2sa->raddr, &ss_dst, B_FALSE);
+	sockaddr_copy(&i2sa->laddr, &ss_src, B_FALSE);
+
+	if (csa->csa_transport_mode) {
+		isrc.sau_ss = NULL;
+		idst.sau_ss = NULL;
+	} else {
+		ts_i = ikev2_ts_iter(ts_ip, &iter_i, &ss_idst, NULL);
+		ts_r = ikev2_ts_iter(ts_rp, &iter_r, &ss_isrc, NULL);
+	}
+
+	if (pfkey_inverse_acquire(src, dst, isrc, idst, &csa->csa_pmsg))
+		return (B_TRUE);
+
+	if (csa->csa_pmsg == NULL || csa->csa_pmsg->pmsg_samsg == NULL)
+		return (B_FALSE);
+
+	sadb_msg_t *m = csa->csa_pmsg->pmsg_samsg;
+
+	switch (m->sadb_msg_errno) {
+	case ENOENT:
+		(void) bunyan_warn(log,
+		    "No policy found for proposed IPsec traffic",
+		    BUNYAN_T_END);
+		parsedmsg_free(csa->csa_pmsg);
+		csa->csa_pmsg = NULL;
+		return (B_TRUE);
+	/* XXX: Other possible errors? */
+	default:
+		TSTDERR(m->sadb_msg_errno, warn,
+		    "Error while looking up IPsec policy",
+		    BUNYAN_T_STRING, "diagmsg",
+		    keysock_diag(m->sadb_x_msg_diagnostic),
+		    BUNYAN_T_UINT32, "diagcode",
+		    (uint32_t)m->sadb_x_msg_diagnostic);
+	}
+	parsedmsg_free(csa->csa_pmsg);
+	csa->csa_pmsg = NULL;
+	return (B_FALSE);
 }
 
 static void
@@ -749,6 +829,17 @@ check_natt_addrs(pkt_t *restrict pkt, boolean_t transport_mode)
 			}
 			sockaddr_copy(&rem, &i2sa->rnatt, B_TRUE);
 		}
+	}
+
+	if (i2sa->lnatt.ss_family != AF_UNSPEC) {
+		(void) bunyan_info(log, "Local NATT address",
+		    ss_bunyan(&i2sa->lnatt), "address", ss_addr(&i2sa->lnatt),
+		    BUNYAN_T_END);
+	}
+	if (i2sa->rnatt.ss_family != AF_UNSPEC) {
+		(void) bunyan_info(log, "Remote NATT address",
+		    ss_bunyan(&i2sa->rnatt), "address", ss_addr(&i2sa->rnatt),
+		    BUNYAN_T_END);
 	}
 }
 
@@ -913,4 +1004,24 @@ get_satype(parsedmsg_t *pmsg)
 	}
 
 	return (SADB_SATYPE_UNSPEC);
+}
+
+static sadb_address_t *
+get_sadb_addr(parsedmsg_t *pmsg, boolean_t src)
+{
+	sadb_ext_t *ext = NULL;
+	uint_t first = src ?
+	    SADB_X_EXT_ADDRESS_INNER_SRC : SADB_X_EXT_ADDRESS_INNER_DST;
+	uint_t alt = src ?  SADB_EXT_ADDRESS_SRC : SADB_EXT_ADDRESS_DST;
+
+	ext = pmsg->pmsg_exts[first];
+	if (ext == NULL) {
+		ext = pmsg->pmsg_exts[alt];
+		VERIFY3P(ext, !=, NULL);
+		VERIFY3U(ext->sadb_ext_type, ==, alt);
+	} else {
+		VERIFY3U(ext->sadb_ext_type, ==, first);
+	}
+
+	return ((sadb_address_t *)ext);
 }

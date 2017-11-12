@@ -164,7 +164,7 @@ ss_bunyan(const struct sockaddr_storage *ss)
 	case AF_INET6:
 		return (BUNYAN_T_IP6);
 	default:
-		INVALID("ss->ss_family");
+		INVALID(ss->ss_family);
 		/*NOTREACHED*/
 		return (0);
 	}
@@ -182,7 +182,7 @@ ss_port(const struct sockaddr_storage *ss)
 	case AF_INET6:
 		return (ntohs(sau.sau_sin6->sin6_port));
 	default:
-		INVALID("ss->ss_family");
+		INVALID(ss->ss_family);
 		/*NOTREACHED*/
 		return (0);
 	}
@@ -199,7 +199,37 @@ ss_addr(const struct sockaddr_storage *ss)
 	case AF_INET6:
 		return (&sau.sau_sin6->sin6_addr);
 	default:
-		INVALID("ss->ss_family");
+		INVALID(ss->ss_family);
+		/*NOTREACHED*/
+		return (0);
+	}
+}
+
+size_t
+ss_addrlen(const struct sockaddr_storage *ss)
+{
+	switch (ss->ss_family) {
+	case AF_INET:
+		return (sizeof (in_addr_t));
+	case AF_INET6:
+		return (sizeof (in6_addr_t));
+	default:
+		INVALID(ss->ss_family);
+		/*NOTREACHED*/
+		return (0);
+	}
+}
+
+uint8_t
+ss_addrbits(const struct sockaddr_storage *ss)
+{
+	switch (ss->ss_family) {
+	case AF_INET:
+		return (IP_ABITS);
+	case AF_INET6:
+		return (IPV6_ABITS);
+	default:
+		INVALID(ss->ss_family);
 		/*NOTREACHED*/
 		return (0);
 	}
@@ -373,48 +403,47 @@ void
 net_to_range(const struct sockaddr_storage *addr, uint8_t prefixlen,
     struct sockaddr_storage *start, struct sockaddr_storage *end)
 {
-	struct sockaddr_storage mask = { 0 };
 	const uint8_t *addrp = NULL;
 	uint8_t *maskp = NULL, *startp = NULL, *endp = NULL;
+	struct sockaddr_storage mask = { 0 };
 	size_t len = 0;
-	offset_t off = 0;
 
 	VERIFY0(plen2mask(prefixlen, addr->ss_family,
 	    (struct sockaddr *)&mask));
 
-	switch (addr->ss_family) {
-	case AF_INET:
-		len = sizeof (in_addr_t);
-		off = offsetof(struct sockaddr_in, sin_addr);
-		if (start != NULL)
-			bcopy(addr, start, sizeof (struct sockaddr_in));
-		if (end != NULL)
-			bcopy(addr, end, sizeof (struct sockaddr_in));
-		break;
-	case AF_INET6:
-		len = sizeof (in6_addr_t);
-		off = offsetof(struct sockaddr_in6, sin6_addr);
-		if (start != NULL)
-			bcopy(addr, start, sizeof (struct sockaddr_in6));
-		if (end != NULL)
-			bcopy(addr, end, sizeof (struct sockaddr_in6));
-		break;
-	default:
-		INVALID(addr->ss_family);
-	}
+	addrp = ss_addr(addr);
+	maskp = (uint8_t *)ss_addr(&mask);
+	len = ss_addrlen(addr);
 
-	addrp = (const uint8_t *)addr + off;
-	maskp = (uint8_t *)&mask + off;
-	if (start != NULL)
-		startp = (uint8_t *)start + off;
-	if (end != NULL)
-		endp = (uint8_t *)end + off;
+	if (start != NULL) {
+		start->ss_family = addr->ss_family;
+		startp = (uint8_t *)ss_addr(start);
+	}
+	if (end != NULL) {
+		end->ss_family = addr->ss_family;
+		endp = (uint8_t *)ss_addr(end);
+	}
 
 	for (size_t i = 0; i < len; i++) {
 		if (startp != NULL)
 			startp[i] = addrp[i] & maskp[i];
 		if (endp != NULL)
 			endp[i] = addrp[i] | ~maskp[i];
+	}
+
+	/*
+	 * SADB addresses don't have the concept of a port range, either the
+	 * port is 0 (to imply any port) or it is a specific port.
+	 */
+
+	/* Take advantage of port at the same offset for IPv4/IPv6 */
+	uint16_t addr_port = ss_port(addr);
+	if (addr_port == 0) {
+		((struct sockaddr_in *)start)->sin_port = 0;
+		((struct sockaddr_in *)end)->sin_port = UINT16_MAX;
+	} else {
+		((struct sockaddr_in *)start)->sin_port = addr_port;
+		((struct sockaddr_in *)end)->sin_port = addr_port;
 	}
 }
 
@@ -445,7 +474,7 @@ range_intersection(struct sockaddr_storage *restrict res_start,
 		off = offsetof(struct sockaddr_in6, sin6_addr);
 		break;
 	default:
-		INVALID(addr->ss_family);
+		INVALID(start1->ss_family);
 	}
 
 	s1 = (const uint8_t *)start1 + off;
@@ -468,9 +497,28 @@ range_intersection(struct sockaddr_storage *restrict res_start,
 		if (re[i] < rs[i]) {
 			bzero(rs, len);
 			bzero(re, len);
-			break;
+			goto done;
 		}
 	}
+
+	/* Take advantage of port at the same offset for IPv4/IPv6 */
+	uint16_t *res_startp = &((struct sockaddr_in *)res_start)->sin_port;
+	uint16_t *res_endp = &((struct sockaddr_in *)res_end)->sin_port;
+	uint16_t s1port = ntohs(((struct sockaddr_in *)start1)->sin_port);
+	uint16_t e1port = ntohs(((struct sockaddr_in *)end1)->sin_port);
+	uint16_t s2port = ntohs(((struct sockaddr_in *)start2)->sin_port);
+	uint16_t e2port = ntohs(((struct sockaddr_in *)end2)->sin_port);
+
+	*res_startp = htons(MAX(s1port, s2port));
+	*res_endp = htons(MIN(e1port, e2port));
+
+	if (ntohs(*res_startp) > ntohs(*res_endp)) {
+		bzero(rs, len);
+		bzero(re, len);
+	}
+
+done:
+	res_start->ss_family = res_end->ss_family = start1->ss_family;
 }
 
 int
@@ -529,7 +577,6 @@ void
 range_clamp(struct sockaddr_storage *restrict start,
     struct sockaddr_storage *restrict end)
 {
-
 }
 
 boolean_t
@@ -562,6 +609,47 @@ range_is_zero(const struct sockaddr_storage *start,
 		if (sp[i] != 0 || ep[i] != 0)
 			return (B_FALSE);
 	}
+	return (B_TRUE);
+}
+
+boolean_t
+range_in_net(const struct sockaddr_storage *net, uint8_t prefixlen,
+    const struct sockaddr_storage *start, const struct sockaddr_storage *end)
+{
+	const uint8_t *ns, *ne, *rs, *re;
+	struct sockaddr_storage net_start = { 0 };
+	struct sockaddr_storage net_end = { 0 };
+	size_t len = 0;
+	offset_t off = 0;
+
+	VERIFY3U(net->ss_family, ==, start->ss_family);
+	VERIFY3U(start->ss_family, ==, end->ss_family);
+
+	net_to_range(net, prefixlen, &net_start, &net_end);
+
+	switch (start->ss_family) {
+	case AF_INET:
+		len = sizeof (in_addr_t);
+		off = offsetof(struct sockaddr_in, sin_addr);
+		break;
+	case AF_INET6:
+		len = sizeof (in6_addr_t);
+		off = offsetof(struct sockaddr_in6, sin6_addr);
+		break;
+	default:
+		INVALID(addr->ss_family);
+	}
+
+	ns = (const uint8_t *)&net_start + off;
+	ne = (const uint8_t *)&net_end + off;
+	rs = (const uint8_t *)start + off;
+	re = (const uint8_t *)end + off;
+
+	for (size_t i = 0; i < len; i++) {
+		if (ns[i] > rs[i] || ne[i] < rs[i])
+			return (B_FALSE);
+	}
+
 	return (B_TRUE);
 }
 

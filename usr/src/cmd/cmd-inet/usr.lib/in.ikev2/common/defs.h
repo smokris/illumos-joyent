@@ -133,6 +133,8 @@ typedef struct algindex {
 int ss_bunyan(const struct sockaddr_storage *);
 uint32_t ss_port(const struct sockaddr_storage *);
 const void *ss_addr(const struct sockaddr_storage *);
+size_t ss_addrlen(const struct sockaddr_storage *);
+uint8_t ss_addrbits(const struct sockaddr_storage *);
 
 #define	LOG_KEY_ERRMSG	"err"
 #define	LOG_KEY_ERRNO	"errno"
@@ -226,6 +228,8 @@ void range_clamp(struct sockaddr_storage *restrict,
     struct sockaddr_storage *restrict);
 boolean_t range_is_zero(const struct sockaddr_storage *,
     const struct sockaddr_storage *);
+boolean_t range_in_net(const struct sockaddr_storage *, uint8_t,
+    const struct sockaddr_storage *, const struct sockaddr_storage *);
 
 #ifdef  __cplusplus
 }
