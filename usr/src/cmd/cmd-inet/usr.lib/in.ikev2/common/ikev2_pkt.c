@@ -827,13 +827,14 @@ ikev2_add_ts(ikev2_pkt_ts_state_t *restrict tstate, uint8_t ip_proto,
     const struct sockaddr_storage *restrict ss_start,
     const struct sockaddr_storage *restrict ss_end)
 {
-	ikev2_ts_t	ts = { 0 };
+	ikev2_ts_t ts = { 0 };
 	sockaddr_u_t start = { .sau_ss = (struct sockaddr_storage *)ss_start };
 	sockaddr_u_t end = { .sau_ss = (struct sockaddr_storage *)ss_end };
 	const void *startptr = NULL;
 	const void *endptr = NULL;
-	size_t		len = 0;
-	size_t		addrlen = 0;
+	size_t len = 0;
+	size_t addrlen = 0;
+	uint32_t val = 0;
 
 	VERIFY3U(start.sau_ss->ss_family, ==, end.sau_ss->ss_family);
 
@@ -848,8 +849,11 @@ ikev2_add_ts(ikev2_pkt_ts_state_t *restrict tstate, uint8_t ip_proto,
 	startptr = ss_addr(ss_start);
 	endptr = ss_addr(ss_end);
 	addrlen = ss_addrlen(ss_start);
-	ts.ts_startport = htons(ss_port(ss_start));
-	ts.ts_endport = htons(ss_port(ss_end));
+
+	val = ss_port(ss_start);
+	ts.ts_startport = htons((uint16_t)val);
+	val = ss_port(ss_end);
+	ts.ts_endport = htons((uint16_t)val);
 
 	switch (start.sau_ss->ss_family) {
 	case AF_INET:

@@ -230,6 +230,8 @@ boolean_t range_is_zero(const struct sockaddr_storage *,
     const struct sockaddr_storage *);
 boolean_t range_in_net(const struct sockaddr_storage *, uint8_t,
     const struct sockaddr_storage *, const struct sockaddr_storage *);
+void log_range(bunyan_logger_t *, bunyan_level_t, const char *,
+    struct sockaddr_storage *, struct sockaddr_storage *);
 
 #ifdef  __cplusplus
 }

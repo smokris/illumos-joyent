@@ -366,6 +366,8 @@ ikev2_create_child_sa_resp_common(pkt_t *restrict req, pkt_t *restrict resp,
 	if (!ikev2_create_child_sas(sa, csa, B_FALSE))
 		goto fail;
 
+	/* XXX: on failures here we need to be sending appropriates NOTIFYS */
+
 done:
 	(void) ikev2_send_resp(resp);
 	/* Don't reuse the same DH key for additional child SAs */
@@ -496,8 +498,6 @@ add_sadb_address(ikev2_pkt_ts_state_t *restrict tstate,
 {
 	struct sockaddr_storage ss_start = { 0 };
 	struct sockaddr_storage ss_end = { 0 };
-	sockaddr_u_t start = { .sau_ss = &ss_end };
-	sockaddr_u_t end = { .sau_ss = &ss_end };
 	uint8_t proto = addr->sadb_address_proto;
 	uint8_t prefixlen = addr->sadb_address_prefixlen;
 
@@ -513,15 +513,7 @@ add_sadb_address(ikev2_pkt_ts_state_t *restrict tstate,
 	net_to_range((struct sockaddr_storage *)(addr + 1), prefixlen,
 	    &ss_start, &ss_end);
 
-	(void) bunyan_debug(log, msg,
-	    BUNYAN_T_UINT32, "proto", (uint32_t)proto,
-	    ss_bunyan(&ss_start), "start", ss_addr(&ss_start),
-	    BUNYAN_T_UINT32, "startport", ss_port(&ss_start),
-	    ss_bunyan(&ss_end), "end", ss_addr(&ss_end),
-	    BUNYAN_T_UINT32, "endport", ss_port(&ss_end),
-	    BUNYAN_T_END);
-
-	return (ikev2_add_ts(tstate, proto, start.sau_ss, end.sau_ss));
+	return (ikev2_add_ts(tstate, proto, &ss_start, &ss_end));
 }
 
 static boolean_t
@@ -578,7 +570,7 @@ add_ts_resp(pkt_t *restrict req, pkt_t *restrict resp,
 
 	tspay = pkt_get_payload(req, IKEV2_PAYLOAD_TSr, NULL);
 
-	addr = get_sadb_addr(pmsg, B_FALSE);
+	addr = get_sadb_addr(pmsg, B_TRUE);
 	proto = addr->sadb_address_proto;
 	acq_addr = (struct sockaddr_storage *)(addr + 1);
 	prefixlen = addr->sadb_address_prefixlen;
@@ -599,7 +591,7 @@ add_ts_resp(pkt_t *restrict req, pkt_t *restrict resp,
 		return (B_FALSE);
 
 	tspay = pkt_get_payload(req, IKEV2_PAYLOAD_TSi, NULL);
-	addr = get_sadb_addr(pmsg, B_TRUE);
+	addr = get_sadb_addr(pmsg, B_FALSE);
 	proto = addr->sadb_address_proto;
 	acq_addr = (struct sockaddr_storage *)(addr + 1);
 	prefixlen = addr->sadb_address_prefixlen;
@@ -692,9 +684,14 @@ resp_ts_negotiate_one(struct sockaddr_storage *restrict res_start,
 	 */
 
 	net_to_range(acq_addr, acq_mask, &acq_start, &acq_end);
+	log_range(log, BUNYAN_L_DEBUG, "acquire address", &acq_start, &acq_end);
+
 	ts = ikev2_ts_iter(ts_pay, &iter, &start, &end);
+	log_range(log, BUNYAN_L_DEBUG, "TS[0] address", &start, &end);
+
 	range_intersection(res_start, res_end, &start, &end, &acq_start,
 	    &acq_end);
+	log_range(log, BUNYAN_L_DEBUG, "acquire ∩ TS[0]", res_start, res_end);
 
 	while ((ts = ikev2_ts_iter_next(&iter, &start, &end)) != NULL) {
 		struct sockaddr_storage cmp_start = { 0 };

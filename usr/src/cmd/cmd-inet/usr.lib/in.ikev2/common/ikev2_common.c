@@ -15,6 +15,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/debug.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -26,6 +27,7 @@
 #include "ikev2_enum.h"
 #include "ikev2_proto.h"
 #include "config.h"
+#include "pfkey.h"
 #include "pkcs11.h"
 #include "pkt.h"
 #include "worker.h"
@@ -44,6 +46,8 @@ static ikev2_prf_t prf_supported[] = {
 	IKEV2_PRF_HMAC_SHA1,
 	IKEV2_PRF_HMAC_MD5
 };
+
+static void log_acq_match(ikev2_sa_result_t *);
 
 static boolean_t
 ikev2_sa_from_ext_acquire(pkt_t *restrict pkt, parsedmsg_t *restrict pmsg,
@@ -189,16 +193,16 @@ ikev2_pfkey_to_auth(int alg)
 {
 	switch (alg) {
 	case SADB_AALG_NONE:
+		return (IKEV2_XF_AUTH_NONE);
 	case SADB_AALG_SHA256HMAC:
+		return (IKEV2_XF_AUTH_HMAC_SHA2_256_128);
 	case SADB_AALG_SHA384HMAC:
+		return (IKEV2_XF_AUTH_HMAC_SHA2_384_192);
 	case SADB_AALG_SHA512HMAC:
-		/* these values all correspond */
-		return (alg);
+		return (IKEV2_XF_AUTH_HMAC_SHA2_512_256);
 	case SADB_AALG_MD5HMAC:
-		/* this one does not */
 		return (IKEV2_XF_AUTH_HMAC_MD5_96);
 	case SADB_AALG_SHA1HMAC:
-		/* nor does this one */
 		return (IKEV2_XF_AUTH_HMAC_SHA1_96);
 	default:
 		INVALID("alg");
@@ -223,6 +227,7 @@ ikev2_pfkey_to_encr(int alg)
 	case SADB_EALG_AES_GCM_8:
 	case SADB_EALG_AES_GCM_12:
 	case SADB_EALG_AES_GCM_16:
+		/* These all match up */
 		return (alg);
 	default:
 		INVALID("alg");
@@ -578,15 +583,25 @@ match_rule_attr_cb(ikev2_xf_type_t xftype, uint16_t xfid,
 }
 
 struct acquire_data_s {
-	sadb_comb_t		*ad_comb;
+	union {
+		sadb_comb_t		*adu_comb;
+		sadb_x_ecomb_t		*adu_ecomb;
+	} adu;
+#define	ad_comb adu.adu_comb
+#define	ad_ecomb adu.adu_ecomb
+	sadb_x_algdesc_t	*ad_algdesc;
 	ikev2_sa_result_t	*ad_res;
 	ikev2_spi_proto_t	ad_spitype;
 	ikev2_dh_t		ad_dh;
+	uint32_t		ad_seen;
 	boolean_t		ad_skip;
 	boolean_t		ad_match;
 	boolean_t		ad_keylen_match;
+	boolean_t		ad_ext_acquire;
 };
 
+static boolean_t ikev2_sa_match_eacquire(parsedmsg_t *restrict,
+    ikev2_dh_t, pkt_t *restrict, ikev2_sa_result_t *restrict);
 static boolean_t match_acq_prop_cb(ikev2_sa_proposal_t *, uint64_t,
     uint8_t *, size_t, void *);
 static boolean_t match_acq_xf_cb(ikev2_transform_t *, uint8_t *, size_t,
@@ -598,6 +613,9 @@ boolean_t
 ikev2_sa_match_acquire(parsedmsg_t *restrict pmsg, ikev2_dh_t dh,
     pkt_t *restrict pkt, ikev2_sa_result_t *restrict result)
 {
+	if (pmsg->pmsg_exts[SADB_X_EXT_EPROP] != NULL)
+		return (ikev2_sa_match_eacquire(pmsg, dh, pkt, result));
+
 	pkt_payload_t *pay = pkt_get_payload(pkt, IKEV2_PAYLOAD_SA, NULL);
 	sadb_msg_t *samsg = pmsg->pmsg_samsg;
 	sadb_prop_t *prop;
@@ -609,6 +627,10 @@ ikev2_sa_match_acquire(parsedmsg_t *restrict pmsg, ikev2_dh_t dh,
 	(void) bunyan_debug(log, "Checking rules against acquire",
 	    BUNYAN_T_END);
 
+	prop = (sadb_prop_t *)pmsg->pmsg_exts[SADB_EXT_PROPOSAL];
+	comb = (sadb_comb_t *)(prop + 1);
+	VERIFY3P(prop, !=, NULL);
+
 	switch (samsg->sadb_msg_satype) {
 	case SADB_SATYPE_AH:
 		spitype = IKEV2_PROTO_AH;
@@ -617,11 +639,8 @@ ikev2_sa_match_acquire(parsedmsg_t *restrict pmsg, ikev2_dh_t dh,
 		spitype = IKEV2_PROTO_ESP;
 		break;
 	default:
-		INVALID("sadb_msg_satype");
+		INVALID(samsg->sadb_msg_satype);
 	}
-
-	prop = (sadb_prop_t *)pmsg->pmsg_exts[SADB_EXT_PROPOSAL];
-	comb = (sadb_comb_t *)(prop + 1);
 
 	for (size_t i = 0; i < prop->sadb_x_prop_numecombs; i++, comb++) {
 		struct acquire_data_s data = {
@@ -637,29 +656,7 @@ ikev2_sa_match_acquire(parsedmsg_t *restrict pmsg, ikev2_dh_t dh,
 		    match_acq_prop_cb, &data, B_FALSE));
 
 		if (data.ad_match) {
-			char estr[IKEV2_ENUM_STRLEN];
-			char astr[IKEV2_ENUM_STRLEN];
-			char pstr[IKEV2_ENUM_STRLEN];
-			char dstr[IKEV2_ENUM_STRLEN];
-
-			(void) bunyan_debug(log, "Found proposal match",
-			    BUNYAN_T_UINT32, "propnum",
-			    (uint32_t)result->sar_propnum,
-			    BUNYAN_T_UINT64, "spi", result->sar_spi,
-			    BUNYAN_T_STRING, "encr",
-			    ikev2_xf_encr_str(result->sar_encr, estr,
-			    sizeof (estr)),
-			    BUNYAN_T_UINT32, "keylen",
-			    (uint32_t)result->sar_encr_keylen,
-			    BUNYAN_T_STRING, "auth",
-			    ikev2_xf_auth_str(result->sar_auth, astr,
-			    sizeof (astr)),
-			    BUNYAN_T_STRING, "prf",
-			    ikev2_prf_str(result->sar_prf, pstr, sizeof (pstr)),
-			    BUNYAN_T_STRING, "dh", ikev2_dh_str(result->sar_dh,
-			    dstr, sizeof (dstr)),
-			    BUNYAN_T_UINT32, "esn", (uint32_t)result->sar_esn,
-			    BUNYAN_T_END);
+			log_acq_match(result);
 			return (B_TRUE);
 		}
 	}
@@ -804,20 +801,243 @@ match_acq_attr_cb(ikev2_xf_type_t xftype, uint16_t xfid,
     ikev2_attribute_t *attr, void *cookie)
 {
 	struct acquire_data_s *data = cookie;
+	uint16_t minbits = 0, maxbits = 0;
 
-	if (attr->attr_type != IKEV2_XF_ATTR_KEYLEN) {
+	if (data->ad_ext_acquire) {
+		sadb_x_algdesc_t *algdesc = data->ad_algdesc;
+
+		minbits = algdesc->sadb_x_algdesc_minbits;
+		maxbits = algdesc->sadb_x_algdesc_maxbits;
+	} else {
+		minbits = data->ad_comb->sadb_comb_encrypt_minbits;
+		maxbits = data->ad_comb->sadb_comb_encrypt_maxbits;
+	}
+
+	if (IKE_ATTR_GET_TYPE(attr->attr_type) != IKEV2_XF_ATTR_KEYLEN) {
 		data->ad_skip = B_TRUE;
 		return (B_FALSE);
 	}
 
-	if (attr->attr_length >= data->ad_comb->sadb_comb_encrypt_minbits &&
-	    attr->attr_length <= data->ad_comb->sadb_comb_encrypt_maxbits) {
+	if (xfid > IKEV2_ENCR_MAX)
+		return (B_FALSE);
+
+	if (!encr_keylen_allowed(xfid))
+		return (B_FALSE);
+
+	if (attr->attr_length >= minbits && attr->attr_length <= maxbits) {
 		data->ad_res->sar_encr_keylen = attr->attr_length;
 		data->ad_keylen_match = B_TRUE;
 		return (B_FALSE);
 	}
 
 	return (B_TRUE);
+}
+
+static boolean_t match_eacq_prop_cb(ikev2_sa_proposal_t *, uint64_t,
+    uint8_t *, size_t, void *);
+static boolean_t match_eacq_xf_cb(ikev2_transform_t *, uint8_t *, size_t,
+    void *);
+
+static boolean_t
+ikev2_sa_match_eacquire(parsedmsg_t *restrict pmsg,
+    ikev2_dh_t dh, pkt_t *restrict pkt, ikev2_sa_result_t *restrict res)
+{
+	pkt_payload_t *pay = pkt_get_payload(pkt, IKEV2_PAYLOAD_SA, NULL);
+	sadb_msg_t *samsg = pmsg->pmsg_samsg;
+	sadb_prop_t *prop = NULL;
+	sadb_x_ecomb_t *ecomb = NULL;
+	struct acquire_data_s data = {
+		.ad_res = res,
+		.ad_dh = dh,
+		.ad_ext_acquire = B_TRUE
+	};
+	uint16_t numcomb = 0;
+	uint8_t	numalg = 0;
+
+	(void) bunyan_debug(log, "Checking rules against extended acquire",
+	    BUNYAN_T_END);
+
+	prop = (sadb_prop_t *)pmsg->pmsg_exts[SADB_X_EXT_EPROP];
+	ecomb = (sadb_x_ecomb_t *)(prop + 1);
+	numcomb = prop->sadb_x_prop_numecombs;
+	numalg = ecomb->sadb_x_ecomb_numalgs;
+	for (size_t i = 0; i < numcomb; i++) {
+		sadb_x_algdesc_t *algdesc = (sadb_x_algdesc_t *)(ecomb + 1);
+
+		data.ad_ecomb = ecomb;
+		VERIFY(ikev2_walk_proposals(pay->pp_ptr, pay->pp_len,
+		    match_eacq_prop_cb, &data, B_FALSE));
+
+		if (data.ad_match) {
+			log_acq_match(res);
+			return (B_TRUE);
+		}
+
+		ecomb = (sadb_x_ecomb_t *)(algdesc + numalg);
+	}
+
+	(void) bunyan_debug(log, "No matching proposals found", BUNYAN_T_END);
+	return (B_FALSE);
+}
+
+static boolean_t
+match_eacq_prop_cb(ikev2_sa_proposal_t *prop, uint64_t spi, uint8_t *buf,
+    size_t buflen, void *cookie)
+{
+	struct acquire_data_s *data = cookie;
+	sadb_x_ecomb_t *ecomb = data->ad_ecomb;
+	sadb_x_algdesc_t *algdesc = (sadb_x_algdesc_t *)(ecomb + 1);
+
+	bzero(data->ad_res, sizeof (*data->ad_res));
+	data->ad_spitype = satype_to_ikev2(algdesc->sadb_x_algdesc_satype);
+	data->ad_seen = 0;
+	if (data->ad_dh != IKEV2_DH_NONE)
+		data->ad_seen |= (uint32_t)1 << IKEV2_XF_DH;
+
+	for (size_t i = 0; i < ecomb->sadb_x_ecomb_numalgs; i++, algdesc++) {
+		ikev2_xf_type_t xftype = 0;
+
+		if (satype_to_ikev2(algdesc->sadb_x_algdesc_satype) !=
+		    prop->proto_protoid)
+			continue;
+
+		switch (algdesc->sadb_x_algdesc_algtype) {
+		case SADB_X_ALGTYPE_AUTH:
+			xftype = IKEV2_XF_AUTH;
+			break;
+		case SADB_X_ALGTYPE_CRYPT:
+			xftype = IKEV2_XF_ENCR;
+			break;
+		}
+
+		data->ad_algdesc = algdesc;
+		if (xftype != 0)
+			data->ad_seen |= (uint32_t)1 << xftype;
+
+		data->ad_skip = B_FALSE;
+		VERIFY(ikev2_walk_xfs(buf, buflen, match_eacq_xf_cb, cookie));
+		if (data->ad_skip)
+			return (B_TRUE);
+	}
+
+	if (((data->ad_seen & data->ad_res->sar_match) != data->ad_seen) ||
+	    !data->ad_keylen_match)
+		return (B_TRUE);
+
+	data->ad_match = B_TRUE;
+	data->ad_res->sar_spi = spi;
+	data->ad_res->sar_proto = data->ad_spitype;
+	data->ad_res->sar_propnum = prop->proto_proposalnr;
+	return (B_FALSE);
+}
+
+static boolean_t
+match_eacq_xf_cb(ikev2_transform_t *xf, uint8_t *buf, size_t buflen,
+    void *cookie)
+{
+	struct acquire_data_s *data = cookie;
+	sadb_x_algdesc_t *algdesc = data->ad_algdesc;
+	char str[IKEV2_ENUM_STRLEN];
+	const char *strp = NULL;
+	boolean_t match = B_FALSE;
+	uint8_t algtype = algdesc->sadb_x_algdesc_algtype;
+	uint8_t alg = algdesc->sadb_x_algdesc_alg;
+
+	(void) bunyan_trace(log, "Checking transform",
+	    BUNYAN_T_STRING, "xftype", ikev2_xf_type_str(xf->xf_type, str,
+	    sizeof (str)),
+	    BUNYAN_T_UINT32, "val", (uint32_t)xf->xf_id,
+	    BUNYAN_T_END);
+
+	/* XXX: Can there be different satypes in one ecomb? */
+	switch (xf->xf_type) {
+	case IKEV2_XF_ENCR:
+		if (algtype != SADB_X_ALGTYPE_CRYPT)
+			return (B_TRUE);
+		if (xf->xf_id != ikev2_pfkey_to_encr(alg))
+			break;
+
+		if (buflen > 0) {
+			data->ad_keylen_match = B_FALSE;
+			VERIFY(ikev2_walk_xfattrs(buf, buflen,
+			    match_acq_attr_cb, xf->xf_type, xf->xf_id,
+			    cookie));
+
+			/*
+			 * RFC7296 3.3.6 - Unknown attribute means skip the
+			 * transform, but not the whole proposal.
+			 */
+			if (data->ad_skip) {
+				data->ad_skip = B_FALSE;
+				break;
+			}
+			if (!data->ad_keylen_match)
+				break;
+		}
+		data->ad_res->sar_encr = xf->xf_id;
+		match = B_TRUE;
+		strp = ikev2_xf_encr_str(xf->xf_id, str, sizeof (str));
+		break;
+	case IKEV2_XF_AUTH:
+		if (algtype != SADB_X_ALGTYPE_AUTH)
+			return (B_TRUE);
+		if (xf->xf_id != ikev2_pfkey_to_auth(alg))
+			break;
+		match = B_TRUE;
+		data->ad_res->sar_auth = xf->xf_id;
+		strp = ikev2_xf_auth_str(xf->xf_id, str, sizeof (str));
+		break;
+	case IKEV2_XF_DH:
+		if (xf->xf_id != data->ad_dh)
+			break;
+		match = B_TRUE;
+		data->ad_res->sar_dh = xf->xf_id;
+		strp = ikev2_dh_str(xf->xf_id, str, sizeof (str));
+		break;
+	case IKEV2_XF_ESN:
+		if (xf->xf_id != IKEV2_ESN_NONE)
+			break;
+		match = B_TRUE;
+		data->ad_res->sar_esn = B_FALSE;
+		break;
+	}
+
+	if (match) {
+		const char *xfp = NULL;
+		char xfbuf[IKEV2_ENUM_STRLEN];
+
+		data->ad_res->sar_match |= (uint32_t)1 << xf->xf_type;
+
+		xfp = ikev2_xf_type_str(xf->xf_type, xfbuf, sizeof (xfbuf));
+		(void) bunyan_debug(log, "Partial transform match",
+		    BUNYAN_T_STRING, "xftype", xfp,
+		    BUNYAN_T_STRING, "xfval", strp,
+		    BUNYAN_T_END);
+	}
+
+	return (!data->ad_skip);
+}
+
+static void
+log_acq_match(ikev2_sa_result_t *res)
+{
+	char estr[IKEV2_ENUM_STRLEN];
+	char astr[IKEV2_ENUM_STRLEN];
+	char pstr[IKEV2_ENUM_STRLEN];
+	char dstr[IKEV2_ENUM_STRLEN];
+
+	(void) bunyan_debug(log, "Found proposal match",
+	    BUNYAN_T_UINT32, "propnum", (uint32_t)res->sar_propnum,
+	    BUNYAN_T_UINT64, "spi", res->sar_spi,
+	    BUNYAN_T_STRING, "encr",
+	    ikev2_xf_encr_str(res->sar_encr, estr, sizeof (estr)),
+	    BUNYAN_T_UINT32, "keylen", (uint32_t)res->sar_encr_keylen,
+	    BUNYAN_T_STRING, "auth",
+	    ikev2_xf_auth_str(res->sar_auth, astr, sizeof (astr)),
+	    BUNYAN_T_STRING, "dh", ikev2_dh_str(res->sar_dh,
+	    dstr, sizeof (dstr)),
+	    BUNYAN_T_BOOLEAN, "esn", res->sar_esn,
+	    BUNYAN_T_END);
 }
 
 char *

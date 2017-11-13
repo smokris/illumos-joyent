@@ -92,8 +92,8 @@
 #define	PFKEY_K_SPI "sadb_sa_spi"
 #define	PFKEY_K_AUTH "sadb_sa_auth"
 #define	PFKEY_K_ENCR "sadb_sa_encr"
-
 #define	PFKEY_K_PORT "_port"
+#define	PFKEY_K_PAIR "sadb_pair_spi"
 
 static const char *pfkey_keys[] = {
 	PFKEY_K_SRCADDR,
@@ -110,6 +110,8 @@ static const char *pfkey_keys[] = {
 	PFKEY_K_NREM PFKEY_K_PORT,
 	PFKEY_K_AUTH,
 	PFKEY_K_ENCR,
+	PFKEY_K_SPI,
+	PFKEY_K_PAIR,
 };
 
 #define	PFKEY_MSG_LEN(msg, ext) \
@@ -598,6 +600,9 @@ pfkey_add_address(sadb_ext_t *restrict ext, uint16_t type,
 	addr->sadb_address_len = SADB_8TO64(len);
 	addr->sadb_address_exttype = type;
 
+	/*XXX:FIXME*/
+	addr->sadb_address_prefixlen = 32;
+
 	return ((sadb_ext_t *)((uint8_t *)ext + len));
 }
 
@@ -701,7 +706,7 @@ pfkey_add_key(sadb_ext_t *restrict ext, uint16_t type, const uint8_t *key,
 
 	skey->sadb_key_len = SADB_8TO64(len);
 	skey->sadb_key_exttype = type;
-	skey->sadb_key_bits = SADB_1TO8(keylen);
+	skey->sadb_key_bits = SADB_8TO1(keylen);
 	(void) memcpy(skey + 1, key, keylen);
 	return ((sadb_ext_t *)((uint8_t *)ext + len));
 }
@@ -806,7 +811,12 @@ pfkey_sadb_add_update(const ikev2_sa_t *restrict sa, uint32_t spi,
 	ext = pfkey_add_sa(ext, spi, sar);
 	ext = pfkey_add_lifetime(ext);
 
-	if (initiator) {
+	/*
+	 * XXX:It's implied that the larval SA we created with GETSPI is the one
+	 * we update (thus the source is always the 'local' address).
+	 * I'd like to find a better way to express this intent more clearly
+	 */
+	if (!add) {
 		pfsa->sadb_sa_flags |= SADB_X_SAFLAGS_OUTBOUND;
 
 		ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_SRC,
@@ -1305,6 +1315,30 @@ pfkey_register(uint8_t satype)
 }
 
 static void
+sadb_log_sa(sadb_ext_t *ext)
+{
+	sadb_sa_t *sa = (sadb_sa_t *)ext;
+	char buf[11] = { 0 }; /* 0x + 8 hex digits + NUL */
+
+	(void) snprintf(buf, sizeof (buf), "0x%X", sa->sadb_sa_spi);
+	(void) bunyan_key_add(log,
+	    BUNYAN_T_STRING, PFKEY_K_SPI, buf,
+	    BUNYAN_T_END);
+}
+
+static void
+sadb_log_pair(sadb_ext_t *ext)
+{
+	sadb_x_pair_t *pair = (sadb_x_pair_t *)ext;
+	char buf[11] = { 0 };
+
+	(void) snprintf(buf, sizeof (buf), "0x%X", pair->sadb_x_pair_spi);
+	(void) bunyan_key_add(log,
+	    BUNYAN_T_STRING, PFKEY_K_PAIR, buf,
+	    BUNYAN_T_END);
+}
+
+static void
 sadb_log_addr(sadb_ext_t *ext)
 {
 	const char *name = NULL;
@@ -1407,6 +1441,9 @@ sadb_log(bunyan_level_t level, const char *restrict msg,
 
 	while (ext < end) {
 		switch (ext->sadb_ext_type) {
+		case SADB_EXT_SA:
+			sadb_log_sa(ext);
+			break;
 		case SADB_EXT_ADDRESS_SRC:
 		case SADB_EXT_ADDRESS_DST:
 		case SADB_X_EXT_ADDRESS_INNER_SRC:
@@ -1414,6 +1451,9 @@ sadb_log(bunyan_level_t level, const char *restrict msg,
 		case SADB_X_EXT_ADDRESS_NATT_REM:
 		case SADB_X_EXT_ADDRESS_NATT_LOC:
 			sadb_log_addr(ext);
+			break;
+		case SADB_X_EXT_PAIR:
+			sadb_log_pair(ext);
 			break;
 		}
 
@@ -1570,10 +1610,13 @@ ikev2_auth_to_pfkey(ikev2_xf_auth_t auth)
 {
 	switch (auth) {
 	case IKEV2_XF_AUTH_NONE:
+		return (SADB_AALG_NONE);
 	case IKEV2_XF_AUTH_HMAC_SHA2_256_128:
+		return (SADB_AALG_SHA256HMAC);
 	case IKEV2_XF_AUTH_HMAC_SHA2_384_192:
+		return (SADB_AALG_SHA384HMAC);
 	case IKEV2_XF_AUTH_HMAC_SHA2_512_256:
-		return (auth);
+		return (SADB_AALG_SHA512HMAC);
 	case IKEV2_XF_AUTH_HMAC_MD5_96:
 		return (SADB_AALG_MD5HMAC);
 	case IKEV2_XF_AUTH_HMAC_SHA1_96:

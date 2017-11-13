@@ -145,9 +145,6 @@ ikev2_ike_auth_resp(pkt_t *req)
 	}
 
 	sa->remote_id = cid_i;
-	cid_i = NULL;
-
-	sa->remote_id = cid_i;
 	sa->flags |= I2SA_AUTHENTICATED;
 	if (ikev2_sa_disarm_timer(sa, I2SA_EVT_P1_EXPIRE))
 		I2SA_REFRELE(sa);

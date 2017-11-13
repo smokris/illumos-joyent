@@ -654,6 +654,17 @@ range_in_net(const struct sockaddr_storage *net, uint8_t prefixlen,
 }
 
 void
+log_range(bunyan_logger_t *log, bunyan_level_t level, const char *msg,
+    struct sockaddr_storage *start, struct sockaddr_storage *end)
+{
+	getlog(level)(log, msg,
+	    ss_bunyan(start), "start", ss_addr(start),
+	    BUNYAN_T_UINT32, "startport", ss_port(start),
+	    ss_bunyan(end), "end", ss_addr(end),
+	    BUNYAN_T_UINT32, "endport", ss_port(end), BUNYAN_T_END);
+}
+
+void
 sockaddr_copy(const struct sockaddr_storage *src, struct sockaddr_storage *dst,
     boolean_t copy_port)
 {
