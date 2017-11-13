@@ -793,7 +793,7 @@ pfkey_sadb_add_update(const ikev2_sa_t *restrict sa, uint32_t spi,
 	    P2ROUNDUP(config_id_strlen(sa->remote_id), sizeof (uint64_t)) +
 	    sizeof (sadb_x_pair_t);
 
-	msg = umem_alloc(msglen, UMEM_DEFAULT);
+	msg = umem_zalloc(msglen, UMEM_DEFAULT);
 	if (msg == NULL) {
 		(void) bunyan_error(log, "No memory for pfkey request",
 		    BUNYAN_T_END);
@@ -849,6 +849,8 @@ pfkey_sadb_add_update(const ikev2_sa_t *restrict sa, uint32_t spi,
 		pfsa->sadb_sa_flags |= SADB_X_SAFLAGS_NATT_LOC;
 	if (srcmsg->pmsg_nrau.sau_ss != NULL)
 		pfsa->sadb_sa_flags |= SADB_X_SAFLAGS_NATT_REM;
+
+	pfsa->sadb_sa_state = SADB_SASTATE_MATURE;
 
 	if (authkey != NULL)
 		ext = pfkey_add_key(ext, SADB_EXT_KEY_AUTH, authkey, authlen);

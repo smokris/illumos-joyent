@@ -381,8 +381,16 @@ fail:
 	pkcs11_destroy_obj("child dh_pubkey", &sa->dh_pubkey);
 	pkcs11_destroy_obj("child dh_privkey", &sa->dh_privkey);
 	pkcs11_destroy_obj("child gir", &sa->dh_key);
+
+	(void) bunyan_info(log, "Sending NO_PROPOSAL_CHOSEN due to error",
+	    BUNYAN_T_END);
+
+	if (!ikev2_no_proposal_chosen(resp, csa->csa_results.sar_proto))
+		ikev2_pkt_free(resp);
+	else
+		(void) ikev2_send_resp(resp);
+
 	ikev2_pkt_free(req);
-	ikev2_pkt_free(resp);
 }
 
 /*
@@ -857,7 +865,7 @@ ikev2_create_child_sas(ikev2_sa_t *restrict sa,
 		encrlen = results->sar_encr_keylen;
 		if (encrlen == 0)
 			encrlen = encr_data[results->sar_encr].ed_keydefault;
-		encrlen = SADB_8TO1(encrlen);
+		encrlen = SADB_1TO8(encrlen);
 
 		encrkey_i = umem_zalloc(encrlen, UMEM_DEFAULT);
 		encrkey_r = umem_zalloc(encrlen, UMEM_DEFAULT);
@@ -868,7 +876,7 @@ ikev2_create_child_sas(ikev2_sa_t *restrict sa,
 	}
 
 	if (results->sar_auth != IKEV2_XF_AUTH_NONE) {
-		authlen = SADB_8TO1(auth_data[results->sar_auth].ad_keylen);
+		authlen = auth_data[results->sar_auth].ad_keylen;
 		authkey_i = umem_zalloc(authlen, UMEM_DEFAULT);
 		authkey_r = umem_zalloc(authlen, UMEM_DEFAULT);
 		if (authkey_i == NULL || authkey_r == NULL) {
