@@ -29,6 +29,12 @@
 extern "C" {
 #endif
 
+#define	CONFIG_P2_LIFETIME_SECS	3600
+#define	CONFIG_P2_SOFTLIFE_SECS	3240
+#define	CONFIG_P2_LIFETIME_KB	(100 * 1024)
+#define CONFIG_P2_SOFTLIFE_KB	(90 * 1024)
+#define	CONFIG_P2_IDLETIME_SECS 600
+
 typedef enum config_auth_id_e {
 	CFG_AUTH_ID_DN,
 	CFG_AUTH_ID_DNS,

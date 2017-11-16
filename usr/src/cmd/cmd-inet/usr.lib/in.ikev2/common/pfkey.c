@@ -858,8 +858,12 @@ pfkey_sadb_add_update(const ikev2_sa_t *restrict sa, uint32_t spi,
 		ext = pfkey_add_key(ext, SADB_EXT_KEY_ENCRYPT, encrkey,
 		    encrlen);
 	}
-	ext = pfkey_add_identity(ext, SADB_EXT_IDENTITY_SRC, sa->remote_id);
-	ext = pfkey_add_identity(ext, SADB_EXT_IDENTITY_DST, sa->local_id);
+
+	ext = pfkey_add_identity(ext, SADB_EXT_IDENTITY_SRC,
+	    (initiator && !add) ? sa->local_id : sa->remote_id);
+	ext = pfkey_add_identity(ext, SADB_EXT_IDENTITY_DST,
+	    (initiator && !add) ? sa->remote_id : sa->local_id);
+
 	if (pair != 0)
 		ext = pfkey_add_pair(ext, pair);
 

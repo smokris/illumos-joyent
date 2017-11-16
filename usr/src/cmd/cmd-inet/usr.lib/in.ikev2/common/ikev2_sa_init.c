@@ -291,7 +291,7 @@ static void
 ikev2_sa_init_init_resp(ikev2_sa_t *restrict sa, pkt_t *restrict pkt,
     void *restrict arg)
 {
-	pkt_payload_t *ke_r = pkt_get_payload(pkt, IKEV2_PAYLOAD_KE, NULL);
+	pkt_payload_t *ke_r = NULL;
 	struct sa_init_args *sa_args = arg;
 	parsedmsg_t *pmsg = sa_args->sia_pmsg;
 	ikev2_sa_result_t sa_result = { 0 };
@@ -301,6 +301,9 @@ ikev2_sa_init_init_resp(ikev2_sa_t *restrict sa, pkt_t *restrict pkt,
 	VERIFY(MUTEX_HELD(&sa->i2sa_lock));
 
 	if (pkt == NULL) {
+		(void) bunyan_info(log, "Timeout during IKE_SA_INIT exchange",
+		    BUNYAN_T_END);
+
 		/*
 		 * Timeout on IKE_SA_INIT packet send.  Timeout handler will
 		 * condemn the larval IKE SA, so only need to clean up
@@ -310,6 +313,8 @@ ikev2_sa_init_init_resp(ikev2_sa_t *restrict sa, pkt_t *restrict pkt,
 		umem_free(sa_args, sizeof (*sa_args));
 		return;
 	}
+
+	ke_r = pkt_get_payload(pkt, IKEV2_PAYLOAD_KE, NULL);
 
 	(void) bunyan_debug(log, "Processing IKE_SA_INIT response",
 	     BUNYAN_T_END);

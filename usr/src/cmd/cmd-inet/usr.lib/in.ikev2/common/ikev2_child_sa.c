@@ -47,7 +47,8 @@ static boolean_t ikev2_create_child_sa_init_common(ikev2_sa_t *restrict,
     pkt_t *restrict req, struct child_sa_args *restrict);
 static void save_p1_nonces(ikev2_sa_t *restrict,
     struct child_sa_args *restrict);
-static boolean_t create_keymat(ikev2_sa_t *restrict, uint8_t *restrict, size_t,
+static boolean_t create_keymat(ikev2_sa_t *restrict, boolean_t,
+    uint8_t *restrict, size_t,
     uint8_t *restrict, size_t, prfp_t *restrict);
 static boolean_t ikev2_create_child_sas(ikev2_sa_t *restrict,
     struct child_sa_args *restrict, boolean_t);
@@ -436,6 +437,7 @@ ikev2_create_child_sa_init_resp(ikev2_sa_t *restrict i2sa,
 		(void) bunyan_warn(log, "SA no likey", BUNYAN_T_END);
 		goto fail;
 	}
+	csa->csa_remote_spi = csa->csa_results.sar_spi;
 
 	if (!csa->csa_is_auth) {
 		pkt_payload_t *nr = NULL;
@@ -860,6 +862,7 @@ ikev2_create_child_sas(ikev2_sa_t *restrict sa,
 	size_t authlen = 0;
 	prfp_t prfp = { 0 };
 	boolean_t ret = B_FALSE;
+	boolean_t use_dh = B_FALSE;
 
 	if (results->sar_encr != IKEV2_ENCR_NONE) {
 		encrlen = results->sar_encr_keylen;
@@ -885,7 +888,10 @@ ikev2_create_child_sas(ikev2_sa_t *restrict sa,
 		}
 	}
 
-	if (!create_keymat(sa, csa->csa_nonce_i, csa->csa_nonce_i_len,
+	if (!csa->csa_is_auth && results->sar_dh != IKEV2_DH_NONE)
+		use_dh = B_TRUE;
+
+	if (!create_keymat(sa, use_dh, csa->csa_nonce_i, csa->csa_nonce_i_len,
 	    csa->csa_nonce_r, csa->csa_nonce_r_len, &prfp))
 		goto done;
 
@@ -936,12 +942,13 @@ done:
 }
 
 static boolean_t
-create_keymat(ikev2_sa_t *restrict sa, uint8_t *restrict ni, size_t ni_len,
+create_keymat(ikev2_sa_t *restrict sa, boolean_t use_dh,
+    uint8_t *restrict ni, size_t ni_len,
     uint8_t *restrict nr, size_t nr_len, prfp_t *restrict prfp)
 {
 	boolean_t ret = B_FALSE;
 
-	if (sa->dh_key != CK_INVALID_HANDLE) {
+	if (use_dh) {
 		uint8_t *gir = NULL;
 		size_t girlen = 0;
 		CK_RV rv = CKR_OK;

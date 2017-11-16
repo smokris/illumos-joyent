@@ -360,6 +360,10 @@ process_config(FILE *f, boolean_t check_only)
 	cfg->cfg_retry_init = MSEC2NSEC(500);
 	cfg->cfg_retry_max = SEC2NSEC(30);
 	cfg->cfg_retry_limit = 5;
+	cfg->cfg_p2_lifetime_secs = CONFIG_P2_LIFETIME_SECS;
+	cfg->cfg_p2_softlife_secs = CONFIG_P2_SOFTLIFE_SECS;
+	cfg->cfg_p2_lifetime_kb = CONFIG_P2_LIFETIME_KB;
+	cfg->cfg_p2_softlife_kb = CONFIG_P2_SOFTLIFE_KB;
 
 	input_cursor_init(&ic, in);
 	while ((t = input_token(&ic, B_TRUE)) != NULL) {
