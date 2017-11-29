@@ -39,6 +39,7 @@
 #include "ikev2_proto.h"
 #include "ikev2_enum.h"
 #include "pkcs11.h"
+#include "range.h"
 #include "worker.h"
 
 static boolean_t check_payloads(pkt_t *);
@@ -824,19 +825,14 @@ add_ts_common(pkt_t *restrict pkt, ikev2_pkt_ts_state_t *restrict tstate,
 
 boolean_t
 ikev2_add_ts(ikev2_pkt_ts_state_t *restrict tstate, uint8_t ip_proto,
-    const struct sockaddr_storage *restrict ss_start,
-    const struct sockaddr_storage *restrict ss_end)
+    const sockrange_t *restrict range)
 {
 	ikev2_ts_t ts = { 0 };
-	sockaddr_u_t start = { .sau_ss = (struct sockaddr_storage *)ss_start };
-	sockaddr_u_t end = { .sau_ss = (struct sockaddr_storage *)ss_end };
 	const void *startptr = NULL;
 	const void *endptr = NULL;
 	size_t len = 0;
 	size_t addrlen = 0;
-	uint32_t val = 0;
-
-	VERIFY3U(start.sau_ss->ss_family, ==, end.sau_ss->ss_family);
+	uint32_t start_port = 0, end_port = 0;
 
 	if (*tstate->i2ts_countp == UINT8_MAX) {
 		(void) bunyan_error(log,
@@ -846,16 +842,16 @@ ikev2_add_ts(ikev2_pkt_ts_state_t *restrict tstate, uint8_t ip_proto,
 	}
 
 	ts.ts_protoid = ip_proto;
-	startptr = ss_addr(ss_start);
-	endptr = ss_addr(ss_end);
-	addrlen = ss_addrlen(ss_start);
+	startptr = ss_addr(&range->sr_start);
+	endptr = ss_addr(&range->sr_end);
+	addrlen = ss_addrlen(&range->sr_start);
 
-	val = ss_port(ss_start);
-	ts.ts_startport = htons((uint16_t)val);
-	val = ss_port(ss_end);
-	ts.ts_endport = htons((uint16_t)val);
+	start_port = ss_port(&range->sr_start);
+	ts.ts_startport = htons((uint16_t)start_port);
+	end_port = ss_port(&range->sr_end);
+	ts.ts_endport = htons((uint16_t)end_port);
 
-	switch (start.sau_ss->ss_family) {
+	switch (range->sr_start.ss_family) {
 	case AF_INET:
 		ts.ts_type = IKEV2_TS_IPV4_ADDR_RANGE;
 		break;
@@ -863,7 +859,7 @@ ikev2_add_ts(ikev2_pkt_ts_state_t *restrict tstate, uint8_t ip_proto,
 		ts.ts_type = IKEV2_TS_IPV6_ADDR_RANGE;
 		break;
 	default:
-		INVALID(start.sau_ss->ss_family);
+		INVALID(range->sr_start.ss_family);
 	}
 
 	len = sizeof (ts) + 2 * addrlen;
@@ -898,60 +894,64 @@ ikev2_add_ts(ikev2_pkt_ts_state_t *restrict tstate, uint8_t ip_proto,
 }
 
 static void
-ts_get_addrs(ikev2_ts_t *restrict ts,
-    struct sockaddr_storage *restrict ss_start,
-    struct sockaddr_storage *restrict ss_end)
+ts_get_addrs(ikev2_ts_t *restrict ts, sockrange_t *restrict range)
 {
-	sockaddr_u_t start = { .sau_ss = ss_start };
-	sockaddr_u_t end = { .sau_ss = ss_end };
+	uint8_t *start = NULL, *end = NULL;
+	uint16_t *start_port = NULL, *end_port = NULL;
 	uint8_t *p = (uint8_t *)(ts + 1);
 	size_t len = 0;
 
-	if (ss_start != NULL)
-		bzero(ss_start, sizeof (*ss_start));
-	if (ss_end != NULL)
-		bzero(ss_end, sizeof (*ss_end));
+	bzero(range, sizeof (*range));
 
 	switch (ts->ts_type) {
 	case IKEV2_TS_IPV4_ADDR_RANGE:
 		len = sizeof (in_addr_t);
-		if (ss_start != NULL) {
-			ss_start->ss_family = AF_INET;
-			(void) memcpy(&start.sau_sin->sin_addr, p, len);
-			(void) memcpy(&start.sau_sin->sin_port,
-			    &ts->ts_startport, sizeof (uint16_t));
-		}
-		if (ss_end != NULL) {
-			ss_end->ss_family = AF_INET;
-			(void) memcpy(&end.sau_sin->sin_addr, p + len, len);
-			(void) memcpy(&end.sau_sin->sin_port, &ts->ts_endport,
-			    sizeof (uint16_t));
-		}
+		range_set_family(range, AF_INET);
+
+		start_port = &SSTOSIN(&range->sr_start)->sin_port;
+		end_port = &SSTOSIN(&range->sr_end)->sin_port;
 		break;
 	case IKEV2_TS_IPV6_ADDR_RANGE:
 		len = sizeof (in6_addr_t);
-		if (ss_start != NULL) {
-			ss_start->ss_family = AF_INET6;
-			(void) memcpy(&start.sau_sin6->sin6_addr, p, len);
-			(void) memcpy(&start.sau_sin6->sin6_port,
-			    &ts->ts_startport, sizeof (uint16_t));
-		}
-		if (ss_end != NULL) {
-			ss_end->ss_family = AF_INET6;
-			(void) memcpy(&end.sau_sin6->sin6_addr, p + len, len);
-			(void) memcpy(&end.sau_sin6->sin6_port, &ts->ts_endport,
-			    sizeof (uint16_t));
-		}
+		range_set_family(range, AF_INET6);
+
+		start_port = &SSTOSIN6(&range->sr_start)->sin6_port;
+		end_port = &SSTOSIN6(&range->sr_end)->sin6_port;
 		break;
 	case IKEV2_TS_FC_ADDR_RANGE:
 		break;
 	}
+
+	start = (uint8_t *)ss_addr(&range->sr_start);
+	end = (uint8_t *)ss_addr(&range->sr_end);
+
+	bcopy(p, start, len);
+	bcopy(p + len, end, len);
+	bcopy(&ts->ts_startport, start_port, sizeof (*start_port));
+	bcopy(&ts->ts_endport, end_port, sizeof (*end_port));
+}
+
+static boolean_t
+ts_type_is_supported(ikev2_ts_type_t type)
+{
+	/*
+	 * We avoid having a default case so that any new TS types that are
+	 * defined but unhandled here will trigger a compilation error instead
+	 * of potentially cause runtime problems.
+	 */
+	switch (type) {
+	case IKEV2_TS_IPV4_ADDR_RANGE:
+	case IKEV2_TS_IPV6_ADDR_RANGE:
+		return (B_TRUE);
+	case IKEV2_TS_FC_ADDR_RANGE:
+		return (B_FALSE);
+	}
+	return (B_FALSE);
 }
 
 ikev2_ts_t *
 ikev2_ts_iter(pkt_payload_t *restrict tsp, ikev2_ts_iter_t *restrict iter,
-    struct sockaddr_storage *restrict start,
-    struct sockaddr_storage *restrict end)
+    sockrange_t *restrict range)
 {
 	iter->i2ti_tsp = (ikev2_tsp_t *)tsp->pp_ptr;
 	iter->i2ti_ts = (ikev2_ts_t *)(iter->i2ti_tsp + 1);
@@ -960,23 +960,38 @@ ikev2_ts_iter(pkt_payload_t *restrict tsp, ikev2_ts_iter_t *restrict iter,
 	if (iter->i2ti_n >= iter->i2ti_tsp->tsp_count)
 		return (NULL);
 
-	ts_get_addrs(iter->i2ti_ts, start, end);
+	/*
+	 * RFC7296 2.9 -- Unknown TS types should be skipped.
+	 * We also skip unsupported TS types
+	 */
+	if (!ts_type_is_supported(iter->i2ti_ts->ts_type))
+		return (ikev2_ts_iter_next(iter, range));
+
+	ts_get_addrs(iter->i2ti_ts, range);
 	return (iter->i2ti_ts);
 }
 
 ikev2_ts_t *
-ikev2_ts_iter_next(ikev2_ts_iter_t *restrict iter,
-    struct sockaddr_storage *restrict start,
-    struct sockaddr_storage *restrict end)
+ikev2_ts_iter_next(ikev2_ts_iter_t *restrict iter, sockrange_t *restrict range)
 {
-	if (++iter->i2ti_n > iter->i2ti_tsp->tsp_count)
-		return (NULL);
+	boolean_t known = B_FALSE;
 
-	uint8_t *p = (uint8_t *)iter->i2ti_ts;
+	/*
+	 * RFC7296 2.9 -- Unkonwn TS types should be skipped.
+	 * We also skip unsupported TS types
+	 */
+	do {
+		if (++iter->i2ti_n > iter->i2ti_tsp->tsp_count)
+			return (NULL);
 
-	p += BE_IN16(&iter->i2ti_ts->ts_length);
-	iter->i2ti_ts = (ikev2_ts_t *)p;
-	ts_get_addrs(iter->i2ti_ts, start, end);
+		uint8_t *p = (uint8_t *)iter->i2ti_ts;
+
+		p += BE_IN16(&iter->i2ti_ts->ts_length);
+		iter->i2ti_ts = (ikev2_ts_t *)p;
+		known = ts_type_is_supported(iter->i2ti_ts->ts_type);
+	} while (!known);
+
+	ts_get_addrs(iter->i2ti_ts, range);
 	return (iter->i2ti_ts);
 }
 

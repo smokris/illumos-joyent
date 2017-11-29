@@ -50,6 +50,7 @@ extern "C" {
 #ifndef SOCKADDR_U_T
 #define	SOCKADDR_U_T
 typedef union sockaddr_u_s {
+	struct sockaddr		*sau_sa;
 	struct sockaddr_storage *sau_ss;
 	struct sockaddr_in	*sau_sin;
 	struct sockaddr_in6	*sau_sin6;
@@ -212,26 +213,6 @@ char *writehex(uint8_t *, size_t, char *, char *, size_t);
 
 void sockaddr_copy(const struct sockaddr_storage *, struct sockaddr_storage *,
     boolean_t);
-void net_to_range(const struct sockaddr_storage *, uint8_t,
-    struct sockaddr_storage *, struct sockaddr_storage *);
-void range_intersection(struct sockaddr_storage *restrict,
-    struct sockaddr_storage *restrict,
-    const struct sockaddr_storage *restrict,
-    const struct sockaddr_storage *restrict,
-    const struct sockaddr_storage *restrict,
-    const struct sockaddr_storage *restrict);
-int range_cmp_size(const struct sockaddr_storage *,
-    const struct sockaddr_storage *restrict,
-    const struct sockaddr_storage *restrict,
-    const struct sockaddr_storage *restrict);
-void range_clamp(struct sockaddr_storage *restrict,
-    struct sockaddr_storage *restrict);
-boolean_t range_is_zero(const struct sockaddr_storage *,
-    const struct sockaddr_storage *);
-boolean_t range_in_net(const struct sockaddr_storage *, uint8_t,
-    const struct sockaddr_storage *, const struct sockaddr_storage *);
-void log_range(bunyan_logger_t *, bunyan_level_t, const char *,
-    struct sockaddr_storage *, struct sockaddr_storage *);
 
 #ifdef  __cplusplus
 }

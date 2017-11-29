@@ -30,6 +30,7 @@ extern "C" {
 struct ikev2_sa_s;
 struct bunyan_logger;
 struct sockaddr_storage;
+struct sockrange_s;
 
 #define	I2P_RESPONSE(p) (!!(pkt_header(p)->flags & IKEV2_FLAG_RESPONSE))
 #define	I2P_INITIATOR(p) (pkt_header(p)->flags & IKEV2_FLAG_INITIATOR)
@@ -92,13 +93,12 @@ boolean_t ikev2_add_vendor(pkt_t *restrict, const void *restrict,
 boolean_t ikev2_add_ts_i(pkt_t *restrict, ikev2_pkt_ts_state_t *restrict);
 boolean_t ikev2_add_ts_r(pkt_t *restrict, ikev2_pkt_ts_state_t *restrict);
 boolean_t ikev2_add_ts(ikev2_pkt_ts_state_t *restrict, uint8_t,
-    const struct sockaddr_storage *restrict,
-    const struct sockaddr_storage *restrict);
+    const struct sockrange_s *restrict);
 
 ikev2_ts_t *ikev2_ts_iter(pkt_payload_t *restrict, ikev2_ts_iter_t *restrict,
-    struct sockaddr_storage *restrict, struct sockaddr_storage *restrict);
+    struct sockrange_s *restrict);
 ikev2_ts_t *ikev2_ts_iter_next(ikev2_ts_iter_t *restrict,
-    struct sockaddr_storage *restrict, struct sockaddr_storage *restrict);
+    struct sockrange_s *restrict);
 
 boolean_t ikev2_add_sk(pkt_t *);
 

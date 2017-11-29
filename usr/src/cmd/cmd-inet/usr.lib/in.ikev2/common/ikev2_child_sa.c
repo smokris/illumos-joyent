@@ -26,6 +26,7 @@
 #include "pfkey.h"
 #include "pkcs11.h"
 #include "prf.h"
+#include "range.h"
 #include "worker.h"
 
 struct child_sa_args {
@@ -60,6 +61,8 @@ static boolean_t resp_inv_acquire(pkt_t *restrict,
 static void check_natt_addrs(pkt_t *restrict, boolean_t);
 static uint8_t get_satype(parsedmsg_t *);
 static sadb_address_t *get_sadb_addr(parsedmsg_t *, boolean_t);
+static ikev2_ts_t *first_ts_addr(pkt_payload_t *restrict,
+    struct sockaddr_storage *restrict);
 
 void *
 ikev2_create_child_sa_init_auth(ikev2_sa_t *restrict sa, pkt_t *restrict req,
@@ -506,8 +509,7 @@ static boolean_t
 add_sadb_address(ikev2_pkt_ts_state_t *restrict tstate,
     const sadb_address_t *restrict addr)
 {
-	struct sockaddr_storage ss_start = { 0 };
-	struct sockaddr_storage ss_end = { 0 };
+	sockrange_t range = { 0 };
 	uint8_t proto = addr->sadb_address_proto;
 	uint8_t prefixlen = addr->sadb_address_prefixlen;
 
@@ -515,15 +517,15 @@ add_sadb_address(ikev2_pkt_ts_state_t *restrict tstate,
 	    "Adding to TSi payload" : "Adding to TSr payload";
 
 	/*
-	 * pf_key uses a mask of 0 for single addresses (instead of /32 or /128)
+	 * pf_key uses a prefix length of 0 for single addresses
+	 * (instead of 32 or 128)
 	 */
 	if (prefixlen == 0)
 		prefixlen = ss_addrbits((struct sockaddr_storage *)(addr + 1));
 
-	net_to_range((struct sockaddr_storage *)(addr + 1), prefixlen,
-	    &ss_start, &ss_end);
+	net_to_range((struct sockaddr *)(addr + 1), prefixlen, &range);
 
-	return (ikev2_add_ts(tstate, proto, &ss_start, &ss_end));
+	return (ikev2_add_ts(tstate, proto, &range));
 }
 
 static boolean_t
@@ -544,7 +546,7 @@ add_ts_init(pkt_t *restrict req, parsedmsg_t *restrict pmsg)
 	if (!add_sadb_address(&tstate, addr))
 		return (B_FALSE);
 
-	(void) memset(&tstate, 0, sizeof (tstate));
+	bzero(&tstate, sizeof (tstate));
 	if (!ikev2_add_ts_r(req, &tstate))
 		return (B_FALSE);
 
@@ -561,9 +563,8 @@ add_ts_init(pkt_t *restrict req, parsedmsg_t *restrict pmsg)
 	return (B_TRUE);
 }
 
-static void resp_ts_negotiate_one(struct sockaddr_storage *restrict,
-    struct sockaddr_storage *restrict, pkt_payload_t *restrict,
-    const struct sockaddr_storage *restrict, uint8_t);
+static void resp_ts_negotiate_one(sockrange_t *restrict,
+    pkt_payload_t *restrict, const struct sockaddr_storage *restrict, uint8_t);
 
 static boolean_t
 add_ts_resp(pkt_t *restrict req, pkt_t *restrict resp,
@@ -573,8 +574,7 @@ add_ts_resp(pkt_t *restrict req, pkt_t *restrict resp,
 	sadb_address_t *addr = NULL;
 	struct sockaddr_storage *acq_addr = NULL;
 	ikev2_pkt_ts_state_t tstate = { 0 };
-	struct sockaddr_storage start = { 0 };
-	struct sockaddr_storage end = { 0 };
+	sockrange_t range = { 0 };
 	uint8_t proto = 0;
 	uint8_t prefixlen = 0;
 
@@ -586,18 +586,18 @@ add_ts_resp(pkt_t *restrict req, pkt_t *restrict resp,
 	prefixlen = addr->sadb_address_prefixlen;
 	if (prefixlen == 0)
 		prefixlen = ss_addrbits(acq_addr);
-	resp_ts_negotiate_one(&start, &end, tspay, acq_addr, prefixlen);
+	resp_ts_negotiate_one(&range, tspay, acq_addr, prefixlen);
 
 	/*
 	 * If the INVERSE_ACQUIRE returns successfully, there must be some
 	 * non-NULL intersection between the proposed addresses and our
 	 * policy, even if it's just a single IP.
 	 */
-	VERIFY(!range_is_zero(&start, &end));
+	VERIFY(!range_is_zero(&range));
 
 	if (!ikev2_add_ts_r(resp, &tstate))
 		return (B_FALSE);
-	if (!ikev2_add_ts(&tstate, proto, &start, &end))
+	if (!ikev2_add_ts(&tstate, proto, &range))
 		return (B_FALSE);
 
 	tspay = pkt_get_payload(req, IKEV2_PAYLOAD_TSi, NULL);
@@ -607,33 +607,29 @@ add_ts_resp(pkt_t *restrict req, pkt_t *restrict resp,
 	prefixlen = addr->sadb_address_prefixlen;
 	if (prefixlen == 0)
 		prefixlen = ss_addrbits(acq_addr);
-	resp_ts_negotiate_one(&start, &end, tspay, acq_addr, prefixlen);
+	resp_ts_negotiate_one(&range, tspay, acq_addr, prefixlen);
 
 	/* Same argument as above */
-	VERIFY(!range_is_zero(&start, &end));
+	VERIFY(!range_is_zero(&range));
 
 	if (!ikev2_add_ts_i(resp, &tstate))
 		return (B_FALSE);
-	if (!ikev2_add_ts(&tstate, proto, &start, &end))
+	if (!ikev2_add_ts(&tstate, proto, &range))
 		return (B_FALSE);
 
 	return (B_TRUE);
 }
 
 static void
-resp_ts_negotiate_one(struct sockaddr_storage *restrict res_start,
-    struct sockaddr_storage *restrict res_end, pkt_payload_t *restrict ts_pay,
+resp_ts_negotiate_one(sockrange_t *restrict res, pkt_payload_t *restrict ts_pay,
     const struct sockaddr_storage *restrict acq_addr, uint8_t acq_mask)
 {
 	ikev2_ts_t *ts = NULL;
 	ikev2_ts_iter_t iter = { 0 };
-	struct sockaddr_storage start = { 0 };
-	struct sockaddr_storage end = { 0 };
-	struct sockaddr_storage acq_start = { 0 };
-	struct sockaddr_storage acq_end = { 0 };
+	sockrange_t range = { 0 };
+	sockrange_t acq = { 0 };
 
-	bzero(res_start, sizeof (*res_start));
-	bzero(res_end, sizeof (*res_end));
+	bzero(res, sizeof (*res));
 
 	/*
 	 * The first traffic selector is what is used during the
@@ -649,8 +645,8 @@ resp_ts_negotiate_one(struct sockaddr_storage *restrict res_start,
 	 * and the result can be too narrow (i.e. the result will be a single
 	 * IP address).  If this is the case, there should be at least one
 	 * more traffic selector present, and we should attempt to widen our
-	 * range, however the result should never be wider (but may be narrower
-	 * than the range given from the ACQUIRE response from the kernel).
+	 * range, however the result should never be wider (but may be narrower)
+	 * than the range given from the ACQUIRE response from the kernel.
 	 * As such, we look through the subsequent selectors looking for the
 	 * largest intersection between a given traffic selector and the ACQUIRE
 	 * address range.
@@ -693,41 +689,36 @@ resp_ts_negotiate_one(struct sockaddr_storage *restrict res_start,
 	 *
 	 */
 
-	net_to_range(acq_addr, acq_mask, &acq_start, &acq_end);
-	log_range(log, BUNYAN_L_DEBUG, "acquire address", &acq_start, &acq_end);
+	net_to_range(SSTOSA(acq_addr), acq_mask, &acq);
+	range_log(log, BUNYAN_L_TRACE, "acquire address", &acq);
 
-	ts = ikev2_ts_iter(ts_pay, &iter, &start, &end);
-	log_range(log, BUNYAN_L_DEBUG, "TS[0] address", &start, &end);
+	ts = ikev2_ts_iter(ts_pay, &iter, &range);
+	range_log(log, BUNYAN_L_TRACE, "TS[0] address", &range);
 
-	range_intersection(res_start, res_end, &start, &end, &acq_start,
-	    &acq_end);
-	log_range(log, BUNYAN_L_DEBUG, "acquire ∩ TS[0]", res_start, res_end);
+	range_intersection(&acq, &range, res);
+	range_log(log, BUNYAN_L_TRACE, "acquire & TS[0]", res);
 
-	while ((ts = ikev2_ts_iter_next(&iter, &start, &end)) != NULL) {
-		struct sockaddr_storage cmp_start = { 0 };
-		struct sockaddr_storage cmp_end = { 0 };
-		int cmp;
+	while ((ts = ikev2_ts_iter_next(&iter, &range)) != NULL) {
+		sockrange_t cmp = { 0 };
 
-		range_intersection(&cmp_start, &cmp_end, res_start, res_end,
-		    &acq_start, &acq_end);
-
-		if (range_is_zero(&cmp_start, &cmp_end))
+		range_intersection(res, &acq, &cmp);
+		if (range_is_zero(&cmp))
 			continue;
 
-		cmp = range_cmp_size(&cmp_start, &cmp_end, res_start, res_end);
-
-		if (cmp > 0) {
-			bcopy(&cmp_start, res_start, sizeof (*res_start));
-			bcopy(&cmp_end, res_end, sizeof (*res_end));
-		}
+		if (range_cmp_size(&cmp, res) > 0)
+			bcopy(&cmp, res, sizeof (cmp));
 	}
+
+	range_log(log, BUNYAN_L_TRACE, "resulting range", res);
 
 	/*
 	 * As the kernel cannot deal with arbitrary ranges in it's policy,
 	 * we must potentially again narrow the result until range (without
 	 * changing the starting address) can be expressed as start_addr/mask
 	 */
-	range_clamp(res_start, res_end);
+	range_clamp(res);
+
+	range_log(log, BUNYAN_L_TRACE, "range -> prefix", res);
 }
 
 /*
@@ -751,8 +742,6 @@ resp_inv_acquire(pkt_t *restrict pkt, struct child_sa_args *restrict csa)
 	sockaddr_u_t dst = { .sau_ss = &ss_dst };
 	sockaddr_u_t isrc = { .sau_ss = &ss_isrc };
 	sockaddr_u_t idst = { .sau_ss = &ss_idst };
-	ikev2_ts_iter_t iter_i = { 0 };
-	ikev2_ts_iter_t iter_r = { 0 };
 	ikev2_ts_t *ts_i = NULL;
 	ikev2_ts_t *ts_r = NULL;
 
@@ -763,8 +752,8 @@ resp_inv_acquire(pkt_t *restrict pkt, struct child_sa_args *restrict csa)
 		isrc.sau_ss = NULL;
 		idst.sau_ss = NULL;
 	} else {
-		ts_i = ikev2_ts_iter(ts_ip, &iter_i, &ss_idst, NULL);
-		ts_r = ikev2_ts_iter(ts_rp, &iter_r, &ss_isrc, NULL);
+		ts_i = first_ts_addr(ts_ip, &ss_idst);
+		ts_r = first_ts_addr(ts_rp, &ss_isrc);
 	}
 
 	if (pfkey_inverse_acquire(src, dst, isrc, idst, &csa->csa_pmsg))
@@ -807,8 +796,6 @@ check_natt_addrs(pkt_t *restrict pkt, boolean_t transport_mode)
 		pkt_payload_t *ts_rp = NULL;
 		ikev2_ts_t *ts_i = NULL;
 		ikev2_ts_t *ts_r = NULL;
-		ikev2_ts_iter_t iter_i = { 0 };
-		ikev2_ts_iter_t iter_r = { 0 };
 		struct sockaddr_storage loc = { 0 };
 		struct sockaddr_storage rem = { 0 };
 		boolean_t init = !!(i2sa->flags & I2SA_INITIATOR);
@@ -816,8 +803,8 @@ check_natt_addrs(pkt_t *restrict pkt, boolean_t transport_mode)
 		ts_ip = pkt_get_payload(pkt, IKEV2_PAYLOAD_TSi, NULL);
 		ts_rp = pkt_get_payload(pkt, IKEV2_PAYLOAD_TSr, NULL);
 
-		ts_i = ikev2_ts_iter(ts_ip, &iter_i, init ? &loc : &rem, NULL);
-		ts_r = ikev2_ts_iter(ts_rp, &iter_r, init ? &rem : &loc, NULL);
+		ts_i = first_ts_addr(ts_ip, init ? &loc : &rem);
+		ts_r = first_ts_addr(ts_rp, init ? &rem : &loc);
 
 		/*
 		 * XXX: The results here should match the NAT_DETECTION_*
@@ -1036,4 +1023,20 @@ get_sadb_addr(parsedmsg_t *pmsg, boolean_t src)
 	}
 
 	return ((sadb_address_t *)ext);
+}
+
+static ikev2_ts_t *
+first_ts_addr(pkt_payload_t *restrict tspay,
+    struct sockaddr_storage *restrict addr)
+{
+	ikev2_ts_t *ts = NULL;
+	ikev2_ts_iter_t iter = { 0 };
+	sockrange_t range = { 0 };
+
+	VERIFY(tspay->pp_type == IKEV2_PAYLOAD_TSi ||
+	    tspay->pp_type == IKEV2_PAYLOAD_TSr);
+
+	ts = ikev2_ts_iter(tspay, &iter, &range);
+	sockaddr_copy(&range.sr_start, addr, B_TRUE);
+	return (ts);
 }

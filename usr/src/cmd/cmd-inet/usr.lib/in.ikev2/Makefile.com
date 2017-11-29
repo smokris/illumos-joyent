@@ -47,6 +47,7 @@ CMD_OBJS =	config.o		\
 		prf.o			\
 		pkcs11.o		\
 		pkt.o			\
+		range.o			\
 		util.o			\
 		worker.o
 
