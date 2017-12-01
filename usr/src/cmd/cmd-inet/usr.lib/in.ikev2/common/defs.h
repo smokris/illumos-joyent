@@ -213,6 +213,8 @@ char *writehex(uint8_t *, size_t, char *, char *, size_t);
 
 void sockaddr_copy(const struct sockaddr_storage *, struct sockaddr_storage *,
     boolean_t);
+int sockaddr_cmp(const struct sockaddr_storage *,
+    const struct sockaddr_storage *);
 
 #ifdef  __cplusplus
 }

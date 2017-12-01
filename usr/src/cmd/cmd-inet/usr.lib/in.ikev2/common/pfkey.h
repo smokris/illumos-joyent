@@ -25,6 +25,8 @@
 extern "C" {
 #endif
 
+#define	IKEV2_SADB_INITIATOR	SADB_X_SAFLAGS_KM1
+
 struct ikev2_sa_s;
 struct ikev2_sa_result_s;
 struct parsedmsg_s;

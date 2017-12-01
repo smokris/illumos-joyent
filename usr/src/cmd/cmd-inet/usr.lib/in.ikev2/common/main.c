@@ -48,7 +48,6 @@ typedef struct lockingfd {
 
 extern void pkt_init(void);
 extern void pkt_fini(void);
-extern void ikev2_sa_init(void);
 extern void pfkey_init(void);
 static void signal_init(void);
 static void event(event_t, void *);

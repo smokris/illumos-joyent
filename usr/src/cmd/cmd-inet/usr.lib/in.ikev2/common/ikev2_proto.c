@@ -57,13 +57,43 @@ static ikev2_sa_t *ikev2_try_new_sa(pkt_t *restrict,
     const struct sockaddr_storage *restrict,
     const struct sockaddr_storage *restrict);
 
+static ikev2_sa_t *
+get_i2sa_inbound(uint64_t local_spi, uint64_t remote_spi,
+    const struct sockaddr_storage *src, const struct sockaddr_storage *dst,
+    const pkt_t *restrict pkt)
+{
+	ikev2_sa_t *i2sa = NULL;
+
+	/*
+	 * We always use the local SPI when present (!= 0) to lookup an IKEv2
+	 * SA.  The only time the local SPI is missing is during an IKE_SA_INIT
+	 * exchange where we are the responder (as we have not yet allocated
+	 * our ikev2_sa_t yet and thus haven't generated our SPI).   If such
+	 * a packet is a retransmit (which could be due to packet loss of our
+	 * reply, or due to us requesting a COOKIE or now KE group), we must
+	 * still be able to find the ikev2_sa_t instance for this connection
+	 * in progress.  Since the remote SPI is (as the term suggests) is
+	 * picked by the remote peer, we have no control over it, and it is
+	 * possible two peers could choose the same value.  To disambiguate, we
+	 * have to not only look at the local and remote addresses, we must
+	 * also look at the original remote packet that triggered the creation
+	 * of our IKEv2 SA.
+	 */
+	if (local_spi != 0 &&
+	    (i2sa = ikev2_sa_getbylspi(local_spi, !I2P_INITIATOR(pkt))) != NULL)
+		return (i2sa);
+	if (pkt_header(pkt)->exch_type != IKEV2_EXCH_IKE_SA_INIT)
+		return (NULL);
+	return (ikev2_sa_getbyrspi(remote_spi, dst, src, pkt));
+}
+
 /*
  * Find the IKEv2 SA for a given inbound packet (or create a new one if
  * an IKE_SA_INIT exchange) and either process or add to the IKEv2 SA queue.
  */
 void
-ikev2_inbound(pkt_t *pkt, const struct sockaddr_storage *restrict src_addr,
-    const struct sockaddr_storage *restrict dest_addr)
+ikev2_inbound(pkt_t *pkt, const struct sockaddr_storage *restrict src,
+    const struct sockaddr_storage *restrict dest)
 {
 	ikev2_sa_t *i2sa = NULL;
 	ike_header_t *hdr = pkt_header(pkt);
@@ -74,7 +104,7 @@ ikev2_inbound(pkt_t *pkt, const struct sockaddr_storage *restrict src_addr,
 
 	ikev2_pkt_log(pkt, BUNYAN_L_TRACE, "Received packet");
 
-	i2sa = ikev2_sa_get(local_spi, remote_spi, dest_addr, src_addr, pkt);
+	i2sa = get_i2sa_inbound(local_spi, remote_spi, dest, src, pkt);
 	if (i2sa == NULL) {
 		if (local_spi != 0) {
 			/*
@@ -118,7 +148,7 @@ ikev2_inbound(pkt_t *pkt, const struct sockaddr_storage *restrict src_addr,
 		}
 
 		/* On success, returns with i2sa_queue_lock held */
-		i2sa = ikev2_try_new_sa(pkt, dest_addr, src_addr);
+		i2sa = ikev2_try_new_sa(pkt, dest, src);
 		if (i2sa == NULL) {
 			ikev2_pkt_free(pkt);
 			return;
@@ -207,7 +237,7 @@ ikev2_try_new_sa(pkt_t *restrict pkt,
 	}
 
 	/* otherwise create a larval SA */
-	i2sa = ikev2_sa_alloc(B_FALSE, pkt, l_addr, r_addr);
+	i2sa = ikev2_sa_alloc(pkt, l_addr, r_addr);
 	if (i2sa == NULL) {
 		errmsg = "Could not create larval IKEv2 SA; discarding";
 		goto fail;
@@ -230,27 +260,34 @@ fail:
 void
 ikev2_pfkey(parsedmsg_t *pmsg)
 {
-	ikev2_sa_t *sa = NULL;
+	ikev2_sa_t *i2sa = NULL;
 	sadb_x_kmc_t *kmc = NULL;
-	uint64_t local_spi = 0;
+	sadb_sa_t *sadb_sa = NULL;
 	sockaddr_u_t laddr;
 	sockaddr_u_t raddr;
 
-	/*
-	 * XXX: Once OPS/OPD extensions are there, this probably needs
-	 * to be changed.
-	 */
 	laddr = pmsg->pmsg_sau;
 	raddr = pmsg->pmsg_dau;
 
 	kmc = (sadb_x_kmc_t *)pmsg->pmsg_exts[SADB_X_EXT_KM_COOKIE];
-	if (kmc != NULL) {
+	sadb_sa = (sadb_sa_t *)pmsg->pmsg_exts[SADB_EXT_SA];
+
+	if (kmc != NULL && sadb_sa != NULL) {
+		uint64_t local_spi = 0;
+		boolean_t initiator = B_FALSE;
+
 		VERIFY3U(kmc->sadb_x_kmc_exttype, ==, SADB_X_EXT_KM_COOKIE);
 		local_spi = kmc->sadb_x_kmc_cookie64;
+
+		if (sadb_sa->sadb_sa_flags & IKEV2_SADB_INITIATOR)
+			initiator = B_TRUE;
+
+		i2sa = ikev2_sa_getbylspi(local_spi, initiator);
+	} else {
+		i2sa = ikev2_sa_getbyaddr(laddr.sau_ss, raddr.sau_ss);
 	}
 
-	sa = ikev2_sa_get(local_spi, 0, laddr.sau_ss, raddr.sau_ss, NULL);
-	if (sa == NULL) {
+	if (i2sa == NULL) {
 		config_rule_t *rule = NULL;
 
 		/*
@@ -293,8 +330,8 @@ ikev2_pfkey(parsedmsg_t *pmsg)
 		}
 
 		/* On success, returns sa with i2sa_queue_lock held */
-		sa = ikev2_sa_alloc(B_TRUE, NULL, laddr.sau_ss, raddr.sau_ss);
-		if (sa == NULL) {
+		i2sa = ikev2_sa_alloc(NULL, laddr.sau_ss, raddr.sau_ss);
+		if (i2sa == NULL) {
 			/*
 			 * The kernel currently only cares that sadb_msg_errno
 			 * (set by the 2nd parameter to pfkey_send_error()) is
@@ -311,20 +348,20 @@ ikev2_pfkey(parsedmsg_t *pmsg)
 			return;
 		}
 
-		mutex_enter(&sa->i2sa_lock);
-		key_add_ike_spi(LOG_KEY_LSPI, I2SA_LOCAL_SPI(sa));
-		sa->i2sa_rule = rule;
-		mutex_exit(&sa->i2sa_lock);
+		mutex_enter(&i2sa->i2sa_lock);
+		key_add_ike_spi(LOG_KEY_LSPI, I2SA_LOCAL_SPI(i2sa));
+		i2sa->i2sa_rule = rule;
+		mutex_exit(&i2sa->i2sa_lock);
 	} else {
-		mutex_enter(&sa->i2sa_queue_lock);
+		mutex_enter(&i2sa->i2sa_queue_lock);
 	}
 
-	if (!ikev2_sa_queuemsg(sa, I2SA_MSG_PFKEY, pmsg)) {
+	if (!ikev2_sa_queuemsg(i2sa, I2SA_MSG_PFKEY, pmsg)) {
 		sadb_log(BUNYAN_L_WARN,
 		    "Could not queue SADB message; discarding",
 		    pmsg->pmsg_samsg);
 		parsedmsg_free(pmsg);
-		I2SA_REFRELE(sa);
+		I2SA_REFRELE(i2sa);
 	}
 }
 
@@ -383,7 +420,7 @@ ikev2_sa_init_cfg(config_rule_t *rule)
 		goto fail;
 	}
 
-	sa = ikev2_sa_alloc(B_TRUE, NULL, &src, &dst);
+	sa = ikev2_sa_alloc(NULL, &src, &dst);
 	if (sa == NULL) {
 		STDERR(error, "Failed to allocate larval IKE SA");
 		goto fail;

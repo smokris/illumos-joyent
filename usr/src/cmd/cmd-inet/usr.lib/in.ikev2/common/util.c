@@ -29,7 +29,6 @@
 #include "config.h"
 #include "ike.h"
 #include "defs.h"
-#include "ilist.h"
 
 struct strbuf_s {
 	char	symstr[128];
@@ -419,20 +418,22 @@ sockaddr_copy(const struct sockaddr_storage *src, struct sockaddr_storage *dst,
 	}
 }
 
-/* inline parking lot */
-extern inline void ilist_create(ilist_t *, size_t, size_t);
-extern inline void ilist_destroy(ilist_t *);
-extern inline void ilist_insert_after(ilist_t *, void *, void *);
-extern inline void ilist_insert_before(ilist_t *, void *, void *);
-extern inline void ilist_insert_head(ilist_t *, void *);
-extern inline void ilist_insert_tail(ilist_t *, void *);
-extern inline void ilist_remove(ilist_t *, void *);
-extern inline void *ilist_remove_head(ilist_t *);
-extern inline void *ilist_remove_tail(ilist_t *);
-extern inline void *ilist_head(ilist_t *);
-extern inline void *ilist_tail(ilist_t *);
-extern inline void *ilist_next(ilist_t *, void *);
-extern inline void *ilist_prev(ilist_t *, void *);
-extern inline void ilist_move_tail(ilist_t *, ilist_t *);
-extern inline int ilist_is_empty(ilist_t *);
-extern inline size_t ilist_size(ilist_t *);
+/*
+ * Compare two addresses.  NOTE: This only looks at the af + address, and
+ * does NOT look at the port.
+ */
+int
+sockaddr_cmp(const struct sockaddr_storage *l, const struct sockaddr_storage *r)
+{
+	const uint8_t *lp = ss_addr(l);
+	const uint8_t *rp = ss_addr(r);
+	size_t addrlen = ss_addrlen(l);
+	int cmp = 0;
+
+	if (l->ss_family < r->ss_family)
+		return (-1);
+	if (l->ss_family > r->ss_family)
+		return (1);
+
+	return (memcmp(l, r, addrlen));
+}

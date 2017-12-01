@@ -34,6 +34,7 @@
 #include <libperiodic.h>
 #include <security/cryptoki.h>
 #include <sys/list.h>
+#include <sys/refhash.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <stddef.h>
@@ -50,21 +51,13 @@ struct ikev2_sa_s;
 struct ikev2_child_sa;
 struct i2sa_bucket;
 struct pkt_s;
+struct config_rule_s;
 
 #ifndef IKEV2_SA_T
 #define	IKEV2_SA_T
 typedef struct ikev2_sa_s ikev2_sa_t;
 typedef struct ikev2_child_sa ikev2_child_sa_t;
-typedef struct i2sa_bucket i2sa_bucket_t;
 #endif /* IKEV2_SA_T */
-
-struct config_rule_s;
-
-typedef enum i2sa_hash {
-	I2SA_LSPI	= 0,
-	I2SA_RHASH	= 1,
-} i2sa_hash_t;
-#define	I2SA_NUM_HASH	2	/* The number of IKEv2 SA hashes we have */
 
 #define	I2SA_SALT_LEN		32	/* Max size of salt, may be smaller */
 
@@ -129,11 +122,10 @@ struct ikev2_sa_s {
 			 */
 	mutex_t		i2sa_lock;
 	thread_t	i2sa_tid;	/* active tid */
-	list_node_t	i2sa_lspi_node;
-	list_node_t	i2sa_rspi_node;
 
-			/* Link to the bucket we are in for each hash */
-	i2sa_bucket_t	*bucket[I2SA_NUM_HASH];
+	refhash_link_t	i2sa_lspi_link;
+	refhash_link_t	i2sa_rspi_link;
+	refhash_link_t	i2sa_addr_link;
 
 	struct config_rule_s	*i2sa_rule;
 
@@ -258,13 +250,15 @@ struct ikev2_child_sa {
 	((((i2sa)->i2sa_queue_end + 1) % I2SA_QUEUE_DEPTH) == \
 	(i2sa)->i2sa_queue_start)
 
-extern size_t ikev2_sa_buckets;		/* Number of HASH buckets */
-
-ikev2_sa_t *ikev2_sa_get(uint64_t, uint64_t,
+ikev2_sa_t *ikev2_sa_getbylspi(uint64_t, boolean_t);
+ikev2_sa_t *ikev2_sa_getbyrspi(uint64_t,
     const struct sockaddr_storage *restrict,
     const struct sockaddr_storage *restrict,
     const struct pkt_s *restrict);
-ikev2_sa_t *ikev2_sa_alloc(boolean_t, struct pkt_s *restrict,
+ikev2_sa_t *ikev2_sa_getbyaddr(const struct sockaddr_storage *restrict,
+    const struct sockaddr_storage *restrict);
+
+ikev2_sa_t *ikev2_sa_alloc(struct pkt_s *restrict,
     const struct sockaddr_storage *restrict,
     const struct sockaddr_storage *restrict);
 
@@ -273,7 +267,6 @@ void	ikev2_sa_free(ikev2_sa_t *);
 void	ikev2_sa_condemn(ikev2_sa_t *);
 
 void	ikev2_sa_flush(void);
-void	ikev2_sa_set_hashsize(uint_t);
 
 struct pkt_s *ikev2_sa_get_response(ikev2_sa_t *restrict,
     const struct pkt_s *restrict);
@@ -287,6 +280,9 @@ const char *i2sa_msgtype_str(i2sa_msg_type_t);
 ikev2_child_sa_t *ikev2_child_sa_alloc(ikev2_sa_t *, ikev2_spi_proto_t,
     uint32_t, boolean_t);
 void ikev2_child_sa_free(ikev2_child_sa_t *);
+
+void ikev2_sa_init(void);
+void ikev2_sa_fini(void);
 
 #ifdef  __cplusplus
 }
