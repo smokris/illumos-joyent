@@ -61,6 +61,7 @@ static boolean_t done;
 static thread_t signal_tid;
 
 __thread bunyan_logger_t *log = NULL;
+bunyan_logger_t *main_log = NULL;
 int main_port = -1;
 
 static void
@@ -178,6 +179,7 @@ main(int argc, char **argv)
 		errx(EXIT_FAILURE, "bunyan_stream_add() failed: %s",
 		    strerror(rc));
 	}
+	main_log = log;
 
 	if ((f = fopen(cfgfile, "rF")) == NULL) {
 		STDERR(fatal, "cannot open config file",
@@ -254,8 +256,6 @@ main_loop(int fd)
 
 	/*CONSTCOND*/
 	while (!done) {
-		char portsrc[PORT_SOURCE_STRLEN];
-
 		if (port_get(main_port, &pe, NULL) < 0) {
 			STDERR(error, "port_get() failed");
 			continue;
@@ -263,8 +263,7 @@ main_loop(int fd)
 
 		(void) bunyan_trace(log, "received event",
 		    BUNYAN_T_STRING, "source",
-		    port_source_str(pe.portev_source, portsrc,
-		    sizeof (portsrc)),
+		    port_source_str(pe.portev_source),
 		    BUNYAN_T_STRING, "event",
 		    event_str(pe.portev_events),
 		    BUNYAN_T_UINT32, "event num",
@@ -286,7 +285,7 @@ main_loop(int fd)
 			break;
 		}
 		default:
-			INVALID("pe.portev_source");
+			INVALID(pe.portev_source);
 		}
 	}
 

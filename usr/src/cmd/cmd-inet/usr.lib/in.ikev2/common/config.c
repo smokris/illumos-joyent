@@ -45,18 +45,14 @@ void
 config_xf_log(bunyan_logger_t *b, bunyan_level_t level, const char *msg,
     const config_xf_t *xf)
 {
-	char str[4][IKEV2_ENUM_STRLEN];
 	getlog(level)(b, msg,
-	    BUNYAN_T_STRING, "xf_encralg", ikev2_xf_encr_str(xf->xf_encr,
-	    str[0], sizeof (str[0])),
+	    BUNYAN_T_STRING, "xf_encralg", ikev2_xf_encr_str(xf->xf_encr),
 	    BUNYAN_T_UINT32, "xf_minbits", (uint32_t)xf->xf_minbits,
 	    BUNYAN_T_UINT32, "xf_maxbits", (uint32_t)xf->xf_maxbits,
-	    BUNYAN_T_STRING, "xf_authalg", ikev2_xf_auth_str(xf->xf_auth,
-	    str[1], sizeof (str[1])),
+	    BUNYAN_T_STRING, "xf_authalg", ikev2_xf_auth_str(xf->xf_auth),
 	    BUNYAN_T_STRING, "xf_authtype",
-	    ikev2_auth_type_str(xf->xf_authtype, str[2], sizeof (str[2])),
-	    BUNYAN_T_STRING, "xf_dh", ikev2_dh_str(xf->xf_dh, str[3],
-	    sizeof (str[3])),
+	    ikev2_auth_type_str(xf->xf_authtype),
+	    BUNYAN_T_STRING, "xf_dh", ikev2_dh_str(xf->xf_dh),
 	    BUNYAN_T_END);
 }
 

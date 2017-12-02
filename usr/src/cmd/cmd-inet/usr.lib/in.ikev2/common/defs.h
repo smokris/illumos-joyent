@@ -182,8 +182,11 @@ typedef enum event {
 	EVENT_SIGNAL
 } event_t;
 
+/* Required for libipsecutils */
 extern char *my_fmri;
+
 extern int main_port;
+
 /*
  * While bunyan itself is multithreaded, since every thread runs some sort
  * of event loop, by guaranteeing every thread it's own instance, we can
@@ -191,17 +194,17 @@ extern int main_port;
  * before we loop around again.
  */
 extern __thread bunyan_logger_t *log;
+extern bunyan_logger_t *main_log;
 
 typedef int (*bunyan_logfn_t)(bunyan_logger_t *, const char *, ...);
 bunyan_logfn_t getlog(bunyan_level_t);
 
-const char *afstr(sa_family_t);
-const char *symstr(void *, char *, size_t);
-const char *event_str(event_t);
+const char *enum_printf(const char *, ...);
 
-/* Size of largest possible port source string + NUL */
-#define	PORT_SOURCE_STRLEN	20
-char *port_source_str(ushort_t, char *, size_t);
+const char *afstr(sa_family_t);
+const char *event_str(event_t);
+const char *port_source_str(ushort_t);
+const char *symstr(void *, char *, size_t);
 
 void log_reset_keys(void);
 void key_add_ike_version(const char *, uint8_t);

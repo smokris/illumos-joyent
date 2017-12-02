@@ -20,6 +20,7 @@
 #include <libinetutil.h>
 #include <netinet/in.h>
 #include <port.h>
+#include <stdarg.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/socket.h>
@@ -30,14 +31,16 @@
 #include "ike.h"
 #include "defs.h"
 
-struct strbuf_s {
-	char	symstr[128];
-	char	portstr[6];	/* Size of ushort_t as string + NUL */
-	char	afstr[6];	/* Same as portstr */
-	char	evtstr[12];	/* Size of int (enum) + NUL */
+#define	ENUMBUF_NUM	8	/* Num of enumbufs that can be used at a time */
+#define	ENUMBUF_SZ	11	/* Large enough to hold a 32-bit number + NUL */
+
+struct enumbuf_s {
+	uint	eb_idx;
+	char	eb_buf[ENUMBUF_NUM][ENUMBUF_SZ];
 };
 
-static thread_key_t strbuf_key = THR_ONCE_KEY;
+/* XXX: Probably should change this to dynamic allocation */
+__thread struct enumbuf_s enumbuf;
 
 /* Pick a bunyan log function based on level */
 bunyan_logfn_t
@@ -61,27 +64,18 @@ getlog(bunyan_level_t level)
 	return (NULL);
 }
 
-static void
-buf_fini(void *arg)
+const char *
+enum_printf(const char *fmt, ...)
 {
-	struct strbuf_s *buf = arg;
+	char *buf = enumbuf.eb_buf[enumbuf.eb_idx++];
+	va_list ap;
 
-	umem_free(buf, sizeof (*buf));
-}
+	enumbuf.eb_idx %= ENUMBUF_NUM;
 
-static struct strbuf_s *
-getbuf(void)
-{
-	struct strbuf_s *buf = NULL;
+	va_start(ap, fmt);
+	(void) vsnprintf(buf, ENUMBUF_SZ, fmt, ap);
+	va_end(ap);
 
-	VERIFY0(thr_keycreate_once(&strbuf_key, buf_fini));
-	VERIFY0(thr_getspecific(strbuf_key, (void **)&buf));
-	if (buf == NULL) {
-		buf = umem_alloc(sizeof (*buf), UMEM_DEFAULT);
-		if (buf == NULL)
-			return (NULL);
-		VERIFY0(thr_setspecific(strbuf_key, buf));
-	}
 	return (buf);
 }
 
@@ -107,13 +101,7 @@ afstr(sa_family_t af)
 		return ("AF_INET6");
 	}
 
-	struct strbuf_s *buf = getbuf();
-
-	if (buf == NULL)
-		return ("");
-
-	(void) snprintf(buf->afstr, sizeof (buf->afstr), "%hhu", af);
-	return (buf->afstr);
+	return (enum_printf("%hhu", af));
 }
 
 #define	STR(x) case x: return (#x)
@@ -125,32 +113,23 @@ event_str(event_t evt)
 	STR(EVENT_SIGNAL);
 	}
 
-	struct strbuf_s *buf = getbuf();
-
-	if (buf == NULL)
-		return ("");
-
-	(void) snprintf(buf->evtstr, sizeof (buf->evtstr), "%d", evt);
-	return (buf->evtstr);
+	return (enum_printf("%d", evt));
 }
-#undef STR
 
-#define	STR(x, s, l) case x: (void) strlcpy(s, #x, l); return (s)
-char *
-port_source_str(ushort_t src, char *buf, size_t buflen)
+const char *
+port_source_str(ushort_t src)
 {
 	switch (src) {
-	STR(PORT_SOURCE_AIO, buf, buflen);
-	STR(PORT_SOURCE_FD, buf, buflen);
-	STR(PORT_SOURCE_MQ, buf, buflen);
-	STR(PORT_SOURCE_TIMER, buf, buflen);
-	STR(PORT_SOURCE_USER, buf, buflen);
-	STR(PORT_SOURCE_ALERT, buf, buflen);
-	STR(PORT_SOURCE_FILE, buf, buflen);
+	STR(PORT_SOURCE_AIO);
+	STR(PORT_SOURCE_FD);
+	STR(PORT_SOURCE_MQ);
+	STR(PORT_SOURCE_TIMER);
+	STR(PORT_SOURCE_USER);
+	STR(PORT_SOURCE_ALERT);
+	STR(PORT_SOURCE_FILE);
 	}
 
-	(void) snprintf(buf, buflen, "%hhu", src);
-	return (buf);
+	return (enum_printf("%hhu", src));
 }
 #undef STR
 

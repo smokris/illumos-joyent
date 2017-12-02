@@ -21,6 +21,7 @@
 #include <string.h>
 #include <strings.h>
 #include <errno.h>
+#include <libcmdutils.h> /* for custr_ */
 #include <netinet/in.h>
 #include <security/cryptoki.h>
 #include <errno.h>
@@ -52,7 +53,6 @@ ikev2_pkt_new_exchange(ikev2_sa_t *i2sa, ikev2_exch_t exch_type)
 	uint32_t msgid = 0;
 	uint8_t flags = 0;
 	const char *exchstr = NULL;
-	char exchbuf[IKEV2_ENUM_STRLEN] = { 0 };
 
 	VERIFY(MUTEX_HELD(&i2sa->i2sa_lock));
 
@@ -61,9 +61,8 @@ ikev2_pkt_new_exchange(ikev2_sa_t *i2sa, ikev2_exch_t exch_type)
 	if (i2sa->flags & I2SA_INITIATOR)
 		flags |= IKEV2_FLAG_INITIATOR;
 
-	exchstr = ikev2_exch_str(exch_type, exchbuf, sizeof (exchbuf));
 	(void) bunyan_key_add(log,
-	    BUNYAN_T_STRING, LOG_KEY_EXCHTYPE, exchstr,
+	    BUNYAN_T_STRING, LOG_KEY_EXCHTYPE, ikev2_exch_str(exch_type),
 	    BUNYAN_T_END);
 
 	pkt = pkt_out_alloc(I2SA_LOCAL_SPI(i2sa),
@@ -138,7 +137,6 @@ ikev2_pkt_new_inbound(void *restrict buf, size_t buflen)
 	size_t			*counts = NULL;
 	size_t			i = 0;
 	boolean_t		keep = B_TRUE;
-	char			exch[IKEV2_ENUM_STRLEN] = { 0 };
 
 	VERIFY(IS_WORKER);
 
@@ -157,8 +155,7 @@ ikev2_pkt_new_inbound(void *restrict buf, size_t buflen)
 
 	/* These are added early in case there is an error */
 	(void) bunyan_key_add(log,
-	    BUNYAN_T_STRING, LOG_KEY_EXCHTYPE,
-	    ikev2_exch_str(hdr->exch_type, exch, sizeof (exch)),
+	    BUNYAN_T_STRING, LOG_KEY_EXCHTYPE, ikev2_exch_str(hdr->exch_type),
 	    BUNYAN_T_END);
 	key_add_ike_spi(LOG_KEY_LSPI, ntohll(INBOUND_LOCAL_SPI(hdr)));
 	key_add_ike_spi(LOG_KEY_RSPI, ntohll(INBOUND_REMOTE_SPI(hdr)));
@@ -1438,8 +1435,7 @@ check_payloads(pkt_t *pkt)
 			(void) bunyan_info(log,
 			    "Packet payload has critical bit set",
 			    BUNYAN_T_STRING, "payload",
-			    ikev2_pay_str(idx->pp_type, logbuf,
-			    sizeof (logbuf)), BUNYAN_T_END);
+			    ikev2_pay_str(idx->pp_type), BUNYAN_T_END);
 			return (B_FALSE);
 		}
 
@@ -1492,71 +1488,47 @@ check_payloads(pkt_t *pkt)
  *
  * Example: 'N(COOKIE), SA, KE, No'
  */
-char *
+custr_t *
 ikev2_pkt_desc(pkt_t *pkt)
 {
-	char *s = NULL;
-	size_t len = 0;
+	custr_t *cstr = NULL;
 	uint16_t i;
 	uint16_t j;
-	char buf[IKEV2_ENUM_STRLEN];
-	char nbuf[IKEV2_ENUM_STRLEN];
+
+	if (custr_alloc(&cstr) != 0)
+		return (NULL);
 
 	for (i = j = 0; i < pkt->pkt_payload_count; i++) {
 		pkt_payload_t *pay = pkt_payload(pkt, i);
 		const char *paystr =
-		    ikev2_pay_short_str((ikev2_pay_type_t)pay->pp_type, buf,
-		    sizeof (buf));
+		    ikev2_pay_short_str((ikev2_pay_type_t)pay->pp_type);
 
-		len += strlen(paystr) + 2;
+		if (i > 0 && custr_appendc(cstr, ',') != 0 &&
+		    custr_appendc(cstr, ' ') != 0)
+			goto fail;
+
+		if (custr_append(cstr, paystr) != 0)
+			goto fail;
+
 		if (pay->pp_type == IKEV2_PAYLOAD_NOTIFY) {
 			pkt_notify_t *n = pkt_notify(pkt, j++);
 			const char *nstr =
-			    ikev2_notify_str((ikev2_notify_type_t)n->pn_type,
-			    nbuf, sizeof (nbuf));
+			    ikev2_notify_str((ikev2_notify_type_t)n->pn_type);
 
-			len += strlen(nstr) + 2;
+			if (custr_appendc(cstr, '(') != 0)
+				goto fail;
+			if (custr_append(cstr, nstr) != 0)
+				goto fail;
+			if (custr_appendc(cstr, ')') != 0)
+				goto fail;
 		}
 	}
 
-	s = calloc(1, len);
-	VERIFY3P(s, !=, len);
+	return (cstr);
 
-	for (i = j = 0; i < pkt->pkt_payload_count; i++) {
-		pkt_payload_t *pay = pkt_payload(pkt, i);
-		const char *paystr =
-		    ikev2_pay_short_str((ikev2_pay_type_t)pay->pp_type, buf,
-		    sizeof (buf));
-
-		if (i > 0)
-			(void) strlcat(s, ", ", len);
-
-		(void) strlcat(s, paystr, len);
-		if (pay->pp_type == IKEV2_PAYLOAD_NOTIFY) {
-			pkt_notify_t *n = pkt_notify(pkt, j++);
-			const char *nstr =
-			    ikev2_notify_str((ikev2_notify_type_t)n->pn_type,
-			    nbuf, sizeof (nbuf));
-
-			/*
-			 * Notify type is 16-bits, so (XXXXX) (7 chars) is
-			 * the largest it can be (and is < than "UNKNOWN"),
-			 * so no worries about truncation.
-			 */
-			if (strcmp(nstr, "UNKNOWN") == 0) {
-				char buf[8] = { 0 };
-				(void) snprintf(buf, sizeof (buf), "(%hhu)",
-				    (uint16_t)n->pn_type);
-				(void) strlcat(s, buf, len);
-			} else {
-				(void) strlcat(s, "(", len);
-				(void) strlcat(s, nstr, len);
-				(void) strlcat(s, ")", len);
-			}
-		}
-	}
-
-	return (s);
+fail:
+	custr_free(cstr);
+	return (NULL);
 }
 
 static struct {
@@ -1572,13 +1544,10 @@ void
 ikev2_pkt_log(pkt_t *restrict pkt, bunyan_level_t level, const char *msg)
 {
 	ike_header_t *hdr = pkt_header(pkt);
-	char *descstr = ikev2_pkt_desc(pkt);
+	custr_t *desc = ikev2_pkt_desc(pkt);
 	char ispi[19];
 	char rspi[19];
 	char flag[30];
-	char exch[IKEV2_ENUM_STRLEN];
-
-	VERIFY3P(descstr, !=, NULL);
 
 	(void) snprintf(ispi, sizeof (ispi), "0x%" PRIX64,
 	    ntohll(hdr->initiator_spi));
@@ -1608,15 +1577,14 @@ ikev2_pkt_log(pkt_t *restrict pkt, bunyan_level_t level, const char *msg)
 	    BUNYAN_T_POINTER, "pkt", pkt,
 	    BUNYAN_T_STRING, "initiator_spi", ispi,
 	    BUNYAN_T_STRING, "responder_spi", rspi,
-	    BUNYAN_T_STRING, "exch_type",
-	    ikev2_exch_str(hdr->exch_type, exch, sizeof (exch)),
+	    BUNYAN_T_STRING, "exch_type", ikev2_exch_str(hdr->exch_type),
 	    BUNYAN_T_UINT32, "msgid", ntohl(pkt_header(pkt)->msgid),
 	    BUNYAN_T_UINT32, "msglen", ntohl(pkt_header(pkt)->length),
 	    BUNYAN_T_STRING, "flags", flag,
 	    BUNYAN_T_UINT32, "nxmit", (uint32_t)pkt->pkt_xmit,
-	    BUNYAN_T_STRING, "payloads", descstr,
+	    BUNYAN_T_STRING, "payloads", (desc != NULL) ? custr_cstr(desc) : "",
 	    BUNYAN_T_END);
-	free(descstr);
+	custr_free(desc);
 }
 
 /* Retrieve the DH group value from a key exchange payload */

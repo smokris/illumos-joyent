@@ -351,13 +351,11 @@ dh_genpair(ikev2_dh_t group, CK_OBJECT_HANDLE_PTR restrict pub,
 	    CKA_DERIVE, &trueval, sizeof (trueval)
 	};
 	CK_RV rc;
-	char buf[IKEV2_ENUM_STRLEN];
 
 	dh = dh_get_group(group);
 	if (dh == NULL) {
 		(void) bunyan_error(log, "Invalid DH group",
-		    BUNYAN_T_STRING, "dhgrp", ikev2_dh_str(group, buf,
-		    sizeof (buf)),
+		    BUNYAN_T_STRING, "dhgrp", ikev2_dh_str(group),
 		    BUNYAN_T_INT32, "val", (int32_t)group,
 		    BUNYAN_T_END);
 		return (B_FALSE);
@@ -377,10 +375,8 @@ dh_genpair(ikev2_dh_t group, CK_OBJECT_HANDLE_PTR restrict pub,
 		PKCS11ERR(error, "C_GenerateKeyPair", rc);
 		return (B_FALSE);
 	} else {
-		char buf[IKEV2_ENUM_STRLEN] = { 0 };
 		(void) bunyan_trace(log, "Created DH keypair",
-		    BUNYAN_T_STRING, "group",
-		    ikev2_dh_str(group, buf, sizeof (buf)),
+		    BUNYAN_T_STRING, "group", ikev2_dh_str(group),
 		    BUNYAN_T_UINT64, "pub_handle", (uint64_t)*pub,
 		    BUNYAN_T_UINT64, "priv_handle", (uint64_t)*priv,
 		    BUNYAN_T_END);

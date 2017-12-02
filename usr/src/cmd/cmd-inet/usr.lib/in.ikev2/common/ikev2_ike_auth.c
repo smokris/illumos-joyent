@@ -108,7 +108,6 @@ ikev2_ike_auth_resp(pkt_t *req)
 	pkt_payload_t *id_r = NULL;
 	config_id_t *cid_i = NULL;
 	const char *mstr = NULL;
-	char mbuf[IKEV2_ENUM_STRLEN] = { 0 };
 
 	(void) bunyan_debug(log, "Responding to IKE_AUTH request",
 	    BUNYAN_T_END);
@@ -130,7 +129,7 @@ ikev2_ike_auth_resp(pkt_t *req)
 		goto authfail;
 	key_add_id(LOG_KEY_REMOTE_ID, LOG_KEY_REMOTE_ID_TYPE, cid_i);
 
-	mstr = ikev2_auth_type_str(sa->authmethod, mbuf, sizeof (mbuf));
+	mstr = ikev2_auth_type_str(sa->authmethod);
 
 	/*
 	 * RFC7296 2.21.2 - We must first authenticate before we can
@@ -166,14 +165,12 @@ ikev2_ike_auth_resp(pkt_t *req)
 		if ((cid_r = i2id_to_cid(id_r)) != NULL &&
 		    config_id_cmp(cid_r, rule->rule_local_id) != 0) {
 			uint8_t idtype = *id_r->pp_ptr;
-			char typebuf[IKEV2_ENUM_STRLEN];
 			char idbuf[256] = { 0 };
 
 			(void) bunyan_info(log,
 			    "Initiator requested ID other than ours",
 			    BUNYAN_T_STRING, "idtype",
-			    ikev2_id_type_str(idtype, typebuf,
-			    sizeof (typebuf)),
+			    ikev2_id_type_str(idtype),
 			    BUNYAN_T_STRING, "id",
 			    ikev2_id_str(id_r, idbuf, sizeof (idbuf)),
 			    BUNYAN_T_END);
@@ -222,7 +219,6 @@ ikev2_ike_auth_init_resp(ikev2_sa_t *restrict sa, pkt_t *restrict resp,
 
 	config_id_t *cid_r = NULL;
 	const char *mstr = NULL;
-	char mbuf[IKEV2_ENUM_STRLEN] = { 0 };
 
 	(void) bunyan_debug(log, "Received IKE_AUTH response",
 	    BUNYAN_T_END);
@@ -255,7 +251,7 @@ ikev2_ike_auth_init_resp(ikev2_sa_t *restrict sa, pkt_t *restrict resp,
 	if (!check_remote_id(resp, &cid_r))
 		goto fail;
 
-	mstr = ikev2_auth_type_str(sa->authmethod, mbuf, sizeof (mbuf));
+	mstr = ikev2_auth_type_str(sa->authmethod);
 
 	key_add_id(LOG_KEY_REMOTE_ID, LOG_KEY_REMOTE_ID_TYPE, cid_r);
 
@@ -380,13 +376,9 @@ check_auth(pkt_t *pkt)
 	 */
 	if (payauth->pp_ptr[0] != sa->authmethod) {
 		const char *l_meth = NULL, *r_meth = NULL;
-		char lbuf[IKEV2_ENUM_STRLEN] = { 0 };
-		char rbuf[IKEV2_ENUM_STRLEN] = { 0 };
 
-		l_meth = ikev2_auth_type_str(sa->authmethod, lbuf,
-		    sizeof (lbuf));
-		r_meth = ikev2_auth_type_str(payauth->pp_ptr[0], rbuf,
-		    sizeof (rbuf));
+		l_meth = ikev2_auth_type_str(sa->authmethod);
+		r_meth = ikev2_auth_type_str(payauth->pp_ptr[0]);
 
 		(void) bunyan_warn(log,
 		    "Authentication method mismatch with remote peer",
@@ -696,7 +688,6 @@ i2id_to_cid(pkt_payload_t *i2id)
 	uint32_t datalen = 0;
 	char *buf = NULL;
 	const char *idtstr = NULL;
-	char idtbuf[IKEV2_ENUM_STRLEN] = { 0 };
 
 	if (i2id->pp_len <= sizeof (ikev2_id_t)) {
 		(void) bunyan_error(log, "ID payload is truncated",
@@ -708,7 +699,7 @@ i2id_to_cid(pkt_payload_t *i2id)
 		return (NULL);
 	}
 
-	idtstr = ikev2_id_type_str(i2id->pp_ptr[0], idtbuf, sizeof (idtbuf));
+	idtstr = ikev2_id_type_str(i2id->pp_ptr[0]);
 
 	data = i2id->pp_ptr + sizeof (ikev2_id_t);
 	datalen = i2id->pp_len - sizeof (ikev2_id_t);
@@ -814,9 +805,7 @@ ikev2_auth_failed(const pkt_t *src)
 static size_t
 get_authlen(const ikev2_sa_t *sa)
 {
-	char str[IKEV2_ENUM_STRLEN] = { 0 };
-	const char *authstr = ikev2_auth_type_str(sa->authmethod, str,
-	    sizeof (str));
+	const char *authstr = ikev2_auth_type_str(sa->authmethod);
 
 	switch (sa->authmethod) {
 	case IKEV2_AUTH_NONE:

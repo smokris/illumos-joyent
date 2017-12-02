@@ -129,7 +129,9 @@ boolean_t ikev2_walk_xfattrs(uint8_t *restrict, size_t, ikev2_xfattr_cb_t,
 
 void ikev2_pkt_log(pkt_t *restrict, bunyan_level_t, const char *);
 
-char *ikev2_pkt_desc(pkt_t *);
+struct custr;
+struct custr *ikev2_pkt_desc(pkt_t *);
+
 ikev2_dh_t ikev2_get_dhgrp(pkt_t *);
 size_t ikev2_spilen(ikev2_spi_proto_t);
 

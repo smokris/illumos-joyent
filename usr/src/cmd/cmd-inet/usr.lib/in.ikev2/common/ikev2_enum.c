@@ -14,6 +14,7 @@
  */
 #include <stdio.h>
 #include <string.h>
+#include "defs.h"
 #include "ikev2_enum.h"
 #include "ikev2.h"
 
@@ -27,7 +28,7 @@
  */
 
 const char *
-ikev2_exch_str(ikev2_exch_t id, char *buf, size_t buflen)
+ikev2_exch_str(ikev2_exch_t id)
 {
 	switch (id) {
 	case IKEV2_EXCH_IKE_SA_INIT:
@@ -47,13 +48,11 @@ ikev2_exch_str(ikev2_exch_t id, char *buf, size_t buflen)
 	case IKEV2_EXCH_GSA_REKEY:
 		return ("GSA_REKEY");
 	}
-
-	(void) snprintf(buf, buflen, "UNKNOWN <%hhu>", (uint8_t)id);
-	return (buf);
+	return (enum_printf("%hhu", (uint8_t)id));
 }
 
 const char *
-ikev2_pay_str(ikev2_pay_type_t id, char *buf, size_t buflen)
+ikev2_pay_str(ikev2_pay_type_t id)
 {
 	switch (id) {
 	STR(IKEV2_PAYLOAD_NONE);
@@ -81,12 +80,11 @@ ikev2_pay_str(ikev2_pay_type_t id, char *buf, size_t buflen)
 	STR(IKEV2_PAYLOAD_PS);
 	}
 
-	(void) snprintf(buf, buflen, "%hhu", (uint8_t)id);
-	return (buf);
+	return (enum_printf("%hhu", (uint8_t)id));
 }
 
 const char *
-ikev2_pay_short_str(ikev2_pay_type_t id, char *buf, size_t buflen)
+ikev2_pay_short_str(ikev2_pay_type_t id)
 {
 	switch (id) {
 	case IKEV2_PAYLOAD_NONE:
@@ -136,11 +134,11 @@ ikev2_pay_short_str(ikev2_pay_type_t id, char *buf, size_t buflen)
 	case IKEV2_PAYLOAD_PS:
 		return ("PS");
 	}
-	(void) snprintf(buf, buflen, "%hhu", (uint8_t)id);
-	return (buf);
+	return (enum_printf("%hhu", (uint8_t)id));
 }
+
 const char *
-ikev2_spi_str(ikev2_spi_proto_t id, char *buf, size_t buflen)
+ikev2_spi_str(ikev2_spi_proto_t id)
 {
 	switch (id) {
 	case IKEV2_PROTO_NONE:
@@ -156,12 +154,11 @@ ikev2_spi_str(ikev2_spi_proto_t id, char *buf, size_t buflen)
 	case IKEV2_PROTO_FC_CT_AUTH:
 		return ("FC_CT_AUTH");
 	}
-	(void) snprintf(buf, buflen, "%hhu", (uint8_t)id);
-	return (buf);
+	return (enum_printf("%hhu", (uint8_t)id));
 }
 
 const char *
-ikev2_xf_type_str(ikev2_xf_type_t id, char *buf, size_t buflen)
+ikev2_xf_type_str(ikev2_xf_type_t id)
 {
 	switch (id) {
 	case IKEV2_XF_ENCR:
@@ -175,12 +172,11 @@ ikev2_xf_type_str(ikev2_xf_type_t id, char *buf, size_t buflen)
 	case IKEV2_XF_ESN:
 		return ("ESN");
 	}
-	(void) snprintf(buf, buflen, "%hhu", (uint8_t)id);
-	return (buf);
+	return (enum_printf("%hhu", (uint8_t)id));
 }
 
 const char *
-ikev2_xf_encr_str(ikev2_xf_encr_t id, char *buf, size_t buflen)
+ikev2_xf_encr_str(ikev2_xf_encr_t id)
 {
 	switch (id) {
 	STR(IKEV2_ENCR_NONE);
@@ -211,12 +207,11 @@ ikev2_xf_encr_str(ikev2_xf_encr_t id, char *buf, size_t buflen)
 	STR(IKEV2_ENCR_CAMELLIA_CCM_12);
 	STR(IKEV2_ENCR_CAMELLIA_CCM_16);
 	}
-	(void) snprintf(buf, buflen, "%hhu", (uint8_t)id);
-	return (buf);
+	return (enum_printf("%hhu", (uint8_t)id));
 }
 
 const char *
-ikev2_xf_auth_str(ikev2_xf_auth_t id, char *buf, size_t buflen)
+ikev2_xf_auth_str(ikev2_xf_auth_t id)
 {
 	switch (id) {
 	STR(IKEV2_XF_AUTH_NONE);
@@ -235,12 +230,11 @@ ikev2_xf_auth_str(ikev2_xf_auth_t id, char *buf, size_t buflen)
 	STR(IKEV2_XF_AUTH_HMAC_SHA2_384_192);
 	STR(IKEV2_XF_AUTH_HMAC_SHA2_512_256);
 	}
-	(void) snprintf(buf, buflen, "%hhu", (uint8_t)id);
-	return (buf);
+	return (enum_printf("%hhu", (uint8_t)id));
 }
 
 const char *
-ikev2_auth_type_str(ikev2_auth_type_t id, char *buf, size_t buflen)
+ikev2_auth_type_str(ikev2_auth_type_t id)
 {
 	switch (id) {
 	STR(IKEV2_AUTH_NONE);
@@ -252,12 +246,11 @@ ikev2_auth_type_str(ikev2_auth_type_t id, char *buf, size_t buflen)
 	STR(IKEV2_AUTH_ECDSA_512);
 	STR(IKEV2_AUTH_GSPM);
 	}
-	(void) snprintf(buf, buflen, "%hhu", (uint8_t)id);
-	return (buf);
+	return (enum_printf("%hhu", (uint8_t)id));
 }
 
 const char *
-ikev2_dh_str(ikev2_dh_t id, char *buf, size_t buflen)
+ikev2_dh_str(ikev2_dh_t id)
 {
 	switch (id) {
 	STR(IKEV2_DH_NONE);
@@ -284,12 +277,11 @@ ikev2_dh_str(ikev2_dh_t id, char *buf, size_t buflen)
 	STR(IKEV2_DH_BRAINPOOL_P384R1);
 	STR(IKEV2_DH_BRAINPOOL_P512R1);
 	}
-	(void) snprintf(buf, buflen, "%hhu", (uint8_t)id);
-	return (buf);
+	return (enum_printf("%hhu", (uint8_t)id));
 }
 
 const char *
-ikev2_prf_str(ikev2_prf_t id, char *buf, size_t buflen)
+ikev2_prf_str(ikev2_prf_t id)
 {
 	switch (id) {
 	STR(IKEV2_PRF_HMAC_MD5);
@@ -301,12 +293,11 @@ ikev2_prf_str(ikev2_prf_t id, char *buf, size_t buflen)
 	STR(IKEV2_PRF_HMAC_SHA2_512);
 	STR(IKEV2_PRF_AES128_CMAC);
 	}
-	(void) snprintf(buf, buflen, "%hhu", (uint8_t)id);
-	return (buf);
+	return (enum_printf("%hhu", (uint8_t)id));
 }
 
 const char *
-ikev2_notify_str(ikev2_notify_type_t id, char *buf, size_t buflen)
+ikev2_notify_str(ikev2_notify_type_t id)
 {
 	switch (id) {
 	case IKEV2_N_UNSUPPORTED_CRITICAL_PAYLOAD:
@@ -440,12 +431,11 @@ ikev2_notify_str(ikev2_notify_type_t id, char *buf, size_t buflen)
 	case IKEV2_N_IFOM_CAPABILITY:
 		return ("IFOM_CAPABILITY");
 	}
-	(void) snprintf(buf, buflen, "%hu", (uint16_t)id);
-	return (buf);
+	return (enum_printf("%hu", (uint16_t)id));
 }
 
 const char *
-ikev2_id_type_str(ikev2_id_type_t id, char *buf, size_t buflen)
+ikev2_id_type_str(ikev2_id_type_t id)
 {
 	switch (id) {
 	STR(IKEV2_ID_IPV4_ADDR);
@@ -457,6 +447,5 @@ ikev2_id_type_str(ikev2_id_type_t id, char *buf, size_t buflen)
 	STR(IKEV2_ID_KEY_ID);
 	STR(IKEV2_ID_FC_NAME);
 	}
-	(void) snprintf(buf, buflen, "%hhu", (uint8_t)id);
-	return (buf);
+	return (enum_printf("%hhu", (uint8_t)id));
 }

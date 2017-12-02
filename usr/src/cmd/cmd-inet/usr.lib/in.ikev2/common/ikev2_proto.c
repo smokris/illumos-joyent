@@ -29,6 +29,7 @@
 
 #include <errno.h>
 #include <ipsec_util.h>
+#include <libcmdutils.h>
 #include <libperiodic.h>
 #include <note.h>
 #include <string.h>
@@ -451,7 +452,7 @@ ikev2_send_common(pkt_t *pkt)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
 	ike_header_t *hdr = pkt_header(pkt);
-	char *desc = NULL;
+	custr_t *desc = NULL;
 	ssize_t len = 0;
 	int s = -1;
 
@@ -461,11 +462,10 @@ ikev2_send_common(pkt_t *pkt)
 	(void) bunyan_debug(log, "Sending packet",
 	    BUNYAN_T_UINT32, "msgid", ntohll(hdr->msgid),
 	    BUNYAN_T_BOOLEAN, "response", I2P_RESPONSE(pkt),
-	    BUNYAN_T_STRING, "pktdesc", desc,
+	    BUNYAN_T_STRING, "pktdesc", (desc != NULL) ? custr_cstr(desc) : "",
 	    BUNYAN_T_UINT32, "nxmit", (uint32_t)pkt->pkt_xmit,
 	    BUNYAN_T_END);
-	free(desc);
-	desc = NULL;
+	custr_free(desc);
 
 	len = sendfromto(s, pkt_start(pkt), pkt_len(pkt), &sa->laddr,
 	    &sa->raddr);

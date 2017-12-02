@@ -442,14 +442,11 @@ redo_init(pkt_t *restrict pkt, struct sa_init_args *restrict sa_args)
 		}
 
 		if (!match) {
-			char dhstr[IKEV2_ENUM_STRLEN] = { 0 };
-
 			(void) bunyan_info(log,
 			    "Received INVALID_KE_PAYLOAD notification with "
 			    "unacceptable group; ignoring",
 			    BUNYAN_T_UINT32, "groupval", (uint32_t)val,
-			    BUNYAN_T_STRING, "group",
-			    ikev2_dh_str(val, dhstr, sizeof (dhstr)),
+			    BUNYAN_T_STRING, "group", ikev2_dh_str(val),
 			    BUNYAN_T_END);
 			ikev2_pkt_free(pkt);
 			return (B_TRUE);
@@ -643,9 +640,6 @@ check_nats(pkt_t *pkt)
 			return (B_FALSE);
 
 		while (n != NULL) {
-			char nstr[IKEV2_ENUM_STRLEN];
-			char spistr[IKEV2_ENUM_STRLEN];
-
 			/*
 			 * XXX: Should these validation failures just ignore
 			 * the individual payload, or discard the packet
@@ -655,11 +649,9 @@ check_nats(pkt_t *pkt)
 				(void) bunyan_error(log,
 				    "Invalid SPI protocol in notification",
 				    BUNYAN_T_STRING, "notification",
-				    ikev2_notify_str(params[i].ntype, nstr,
-				    sizeof (nstr)),
+				    ikev2_notify_str(params[i].ntype),
 				    BUNYAN_T_STRING, "protocol",
-				    ikev2_spi_str(n->pn_proto, spistr,
-				    sizeof (spistr)),
+				    ikev2_spi_str(n->pn_proto),
 				    BUNYAN_T_UINT32, "protonum",
 				    (uint32_t)n->pn_proto, BUNYAN_T_END);
 				return (B_FALSE);
@@ -668,8 +660,7 @@ check_nats(pkt_t *pkt)
 				(void) bunyan_error(log,
 				    "Non-zero SPI size in NAT notification",
 				    BUNYAN_T_STRING, "notification",
-				    ikev2_notify_str(params[i].ntype, nstr,
-				    sizeof (nstr)),
+				    ikev2_notify_str(params[i].ntype),
 				    BUNYAN_T_END);
 				return (B_FALSE);
 			}
@@ -677,8 +668,7 @@ check_nats(pkt_t *pkt)
 				(void) bunyan_error(log,
 				    "NAT notification size mismatch",
 				    BUNYAN_T_STRING, "notification",
-				    ikev2_notify_str(params[i].ntype, nstr,
-				    sizeof (nstr)),
+				    ikev2_notify_str(params[i].ntype),
 				    BUNYAN_T_UINT32, "notifylen",
 				    (uint32_t)n->pn_len,
 				    BUNYAN_T_UINT32, "expected",

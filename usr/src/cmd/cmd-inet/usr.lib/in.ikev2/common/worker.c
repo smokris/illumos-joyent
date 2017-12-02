@@ -139,7 +139,7 @@ worker_add(void)
 	if ((w = umem_zalloc(sizeof (worker_t), UMEM_DEFAULT)) == NULL)
 		goto fail;
 
-	if (bunyan_child(log, &w->w_log, BUNYAN_T_END) != 0)
+	if (bunyan_child(main_log, &w->w_log, BUNYAN_T_END) != 0)
 		goto fail;
 
 	if ((w->w_p11 = pkcs11_new_session()) == CK_INVALID_HANDLE)
@@ -333,7 +333,6 @@ worker_main(void *arg)
 
 	while (!w->w_quit) {
 		port_event_t pe = { 0 };
-		char portsrc[PORT_SOURCE_STRLEN];
 
 		log_reset_keys();
 
@@ -356,8 +355,8 @@ worker_main(void *arg)
 
 		(void) bunyan_trace(log, "Received event",
 		    BUNYAN_T_INT32, "evport", (int32_t)wk_evport,
-		    BUNYAN_T_STRING, "source", port_source_str(pe.portev_source,
-		    portsrc, sizeof (portsrc)),
+		    BUNYAN_T_STRING, "source",
+		    port_source_str(pe.portev_source),
 		    BUNYAN_T_INT32, "events", (int32_t)pe.portev_events,
 		    BUNYAN_T_UINT64, "object", (uint64_t)pe.portev_object,
 		    BUNYAN_T_POINTER, "cookie", pe.portev_user,
