@@ -70,10 +70,12 @@ pkt_out_alloc(uint64_t i_spi, uint64_t r_spi, uint8_t version,
  * header, and cache the location of the payloads in the payload field.
  */
 pkt_t *
-pkt_in_alloc(void *restrict buf, size_t buflen)
+pkt_in_alloc(void *restrict buf, size_t buflen, pkt_check_fn_t cb)
 {
 	ike_header_t *hdr = (ike_header_t *)buf;
 	pkt_t *pkt = NULL;
+	uint8_t *payptr = NULL;
+	size_t paylen = 0;
 	uint8_t first;
 
 	VERIFY(IS_WORKER);
@@ -84,6 +86,10 @@ pkt_in_alloc(void *restrict buf, size_t buflen)
 	VERIFY3U(buflen, <=, MAX_PACKET_SIZE);
 
 	first = hdr->next_payload;
+
+	if (!pkt_check_payloads(first, (const uint8_t *)(hdr + 1),
+	    buflen - sizeof (*hdr), cb))
+		return (NULL);
 
 	if ((pkt = umem_cache_alloc(pkt_cache, UMEM_DEFAULT)) == NULL) {
 		STDERR(error, "umem_cache_alloc failed");
@@ -96,8 +102,9 @@ pkt_in_alloc(void *restrict buf, size_t buflen)
 	(void) memcpy(pkt->pkt_raw, buf, buflen);
 	pkt->pkt_ptr += buflen;
 
-	if (!pkt_index_payloads(pkt, pkt_start(pkt) + sizeof (ike_header_t),
-	    pkt_len(pkt) - sizeof (ike_header_t), first)) {
+	payptr = pkt_start(pkt) + sizeof (ike_header_t);
+	paylen = pkt_len(pkt) - sizeof (ike_header_t);
+	if (!pkt_index_payloads(pkt, payptr, paylen, first)) {
 		pkt_free(pkt);
 		return (NULL);
 	}
@@ -107,6 +114,57 @@ pkt_in_alloc(void *restrict buf, size_t buflen)
 	    BUNYAN_T_END);
 
 	return (pkt);
+}
+
+boolean_t
+pkt_check_payloads(uint8_t first, const uint8_t *buf, size_t buflen,
+    pkt_check_fn_t cb)
+{
+	const uint8_t *ptr = buf;
+	const uint8_t *end = buf + buflen;
+	size_t paylen = 0, paycount = 0;
+	uint8_t type = first;
+
+	while (ptr < end && type != 0) {
+		const ike_payload_t *pay = (const ike_payload_t *)ptr;
+
+		if (ptr + sizeof (*pay) > end) {
+			(void) bunyan_warn(log, "Payload header is truncated",
+			    BUNYAN_T_UINT32, "paynum", (uint32_t)paycount,
+			    BUNYAN_T_UINT32, "paytype", (uint32_t)type,
+			    BUNYAN_T_UINT32, "paylen", (uint32_t)(end - ptr),
+			    BUNYAN_T_END);
+			return (B_FALSE);
+		}
+
+		paylen = BE_IN16(&pay->pay_length);
+		if (ptr + paylen > end) {
+			(void) bunyan_warn(log,
+			    "Payload overruns end of packet",
+			    BUNYAN_T_UINT32, "paynum", (uint32_t)paycount,
+			    BUNYAN_T_UINT32, "paytype", (uint32_t)type,
+			    BUNYAN_T_UINT32, "paylen", (uint32_t)paylen,
+			    BUNYAN_T_END);
+				return (B_FALSE);
+		}
+
+		if (!cb(type, ptr + sizeof (*pay), paylen - sizeof (*pay)))
+			return (B_FALSE);
+
+		type = pay->pay_next;
+		ptr += paylen;
+		paycount++;
+	}
+
+	if (ptr < end) {
+		(void) bunyan_warn(log,
+		    "Packet has trailing data after last payload",
+		    BUNYAN_T_UINT32, "amt", (uint32_t)(end - ptr),
+		    BUNYAN_T_END);
+		return (B_FALSE);
+	}
+
+	return (B_TRUE);
 }
 
 struct index_data {
@@ -638,11 +696,12 @@ pkt_payload_walk(uint8_t *restrict data, size_t len, pkt_walk_fn_t cb,
     uint8_t first, void *restrict cookie)
 {
 	uint8_t			*ptr = data;
+	uint8_t			*end = data + len;
 	uint8_t			paytype = first;
 	boolean_t		ret = B_TRUE;
 
 	/* 0 is used for both IKEv1 and IKEv2 to indicate last payload */
-	while (len > 0 && paytype != 0) {
+	while (ptr < end && paytype != 0) {
 		ike_payload_t pay = { 0 };
 
 		if (len < sizeof (pay)) {
@@ -672,12 +731,11 @@ pkt_payload_walk(uint8_t *restrict data, size_t len, pkt_walk_fn_t cb,
 
 		paytype = pay.pay_next;
 		ptr += pay.pay_length;
-		len -= pay.pay_length;
 	}
 
-	if (ret && len > 0) {
+	if (ret && ptr < end) {
 		(void) bunyan_info(log, "Packet contains extranenous data",
-		    BUNYAN_T_UINT32, "amt", (uint32_t)len,
+		    BUNYAN_T_UINT32, "amt", (uint32_t)(end - ptr),
 		    BUNYAN_T_END);
 		return (B_FALSE);
 	}

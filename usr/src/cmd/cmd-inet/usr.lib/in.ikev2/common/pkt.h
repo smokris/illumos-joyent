@@ -125,8 +125,8 @@ struct pkt_s {
 	uint16_t		pkt_notify_count;
 	uint16_t		pkt_notify_alloc;
 
-				/* Ready for transmit */
-	boolean_t		pkt_done;
+	boolean_t		pkt_done;	/* Ready for transmit */
+	boolean_t		pkt_decrypted;
 };
 
 /* Used to help construct SA payloads */

@@ -43,6 +43,7 @@
 #include "ikev2_cookie.h"
 #include "ikev2_enum.h"
 #include "ikev2_pkt.h"
+#include "ikev2_pkt_check.h"
 #include "ikev2_proto.h"
 #include "ikev2_sa.h"
 #include "pfkey.h"
@@ -657,89 +658,6 @@ ikev2_retransmit(ikev2_sa_t *sa)
 }
 
 /*
- * Handle the instance where an inbound request is a retransmit by sending
- * out last response.  Returns B_TRUE if packet was processed.
- */
-static boolean_t
-ikev2_handle_retransmit(pkt_t *req)
-{
-	ikev2_sa_t *i2sa = req->pkt_sa;
-	pkt_t *resp = NULL;
-	uint32_t msgid = ntohl(pkt_header(req)->msgid);
-
-	VERIFY(!MUTEX_HELD(&i2sa->i2sa_queue_lock));
-	VERIFY(MUTEX_HELD(&i2sa->i2sa_lock));
-
-	if (I2P_RESPONSE(req))
-		return (B_FALSE);
-
-	if ((resp = ikev2_sa_get_response(i2sa, req)) == NULL)
-		return (B_FALSE);
-
-	(void) bunyan_debug(log, "Resending last response", BUNYAN_T_END);
-	ikev2_send_common(resp);
-	ikev2_pkt_free(req);
-	return (B_TRUE);
-}
-
-/* Returns B_TRUE if resp was processed */
-static boolean_t
-ikev2_handle_response(pkt_t *resp)
-{
-	ikev2_sa_t *i2sa = resp->pkt_sa;
-	i2sa_req_t *i2req = &i2sa->last_req;
-	pkt_t *last = i2sa->last_sent;
-	ikev2_send_cb_t cb = i2req->i2r_cb;
-	uint32_t msgid = ntohl(pkt_header(resp)->msgid);
-
-	VERIFY(!MUTEX_HELD(&i2sa->i2sa_queue_lock));
-	VERIFY(MUTEX_HELD(&i2sa->i2sa_lock));
-
-	if (!I2P_RESPONSE(resp))
-		return (B_FALSE);
-
-	if (msgid != i2req->i2r_msgid) {
-		/*
-		 * Not a response to an outstanding request.
-		 *
-		 * XXX: Send INVALID_MESSAGE_ID notification in certain
-		 * circumstances.  For now, drop.
-		 */
-		goto discard;
-	}
-
-	if (pkt_get_payload(resp, IKEV2_PAYLOAD_SK, NULL) != NULL) {
-		if (!ikev2_pkt_signverify(resp, B_FALSE))
-			goto discard;
-		/*
-		 * This also indexes and verifies the sizes of the decrypted
-		 * payloads.
-		 */
-		if (!ikev2_pkt_encryptdecrypt(resp, B_FALSE))
-			goto discard;
-	}
-
-	(void) ikev2_sa_disarm_timer(i2sa, I2SA_EVT_PKT_XMIT);
-
-	i2sa->last_sent = NULL;
-	i2req->i2r_pkt = NULL;
-
-	/*
-	 * The IKE_SA_INIT packets need to be retained for the IKE_AUTH
-	 * exchange.
-	 */
-	if (last != i2sa->init_i)
-		ikev2_pkt_free(last);
-
-	cb(i2sa, resp, i2req->i2r_arg);
-	return (B_TRUE);
-
-discard:
-	ikev2_pkt_free(resp);
-	return (B_TRUE);
-}
-
-/*
  * Dispatches any queued messages and services any events that have fired.
  * Function must be called with sa->i2sa_queue_lock held.  If another thread
  * is already processing the queue for this IKE SA, the function will return
@@ -912,27 +830,109 @@ ikev2_dispatch(ikev2_sa_t *sa)
 	 */
 }
 
+/*
+ * Handle the instance where an inbound request is a retransmit by sending
+ * out last response.  Returns B_TRUE if packet was processed.
+ */
+static boolean_t
+ikev2_handle_retransmit(pkt_t *req)
+{
+	ikev2_sa_t *i2sa = req->pkt_sa;
+	pkt_t *resp = NULL;
+	uint32_t msgid = ntohl(pkt_header(req)->msgid);
+
+	VERIFY(!MUTEX_HELD(&i2sa->i2sa_queue_lock));
+	VERIFY(MUTEX_HELD(&i2sa->i2sa_lock));
+
+	if (I2P_RESPONSE(req))
+		return (B_FALSE);
+
+	if ((resp = ikev2_sa_get_response(i2sa, req)) == NULL)
+		return (B_FALSE);
+
+	(void) bunyan_debug(log, "Resending last response", BUNYAN_T_END);
+	ikev2_send_common(resp);
+	ikev2_pkt_free(req);
+	return (B_TRUE);
+}
+
+/* Returns B_TRUE if resp was processed */
+static boolean_t
+ikev2_handle_response(pkt_t *resp)
+{
+	ikev2_sa_t *i2sa = resp->pkt_sa;
+	i2sa_req_t *i2req = &i2sa->last_req;
+	pkt_t *last = i2sa->last_sent;
+	ikev2_send_cb_t cb = i2req->i2r_cb;
+	uint32_t msgid = ntohl(pkt_header(resp)->msgid);
+
+	VERIFY(!MUTEX_HELD(&i2sa->i2sa_queue_lock));
+	VERIFY(MUTEX_HELD(&i2sa->i2sa_lock));
+
+	if (!I2P_RESPONSE(resp))
+		return (B_FALSE);
+
+	if (msgid != i2req->i2r_msgid) {
+		/*
+		 * Not a response to an outstanding request.
+		 *
+		 * XXX: Send INVALID_MESSAGE_ID notification in certain
+		 * circumstances.  For now, drop.
+		 */
+		goto discard;
+	}
+
+	if (pkt_header(resp)->exch_type != IKEV2_EXCH_IKE_SA_INIT &&
+	    !ikev2_pkt_encryptdecrypt(resp, B_FALSE))
+		goto discard;
+
+	/*
+	 * RFC7296 is fairly clear that problems with response traffic should
+	 * not themselves generate additional traffic except in specific
+	 * circumstances.  Additionally section 2.5 specifically states that
+	 * the critical bit MUST NOT be set in responses.  Therefore we
+	 * just discard these packets without generating another exchange.
+	 */
+	if (!ikev2_pkt_check_payloads(resp) ||
+	    ikev2_pkt_check_critical(resp) != IKEV2_PAYLOAD_NONE)
+		goto discard;
+
+	(void) ikev2_sa_disarm_timer(i2sa, I2SA_EVT_PKT_XMIT);
+
+	i2sa->last_sent = NULL;
+	i2req->i2r_pkt = NULL;
+
+	/*
+	 * The IKE_SA_INIT packets need to be retained for the IKE_AUTH
+	 * exchange.
+	 */
+	if (last != i2sa->init_i)
+		ikev2_pkt_free(last);
+
+	cb(i2sa, resp, i2req->i2r_arg);
+	return (B_TRUE);
+
+discard:
+	ikev2_pkt_free(resp);
+	return (B_TRUE);
+}
+
 static void
 ikev2_dispatch_pkt(pkt_t *pkt)
 {
 	ikev2_sa_t *i2sa = pkt->pkt_sa;
 	uint32_t msgid = ntohl(pkt_header(pkt)->msgid);
+	ikev2_exch_t exch_type = pkt_header(pkt)->exch_type;
+	uint8_t crit_pay = IKEV2_PAYLOAD_NONE;
 
 	VERIFY(!MUTEX_HELD(&i2sa->i2sa_queue_lock));
 	VERIFY(MUTEX_HELD(&i2sa->i2sa_lock));
 
-	if (ikev2_handle_retransmit(pkt))
-		return;
+	if (exch_type != IKEV2_EXCH_IKE_SA_INIT &&
+	    !ikev2_pkt_signverify(pkt, B_FALSE))
+		goto discard;
 
-	if (ikev2_handle_response(pkt))
-		return;
-
-	if (i2sa->flags & I2SA_CONDEMNED) {
-		ikev2_pkt_free(pkt);
-		return;
-	}
-
-	if (i2sa->inmsgid != msgid) {
+	if (!I2P_RESPONSE(pkt) && i2sa->inmsgid != msgid) {
 		(void) bunyan_info(log,
 		    "IKEv2 packet message ID out of sequence", BUNYAN_T_END);
 
@@ -945,25 +945,36 @@ ikev2_dispatch_pkt(pkt_t *pkt)
 		goto discard;
 	}
 
-	switch (pkt_header(pkt)->exch_type) {
-	case IKEV2_EXCH_IKE_SA_INIT:
-		/* Nothing to decrypt */
-		break;
-	case IKEV2_EXCH_IKE_AUTH:
-	case IKEV2_EXCH_CREATE_CHILD_SA:
-	case IKEV2_EXCH_INFORMATIONAL:
-	case IKEV2_EXCH_IKE_SESSION_RESUME:
-		if (!ikev2_pkt_signverify(pkt, B_FALSE))
+	if (ikev2_handle_retransmit(pkt))
+		return;
+
+	if (ikev2_handle_response(pkt))
+		return;
+
+	if (i2sa->flags & I2SA_CONDEMNED) {
+		ikev2_pkt_free(pkt);
+		return;
+	}
+
+	/* Decyption will also index the encrypted payloads */
+	if (exch_type != IKEV2_EXCH_IKE_SA_INIT &&
+	    !ikev2_pkt_encryptdecrypt(pkt, B_FALSE))
+		goto discard;
+
+	if (!ikev2_pkt_check_payloads(pkt)) {
+		if (exch_type == IKEV2_EXCH_IKE_SA_INIT)
 			goto discard;
-		/*
-		 * This also indexes and verifies the sizes of the
-		 * decrypted payloads.
-		 */
-		if (!ikev2_pkt_encryptdecrypt(pkt, B_FALSE))
+
+		/* TODO: send INVALID_SYNTAX notification */
+		goto discard;
+	}
+
+	crit_pay = ikev2_pkt_check_critical(pkt);
+	if (crit_pay != IKEV2_PAYLOAD_NONE) {
+		if (exch_type == IKEV2_EXCH_IKE_SA_INIT)
 			goto discard;
-		break;
-	default:
-		ikev2_pkt_log(pkt, BUNYAN_L_ERROR, "Unknown IKEv2 exchange");
+
+		/* TODO: send UNSUPPORTED_CRITICAL_PAYLOAD */
 		goto discard;
 	}
 
@@ -984,7 +995,6 @@ ikev2_dispatch_pkt(pkt_t *pkt)
 		ikev2_create_child_sa_resp(pkt);
 		break;
 	case IKEV2_EXCH_INFORMATIONAL:
-	case IKEV2_EXCH_IKE_SESSION_RESUME:
 		/* TODO */
 		ikev2_pkt_log(pkt, BUNYAN_L_INFO,
 		    "Exchange not implemented yet");

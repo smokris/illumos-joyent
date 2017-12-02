@@ -37,13 +37,12 @@
 #include "ikev2.h"
 #include "ikev2_sa.h"
 #include "ikev2_pkt.h"
+#include "ikev2_pkt_check.h"
 #include "ikev2_proto.h"
 #include "ikev2_enum.h"
 #include "pkcs11.h"
 #include "range.h"
 #include "worker.h"
-
-static boolean_t check_payloads(pkt_t *);
 
 /* Allocate an outbound IKEv2 pkt for a new exchange */
 pkt_t *
@@ -134,9 +133,7 @@ ikev2_pkt_new_inbound(void *restrict buf, size_t buflen)
 	const char		*pktkey = NULL;
 	const ike_header_t	*hdr = NULL;
 	pkt_t			*pkt = NULL;
-	size_t			*counts = NULL;
 	size_t			i = 0;
-	boolean_t		keep = B_TRUE;
 
 	VERIFY(IS_WORKER);
 
@@ -177,12 +174,12 @@ ikev2_pkt_new_inbound(void *restrict buf, size_t buflen)
 	}
 
 	/* pkt_in_alloc() will log any error messages */
-	if ((pkt = pkt_in_alloc(buf, buflen)) == NULL)
+	if ((pkt = pkt_in_alloc(buf, buflen, ikev2_pkt_checklen)) == NULL)
 		return (NULL);
 
 	(void) bunyan_key_add(log, BUNYAN_T_POINTER, pktkey, pkt, BUNYAN_T_END);
 
-	if (!check_payloads(pkt)) {
+	if (!ikev2_pkt_check_payloads(pkt)) {
 		ikev2_pkt_free(pkt);
 		return (NULL);
 	}
@@ -1144,7 +1141,6 @@ ikev2_pkt_encryptdecrypt(pkt_t *pkt, boolean_t encrypt)
 
 	VERIFY(IS_WORKER);
 	VERIFY(MUTEX_HELD(&sa->i2sa_lock));
-	VERIFY3U(ivlen + sa->saltlen, <=, noncelen);
 
 	if (pkt_header(pkt)->flags & IKEV2_FLAG_INITIATOR) {
 		key = sa->sk_ei;
@@ -1154,32 +1150,32 @@ ikev2_pkt_encryptdecrypt(pkt_t *pkt, boolean_t encrypt)
 		salt = sa->salt_r;
 	}
 
+	outlen = pkt_write_left(pkt) + icvlen;
 	iv = sk->pp_ptr;
 	data = iv + ivlen;
-	datalen = (CK_ULONG)(pkt->pkt_ptr - data) - icvlen;
-	outlen = pkt_write_left(pkt) + icvlen;
+
+	if (encrypt) {
+		datalen = (CK_ULONG)(pkt->pkt_ptr - data) - icvlen;
+		/* If we're creating it, lengths should match */
+		VERIFY3U(sk->pp_len, ==, ivlen + datalen + icvlen);
+	} else if (sk->pp_len > ivlen + icvlen) {
+		datalen = sk->pp_len - ivlen - icvlen;
+	} else {
+		(void) bunyan_info(log,
+		    "Encrypted payload invalid length",
+		    BUNYAN_T_UINT32, "paylen", (uint32_t)sk->pp_len,
+		    BUNYAN_T_UINT32, "ivlen", (uint32_t)ivlen,
+		    BUNYAN_T_UINT32, "datalen", (uint32_t)datalen,
+		    BUNYAN_T_UINT32, "icvlen", (uint32_t)icvlen,
+		    BUNYAN_T_END);
+		return (B_FALSE);
+	}
+
 	icv = data + datalen;
 
 	bcopy(iv, nonce, ivlen);
 	if (sa->saltlen > 0)
 		bcopy(salt, nonce + ivlen, sa->saltlen);
-
-	if (encrypt) {
-		/* If we're creating it, lengths should match */
-		VERIFY3U(sk->pp_len, ==, ivlen + datalen + icvlen);
-	} else {
-		/* Otherwise check first */
-		if (sk->pp_len != ivlen + datalen + icvlen) {
-			(void) bunyan_info(log,
-			    "Encrypted payload invalid length",
-			    BUNYAN_T_UINT32, "paylen", (uint32_t)sk->pp_len,
-			    BUNYAN_T_UINT32, "ivlen", (uint32_t)ivlen,
-			    BUNYAN_T_UINT32, "datalen", (uint32_t)datalen,
-			    BUNYAN_T_UINT32, "icvlen", (uint32_t)icvlen,
-			    BUNYAN_T_END);
-			return (B_FALSE);
-		}
-	}
 
 	mech.mechanism = encr_data[sa->encr].ed_p11id;
 	switch (mode) {
@@ -1280,9 +1276,13 @@ ikev2_pkt_encryptdecrypt(pkt_t *pkt, boolean_t encrypt)
 		}
 	}
 	datalen -= padlen + 1;
+	pkt->pkt_decrypted = B_TRUE;
 
 	ike_payload_t *skpay = pkt_idx_to_payload(sk);
 
+	if (!pkt_check_payloads(skpay->pay_next, data, datalen,
+	    ikev2_pkt_checklen))
+		return (B_FALSE);
 	if (!pkt_index_payloads(pkt, data, datalen, skpay->pay_next))
 		return (B_FALSE);
 
@@ -1318,6 +1318,13 @@ ikev2_pkt_signverify(pkt_t *pkt, boolean_t sign)
 		key = sa->sk_ar;
 
 	icvlen = ikev2_auth_icv_size(sa->encr, sa->auth);
+	if (sizeof (ike_header_t) + sizeof (ikev2_payload_t) + icvlen >
+	    pkt_len(pkt)) {
+		(void) bunyan_warn(log, "SK payload is truncated",
+		    BUNYAN_T_END);
+		return (B_FALSE);
+	}
+
 	signlen = pkt_len(pkt) - icvlen;
 	icv = pkt->pkt_ptr - icvlen;
 
@@ -1416,70 +1423,6 @@ ikev2_pkt_done(pkt_t *pkt)
 
 done:
 	return (ok);
-}
-
-static boolean_t
-check_payloads(pkt_t *pkt)
-{
-	size_t paycount[IKEV2_NUM_PAYLOADS] = { 0 };
-	char logbuf[64];
-
-#define	PAYCOUNT(type)	paycount[(type) - IKEV2_PAYLOAD_MIN]
-
-	for (size_t i = 0; i < pkt->pkt_payload_count; i++) {
-		pkt_payload_t *idx = pkt_payload(pkt, i);
-		ike_payload_t *pay = pkt_idx_to_payload(idx);
-
-		/* All known payloads should not have the critical bit set */
-		if (pay->pay_reserved & IKEV2_CRITICAL_PAYLOAD) {
-			(void) bunyan_info(log,
-			    "Packet payload has critical bit set",
-			    BUNYAN_T_STRING, "payload",
-			    ikev2_pay_str(idx->pp_type), BUNYAN_T_END);
-			return (B_FALSE);
-		}
-
-		if (!IKEV2_VALID_PAYLOAD(idx->pp_type)) {
-			(void) bunyan_trace(log,
-			    "Ignoring unknown payload",
-			    BUNYAN_T_UINT32, "payload", (uint32_t)idx->pp_type,
-			    BUNYAN_T_END);
-			continue;
-		}
-
-		PAYCOUNT(idx->pp_type)++;
-	}
-
-	if (pkt_header(pkt)->exch_type != IKEV2_EXCH_IKE_SA_INIT) {
-		if (PAYCOUNT(IKEV2_PAYLOAD_SK) == 0) {
-			ikev2_pkt_log(pkt, BUNYAN_L_INFO,
-			    "Non IKE_SA_INIT exchange is missing SK payload");
-			return (B_FALSE);
-		}
-
-		/* XXX: Figure out way to ignore unprotected payloads */
-
-		return (B_TRUE);
-	}
-
-	if ((pkt_header(pkt)->flags & IKEV2_FLAG_RESPONSE) &&
-	    (pkt_header(pkt)->responder_spi == 0)) {
-		if (PAYCOUNT(IKEV2_PAYLOAD_SA) > 0) {
-			ikev2_pkt_log(pkt, BUNYAN_L_INFO,
-			    "IKE_SA_INIT error response contains SA payload");
-			return (B_FALSE);
-		}
-
-		/* XXX: Other IKE_SA_INIT error repsonse checks? */
-	}
-
-	/*
-	 * XXX: Possibly add more checks on which payloads are or aren't allowed
-	 * for IKE_SA_INIT
-	 */
-
-	return (B_TRUE);
-#undef PAYCOUNT
 }
 
 /*

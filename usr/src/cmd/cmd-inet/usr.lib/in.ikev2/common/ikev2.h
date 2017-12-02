@@ -429,6 +429,12 @@ struct ikev2_tsp {
 	/* Followed by the traffic selectors */
 } __packed;
 
+struct ikev2_ts_hdr {
+	uint8_t		tsh_type;		/* TS type */
+	uint8_t		tsh_reserved;		/* Reserved */
+	uint16_t	tsh_length;		/* Length */
+};
+
 struct ikev2_ts {
 	uint8_t		ts_type;		/* TS type */
 	uint8_t		ts_protoid;		/* Protocol Id */
@@ -529,6 +535,7 @@ typedef struct ikev2_notify ikev2_notify_t;
 typedef struct ikev2_delete ikev2_delete_t;
 typedef struct ikev2_id ikev2_id_t;
 typedef struct ikev2_tsp ikev2_tsp_t;
+typedef struct ikev2_ts_hdr ikev2_ts_hdr_t;
 typedef struct ikev2_ts ikev2_ts_t;
 typedef struct ikev2_auth ikev2_auth_t;
 typedef struct ikev2_cp ikev2_cp_t;

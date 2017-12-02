@@ -37,6 +37,7 @@ CMD_OBJS =	config.o		\
 		ikev2_enum.o		\
 		ikev2_ike_auth.o	\
 		ikev2_pkt.o		\
+		ikev2_pkt_check.o	\
 		ikev2_proto.o		\
 		ikev2_sa.o		\
 		ikev2_sa_init.o		\

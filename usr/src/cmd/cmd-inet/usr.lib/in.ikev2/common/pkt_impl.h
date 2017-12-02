@@ -25,11 +25,12 @@ extern "C" {
 
 typedef boolean_t (*pkt_walk_fn_t)(uint8_t, uint8_t, uint8_t *restrict,
     size_t, void *restrict);
+typedef boolean_t (*pkt_check_fn_t)(uint8_t, const uint8_t *, size_t);
+
 boolean_t pkt_payload_walk(uint8_t *restrict, size_t, pkt_walk_fn_t,
     uint8_t, void *restrict);
 
-boolean_t pkt_count_payloads(uint8_t *restrict, size_t, uint8_t, size_t *,
-    size_t *);
+boolean_t pkt_check_payloads(uint8_t, const uint8_t *, size_t, pkt_check_fn_t);
 boolean_t pkt_index_payloads(pkt_t *, uint8_t *, size_t, uint8_t);
 boolean_t pkt_add_index(pkt_t *, uint8_t, uint8_t *, uint16_t);
 boolean_t pkt_add_nindex(pkt_t *, uint64_t, uint32_t, uint8_t, uint16_t,
@@ -38,7 +39,7 @@ pkt_payload_t *pkt_payload(pkt_t *, uint16_t);
 pkt_notify_t *pkt_notify(pkt_t *, uint16_t);
 ike_payload_t *pkt_idx_to_payload(pkt_payload_t *);
 
-pkt_t *pkt_in_alloc(void*restrict, size_t);
+pkt_t *pkt_in_alloc(void *restrict, size_t, pkt_check_fn_t);
 pkt_t *pkt_out_alloc(uint64_t, uint64_t, uint8_t, uint8_t, uint32_t, uint8_t);
 void pkt_free(pkt_t *);
 
