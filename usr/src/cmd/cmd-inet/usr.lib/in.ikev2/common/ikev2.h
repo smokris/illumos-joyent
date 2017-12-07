@@ -20,9 +20,14 @@
 #define	_IKEV2_H
 
 #include <inttypes.h>
+#include <sys/sha1.h>	/* For SHA1_DIGEST_LENGTH */
 
 #ifdef __cplusplus
 extern "C" {
+#endif
+
+#ifndef __packed
+#define	__packed __attribute__((packed))
 #endif
 
 #define	IKEV2_VERSION		0x20	/* IKE version 2.0 */
@@ -39,9 +44,8 @@ extern "C" {
 #define	IKEV2_COOKIE_MIN	1
 #define	IKEV2_COOKIE_MAX	64
 
-#ifndef __packed
-#define	__packed __attribute__((packed))
-#endif
+/* The NAT detection notification data are SHA1 hashes */
+#define	IKEV2_N_NAT_SIZE	SHA1_DIGEST_LENGTH
 
 /*
  * "IKEv2 Parameters" based on the official RFC-based assignments by IANA

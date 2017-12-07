@@ -512,12 +512,6 @@ done:
 	return (B_TRUE);
 }
 
-/*
- * Size of a SHA1 hash.  NAT detection always uses SHA1 to compute the
- * NAT detection payload contents.
- */
-#define	NAT_LEN	(20)
-
 /* Compute a NAT detection payload and place result into buf */
 static boolean_t
 compute_nat(uint64_t *restrict spi, struct sockaddr_storage *restrict addr,
@@ -539,7 +533,7 @@ compute_nat(uint64_t *restrict spi, struct sockaddr_storage *restrict addr,
 	    ((struct sockaddr_in *)addr)->sin_port :
 	    ((struct sockaddr_in6 *)addr)->sin6_port;
 
-	VERIFY3U(buflen, >=, NAT_LEN);
+	VERIFY3U(buflen, >=, IKEV2_N_NAT_SIZE);
 	VERIFY(addr->ss_family == AF_INET || addr->ss_family == AF_INET6);
 
 	p11f = "C_DigestInit";
@@ -628,7 +622,7 @@ check_nats(pkt_t *pkt)
 	 */
 	for (size_t i = 0; i < 2; i++) {
 		pkt_notify_t *n = pkt_get_notify(pkt, params[i].ntype, NULL);
-		uint8_t data[NAT_LEN] = { 0 };
+		uint8_t data[IKEV2_N_NAT_SIZE] = { 0 };
 		boolean_t match = B_FALSE;
 
 		/* If notification isn't present, assume no NAT */
@@ -664,7 +658,7 @@ check_nats(pkt_t *pkt)
 				    BUNYAN_T_END);
 				return (B_FALSE);
 			}
-			if (n->pn_len != NAT_LEN) {
+			if (n->pn_len != IKEV2_N_NAT_SIZE) {
 				(void) bunyan_error(log,
 				    "NAT notification size mismatch",
 				    BUNYAN_T_STRING, "notification",
@@ -672,12 +666,12 @@ check_nats(pkt_t *pkt)
 				    BUNYAN_T_UINT32, "notifylen",
 				    (uint32_t)n->pn_len,
 				    BUNYAN_T_UINT32, "expected",
-				    (uint32_t)NAT_LEN,
+				    (uint32_t)IKEV2_N_NAT_SIZE,
 				    BUNYAN_T_END);
 				return (B_FALSE);
 			}
 
-			if (memcmp(data, n->pn_ptr, NAT_LEN) == 0) {
+			if (memcmp(data, n->pn_ptr, IKEV2_N_NAT_SIZE) == 0) {
 				match = B_TRUE;
 				break;
 			}
@@ -751,7 +745,7 @@ add_nat(pkt_t *pkt)
 	};
 
 	for (int i = 0; i < 2; i++) {
-		uint8_t data[NAT_LEN] = { 0 };
+		uint8_t data[IKEV2_N_NAT_SIZE] = { 0 };
 
 		/* The SPIs are always at the start of the packet */
 		if (!compute_nat(pkt->pkt_raw, params[i].addr, data,

@@ -446,6 +446,11 @@ ikev2_checklen_notify(const uint8_t *buf, size_t buflen)
 	case IKEV2_N_NO_ADDITIONAL_SAS:
 		max = min;
 		break;
+	case IKEV2_N_COOKIE:
+	case IKEV2_N_NAT_DETECTION_SOURCE_IP:
+	case IKEV2_N_NAT_DETECTION_DESTINATION_IP:
+		/* If these have invalid data in them, we just ignore them */
+		break;
 	/* TODO */
 	case IKEV2_N_INTERNAL_ADDRESS_FAILURE:
 	case IKEV2_N_FAILED_CP_REQUIRED:
@@ -457,9 +462,6 @@ ikev2_checklen_notify(const uint8_t *buf, size_t buflen)
 	case IKEV2_N_SET_WINDOW_SIZE:
 	case IKEV2_N_ADDITIONAL_TS_POSSIBLE:
 	case IKEV2_N_IPCOMP_SUPPORTED:
-	case IKEV2_N_NAT_DETECTION_SOURCE_IP:
-	case IKEV2_N_NAT_DETECTION_DESTINATION_IP:
-	case IKEV2_N_COOKIE:
 	case IKEV2_N_USE_TRANSPORT_MODE:
 	case IKEV2_N_HTTP_CERT_LOOKUP_SUPPORTED:
 	case IKEV2_N_REKEY_SA:
