@@ -198,8 +198,8 @@ recvfromto(int s, void *restrict buf, size_t buflen, int flags,
  */
 ssize_t
 sendfromto(int s, const uint8_t *restrict buf, size_t buflen,
-    struct sockaddr_storage *restrict src,
-    struct sockaddr_storage *restrict dst)
+    const struct sockaddr_storage *restrict src,
+    const struct sockaddr_storage *restrict dst)
 {
 	uint32_t cmsgbuf[64] = { 0 };
 	struct msghdr m = { 0 };

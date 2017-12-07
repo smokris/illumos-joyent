@@ -189,6 +189,7 @@ done:
 
 static void
 send_cookie(pkt_t *restrict pkt,
+    const struct sockaddr_storage *restrict laddr,
     const struct sockaddr_storage *restrict raddr)
 {
 	pkt_payload_t *nonce = pkt_get_payload(pkt, IKEV2_PAYLOAD_NONCE, NULL);
@@ -211,7 +212,9 @@ send_cookie(pkt_t *restrict pkt,
 		return;
 	}
 
-	(void) ikev2_send_resp(resp);
+	(void) bunyan_debug(log, "Sending cookie", BUNYAN_T_END);
+
+	(void) ikev2_send_resp_addr(resp, laddr, raddr);
 }
 
 static boolean_t
@@ -237,6 +240,7 @@ cookie_compare(uint8_t *restrict nonce, size_t noncelen,
  */
 boolean_t
 ikev2_cookie_check(pkt_t *restrict pkt,
+    const struct sockaddr_storage *restrict laddr,
     const struct sockaddr_storage *restrict raddr)
 {
 	pkt_notify_t *cookie = pkt_get_notify(pkt, IKEV2_N_COOKIE, NULL);
@@ -249,7 +253,7 @@ ikev2_cookie_check(pkt_t *restrict pkt,
 
 	if (cookie == NULL) {
 		ok = B_FALSE;
-		send_cookie(pkt, raddr);
+		send_cookie(pkt, laddr, raddr);
 		goto done;
 	}
 
@@ -270,6 +274,10 @@ ikev2_cookie_check(pkt_t *restrict pkt,
 
 done:
 	VERIFY0(rw_unlock(&i2c_lock));
+
+	if (!ok)
+		(void) bunyan_debug(log, "Cookie check failed", BUNYAN_T_END);
+
 	return (ok);
 }
 

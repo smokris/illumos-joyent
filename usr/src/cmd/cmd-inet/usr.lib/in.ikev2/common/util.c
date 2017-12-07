@@ -286,26 +286,15 @@ key_add_id(const char *name, const char *typename, config_id_t *id)
 }
 
 void
-key_add_addr(const char *name, struct sockaddr_storage *addr)
+key_add_addr(const char *name, const struct sockaddr_storage *addr)
 {
-	void *ptr = NULL;
-	sockaddr_u_t su = { .sau_ss = addr };
+	const void *ptr = NULL;
 	int af = addr->ss_family;
-	uint16_t port = 0;
+	uint32_t port = 0;
 	char addrbuf[INET6_ADDRSTRLEN];
 
-	switch (af) {
-	case AF_INET:
-		ptr = &su.sau_sin->sin_addr;
-		port = ntohs(su.sau_sin->sin_port);
-		break;
-	case AF_INET6:
-		ptr = &su.sau_sin6->sin6_addr;
-		port = ntohs(su.sau_sin->sin_port);
-		break;
-	default:
-		INVALID(af);
-	}
+	ptr = ss_addr(addr);
+	port = ss_port(addr);
 
 	if (inet_ntop(af, ptr, addrbuf, sizeof (addrbuf)) == NULL)
 		return;
@@ -321,10 +310,12 @@ key_add_addr(const char *name, struct sockaddr_storage *addr)
 
 	switch (af) {
 	case AF_INET:
-		(void) snprintf(buf, sizeof (buf), "%s:%hu", addrbuf, port);
+		(void) snprintf(buf, sizeof (buf), "%s:%" PRIu32, addrbuf,
+		    port);
 		break;
 	case AF_INET6:
-		(void) snprintf(buf, sizeof (buf), "[%s]:%hu", addrbuf, port);
+		(void) snprintf(buf, sizeof (buf), "[%s]:%" PRIu32, addrbuf,
+		    port);
 		break;
 	default:
 		INVALID(af);

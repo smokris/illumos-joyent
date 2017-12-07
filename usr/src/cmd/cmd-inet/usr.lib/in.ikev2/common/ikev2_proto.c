@@ -233,10 +233,8 @@ ikev2_try_new_sa(pkt_t *restrict pkt,
 	 * XXX: Since cookies are enabled in high traffic situations,
 	 * might we want to silently discard these?
 	 */
-	if (!ikev2_cookie_check(pkt, r_addr)) {
-		errmsg = "Cookies missing or failed check; discarding";
+	if (!ikev2_cookie_check(pkt, l_addr, r_addr))
 		goto fail;
-	}
 
 	/* otherwise create a larval SA */
 	i2sa = ikev2_sa_alloc(pkt, l_addr, r_addr);
@@ -582,6 +580,49 @@ ikev2_send_resp(pkt_t *restrict resp)
 	}
 
 	return (B_TRUE);
+}
+
+/* Used for sending responses outside of an IKEv2 SA */
+boolean_t
+ikev2_send_resp_addr(pkt_t *restrict resp,
+    const struct sockaddr_storage *restrict laddr,
+    const struct sockaddr_storage *restrict raddr)
+{
+	ike_header_t *hdr = pkt_header(resp);
+	custr_t *desc = NULL;
+	ssize_t len = 0;
+	int s = -1;
+
+	VERIFY(IS_WORKER);
+	VERIFY(I2P_RESPONSE(resp));
+
+	if (!ikev2_pkt_done(resp)) {
+		ikev2_pkt_free(resp);
+		return (B_FALSE);
+	}
+
+	if (raddr->ss_family == AF_INET6) {
+		s = ikesock6;
+	} else {
+		const struct sockaddr_in *sin;
+
+		sin = (const struct sockaddr_in *)laddr;
+		if (ntohs(sin->sin_port) == IPPORT_IKE_NATT)
+			s = nattsock;
+		else
+			s= ikesock4;
+	}
+
+	desc = ikev2_pkt_desc(resp);
+	(void) bunyan_debug(log, "Sending packet",
+	    BUNYAN_T_UINT32, "msgid", ntohll(hdr->msgid),
+	    BUNYAN_T_BOOLEAN, "response", I2P_RESPONSE(resp),
+	    BUNYAN_T_STRING, "pktdesc", (desc != NULL) ? custr_cstr(desc) : "",
+	    BUNYAN_T_END);
+	custr_free(desc);
+
+	len = sendfromto(s, pkt_start(resp), pkt_len(resp), laddr, raddr);
+	return ((len == -1) ? B_FALSE : B_TRUE);
 }
 
 /*

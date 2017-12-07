@@ -799,7 +799,7 @@ add_vendor(pkt_t *pkt)
 static boolean_t
 add_cookie(pkt_t *restrict pkt, void *restrict cookie, size_t len)
 {
-	if (cookie == NULL)
+	if (cookie == NULL || len == 0)
 		return (B_TRUE);
 
 	/* Should be the first payload */

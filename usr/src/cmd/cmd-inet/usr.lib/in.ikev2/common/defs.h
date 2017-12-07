@@ -209,7 +209,7 @@ const char *symstr(void *, char *, size_t);
 void log_reset_keys(void);
 void key_add_ike_version(const char *, uint8_t);
 void key_add_ike_spi(const char *, uint64_t);
-void key_add_addr(const char *, struct sockaddr_storage *);
+void key_add_addr(const char *, const struct sockaddr_storage *);
 struct config_id_s;
 void key_add_id(const char *, const char *, struct config_id_s *);
 char *writehex(uint8_t *, size_t, char *, char *, size_t);
