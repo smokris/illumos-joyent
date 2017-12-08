@@ -38,6 +38,7 @@
 #include <synch.h>
 #include <syslog.h>
 #include <sys/debug.h>
+#include <umem.h>
 #include "defs.h"
 #include "pkcs11.h"
 #include "worker.h"
@@ -440,17 +441,9 @@ pkcs11_session_free(CK_SESSION_HANDLE h)
 		CK_SESSION_HANDLE *nh = NULL;
 		size_t newamt = pkcs11_handlesz + CHUNK_SZ;
 
-		nh = recallocarray(pkcs11_handles, pkcs11_handlesz, newamt,
-		    sizeof (CK_SESSION_HANDLE));
-		if (nh == NULL) {
-			STDERR(error,
-			    "recallocarray failed; PKCS#11 session handles"
-			    "will leak");
-			mutex_exit(&pkcs11_handle_lock);
-			return;
-		}
-
-		pkcs11_handles = nh;
+		pkcs11_handles = umem_reallocarray(pkcs11_handles,
+		    pkcs11_handlesz, newamt, sizeof (CK_SESSION_HANDLE),
+		    UMEM_NOFAIL);
 		pkcs11_handlesz = newamt;
 	}
 

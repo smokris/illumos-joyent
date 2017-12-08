@@ -407,3 +407,27 @@ sockaddr_cmp(const struct sockaddr_storage *l, const struct sockaddr_storage *r)
 
 	return (memcmp(l, r, addrlen));
 }
+
+/* XXX: Might these (possibly renamed) be better moved to libumem? */
+char *
+ustrdup(const char *src, int umflag)
+{
+	size_t len = strlen(src) + 1;
+	char *str = umem_alloc(len, umflag);
+
+	if (str != NULL)
+		(void) strlcpy(str, src, len);
+
+	return (str);
+}
+
+void
+ustrfree(char *str)
+{
+	if (str == NULL)
+		return;
+
+	size_t len = strlen(str) + 1;
+
+	umem_free(str, len);
+}

@@ -432,7 +432,7 @@ redo_init(pkt_t *restrict pkt, struct sa_init_args *restrict sa_args)
 		uint16_t val = BE_IN16(invalid_ke->pn_ptr);
 		boolean_t match = B_FALSE;
 
-		for (size_t i = 0; i < rule->rule_nxf; i++) {
+		for (size_t i = 0; rule->rule_xf[i] != NULL; i++) {
 			config_xf_t *xf = rule->rule_xf[i];
 
 			if (val == xf->xf_dh) {
@@ -502,7 +502,8 @@ done:
 		    BUNYAN_T_END);
 	}
 
-	if (sa->i2sa_rule->rule_nxf == 0) {
+	if (sa->i2sa_rule->rule_xf == NULL ||
+	    sa->i2sa_rule->rule_xf[0] == NULL) {
 		(void) bunyan_debug(log, "No transforms found",
 		    BUNYAN_T_END);
 		(void) ikev2_no_proposal_chosen(pkt, IKEV2_PROTO_IKE);

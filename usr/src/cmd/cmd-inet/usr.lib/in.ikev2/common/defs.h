@@ -219,6 +219,9 @@ void sockaddr_copy(const struct sockaddr_storage *, struct sockaddr_storage *,
 int sockaddr_cmp(const struct sockaddr_storage *,
     const struct sockaddr_storage *);
 
+char *ustrdup(const char *, int);
+void ustrfree(char *);
+
 #ifdef  __cplusplus
 }
 #endif

@@ -22,6 +22,7 @@
 #include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <stdarg.h>
 #include <umem.h>
 #include <netinet/in.h>
@@ -351,8 +352,7 @@ process_config(FILE *f, boolean_t check_only)
 		return;
 	}
 
-	cfg = calloc(1, sizeof (*cfg));
-	VERIFY3P(cfg, !=, NULL);
+	cfg = umem_zalloc(sizeof (*cfg), UMEM_NOFAIL);
 
 	/* Set defaults */
 	cfg->cfg_local_id_type = CFG_AUTH_ID_IPV4;
@@ -436,12 +436,10 @@ process_config(FILE *f, boolean_t check_only)
 			cfg->cfg_retry_limit = val.ui;
 			break;
 		case KW_PROXY:
-			cfg->cfg_proxy = strdup(targ->t_str);
-			VERIFY3P(cfg->cfg_proxy, !=, NULL);
+			cfg->cfg_proxy = ustrdup(targ->t_str, UMEM_NOFAIL);
 			break;
 		case KW_SOCKS:
-			cfg->cfg_socks = strdup(targ->t_str);
-			VERIFY3P(cfg->cfg_socks, !=, NULL);
+			cfg->cfg_socks = ustrdup(targ->t_str, UMEM_NOFAIL);
 			break;
 		case KW_RETRY_TIMER_INIT:
 			if (parse_int(targ->t_str, &val.ui)) {
@@ -633,8 +631,7 @@ parse_xform(input_cursor_t *restrict ic, config_xf_t **restrict xfp)
 	size_t kwcount[KW_MAX] = { 0 };
 	boolean_t ok = B_TRUE;
 
-	xf = calloc(1, sizeof (*xf));
-	VERIFY3P(xf, !=, NULL);
+	xf = umem_zalloc(sizeof (*xf), UMEM_NOFAIL);
 
 	if ((start_t = input_token(ic, B_FALSE)) == NULL) {
 		(void) bunyan_error(log,
@@ -775,9 +772,8 @@ parse_xform(input_cursor_t *restrict ic, config_xf_t **restrict xfp)
 	 * includes closing } plus room for NUL
 	 */
 	val = (uint64_t)(end - start) + 2;
-	xf->xf_str = calloc(1, val);
-	VERIFY3P(xf->xf_str, !=, NULL);
-	(void) strlcpy(xf->xf_str, start, val);
+	xf->xf_str = umem_zalloc(val, UMEM_NOFAIL);
+	bcopy(start, xf->xf_str, val - 1);
 
 	tok_free(start_t);
 	tok_free(t);
@@ -789,7 +785,7 @@ fail:
 	tok_free(start_t);
 	tok_free(t);
 	tok_free(targ);
-	free(xf);
+	umem_free(xf, sizeof (*xf));
 	*xfp = NULL;
 	return (B_FALSE);
 }
@@ -911,8 +907,7 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 
 	*rulep = NULL;
 
-	rule = calloc(1, sizeof (*rule));
-	VERIFY3P(rule, !=, NULL);
+	rule = umem_zalloc(sizeof (*rule), UMEM_NOFAIL);
 
 	while ((t = input_token(ic, B_FALSE)) != NULL) {
 		keyword_t kw = KW_NONE;
@@ -945,9 +940,7 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 
 		switch (kw) {
 		case KW_LABEL:
-			rule->rule_label = strdup(targ->t_str);
-			if (rule->rule_label == NULL)
-				goto fail;
+			rule->rule_label = ustrdup(targ->t_str, UMEM_NOFAIL);
 			break;
 		case KW_P2_PFS:
 			if (!parse_dh(targ->t_str, &rule->rule_p2_dh)) {
@@ -963,14 +956,14 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 			xf = NULL;
 			break;
 		case KW_LOCAL_ADDR:
-			(void) memset(&addr, 0, sizeof (addr));
+			bzero(&addr, sizeof (addr));
 			if (!parse_address(ic, targ, &addr))
 				goto fail;
 			add_addr(&rule->rule_local_addr,
 			    &rule->rule_nlocal_addr, &addr);
 			break;
 		case KW_REMOTE_ADDR:
-			(void) memset(&addr, 0, sizeof (addr));
+			bzero(&addr, sizeof (addr));
 			if (!parse_address(ic, targ, &addr))
 				goto fail;
 			add_addr(&rule->rule_remote_addr,
@@ -1100,7 +1093,7 @@ fail:
 	tok_free(t);
 	tok_free(targ);
 	tok_free(local_id);
-	free(rule);
+	umem_free(rule, sizeof (*rule));
 	return (B_FALSE);
 }
 
@@ -1409,13 +1402,10 @@ tok_new(const char *startp, const char *endp, const char *linep, size_t line,
 	token_t *t = NULL;
 	size_t len = (size_t)(endp - startp) + 1;
 
-	t = calloc(1, sizeof (*t));
-	VERIFY3P(t, !=, NULL);
+	t = umem_zalloc(sizeof (*t), UMEM_NOFAIL);
+	t->t_str = umem_zalloc(len, UMEM_NOFAIL);
+	bcopy(startp, t->t_str, len -1);
 
-	t->t_str = calloc(1, len);
-	VERIFY3P(t, !=, NULL);
-
-	(void) strlcpy(t->t_str, startp, len);
 	t->t_linep = linep;
 	t->t_line = line;
 	t->t_col = col;
@@ -1427,8 +1417,8 @@ tok_free(token_t *t)
 {
 	if (t == NULL)
 		return;
-	free(t->t_str);
-	free(t);
+	ustrfree(t->t_str);
+	umem_free(t, sizeof (*t));
 }
 
 #define	STR(x) case x: return (#x)
@@ -1464,8 +1454,9 @@ tok_log(const token_t *restrict t, bunyan_level_t level, const char *msg,
 	else
 		len = strlen(t->t_linep) + 1;
 
-	linecpy = malloc(len);
-	VERIFY3P(linecpy, !=, NULL);
+	if ((linecpy = umem_alloc(len, UMEM_DEFAULT)) == NULL)
+		return;
+
 	(void) strlcpy(linecpy, t->t_linep, len);
 
 	getlog(level)(log, msg,
@@ -1475,7 +1466,7 @@ tok_log(const token_t *restrict t, bunyan_level_t level, const char *msg,
 	    (strname != NULL) ? BUNYAN_T_STRING : BUNYAN_T_END,
 	    strname, t->t_str, BUNYAN_T_END);
 
-	free(linecpy);
+	umem_free(linecpy, len);
 }
 
 static void
@@ -1505,8 +1496,7 @@ input_new(FILE *restrict f)
 	struct stat sb = { 0 };
 	int fd = -1;
 
-	in = calloc(1, sizeof (*in));
-	VERIFY3P(in, !=, NULL);
+	in = umem_zalloc(sizeof (*in), UMEM_NOFAIL);
 
 	fd = fileno(f);
 	if (fstat(fd, &sb) == -1) {
@@ -1524,8 +1514,7 @@ input_new(FILE *restrict f)
 	} else {
 		in->in_buflen = CONFIG_CHUNK;
 	}
-	in->in_buf = calloc(1, in->in_buflen);
-	VERIFY3P(in->in_buf, !=, NULL);
+	in->in_buf = umem_zalloc(in->in_buflen, UMEM_NOFAIL);
 
 	do {
 		n = fread(in->in_buf + cnt, 1, in->in_buflen - cnt - 1, f);
@@ -1550,10 +1539,8 @@ input_new(FILE *restrict f)
 			size_t newlen = P2ROUNDUP(in->in_buflen + CONFIG_CHUNK,
 			    CONFIG_CHUNK);
 
-			char *newp = realloc(in->in_buf, newlen);
-			VERIFY3P(newp, !=, NULL);
-
-			in->in_buf = newp;
+			in->in_buf = umem_realloc(in->in_buf, in->in_buflen,
+			    newlen, UMEM_NOFAIL);
 			in->in_buflen = newlen;
 		}
 	} while (n > 0);
@@ -1562,8 +1549,7 @@ input_new(FILE *restrict f)
 	for (p = in->in_buf, nlines = 0; p != NULL; p = strchr(p + 1, '\n'))
 		nlines++;
 
-	in->in_lines = calloc(nlines + 1, sizeof (char *));
-	VERIFY3P(in->in_lines, !=, NULL);
+	in->in_lines = umem_calloc(nlines + 1, sizeof (char *), UMEM_NOFAIL);
 
 	for (p = in->in_buf, nlines = 0; p != NULL; p = strchr(p + 1, '\n'))
 		in->in_lines[nlines++] = p;
@@ -1689,7 +1675,7 @@ input_cursor_getpos(input_cursor_t *restrict ic, const char *restrict p,
 static void
 input_cursor_init(input_cursor_t *restrict ic, input_t *restrict in)
 {
-	(void) memset(ic, 0, sizeof (*ic));
+	bzero(ic, sizeof (*ic));
 	ic->ic_input = in;
 	ic->ic_p = in->in_buf;
 }
@@ -1697,8 +1683,8 @@ input_cursor_init(input_cursor_t *restrict ic, input_t *restrict in)
 static void
 input_cursor_fini(input_cursor_t *ic)
 {
-	free(ic->ic_peek);
-	(void) memset(ic, 0, sizeof (*ic));
+	tok_free(ic->ic_peek);
+	bzero(ic, sizeof (*ic));
 }
 
 static void
@@ -1707,9 +1693,16 @@ input_free(input_t *in)
 	if (in == NULL)
 		return;
 
-	free(in->in_buf);
-	free(in->in_lines);
-	free(in);
+	umem_free(in->in_buf, in->in_buflen);
+	if (in->in_lines != NULL) {
+		size_t i = 0;
+
+		while (in->in_lines[i] != NULL)
+			i++;
+
+		umem_cfree(in->in_lines, i + 1, sizeof (char *));
+	}
+	umem_free(in, sizeof (*in));
 }
 
 #define	CHUNK_SZ	(8)
@@ -1754,57 +1747,44 @@ add_str(char ***restrict ppp, size_t *restrict allocp, const char *restrict str)
 static void
 add_xf(config_rule_t *restrict rule, config_xf_t *restrict xf)
 {
-	size_t nxf = 0;
-
-	while (nxf < rule->rule_nxf && rule->rule_xf[nxf] != NULL)
-		nxf++;
-
-	if (nxf + 2 > rule->rule_nxf) {
-		config_xf_t **newxf = NULL;
-		size_t newalloc = rule->rule_nxf + CHUNK_SZ;
-		size_t amt = newalloc * sizeof (config_xf_t *);
-
-		VERIFY3U(amt, >, newalloc);
-		VERIFY3U(amt, >=, sizeof (config_xf_t *));
-
-		newxf = realloc(rule->rule_xf, amt);
-		VERIFY3P(newxf, !=, NULL);
-
-		rule->rule_nxf = newalloc;
-		rule->rule_xf = newxf;
+	if (rule->rule_xf == NULL) {
+		rule->rule_xf = umem_calloc(2, sizeof (config_xf_t *),
+		    UMEM_NOFAIL);
+		rule->rule_xf[0] = xf;
+		return;
 	}
 
-	rule->rule_xf[nxf++] = xf;
-	rule->rule_xf[nxf] = NULL;
+	size_t nxf = 0;
+
+	while (rule->rule_xf[nxf] != NULL)
+		nxf++;
+
+	/* We include space for a trailing NULL entry */
+	rule->rule_xf = umem_reallocarray(rule->rule_xf, nxf + 1, nxf + 2,
+	    sizeof (config_xf_t *), UMEM_NOFAIL);
+	rule->rule_xf[nxf] = xf;
 }
 
 static void
 add_rule(config_t *restrict cfg, config_rule_t *restrict rule)
 {
 	/* TODO: validate label value is unique */
-	size_t nrules = 0;
 
-	while (nrules < cfg->cfg_rules_alloc && cfg->cfg_rules[nrules] != NULL)
-		nrules++;
-
-	if (nrules + 2 > cfg->cfg_rules_alloc) {
-		config_rule_t **newrules = NULL;
-		size_t newalloc = cfg->cfg_rules_alloc + CHUNK_SZ;
-		size_t amt = newalloc * sizeof (config_rule_t *);
-
-		VERIFY3U(amt, >, newalloc);
-		VERIFY3U(amt, >=, sizeof (config_rule_t *));
-
-		newrules = realloc(cfg->cfg_rules, amt);
-		VERIFY3P(newrules, !=, NULL);
-
-		cfg->cfg_rules = newrules;
-		cfg->cfg_rules_alloc = newalloc;
+	if (cfg->cfg_rules == NULL) {
+		cfg->cfg_rules = umem_calloc(2, sizeof (config_rule_t *),
+		    UMEM_NOFAIL);
+		cfg->cfg_rules[0] = rule;
+		return;
 	}
 
-	rule->rule_config = cfg;
-	cfg->cfg_rules[nrules++] = rule;
-	cfg->cfg_rules[nrules] = NULL;
+	size_t nrules = 0;
+
+	while (cfg->cfg_rules[nrules] != NULL)
+		nrules++;
+
+	cfg->cfg_rules = umem_reallocarray(cfg->cfg_rules, nrules + 1,
+	    nrules + 2, sizeof (config_rule_t *), UMEM_NOFAIL);
+	cfg->cfg_rules[nrules] = rule;
 }
 
 static void
@@ -1830,21 +1810,22 @@ add_addr(config_addr_t **restrict addrs, size_t *restrict naddrs,
 static void
 add_remid(config_rule_t *restrict rule, config_id_t *restrict id)
 {
-	config_id_t **ids = NULL;
-	size_t amt = 0;
-
-	for (size_t i = 0;
-	    rule->rule_remote_id != NULL && rule->rule_remote_id[i] != NULL;
-	    i++) {
-		amt++;
+	if (rule->rule_remote_id == NULL) {
+		rule->rule_remote_id = umem_calloc(2, sizeof (config_id_t *),
+		    UMEM_NOFAIL);
+		rule->rule_remote_id[0] = id;
+		return;
 	}
 
-	ids = recallocarray(rule->rule_remote_id, amt, amt + 1,
-	    sizeof (config_id_t *));
-	VERIFY3P(ids, !=, NULL);
+	size_t i = 0;
 
-	ids[amt] = id;
-	rule->rule_remote_id = ids;
+	while (rule->rule_remote_id[i] != NULL)
+		i++;
+
+	rule->rule_remote_id = umem_reallocarray(rule->rule_remote_id, i + 1,
+	    i + 2, sizeof (config_id_t *), UMEM_NOFAIL);
+
+	rule->rule_remote_id[i] = id;
 }
 
 /* Is the given character a token separator? */

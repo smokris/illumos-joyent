@@ -19,6 +19,8 @@
 #include <sys/debug.h>
 #include <pthread.h>
 #include <string.h>
+#include <strings.h>
+#include <umem.h>
 #include "defs.h"
 #include "config.h"
 #include "ikev2_enum.h"
@@ -234,7 +236,7 @@ config_id_str(const config_id_t *id, char *buf, size_t buflen)
 	}
 
 	if (inet_ntop(af, ptr, buf, buflen) == NULL)
-		(void) memset(buf, 0, buflen);
+		bzero(buf, buflen);
 
 	return (buf);
 }
@@ -306,7 +308,7 @@ config_id_new(config_auth_id_t type, const void *data, size_t len)
 
 	cid->cid_type = type;
 	cid->cid_len = len;
-	(void) memcpy(cid->cid_data, data, len);
+	bcopy(data, cid->cid_data, len);
 	return (cid);
 }
 
@@ -329,34 +331,41 @@ config_id_free(config_id_t *id)
 {
 	if (id == NULL)
 		return;
+
 	size_t len = id->cid_len + sizeof (config_id_t);
+
 	umem_free(id, len);
 }
 
 void
 cfg_rule_free(config_rule_t *rule)
 {
+	size_t i;
+
 	if (rule == NULL)
 		return;
 
 	if (rule->rule_xf != NULL) {
-		for (size_t i = 0; rule->rule_xf[i] != NULL; i++) {
-			free(rule->rule_xf[i]->xf_str);
-			free(rule->rule_xf[i]);
+		for (i = 0; rule->rule_xf[i] != NULL; i++) {
+			char *s = rule->rule_xf[i]->xf_str;
+
+			ustrfree(rule->rule_xf[i]->xf_str);
+			umem_free(rule->rule_xf[i], sizeof (config_xf_t));
 		}
+		umem_cfree(rule->rule_xf, i + 1, sizeof (config_xf_t *));
 	}
 
 	if (rule->rule_remote_id != NULL) {
-		for (size_t i = 0; rule->rule_remote_id[i] != NULL; i++)
-			free(rule->rule_remote_id[i]);
-		free(rule->rule_remote_id);
+		for (i = 0; rule->rule_remote_id[i] != NULL; i++)
+			config_id_free(rule->rule_remote_id[i]);
+
+		umem_cfree(rule->rule_remote_id, i + 1, sizeof (config_id_t *));
 	}
 
-	free(rule->rule_xf);
 	free(rule->rule_local_addr);
 	free(rule->rule_remote_addr);
-	free(rule->rule_label);
-	free(rule);
+	ustrfree(rule->rule_label);
+	umem_free(rule, sizeof (*rule));
 }
 
 void
@@ -373,27 +382,36 @@ cfg_free(config_t *cfg)
 	    cfg->cfg_cert_root != NULL && cfg->cfg_cert_root[i] != NULL;
 	    i++)
 		free(cfg->cfg_cert_root[i]);
+	free(cfg->cfg_cert_root);
 
 	if (cfg->cfg_cert_trust != NULL) {
 		for (i = 0; cfg->cfg_cert_trust[i] != NULL; i++)
 			free(cfg->cfg_cert_trust[i]);
+		free(cfg->cfg_cert_trust);
 	}
 
 	if (cfg->cfg_default.rule_xf != NULL) {
-		for (i = 0; cfg->cfg_default.rule_xf[i] != NULL; i++)
-			free(cfg->cfg_default.rule_xf[i]);
+		size_t nxf = 0;
+
+		for (i = 0; cfg->cfg_default.rule_xf[i] != NULL; i++, nxf++) {
+			umem_free(cfg->cfg_default.rule_xf[i],
+			    sizeof (config_xf_t));
+		}
+
+		umem_cfree(cfg->cfg_default.rule_xf, nxf,
+		    sizeof (config_xf_t *));
 	}
 
 	if (cfg->cfg_rules != NULL) {
-		for (i = 0; cfg->cfg_rules[i] != NULL; i++)
+		size_t amt = 0;
+
+		for (i = 0; cfg->cfg_rules[i] != NULL; i++, amt++)
 			cfg_rule_free(cfg->cfg_rules[i]);
+
+		umem_cfree(cfg->cfg_rules, amt + 1, sizeof (config_rule_t *));
 	}
 
-	free(cfg->cfg_rules);
-	free(cfg->cfg_default.rule_xf);
-	free(cfg->cfg_proxy);
-	free(cfg->cfg_socks);
-	free(cfg->cfg_cert_root);
-	free(cfg->cfg_cert_trust);
-	free(cfg);
+	ustrfree(cfg->cfg_proxy);
+	ustrfree(cfg->cfg_socks);
+	umem_free(cfg, sizeof (*cfg));
 }

@@ -105,7 +105,6 @@ typedef struct config_rule_s {
 	config_addr_t		*rule_remote_addr;
 	size_t			rule_nremote_addr;
 	config_xf_t		**rule_xf;
-	size_t			rule_nxf;
 	ikev2_dh_t		rule_p2_dh;
 	config_id_t		*rule_local_id;
 	config_id_t		**rule_remote_id;
@@ -117,7 +116,6 @@ struct config_s {
 	volatile uint32_t	cfg_refcnt;
 	config_rule_t		cfg_default;
 	config_rule_t		**cfg_rules;
-	size_t			cfg_rules_alloc;
 	size_t			cfg_xforms_alloc;
 	char			*cfg_proxy;
 	char			*cfg_socks;
