@@ -73,6 +73,7 @@ typedef struct encr_data_s {
 	size_t			ed_icvlen;	/* For combined modes */
 	size_t			ed_saltlen;	/* For combined modes */
 } encr_data_t;
+#define	IKEV2_ENCR_KEYLEN_MAX 256
 
 typedef struct auth_data_s {
 	CK_MECHANISM_TYPE	ad_p11id;
@@ -81,6 +82,7 @@ typedef struct auth_data_s {
 	size_t			ad_outlen;
 	size_t			ad_icvlen;
 } auth_data_t;
+#define	IKEV2_AUTH_KEYLEN_MAX 512
 
 /*
  * These are sized off IKEV2_{ENCR,XF_AUTH}_MAX.  Entries are intended to be

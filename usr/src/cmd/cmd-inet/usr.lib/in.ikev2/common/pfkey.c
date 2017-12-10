@@ -44,12 +44,14 @@
 #include <port.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <synch.h>
 #include <time.h>
 #include "config.h"
 #include "defs.h"
 #include "ikev2.h"
 #include "ikev2_common.h"
+#include "ikev2_enum.h"
 #include "ikev2_pkt.h"
 #include "ikev2_sa.h"
 #include "inbound.h"
@@ -116,6 +118,7 @@ static const char *pfkey_keys[] = {
 
 #define	PFKEY_MSG_LEN(msg, ext) \
     SADB_8TO64((size_t)((uint8_t *)ext - (uint8_t *)msg))
+#define	ROUND64(val) P2ROUNDUP(val, sizeof (uint64_t))
 
 typedef struct pfreq {
 	list_node_t	pr_node;
@@ -544,6 +547,21 @@ pfkey_send_error(const sadb_msg_t *src, uint8_t reason)
 		STDERR(error, "Unable to send PFKEY error notification");
 }
 
+sadb_ext_t *
+pfkey_add_ext(sadb_ext_t *dest, uint16_t type, const sadb_ext_t *src)
+{
+	if (src == NULL)
+		return (dest);
+
+	size_t len = SADB_64TO8(src->sadb_ext_len);
+
+	bcopy(src, dest, len);
+	if (type != SADB_EXT_RESERVED)
+		dest->sadb_ext_type = type;
+
+	return ((sadb_ext_t *)((uint8_t *)dest + len));
+}
+
 /*
  * Add an sadb_address_t extension to a pfkey message.  Caller must fill
  * in SADB address type (SRC, INNER_DST, etc.).  Caller must guarantee memory
@@ -556,7 +574,7 @@ pfkey_send_error(const sadb_msg_t *src, uint8_t reason)
  */
 sadb_ext_t *
 pfkey_add_address(sadb_ext_t *restrict ext, uint16_t type,
-    const sockaddr_u_t su)
+    const sockaddr_u_t su, uint8_t prefixlen, uint8_t proto)
 {
 	sadb_address_t *addr = (sadb_address_t *)ext;
 	sockaddr_u_t msgaddr = {
@@ -581,16 +599,12 @@ pfkey_add_address(sadb_ext_t *restrict ext, uint16_t type,
 
 	switch (su.sau_ss->ss_family) {
 	case AF_INET:
-		(void) memcpy(msgaddr.sau_sin, su.sau_sin,
-		    sizeof (struct sockaddr_in));
-		len = P2ROUNDUP(sizeof (struct sockaddr_in),
-		    sizeof (uint64_t));
+		bcopy(su.sau_sin, msgaddr.sau_sin, sizeof (*su.sau_sin));
+		len = ROUND64(sizeof (struct sockaddr_in));
 		break;
 	case AF_INET6:
-		(void) memcpy(msgaddr.sau_sin6, su.sau_sin6,
-		    sizeof (struct sockaddr_in6));
-		len = P2ROUNDUP(sizeof (struct sockaddr_in6),
-		    sizeof (uint64_t));
+		bcopy(su.sau_sin6, msgaddr.sau_sin6, sizeof (*su.sau_sin6));
+		len = ROUND64(sizeof (struct sockaddr_in6));
 		break;
 	default:
 		INVALID(su.sau_ss->ss_family);
@@ -599,30 +613,35 @@ pfkey_add_address(sadb_ext_t *restrict ext, uint16_t type,
 	len += sizeof (*addr);
 	addr->sadb_address_len = SADB_8TO64(len);
 	addr->sadb_address_exttype = type;
-
-	/*XXX:FIXME*/
-	addr->sadb_address_prefixlen = 32;
+	addr->sadb_address_prefixlen = prefixlen;
+	addr->sadb_address_proto = proto;
 
 	return ((sadb_ext_t *)((uint8_t *)ext + len));
 }
 
 sadb_ext_t *
-pfkey_add_sa(sadb_ext_t *restrict ext, uint32_t spi,
-    const ikev2_sa_result_t *restrict res)
+pfkey_add_sa(sadb_ext_t *restrict ext, uint32_t spi, ikev2_xf_encr_t i2encr,
+    ikev2_xf_auth_t i2auth, uint32_t flags)
 {
 	sadb_sa_t *sa = (sadb_sa_t *)ext;
-	int auth = ikev2_auth_to_pfkey(res->sar_auth);
-	int encr = ikev2_encr_to_pfkey(res->sar_encr);
+	int auth = ikev2_auth_to_pfkey(i2encr);
+	int encr = ikev2_encr_to_pfkey(i2auth);
 
-	/* We shouldn't negotiate anything we don't support */
+	/*
+	 * We shouldn't negotiate anything we don't support nor should we
+	 * return an out of range value when translating to pf_key values.
+	 */
 	VERIFY3S(auth, >=, 0);
+	VERIFY3S(auth, <=, UINT8_MAX);
 	VERIFY3S(encr, >=, 0);
+	VERIFY3S(encr, <=, UINT8_MAX);
 
 	sa->sadb_sa_len = SADB_8TO64(sizeof (*sa));
 	sa->sadb_sa_exttype = SADB_EXT_SA;
 	sa->sadb_sa_spi = spi;
 	sa->sadb_sa_auth = (uint8_t)auth;
 	sa->sadb_sa_encrypt = (uint8_t)encr;
+	sa->sadb_sa_flags = flags;
 	return ((sadb_ext_t *)(sa + 1));
 }
 
@@ -643,8 +662,7 @@ pfkey_add_identity(sadb_ext_t *restrict ext, uint16_t type,
     const config_id_t *cid)
 {
 	sadb_ident_t *id = (sadb_ident_t *)ext;
-	size_t len = sizeof (*id) +
-	    P2ROUNDUP(config_id_strlen(cid), sizeof (uint64_t));
+	size_t len = sizeof (*id) + ROUND64(config_id_strlen(cid));
 
 	switch (type) {
 	case SADB_EXT_IDENTITY_SRC:
@@ -693,8 +711,7 @@ pfkey_add_key(sadb_ext_t *restrict ext, uint16_t type, const uint8_t *key,
     size_t keylen)
 {
 	sadb_key_t *skey = (sadb_key_t *)ext;
-	size_t len = sizeof (sadb_key_t) +
-	    P2ROUNDUP(keylen, sizeof (uint64_t));
+	size_t len = sizeof (sadb_key_t) + ROUND64(keylen);
 
 	switch (type) {
 	case SADB_EXT_KEY_AUTH:
@@ -704,10 +721,13 @@ pfkey_add_key(sadb_ext_t *restrict ext, uint16_t type, const uint8_t *key,
 		INVALID(type);
 	}
 
+	if (keylen == 0)
+		return (ext);
+
 	skey->sadb_key_len = SADB_8TO64(len);
 	skey->sadb_key_exttype = type;
 	skey->sadb_key_bits = SADB_8TO1(keylen);
-	(void) memcpy(skey + 1, key, keylen);
+	bcopy(key, skey + 1, keylen);
 	return ((sadb_ext_t *)((uint8_t *)ext + len));
 }
 
@@ -715,6 +735,9 @@ sadb_ext_t *
 pfkey_add_pair(sadb_ext_t *ext, uint32_t spi)
 {
 	sadb_x_pair_t *pair = (sadb_x_pair_t *)ext;
+
+	if (spi == 0)
+		return (ext);
 
 	pair->sadb_x_pair_len = SADB_8TO64(sizeof (*pair));
 	pair->sadb_x_pair_exttype = SADB_X_EXT_PAIR;
@@ -757,41 +780,106 @@ pfkey_add_lifetime(sadb_ext_t *restrict ext)
 	return ((sadb_ext_t *)life);
 }
 
-boolean_t
-pfkey_sadb_add_update(const ikev2_sa_t *restrict sa, uint32_t spi,
-    const ikev2_sa_result_t *restrict sar, const parsedmsg_t *restrict srcmsg,
-    const uint8_t *encrkey, size_t encrlen,
-    const uint8_t *authkey, size_t authlen,
-    uint32_t pair, boolean_t initiator, boolean_t add)
+sadb_ext_t *
+pfkey_add_kmc(sadb_ext_t *ext, uint32_t proto, uint64_t cookie)
 {
-	const sadb_msg_t *sadb_src = NULL;
+	sadb_x_kmc_t *kmc = (sadb_x_kmc_t *)ext;
+
+	kmc->sadb_x_kmc_len = SADB_8TO64(sizeof (*kmc));
+	kmc->sadb_x_kmc_exttype = SADB_X_EXT_KM_COOKIE;
+	kmc->sadb_x_kmc_proto = proto;
+	kmc->sadb_x_kmc_cookie64 = cookie;
+
+	return ((sadb_ext_t *)(kmc + 1));
+}
+
+boolean_t
+pfkey_sadb_add_update(ikev2_sa_t *restrict sa,
+    ikev2_child_sa_t *restrict csa, const uint8_t *restrict encrkey,
+    const uint8_t *restrict authkey, const sadb_msg_t *restrict srcmsg)
+{
 	parsedmsg_t *pmsg = NULL;
 	sadb_msg_t *msg = NULL;
 	sadb_ext_t *ext = NULL;
-	sadb_sa_t *pfsa = NULL;
-	size_t msglen = 0;
-	uint8_t satype;
+	size_t msglen = 0, encrlen = 0, authlen = 0;
+	uint32_t pair = (csa->i2c_pair != NULL) ? csa->i2c_pair->i2c_spi : 0;
+	uint32_t flags = SADB_SASTATE_MATURE;
+	uint8_t satype = ikev2_to_satype(csa->i2c_satype);
+	sockaddr_u_t src = { 0 };
+	sockaddr_u_t dst = { 0 };
+	sockaddr_u_t isrc = { 0 };
+	sockaddr_u_t idst = { 0 };
+	sockaddr_u_t nat_l = { 0 };
+	sockaddr_u_t nat_r = { 0 };
+	const config_id_t *id_src = NULL, *id_dst = NULL;
+	uint8_t srcpfx = 0, dstpfx = 0, isrcpfx = 0, idstpfx = 0;
 	boolean_t ret = B_FALSE;
+
+	encrlen = SADB_1TO8(csa->i2c_encr_keylen);
+	authlen = auth_data[csa->i2c_auth].ad_keylen;
 
 	/*
 	 * Worst case msg length:
 	 *	base, SA, lifetime(HSI), address(SD), address(Is, Id),
-	 *	address(Nl, Nr), key(AE), identity(SD), pair
+	 *	address(Nl, Nr), key(AE), identity(SD), pair, kmc
 	 *
 	 * The sadb_* types are already including padding for 64-bit alignment.
 	 */
+
 	msglen = sizeof (*msg) + sizeof (sadb_sa_t) +
 	    3 * sizeof (sadb_lifetime_t) +
-	    6 * (sizeof (sadb_address_t) + sizeof (struct sockaddr_storage)) +
-	    sizeof (sadb_key_t) +
-	    P2ROUNDUP(SADB_8TO1(encrlen), sizeof (uint64_t)) +
-	    sizeof (sadb_key_t) +
-	    P2ROUNDUP(SADB_8TO1(authlen), sizeof (uint64_t)) +
-	    sizeof (sadb_ident_t) +
-	    P2ROUNDUP(config_id_strlen(sa->local_id), sizeof (uint64_t)) +
-	    sizeof (sadb_ident_t) +
-	    P2ROUNDUP(config_id_strlen(sa->remote_id), sizeof (uint64_t)) +
-	    sizeof (sadb_x_pair_t);
+	    6 * (sizeof (sadb_address_t) +
+	    ROUND64(sizeof (struct sockaddr_storage))) +
+	    sizeof (sadb_key_t) + ROUND64(encrlen) +
+	    sizeof (sadb_key_t) + ROUND64(authlen) +
+	    sizeof (sadb_ident_t) + ROUND64(config_id_strlen(sa->local_id)) +
+	    sizeof (sadb_ident_t) + ROUND64(config_id_strlen(sa->remote_id)) +
+	    (pair > 0) ? sizeof (sadb_x_pair_t) : 0 +
+	    sizeof (sadb_x_kmc_t);
+
+	if (csa->i2c_initiator)
+		flags |= IKEV2_SADB_INITIATOR;
+
+	if (csa->i2c_inbound) {
+		flags |= SADB_X_SAFLAGS_INBOUND;
+
+		src.sau_ss = &csa->i2c_raddr;
+		dst.sau_ss = &csa->i2c_laddr;
+		srcpfx = csa->i2c_rprefix;
+		dstpfx = csa->i2c_lprefix;
+		if (!csa->i2c_transport) {
+			isrc.sau_ss = &csa->i2c_inner_raddr;
+			idst.sau_ss = &csa->i2c_inner_laddr;
+			isrcpfx = csa->i2c_inner_rprefix;
+			idstpfx = csa->i2c_inner_lprefix;
+		}
+		id_src = sa->remote_id;
+		id_dst = sa->local_id;
+	} else {
+		flags |= SADB_X_SAFLAGS_OUTBOUND;
+
+		src.sau_ss = &csa->i2c_laddr;
+		dst.sau_ss = &csa->i2c_raddr;
+		srcpfx = csa->i2c_lprefix;
+		dstpfx = csa->i2c_rprefix;
+		if (!csa->i2c_transport) {
+			isrc.sau_ss = &csa->i2c_inner_laddr;
+			idst.sau_ss = &csa->i2c_inner_raddr;
+			isrcpfx = csa->i2c_inner_lprefix;
+			idstpfx = csa->i2c_inner_rprefix;
+		}
+		id_src = sa->local_id;
+		id_dst = sa->remote_id;
+	}
+
+	if (sa->flags & I2SA_NAT_LOCAL) {
+		flags |= SADB_X_SAFLAGS_NATT_LOC;
+		nat_l.sau_ss = &sa->lnatt;
+	}
+	if (sa->flags & I2SA_NAT_REMOTE) {
+		flags |= SADB_X_SAFLAGS_NATT_REM;
+		nat_r.sau_ss = &sa->rnatt;
+	}
 
 	msg = umem_zalloc(msglen, UMEM_DEFAULT);
 	if (msg == NULL) {
@@ -800,72 +888,37 @@ pfkey_sadb_add_update(const ikev2_sa_t *restrict sa, uint32_t spi,
 		return (B_FALSE);
 	}
 
-	if (PMSG_FROM_KERNEL(srcmsg))
-		sadb_src = srcmsg->pmsg_samsg;
-
-	satype = ikev2_to_satype(sar->sar_proto);
-	pfkey_msg_init(sadb_src, msg, add ? SADB_ADD : SADB_UPDATE, satype);
+	pfkey_msg_init(srcmsg, msg, csa->i2c_inbound ? SADB_ADD : SADB_UPDATE,
+	    satype);
 
 	ext = (sadb_ext_t *)(msg + 1);
-	pfsa = (sadb_sa_t *)ext;
-	ext = pfkey_add_sa(ext, spi, sar);
+	ext = pfkey_add_sa(ext, csa->i2c_spi, csa->i2c_encr, csa->i2c_auth,
+	    flags);
 	ext = pfkey_add_lifetime(ext);
 
-	/*
-	 * XXX:It's implied that the larval SA we created with GETSPI is the one
-	 * we update (thus the source is always the 'local' address).
-	 * I'd like to find a better way to express this intent more clearly
-	 */
-	if (!add) {
-		pfsa->sadb_sa_flags |= SADB_X_SAFLAGS_OUTBOUND;
+	ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_SRC, src, srcpfx,
+	    csa->i2c_addr_proto);
+	ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_DST, dst, dstpfx,
+	    csa->i2c_addr_proto);
 
-		ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_SRC,
-		    srcmsg->pmsg_sau);
-		ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_DST,
-		    srcmsg->pmsg_dau);
+	if (!csa->i2c_transport) {
 		ext = pfkey_add_address(ext, SADB_X_EXT_ADDRESS_INNER_SRC,
-		    srcmsg->pmsg_isau);
+		    isrc, isrcpfx, csa->i2c_inner_proto);
 		ext = pfkey_add_address(ext, SADB_X_EXT_ADDRESS_INNER_DST,
-		    srcmsg->pmsg_idau);
-	} else {
-		pfsa->sadb_sa_flags |= SADB_X_SAFLAGS_INBOUND;
-
-		ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_SRC,
-		    srcmsg->pmsg_dau);
-		ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_DST,
-		    srcmsg->pmsg_sau);
-		ext = pfkey_add_address(ext, SADB_X_EXT_ADDRESS_INNER_SRC,
-		    srcmsg->pmsg_idau);
-		ext = pfkey_add_address(ext, SADB_X_EXT_ADDRESS_INNER_DST,
-		    srcmsg->pmsg_isau);
+		    idst, idstpfx, csa->i2c_inner_proto);
 	}
 
-	ext = pfkey_add_address(ext, SADB_X_EXT_ADDRESS_NATT_LOC,
-	    srcmsg->pmsg_nlau);
-	ext = pfkey_add_address(ext, SADB_X_EXT_ADDRESS_NATT_REM,
-	    srcmsg->pmsg_nrau);
+	ext = pfkey_add_key(ext, SADB_EXT_KEY_AUTH, authkey, authlen);
+	ext = pfkey_add_key(ext, SADB_EXT_KEY_ENCRYPT, encrkey, encrlen);
 
-	if (srcmsg->pmsg_nlau.sau_ss != NULL)
-		pfsa->sadb_sa_flags |= SADB_X_SAFLAGS_NATT_LOC;
-	if (srcmsg->pmsg_nrau.sau_ss != NULL)
-		pfsa->sadb_sa_flags |= SADB_X_SAFLAGS_NATT_REM;
+	ext = pfkey_add_identity(ext, SADB_EXT_IDENTITY_SRC, id_src);
+	ext = pfkey_add_identity(ext, SADB_EXT_IDENTITY_DST, id_dst);
 
-	pfsa->sadb_sa_state = SADB_SASTATE_MATURE;
+	ext = pfkey_add_pair(ext, pair);
 
-	if (authkey != NULL)
-		ext = pfkey_add_key(ext, SADB_EXT_KEY_AUTH, authkey, authlen);
-	if (encrkey != NULL) {
-		ext = pfkey_add_key(ext, SADB_EXT_KEY_ENCRYPT, encrkey,
-		    encrlen);
-	}
-
-	ext = pfkey_add_identity(ext, SADB_EXT_IDENTITY_SRC,
-	    (initiator && !add) ? sa->local_id : sa->remote_id);
-	ext = pfkey_add_identity(ext, SADB_EXT_IDENTITY_DST,
-	    (initiator && !add) ? sa->remote_id : sa->local_id);
-
-	if (pair != 0)
-		ext = pfkey_add_pair(ext, pair);
+#ifdef notyet
+	ext = pfkey_add_kmc(ext, SADB_X_KMP_IKEV2, (uint64_t)sa);
+#endif
 
 	VERIFY(IS_P2ALIGNED(ext, sizeof (uint64_t)));
 	msg->sadb_msg_len = PFKEY_MSG_LEN(msg, ext);
@@ -887,17 +940,13 @@ pfkey_sadb_add_update(const ikev2_sa_t *restrict sa, uint32_t spi,
 		    BUNYAN_T_UINT32, "diagcode",
 		    (uint32_t)m->sadb_x_msg_diagnostic);
 	} else {
-		pfsa = (sadb_sa_t *)pmsg->pmsg_exts[SADB_EXT_SA];
-		char type[64] = { 0 };
 		char spistr[11] = { 0 }; /* 0x + 32bit hix + NUL */
 
-		(void) sadb_type_str(pmsg->pmsg_samsg->sadb_msg_type, type,
-		    sizeof (type));
 		(void) snprintf(spistr, sizeof (spistr), "0x%" PRIX32,
-		    pfsa->sadb_sa_spi);
+		    csa->i2c_spi);
 
 		(void) bunyan_debug(log, "Added IPsec SA",
-		    BUNYAN_T_STRING, "satype", type,
+		    BUNYAN_T_STRING, "satype", ikev2_spi_str(csa->i2c_satype),
 		    BUNYAN_T_STRING, "spi", spistr,
 		    BUNYAN_T_END);
 
@@ -948,8 +997,8 @@ pfkey_getspi(const sadb_msg_t *restrict srcmsg, sockaddr_u_t src,
 		pfkey_msg_init(srcmsg, samsg, SADB_GETSPI, satype);
 		ext = (sadb_ext_t *)(samsg + 1);
 
-		ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_SRC, src);
-		ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_DST, dest);
+		ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_SRC, src, 0, 0);
+		ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_DST, dest, 0, 0);
 		ext = pfkey_add_range(ext, 1, UINT32_MAX);
 
 		samsg->sadb_msg_len = PFKEY_MSG_LEN(samsg, ext);
@@ -995,8 +1044,9 @@ pfkey_getspi(const sadb_msg_t *restrict srcmsg, sockaddr_u_t src,
 }
 
 boolean_t
-pfkey_inverse_acquire(sockaddr_u_t src, sockaddr_u_t dest,
-    sockaddr_u_t isrc, sockaddr_u_t idest, parsedmsg_t **resp)
+pfkey_inverse_acquire(sockaddr_u_t src, sockaddr_u_t dest, uint8_t iproto,
+    sockaddr_u_t isrc, uint8_t isrcpfx,
+    sockaddr_u_t idest, uint8_t idstpfx, parsedmsg_t **resp)
 {
 	uint64_t buffer[128] = { 0 };
 	sadb_msg_t *msg = (sadb_msg_t *)buffer;
@@ -1015,13 +1065,13 @@ pfkey_inverse_acquire(sockaddr_u_t src, sockaddr_u_t dest,
 
 	pfkey_msg_init(NULL, msg, SADB_X_INVERSE_ACQUIRE, SADB_SATYPE_UNSPEC);
 
-	ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_SRC, src);
-	ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_DST, dest);
+	ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_SRC, src, 0, 0);
+	ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_DST, dest, 0, 0);
 	if (isrc.sau_ss != NULL) {
 		ext = pfkey_add_address(ext, SADB_X_EXT_ADDRESS_INNER_SRC,
-		    isrc);
+		    isrc, isrcpfx, iproto);
 		ext = pfkey_add_address(ext, SADB_X_EXT_ADDRESS_INNER_DST,
-		    idest);
+		    idest, idstpfx, iproto);
 	}
 
 	msg->sadb_msg_len = PFKEY_MSG_LEN(msg, ext);
@@ -1041,8 +1091,8 @@ pfkey_delete(uint8_t satype, uint32_t spi, sockaddr_u_t src, sockaddr_u_t dst,
 
 	pfkey_msg_init(NULL, msg, pair ? SADB_X_DELPAIR : SADB_DELETE, satype);
 
-	ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_SRC, src);
-	ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_DST, dst);
+	ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_SRC, src, 0, 0);
+	ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_DST, dst, 0, 0);
 
 	if (!pfkey_send_msg(msg, &pmsg, 1, SADB_EXT_SA) ||
 	    (pmsg->pmsg_samsg != NULL &&

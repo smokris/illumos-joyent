@@ -627,15 +627,22 @@ check_count(ikev2_pay_type_t type, size_t min, size_t max, size_t *count)
 static boolean_t
 ikev2_pkt_check_ike_sa_init(pkt_t *pkt)
 {
+	static const ikev2_notify_type_t errors[] = {
+		IKEV2_N_COOKIE,
+		IKEV2_N_INVALID_KE_PAYLOAD,
+		IKEV2_N_NO_PROPOSAL_CHOSEN
+	};
 	size_t paycount[IKEV2_NUM_PAYLOADS] = { 0 };
 	boolean_t ok = B_TRUE;
 
 	ikev2_count_payloads(pkt, paycount);
 
-	if (I2P_RESPONSE(pkt) &&
-	    (pkt_get_notify(pkt, IKEV2_N_COOKIE, NULL) != NULL ||
-	    pkt_get_notify(pkt, IKEV2_N_INVALID_KE_PAYLOAD, NULL) != NULL))
-		return (B_TRUE);
+	if (I2P_RESPONSE(pkt)) {
+		for (size_t i = 0; i < ARRAY_SIZE(errors); i++) {
+			if (pkt_get_notify(pkt, errors[i], NULL) != NULL)
+				return (B_TRUE);
+		}
+	}
 
 	ok &= check_count(IKEV2_PAYLOAD_SA, 1, 1, paycount);
 	ok &= check_count(IKEV2_PAYLOAD_KE, 1, 1, paycount);

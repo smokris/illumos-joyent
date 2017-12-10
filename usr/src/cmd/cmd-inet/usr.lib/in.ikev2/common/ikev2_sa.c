@@ -108,6 +108,12 @@ ikev2_sa_getbylspi(uint64_t spi, boolean_t initiator)
 	i2sa = refhash_lookup(i2sa_lspi_refhash, &cmp_sa);
 	VERIFY0(rw_unlock(&i2sa_hash_lock));
 
+	if (i2sa != NULL) {
+		(void) bunyan_key_add(log,
+		    BUNYAN_T_POINTER, LOG_KEY_I2SA, i2sa,
+		    BUNYAN_T_END);
+	}
+
 	return (i2sa);
 }
 
@@ -130,6 +136,12 @@ ikev2_sa_getbyrspi(uint64_t spi,
 	i2sa = refhash_lookup(i2sa_rspi_refhash, &cmp_sa);
 	VERIFY0(rw_unlock(&i2sa_hash_lock));
 
+	if (i2sa != NULL) {
+		(void) bunyan_key_add(log,
+		    BUNYAN_T_POINTER, LOG_KEY_I2SA, i2sa,
+		    BUNYAN_T_END);
+	}
+
 	return (i2sa);
 }
 
@@ -146,6 +158,12 @@ ikev2_sa_getbyaddr(const struct sockaddr_storage *restrict src,
 	VERIFY0(rw_rdlock(&i2sa_hash_lock));
 	i2sa = refhash_lookup(i2sa_addr_refhash, &cmp_sa);
 	VERIFY0(rw_unlock(&i2sa_hash_lock));
+
+	if (i2sa != NULL) {
+		(void) bunyan_key_add(log,
+		    BUNYAN_T_POINTER, LOG_KEY_I2SA, i2sa,
+		    BUNYAN_T_END);
+	}
 
 	return (i2sa);
 }
@@ -193,8 +211,10 @@ ikev2_sa_alloc(pkt_t *restrict init_pkt,
 	expire = cfg->cfg_expire_timer;
 	CONFIG_REFRELE(cfg);
 
-	if ((i2sa = umem_cache_alloc(i2sa_cache, UMEM_DEFAULT)) == NULL)
+	if ((i2sa = umem_cache_alloc(i2sa_cache, UMEM_DEFAULT)) == NULL) {
+		STDERR(error, "No memory to create IKEv2 SA");
 		return (NULL);
+	}
 
 	/* Keep anyone else out while we initialize */
 	mutex_enter(&i2sa->i2sa_queue_lock);
@@ -202,13 +222,24 @@ ikev2_sa_alloc(pkt_t *restrict init_pkt,
 
 	i2sa->i2sa_tid = thr_self();
 
-	ASSERT((init_pkt == NULL) ||
-	    (init_pkt->hdr.exch_type == IKEV2_EXCHANGE_IKE_SA_INIT));
-
 	i2sa->flags |= initiator ? I2SA_INITIATOR : 0;
 
 	bcopy(laddr, &i2sa->laddr, sizeof (*laddr));
 	bcopy(raddr, &i2sa->raddr, sizeof (*raddr));
+
+	/*
+	 * Use the port given to us if specified, otherwise use the default.
+	 * Take advantage of port being at the same offset for IPv4/v6
+	 */
+	VERIFY(laddr->ss_family == AF_INET || laddr->ss_family == AF_INET6);
+	if (ss_port(laddr) == 0) {
+		((struct sockaddr_in *)&i2sa->laddr)->sin_port =
+		    htons(IPPORT_IKE);
+	}
+	if (ss_port(raddr) == 0) {
+		((struct sockaddr_in *)&i2sa->raddr)->sin_port =
+		    htons(IPPORT_IKE);
+	}
 
 	/*
 	 * Generate a random local SPI and try to add it.  Almost always this
@@ -256,6 +287,9 @@ ikev2_sa_alloc(pkt_t *restrict init_pkt,
 		VERIFY0(rw_unlock(&i2sa_hash_lock));
 		break;
 	};
+
+	key_add_ike_spi(LOG_KEY_LSPI, I2SA_LOCAL_SPI(i2sa));
+	(void) bunyan_trace(log, "Allocated local SPI", BUNYAN_T_END);
 
 	/*
 	 * If we're the initiator, we don't know the remote SPI until after
@@ -554,8 +588,6 @@ ikev2_sa_get_response(ikev2_sa_t *restrict i2sa, const pkt_t *req)
 void
 ikev2_sa_condemn(ikev2_sa_t *i2sa)
 {
-	parsedmsg_t *pmsg = NULL;
-
 	VERIFY(!MUTEX_HELD(&i2sa->i2sa_queue_lock));
 	VERIFY(MUTEX_HELD(&i2sa->i2sa_lock));
 	VERIFY3U(i2sa->i2sa_tid, ==, thr_self());
@@ -607,13 +639,39 @@ ikev2_sa_condemn(ikev2_sa_t *i2sa)
 	ikev2_pkt_free(i2sa->last_recvd);
 	i2sa->last_recvd = NULL;
 
-	pmsg = list_head(&i2sa->i2sa_pending);
-	while (pmsg != NULL) {
-		parsedmsg_t *next = list_next(&i2sa->i2sa_pending, pmsg);
-		sadb_msg_t *samsg = pmsg->pmsg_samsg;
+	ikev2_child_sa_t *i2c = refhash_first(i2sa->i2sa_child_sas);
 
-		/* Fail/cancel any pending acquires from the kernel */
-		if (samsg->sadb_msg_pid == 0 &&
+	while (i2c != NULL) {
+		ikev2_child_sa_t *i2c_next;
+
+		i2c_next = refhash_next(i2sa->i2sa_child_sas, i2c);
+		refhash_remove(i2sa->i2sa_child_sas, i2c);
+		i2c = i2c_next;
+	}
+
+	mutex_exit(&i2sa->i2sa_lock);
+	mutex_enter(&i2sa->i2sa_queue_lock);
+	mutex_enter(&i2sa->i2sa_lock);
+
+	for (size_t i = 0; i < I2SA_QUEUE_DEPTH; i++) {
+		parsedmsg_t *pmsg = NULL;
+		sadb_msg_t *samsg = NULL;
+
+		switch (i2sa->i2sa_queue[i].i2m_type) {
+		case I2SA_MSG_NONE:
+			break;
+		case I2SA_MSG_PKT:
+			ikev2_pkt_free(i2sa->i2sa_queue[i].i2m_data);
+			break;
+		case I2SA_MSG_PFKEY:
+			pmsg = i2sa->i2sa_queue[i].i2m_data;
+			samsg = pmsg->pmsg_samsg;
+			break;
+		}
+		i2sa->i2sa_queue[i].i2m_type = I2SA_MSG_NONE;
+		i2sa->i2sa_queue[i].i2m_data = NULL;
+
+		if (samsg != NULL && samsg->sadb_msg_pid == 0 &&
 		    samsg->sadb_msg_type == SADB_ACQUIRE) {
 			/*
 			 * The kernel currently only cares that errno != 0,
@@ -624,30 +682,7 @@ ikev2_sa_condemn(ikev2_sa_t *i2sa)
 			pfkey_send_error(samsg, ECANCELED);
 		}
 
-		list_remove(&i2sa->i2sa_pending, pmsg);
 		parsedmsg_free(pmsg);
-		pmsg = next;
-	}
-
-	/* XXX: remove child SAs */
-
-	mutex_exit(&i2sa->i2sa_lock);
-	mutex_enter(&i2sa->i2sa_queue_lock);
-	mutex_enter(&i2sa->i2sa_lock);
-
-	for (size_t i = 0; i < I2SA_QUEUE_DEPTH; i++) {
-		switch (i2sa->i2sa_queue[i].i2m_type) {
-		case I2SA_MSG_NONE:
-			break;
-		case I2SA_MSG_PKT:
-			ikev2_pkt_free(i2sa->i2sa_queue[i].i2m_data);
-			break;
-		case I2SA_MSG_PFKEY:
-			parsedmsg_free(i2sa->i2sa_queue[i].i2m_data);
-			break;
-		}
-		i2sa->i2sa_queue[i].i2m_type = I2SA_MSG_NONE;
-		i2sa->i2sa_queue[i].i2m_data = NULL;
 	}
 
 	mutex_exit(&i2sa->i2sa_queue_lock);
@@ -695,8 +730,6 @@ ikev2_sa_free(ikev2_sa_t *i2sa)
 	DESTROY(i2sa, sk_pr);
 	DESTROY(i2sa, psk);
 #undef  DESTROY
-
-	/* TODO: free child SAs */
 
 	i2sa_dtor(i2sa, NULL);
 	(void) i2sa_ctor(i2sa, NULL, 0);
@@ -820,8 +853,7 @@ ikev2_sa_queuemsg(ikev2_sa_t *sa, i2sa_msg_type_t type, void *data)
 }
 
 ikev2_child_sa_t *
-ikev2_child_sa_alloc(ikev2_sa_t *i2sa, ikev2_spi_proto_t proto, uint32_t spi,
-    boolean_t inbound)
+ikev2_child_sa_alloc(boolean_t inbound)
 {
 	ikev2_child_sa_t *csa = NULL;
 
@@ -829,25 +861,79 @@ ikev2_child_sa_alloc(ikev2_sa_t *i2sa, ikev2_spi_proto_t proto, uint32_t spi,
 		return (NULL);
 
 	csa->i2c_birth = gethrtime();
-	csa->i2c_satype = proto;
-	csa->i2c_spi = spi;
 	csa->i2c_inbound = inbound;
-	list_insert_tail(&i2sa->i2sa_pending, csa);
 	return (csa);
 }
 
 void
-ikev2_child_sa_free(ikev2_child_sa_t *csa)
+ikev2_child_sa_free(ikev2_sa_t *restrict i2sa, ikev2_child_sa_t *restrict csa)
 {
 	if (csa == NULL)
 		return;
-	VERIFY(!list_link_active(&csa->i2c_node));
-	(void) memset(csa, 0, sizeof (*csa));
+
+	VERIFY(!refhash_obj_valid(i2sa->i2sa_child_sas, csa));
+	bzero(csa, sizeof (*csa));
 	umem_cache_free(i2c_cache, csa);
 }
 
+ikev2_child_sa_t *
+ikev2_sa_get_child(ikev2_sa_t *i2sa, uint32_t spi, boolean_t inbound)
+{
+	ikev2_child_sa_t cmp = {
+		.i2c_inbound = inbound,
+		.i2c_spi = spi
+	};
+
+	return (refhash_lookup(i2sa->i2sa_child_sas, &cmp));
+}
+
+void
+ikev2_sa_add_child(ikev2_sa_t *restrict i2sa, ikev2_child_sa_t *restrict i2c)
+{
+	refhash_insert(i2sa->i2sa_child_sas, i2c);
+}
+
+static uint64_t
+i2c_hash(const void *arg)
+{
+	const ikev2_child_sa_t *i2c = arg;
+	uint64_t val = i2c->i2c_spi;
+
+	if (i2c->i2c_inbound)
+		val |= (1ULL << 32);
+	return (val);
+}
+
 static int
-i2sa_ctor(void *buf, void *dummy, int flags)
+i2c_cmp(const void *larg, const void *rarg)
+{
+	const ikev2_child_sa_t *l = larg;
+	const ikev2_child_sa_t *r = rarg;
+
+	if (l->i2c_spi < r->i2c_spi)
+		return (-1);
+	if (l->i2c_spi > r->i2c_spi)
+		return (1);
+
+	if (l->i2c_inbound && !r->i2c_inbound)
+		return (-1);
+	if (!l->i2c_inbound && r->i2c_inbound)
+		return (1);
+
+	return (0);
+}
+
+static void
+i2c_refdtor(void *arg)
+{
+	ikev2_child_sa_t *i2c = arg;
+
+	bzero(i2c, sizeof (*i2c));
+	umem_cache_free(i2c_cache, i2c);
+}
+
+static int
+i2sa_ctor(void *buf, void *dummy __unused, int flags __unused)
 {
 	NOTE(ARGUNUSED(dummy, flags))
 
@@ -861,15 +947,15 @@ i2sa_ctor(void *buf, void *dummy, int flags)
 	VERIFY0(mutex_init(&i2sa->i2sa_queue_lock, USYNC_THREAD|LOCK_ERRORCHECK,
 	    NULL));
 
-	list_create(&i2sa->i2sa_pending, sizeof (parsedmsg_t),
-	    offsetof(parsedmsg_t, pmsg_node));
-	list_create(&i2sa->i2sa_child_sas, sizeof (ikev2_child_sa_t),
-	    offsetof(ikev2_child_sa_t, i2c_node));
-	return (0);
+	i2sa->i2sa_child_sas = refhash_create(I2SA_NBUCKETS, i2c_hash, i2c_cmp,
+	    i2c_refdtor, sizeof (ikev2_child_sa_t),
+	    offsetof(ikev2_child_sa_t, i2c_link), 0, UMEM_DEFAULT);
+
+	return ((i2sa->i2sa_child_sas == NULL) ? 1 : 0);
 }
 
 static void
-i2sa_dtor(void *buf, void *dummy)
+i2sa_dtor(void *buf, void *dummy __unused)
 {
 	NOTE(ARGUNUSED(dummy))
 
@@ -877,32 +963,19 @@ i2sa_dtor(void *buf, void *dummy)
 
 	VERIFY0(mutex_destroy(&i2sa->i2sa_lock));
 	VERIFY0(mutex_destroy(&i2sa->i2sa_queue_lock));
-	VERIFY(list_is_empty(&i2sa->i2sa_pending));
-	VERIFY(list_is_empty(&i2sa->i2sa_child_sas));
-	list_destroy(&i2sa->i2sa_pending);
-	list_destroy(&i2sa->i2sa_child_sas);
+	refhash_destroy(i2sa->i2sa_child_sas);
+	i2sa->i2sa_child_sas = NULL;
 }
 
 static int
-i2c_ctor(void *buf, void *dummy, int flags)
+i2c_ctor(void *buf, void *dummy __unused, int flags __unused)
 {
 	NOTE(ARGUNUSED(dummy, flags))
 
 	ikev2_child_sa_t *i2c = buf;
 
-	(void) memset(i2c, 0, sizeof (*i2c));
-	list_link_init(&i2c->i2c_node);
+	bzero(i2c, sizeof (*i2c));
 	return (0);
-}
-
-static void
-i2c_dtor(void *buf, void *dummy)
-{
-	NOTE(ARGUNUSED(dummy))
-
-	ikev2_child_sa_t *i2c = buf;
-
-	VERIFY(!list_link_active(&i2c->i2c_node));
 }
 
 static boolean_t
@@ -1113,7 +1186,7 @@ ikev2_sa_init(void)
 		err(EXIT_FAILURE, "Unable to create IKEv2 SA cache");
 
 	if ((i2c_cache = umem_cache_create("IKEv2 Child SAs",
-	    sizeof (ikev2_child_sa_t), 0, i2c_ctor, i2c_dtor, NULL, NULL, NULL,
+	    sizeof (ikev2_child_sa_t), 0, i2c_ctor, NULL, NULL, NULL, NULL,
 	    0)) == NULL)
 		err(EXIT_FAILURE, "Unable to create IKEv2 Child SA cache");
 

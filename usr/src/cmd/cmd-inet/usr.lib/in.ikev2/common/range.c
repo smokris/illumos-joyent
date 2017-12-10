@@ -66,7 +66,7 @@ set_port(sockrange_t *range, in_port_t port)
 
 /* Convert address/prefixlen to a range */
 void
-net_to_range(const struct sockaddr *restrict addr, uint_t prefixlen,
+net_to_range(const struct sockaddr *restrict addr, uint8_t prefixlen,
     sockrange_t *restrict range)
 {
 	const uint8_t *addrp = NULL, *maskp = NULL;
@@ -74,11 +74,25 @@ net_to_range(const struct sockaddr *restrict addr, uint_t prefixlen,
 	struct sockaddr_storage mask = { 0 };
 	size_t len = 0;
 
-	VERIFY0(plen2mask(prefixlen, addr->sa_family, SSTOSA(&mask)));
-
 	addrp = ss_addr(SATOSS(addr));
 	maskp = ss_addr(SATOSS(&mask));
 	len = ss_addrlen(SATOSS(addr));
+
+	/*
+	 * For unknown reasons, pf_key(7P) uses a prefix length of 0 for
+	 * single addresses.  However an 'ANY' address (e.g. 0.0.0.0/0) is
+	 * also valid, so we have to disambiguate these.  Sigh.
+	 */
+	if (prefixlen == 0) {
+		for (size_t i = 0; i < len; i++) {
+			if (addrp[i] == 0)
+				continue;
+			prefixlen = ss_addrbits(SATOSS(addr));
+			break;
+		}
+	}
+
+	VERIFY0(plen2mask(prefixlen, addr->sa_family, SSTOSA(&mask)));
 
 	range_set_family(range, addr->sa_family);
 	startp = (uint8_t *)ss_addr(&range->sr_start);
@@ -133,7 +147,7 @@ addr_lsb(const struct sockaddr_storage *addr, boolean_t set)
 
 void
 range_to_net(const sockrange_t *restrict range,
-    struct sockaddr *restrict addr, size_t *restrict prefixlenp)
+    struct sockaddr *restrict addr, uint8_t *restrict prefixlenp)
 {
 	uint8_t *addrp = NULL;
 	size_t start_lsb, end_lsb;
@@ -157,10 +171,15 @@ range_to_net(const sockrange_t *restrict range,
 	end_lsb = addr_lsb(&range->sr_end, B_FALSE);
 	*prefixlenp = MAX(start_lsb, end_lsb);
 
+
 	start_port = ss_port(&range->sr_start);
 	end_port = ss_port(&range->sr_end);
 
 	bcopy(&range->sr_start, addr, len);
+
+	/* pf_key(7P) represents single address with a prefix length of 0 */
+	if (*prefixlenp == ss_addrbits(SATOSS(addr)))
+		*prefixlenp = 0;
 
 	/* Take advantage of port being at the same offset for IPv4/v6 */
 	if (start_port != 0 || end_port != UINT16_MAX)
@@ -175,7 +194,7 @@ void
 range_clamp(sockrange_t *restrict range)
 {
 	struct sockaddr_storage addr = { 0 };
-	size_t prefixlen = 0;
+	uint8_t prefixlen = 0;
 
 	range_to_net(range, SSTOSA(&addr), &prefixlen);
 	net_to_range(SSTOSA(&addr), prefixlen, range);
@@ -237,7 +256,7 @@ zero:
 }
 
 boolean_t
-range_is_zero(const sockrange_t *restrict range)
+range_is_empty(const sockrange_t *restrict range)
 {
 	const uint8_t *sp = NULL, *ep = NULL;
 	size_t len = 0;

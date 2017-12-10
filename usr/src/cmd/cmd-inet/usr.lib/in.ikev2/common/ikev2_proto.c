@@ -387,7 +387,7 @@ ikev2_sa_init_cfg(config_rule_t *rule)
 	if (!config_addr_to_ss(&rule->rule_remote_addr[0], sudst))
 		goto fail;
 
-	if (!pfkey_inverse_acquire(susrc, sudst, isrc, idst, &pmsg)) {
+	if (!pfkey_inverse_acquire(susrc, sudst, 0, isrc, 0, idst, 0, &pmsg)) {
 		if (pmsg == NULL) {
 			STDERR(error, "Inverse acquire failed");
 			goto fail;

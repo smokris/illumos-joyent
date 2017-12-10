@@ -28,18 +28,17 @@ extern "C" {
 #define	IKEV2_SADB_INITIATOR	SADB_X_SAFLAGS_KM1
 
 struct ikev2_sa_s;
+struct ikev2_child_sa_s;
 struct ikev2_sa_result_s;
-struct parsedmsg_s;
 
 void pfkey_send_error(const sadb_msg_t *, uint8_t);
 boolean_t pfkey_getspi(const sadb_msg_t *restrict, sockaddr_u_t, sockaddr_u_t,
     uint8_t, uint32_t *restrict);
-boolean_t pfkey_inverse_acquire(sockaddr_u_t, sockaddr_u_t, sockaddr_u_t,
-    sockaddr_u_t, struct parsedmsg_s **);
-boolean_t pfkey_sadb_add_update(const struct ikev2_sa_s *restrict, uint32_t,
-    const struct ikev2_sa_result_s *restrict,
-    const struct parsedmsg_s *, const uint8_t *,
-    size_t, const uint8_t *, size_t, uint32_t, boolean_t, boolean_t);
+boolean_t pfkey_inverse_acquire(sockaddr_u_t, sockaddr_u_t, uint8_t,
+    sockaddr_u_t, uint8_t, sockaddr_u_t, uint8_t, struct parsedmsg_s **);
+boolean_t pfkey_sadb_add_update(struct ikev2_sa_s *restrict,
+    struct ikev2_child_sa_s *restrict, const uint8_t *restrict,
+    const uint8_t *restrict, const sadb_msg_t *restrict);
 boolean_t pfkey_delete(uint8_t, uint32_t, sockaddr_u_t, sockaddr_u_t,
     boolean_t);
 

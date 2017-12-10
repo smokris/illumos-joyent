@@ -37,14 +37,14 @@ typedef struct sockrange_s {
 } sockrange_t;
 
 void range_set_family(sockrange_t *, sa_family_t);
-void net_to_range(const struct sockaddr *restrict, uint_t,
+void net_to_range(const struct sockaddr *restrict, uint8_t,
     sockrange_t *restrict);
 void range_to_net(const sockrange_t *restrict, struct sockaddr *restrict,
-    size_t *restrict);
+    uint8_t *restrict);
 void range_clamp(sockrange_t *restrict);
 void range_intersection(const sockrange_t *restrict,
     const sockrange_t *restrict, sockrange_t *restrict);
-boolean_t range_is_zero(const sockrange_t *restrict);
+boolean_t range_is_empty(const sockrange_t *restrict);
 boolean_t range_in_net(const sockrange_t *restrict,
     const struct sockaddr *restrict, uint_t);
 int range_cmp_size(const sockrange_t *restrict, const sockrange_t *restrict);

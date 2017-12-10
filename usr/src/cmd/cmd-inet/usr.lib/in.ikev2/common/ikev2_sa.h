@@ -56,7 +56,7 @@ struct config_rule_s;
 #ifndef IKEV2_SA_T
 #define	IKEV2_SA_T
 typedef struct ikev2_sa_s ikev2_sa_t;
-typedef struct ikev2_child_sa ikev2_child_sa_t;
+typedef struct ikev2_child_sa_s ikev2_child_sa_t;
 #endif /* IKEV2_SA_T */
 
 #define	I2SA_SALT_LEN		32	/* Max size of salt, may be smaller */
@@ -176,8 +176,7 @@ struct ikev2_sa_s {
 	hrtime_t	softexpire;
 	hrtime_t	hardexpire;
 
-	list_t		i2sa_pending;
-	list_t		i2sa_child_sas;
+	refhash_t	*i2sa_child_sas;
 
 	CK_OBJECT_HANDLE dh_pubkey;
 	CK_OBJECT_HANDLE dh_privkey;
@@ -199,18 +198,34 @@ struct ikev2_sa_s {
 	size_t		saltlen;
 };
 
-struct ikev2_child_sa {
-	list_node_t		i2c_node;
+struct ikev2_child_sa_s {
+	refhash_link_t		i2c_link;
 	ikev2_child_sa_t	*i2c_pair;
 	hrtime_t		i2c_birth;
 	ikev2_spi_proto_t	i2c_satype;
 	uint32_t		i2c_spi;
+	boolean_t		i2c_initiator;
 	boolean_t		i2c_inbound;
+	boolean_t		i2c_transport;
 
 	/* A subset of the child SAs state duplicated for observability */
 	ikev2_xf_encr_t		i2c_encr;
-	size_t			i2c_encr_key_len;
+	size_t			i2c_encr_keylen; /* in bits */
 	ikev2_xf_auth_t		i2c_auth;
+	ikev2_dh_t		i2c_dh;
+
+	uint8_t			i2c_addr_proto;
+	struct sockaddr_storage	i2c_laddr;
+	uint8_t			i2c_lprefix;
+	struct sockaddr_storage	i2c_raddr;
+	uint8_t			i2c_rprefix;
+
+	uint8_t			i2c_inner_proto;
+	struct sockaddr_storage	i2c_inner_laddr;
+	uint8_t			i2c_inner_lprefix;
+	struct sockaddr_storage	i2c_inner_raddr;
+	uint8_t			i2c_inner_rprefix;
+
 	/* XXX: More to come.  Traffic selectors perhaps? */
 };
 
@@ -277,9 +292,10 @@ boolean_t ikev2_sa_disarm_timer(ikev2_sa_t *, i2sa_evt_t);
 boolean_t ikev2_sa_queuemsg(ikev2_sa_t *, i2sa_msg_type_t, void *);
 const char *i2sa_msgtype_str(i2sa_msg_type_t);
 
-ikev2_child_sa_t *ikev2_child_sa_alloc(ikev2_sa_t *, ikev2_spi_proto_t,
-    uint32_t, boolean_t);
-void ikev2_child_sa_free(ikev2_child_sa_t *);
+ikev2_child_sa_t *ikev2_child_sa_alloc(boolean_t);
+void ikev2_child_sa_free(ikev2_sa_t *restrict, ikev2_child_sa_t *restrict);
+ikev2_child_sa_t *ikev2_sa_get_child(ikev2_sa_t *, uint32_t, boolean_t);
+void ikev2_sa_add_child(ikev2_sa_t *restrict, ikev2_child_sa_t *restrict);
 
 void ikev2_sa_init(void);
 void ikev2_sa_fini(void);
