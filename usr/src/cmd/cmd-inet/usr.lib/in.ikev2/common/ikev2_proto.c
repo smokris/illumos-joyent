@@ -53,7 +53,7 @@
 static void ikev2_dispatch_pkt(pkt_t *);
 static void ikev2_dispatch_pfkey(ikev2_sa_t *restrict, parsedmsg_t *restrict);
 
-static int select_socket(const ikev2_sa_t *);
+static int select_socket(const struct sockaddr_storage *, boolean_t);
 
 static ikev2_sa_t *ikev2_try_new_sa(pkt_t *restrict,
     const struct sockaddr_storage *restrict,
@@ -155,7 +155,6 @@ ikev2_inbound(pkt_t *pkt, const struct sockaddr_storage *restrict src,
 			ikev2_pkt_free(pkt);
 			return;
 		}
-		key_add_ike_spi(LOG_KEY_LSPI, I2SA_LOCAL_SPI(i2sa));
 	} else {
 		mutex_enter(&i2sa->i2sa_queue_lock);
 	}
@@ -447,7 +446,10 @@ fail:
 }
 
 static boolean_t
-ikev2_send_common(pkt_t *pkt)
+ikev2_send_common(pkt_t *restrict pkt,
+    const struct sockaddr_storage *restrict laddr,
+    const struct sockaddr_storage *restrict raddr,
+    boolean_t nat_is_known)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
 	ike_header_t *hdr = pkt_header(pkt);
@@ -455,7 +457,12 @@ ikev2_send_common(pkt_t *pkt)
 	ssize_t len = 0;
 	int s = -1;
 
-	s = select_socket(sa);
+	if (!ikev2_pkt_done(pkt)) {
+		ikev2_pkt_free(pkt);
+		return (B_FALSE);
+	}
+
+	s = select_socket(laddr, nat_is_known);
 
 	desc = ikev2_pkt_desc(pkt);
 	(void) bunyan_debug(log, "Sending packet",
@@ -499,11 +506,6 @@ ikev2_send_req(pkt_t *restrict req, ikev2_send_cb_t cb, void *restrict arg)
 
 	CONFIG_REFRELE(cfg);
 
-	if (!ikev2_pkt_done(req)) {
-		ikev2_pkt_free(req);
-		return (B_FALSE);
-	}
-
 	/*
 	 * Shouldn't try to start a new exchange when one is already in
 	 * progress.
@@ -511,7 +513,8 @@ ikev2_send_req(pkt_t *restrict req, ikev2_send_cb_t cb, void *restrict arg)
 	VERIFY3P(i2sa->last_sent, ==, NULL);
 	VERIFY3P(i2req->i2r_pkt, ==, NULL);
 
-	if (!ikev2_send_common(req)) {
+	if (!ikev2_send_common(req, &i2sa->laddr, &i2sa->raddr,
+	    I2SA_IS_NAT(i2sa))) {
 		/*
 		 * XXX: For now at least, we don't bother with attempting to
 		 * retransmit a packet if the original transmission failed.
@@ -548,16 +551,12 @@ ikev2_send_resp(pkt_t *restrict resp)
 	ike_header_t *hdr = pkt_header(resp);
 
 	VERIFY(IS_WORKER);
-	VERIFY(i2sa == NULL || !MUTEX_HELD(&i2sa->i2sa_queue_lock));
-	VERIFY(i2sa == NULL || MUTEX_HELD(&i2sa->i2sa_lock));
+	VERIFY(!MUTEX_HELD(&i2sa->i2sa_queue_lock));
+	VERIFY(MUTEX_HELD(&i2sa->i2sa_lock));
 	VERIFY(I2P_RESPONSE(resp));
 
-	if (!ikev2_pkt_done(resp)) {
-		ikev2_pkt_free(resp);
-		return (B_FALSE);
-	}
-
-	if (!ikev2_send_common(resp)) {
+	if (!ikev2_send_common(resp, &i2sa->laddr, &i2sa->raddr,
+	    I2SA_IS_NAT(i2sa))) {
 		if (resp != i2sa->init_r)
 			ikev2_pkt_free(resp);
 		return (B_FALSE);
@@ -595,34 +594,9 @@ ikev2_send_resp_addr(pkt_t *restrict resp,
 
 	VERIFY(IS_WORKER);
 	VERIFY(I2P_RESPONSE(resp));
+	VERIFY3P(resp->pkt_sa, ==, NULL);
 
-	if (!ikev2_pkt_done(resp)) {
-		ikev2_pkt_free(resp);
-		return (B_FALSE);
-	}
-
-	if (raddr->ss_family == AF_INET6) {
-		s = ikesock6;
-	} else {
-		const struct sockaddr_in *sin;
-
-		sin = (const struct sockaddr_in *)laddr;
-		if (ntohs(sin->sin_port) == IPPORT_IKE_NATT)
-			s = nattsock;
-		else
-			s= ikesock4;
-	}
-
-	desc = ikev2_pkt_desc(resp);
-	(void) bunyan_debug(log, "Sending packet",
-	    BUNYAN_T_UINT32, "msgid", ntohll(hdr->msgid),
-	    BUNYAN_T_BOOLEAN, "response", I2P_RESPONSE(resp),
-	    BUNYAN_T_STRING, "pktdesc", (desc != NULL) ? custr_cstr(desc) : "",
-	    BUNYAN_T_END);
-	custr_free(desc);
-
-	len = sendfromto(s, pkt_start(resp), pkt_len(resp), laddr, raddr);
-	return ((len == -1) ? B_FALSE : B_TRUE);
+	return (ikev2_send_common(resp, laddr, raddr, B_FALSE));
 }
 
 /*
@@ -688,7 +662,7 @@ ikev2_retransmit(ikev2_sa_t *sa)
 	 * much that can be done if it fails, other than just wait to try
 	 * again, so we ignore the return value.
 	 */
-	(void) ikev2_send_common(pkt);
+	(void) ikev2_send_common(pkt, &sa->laddr, &sa->raddr, I2SA_IS_NAT(sa));
 
 	if (!ikev2_sa_arm_timer(sa, I2SA_EVT_PKT_XMIT, retry)) {
 		(void) bunyan_error(log,
@@ -892,7 +866,7 @@ ikev2_handle_retransmit(pkt_t *req)
 		return (B_FALSE);
 
 	(void) bunyan_debug(log, "Resending last response", BUNYAN_T_END);
-	ikev2_send_common(resp);
+	ikev2_send_common(resp, &i2sa->laddr, &i2sa->raddr, I2SA_IS_NAT(i2sa));
 	ikev2_pkt_free(req);
 	return (B_TRUE);
 }
@@ -1082,12 +1056,20 @@ ikev2_dispatch_pfkey(ikev2_sa_t *restrict sa, parsedmsg_t *restrict pmsg)
 	}
 }
 
+/* Picks the socket to use for sending based on our local address. */
 static int
-select_socket(const ikev2_sa_t *i2sa)
+select_socket(const struct sockaddr_storage *laddr, boolean_t nat_is_known)
 {
-	if (i2sa->laddr.ss_family == AF_INET6)
+	if (laddr->ss_family == AF_INET6)
 		return (ikesock6);
-	if (I2SA_IS_NAT(i2sa))
+
+	/*
+	 * If our local port is IPPORT_IKE_NATT (4500), we always use the
+	 * NATT (NAT-traversal) socket.  If our IKEv2 SA determines either end
+	 * is behind a NAT, we also use the NATT socket for any subsequent
+	 * transmissions.
+	 */
+	if (nat_is_known || ss_port(laddr) == IPPORT_IKE_NATT)
 		return (nattsock);
 	return (ikesock4);
 }
