@@ -16,6 +16,7 @@
 #ifndef _IKEV2_ENUM_H
 #define	_IKEV2_ENUM_H
 
+#include <inttypes.h>
 #include "ikev2.h"
 
 #ifdef __cplusplus
@@ -26,13 +27,14 @@ const char *ikev2_exch_str(ikev2_exch_t);
 const char *ikev2_pay_str(ikev2_pay_type_t);
 const char *ikev2_pay_short_str(ikev2_pay_type_t);
 const char *ikev2_spi_str(ikev2_spi_proto_t);
+const char *ikev2_xf_str(ikev2_xf_type_t, uint16_t);
 const char *ikev2_xf_type_str(ikev2_xf_type_t);
 const char *ikev2_xf_encr_str(ikev2_xf_encr_t);
 const char *ikev2_xf_auth_str(ikev2_xf_auth_t);
-const char *ikev2_auth_type_str(ikev2_auth_type_t);
 const char *ikev2_dh_str(ikev2_dh_t);
-const char *ikev2_notify_str(ikev2_notify_type_t);
 const char *ikev2_prf_str(ikev2_prf_t);
+const char *ikev2_auth_type_str(ikev2_auth_type_t);
+const char *ikev2_notify_str(ikev2_notify_type_t);
 const char *ikev2_id_type_str(ikev2_id_type_t);
 
 #ifdef __cplusplus

@@ -37,6 +37,7 @@
 #include <limits.h>
 #include <locale.h>
 #include <note.h>
+#include <stdarg.h>
 #include <stddef.h>
 #include <strings.h>
 #include <sys/debug.h>
@@ -48,6 +49,7 @@
 #include "config.h"
 #include "defs.h"
 #include "ike.h"
+#include "ikev2_common.h"
 #include "ikev2_cookie.h"
 #include "ikev2_pkt.h"
 #include "ikev2_proto.h"
@@ -105,7 +107,8 @@ ikev2_sa_getbylspi(uint64_t spi, boolean_t initiator)
 	};
 
 	VERIFY0(rw_rdlock(&i2sa_hash_lock));
-	i2sa = refhash_lookup(i2sa_lspi_refhash, &cmp_sa);
+	if ((i2sa = refhash_lookup(i2sa_lspi_refhash, &cmp_sa)) != NULL)
+		I2SA_REFHOLD(i2sa);
 	VERIFY0(rw_unlock(&i2sa_hash_lock));
 
 	if (i2sa != NULL) {
@@ -119,21 +122,33 @@ ikev2_sa_getbylspi(uint64_t spi, boolean_t initiator)
 
 ikev2_sa_t *
 ikev2_sa_getbyrspi(uint64_t spi,
-    const struct sockaddr_storage *restrict laddr,
-    const struct sockaddr_storage *restrict raddr,
-    const pkt_t *restrict init_pkt)
+    const struct sockaddr *restrict laddr,
+    const struct sockaddr *restrict raddr,
+    pkt_t *restrict init_pkt)
 {
 	ikev2_sa_t *i2sa = NULL;
+	pkt_payload_t *nonce = NULL;
+	ikev2_sa_args_t cmp_sa_args = { 0 };
 	ikev2_sa_t cmp_sa = {
 		.i_spi = spi,
-		.init_i = (pkt_t *)init_pkt
+		.sa_init_args = &cmp_sa_args,
 	};
+
+	nonce = pkt_get_payload(init_pkt, IKEV2_PAYLOAD_NONCE, NULL);
+	if (nonce == NULL)
+		return (NULL);
+
+	/* Inbound packet checks should prevent this */
+	VERIFY3U(nonce->pp_len, <=, sizeof (cmp_sa_args.i2a_nonce_i));
+	bcopy(nonce->pp_ptr, cmp_sa_args.i2a_nonce_i, nonce->pp_len);
+	cmp_sa_args.i2a_nonce_i_len = nonce->pp_len;
 
 	sockaddr_copy(laddr, &cmp_sa.laddr, B_FALSE);
 	sockaddr_copy(raddr, &cmp_sa.raddr, B_FALSE);
 
 	VERIFY0(rw_rdlock(&i2sa_hash_lock));
-	i2sa = refhash_lookup(i2sa_rspi_refhash, &cmp_sa);
+	if ((i2sa = refhash_lookup(i2sa_rspi_refhash, &cmp_sa)) != NULL)
+		I2SA_REFHOLD(i2sa);
 	VERIFY0(rw_unlock(&i2sa_hash_lock));
 
 	if (i2sa != NULL) {
@@ -146,8 +161,8 @@ ikev2_sa_getbyrspi(uint64_t spi,
 }
 
 ikev2_sa_t *
-ikev2_sa_getbyaddr(const struct sockaddr_storage *restrict src,
-   const struct sockaddr_storage *restrict dst)
+ikev2_sa_getbyaddr(const struct sockaddr *restrict src,
+   const struct sockaddr *restrict dst)
 {
 	ikev2_sa_t *i2sa = NULL;
 	ikev2_sa_t cmp_sa = { 0 };
@@ -156,7 +171,8 @@ ikev2_sa_getbyaddr(const struct sockaddr_storage *restrict src,
 	sockaddr_copy(dst, &cmp_sa.raddr, B_FALSE);
 
 	VERIFY0(rw_rdlock(&i2sa_hash_lock));
-	i2sa = refhash_lookup(i2sa_addr_refhash, &cmp_sa);
+	if ((i2sa = refhash_lookup(i2sa_addr_refhash, &cmp_sa)) != NULL)
+		I2SA_REFHOLD(i2sa);
 	VERIFY0(rw_unlock(&i2sa_hash_lock));
 
 	if (i2sa != NULL) {
@@ -193,8 +209,8 @@ ikev2_sa_getbyaddr(const struct sockaddr_storage *restrict src,
  */
 ikev2_sa_t *
 ikev2_sa_alloc(pkt_t *restrict init_pkt,
-    const struct sockaddr_storage *restrict laddr,
-    const struct sockaddr_storage *restrict raddr)
+    const struct sockaddr *restrict laddr,
+    const struct sockaddr *restrict raddr)
 {
 	ikev2_sa_t	*i2sa = NULL;
 	config_t	*cfg = NULL;
@@ -216,6 +232,13 @@ ikev2_sa_alloc(pkt_t *restrict init_pkt,
 		return (NULL);
 	}
 
+	if ((i2sa->sa_init_args = ikev2_sa_args_new(B_TRUE, 0)) == NULL) {
+		STDERR(error, "No memory to create IKEv2 SA");
+		umem_cache_free(i2sa_cache, i2sa);
+		return (NULL);
+	}
+	i2sa->sa_init_args->i2a_i2sa = i2sa;
+
 	/* Keep anyone else out while we initialize */
 	mutex_enter(&i2sa->i2sa_queue_lock);
 	mutex_enter(&i2sa->i2sa_lock);
@@ -224,14 +247,14 @@ ikev2_sa_alloc(pkt_t *restrict init_pkt,
 
 	i2sa->flags |= initiator ? I2SA_INITIATOR : 0;
 
-	bcopy(laddr, &i2sa->laddr, sizeof (*laddr));
-	bcopy(raddr, &i2sa->raddr, sizeof (*raddr));
+	sockaddr_copy(laddr, &i2sa->laddr, B_TRUE);
+	sockaddr_copy(raddr, &i2sa->raddr, B_TRUE);
 
 	/*
 	 * Use the port given to us if specified, otherwise use the default.
 	 * Take advantage of port being at the same offset for IPv4/v6
 	 */
-	VERIFY(laddr->ss_family == AF_INET || laddr->ss_family == AF_INET6);
+	VERIFY(laddr->sa_family == AF_INET || laddr->sa_family == AF_INET6);
 	if (ss_port(laddr) == 0) {
 		((struct sockaddr_in *)&i2sa->laddr)->sin_port =
 		    htons(IPPORT_IKE);
@@ -279,8 +302,6 @@ ikev2_sa_alloc(pkt_t *restrict init_pkt,
 
 		VERIFY3U(i2sa->refcnt, ==, 2);
 
-		i2sa->init_i = init_pkt;
-
 		/* refhold for caller */
 		I2SA_REFHOLD(i2sa);
 
@@ -307,7 +328,7 @@ ikev2_sa_alloc(pkt_t *restrict init_pkt,
 	mutex_exit(&i2sa->i2sa_queue_lock);
 
 	I2SA_REFHOLD(i2sa);	/* ref for periodic */
-	if (!ikev2_sa_arm_timer(i2sa, I2SA_EVT_P1_EXPIRE, expire)) {
+	if (!ikev2_sa_arm_timer(i2sa, expire, I2SA_EVT_P1_EXPIRE)) {
 		STDERR(error, "Cannot create IKEv2 SA P1 expiration timer");
 		i2sa_unlink(i2sa);
 		i2sa->i2sa_tid = 0;
@@ -357,7 +378,9 @@ i2sa_p1_expire(void *data)
 	key_add_ike_spi(LOG_KEY_LSPI, I2SA_LOCAL_SPI(i2sa));
 	key_add_ike_spi(LOG_KEY_RSPI, I2SA_REMOTE_SPI(i2sa));
 
-	(void) bunyan_info(log, "Larval IKE SA (P1) timeout", BUNYAN_T_END);
+	(void) bunyan_info(log, "Larval IKE SA (P1) timeout",
+	    BUNYAN_T_POINTER, LOG_KEY_I2SA, i2sa,
+	    BUNYAN_T_END);
 	ikev2_sa_post_event(i2sa, I2SA_EVT_P1_EXPIRE);
 
 	(void) bunyan_key_remove(log, LOG_KEY_LSPI);
@@ -379,7 +402,7 @@ ikev2_sa_flush(void)
  * timer was successfully armed.
  */
 boolean_t
-ikev2_sa_arm_timer(ikev2_sa_t *i2sa, i2sa_evt_t event, hrtime_t reltime)
+ikev2_sa_arm_timer(ikev2_sa_t *i2sa, hrtime_t reltime, i2sa_evt_t event, ...)
 {
 	VERIFY(!MUTEX_HELD(&i2sa->i2sa_queue_lock));
 	VERIFY(MUTEX_HELD(&i2sa->i2sa_lock));
@@ -387,16 +410,24 @@ ikev2_sa_arm_timer(ikev2_sa_t *i2sa, i2sa_evt_t event, hrtime_t reltime)
 
 	periodic_id_t *idp = NULL;
 	periodic_func_t *cb = NULL;
+	void *arg = i2sa;
+	va_list ap;
+
+	va_start(ap, event);
 
 	switch (event) {
 	case I2SA_EVT_NONE:
 		INVALID(event);
 		/*NOTREACHED*/
 		break;
-	case I2SA_EVT_PKT_XMIT:
-		idp = &i2sa->i2sa_xmit_timer;
+	case I2SA_EVT_PKT_XMIT: {
+		i2sa_req_t *i2r = va_arg(ap, i2sa_req_t *);
+
+		idp = &i2r->i2r_timer;
 		cb = ikev2_retransmit_cb;
+		arg = i2r;
 		break;
+	}
 	case I2SA_EVT_P1_EXPIRE:
 		idp = &i2sa->i2sa_p1_timer;
 		cb = i2sa_p1_expire;
@@ -411,12 +442,14 @@ ikev2_sa_arm_timer(ikev2_sa_t *i2sa, i2sa_evt_t event, hrtime_t reltime)
 		break;
 	}
 
+	va_end(ap);
+
 	mutex_exit(&i2sa->i2sa_lock);
 	mutex_enter(&i2sa->i2sa_queue_lock);
 	mutex_enter(&i2sa->i2sa_lock);
 
 	int rc = periodic_schedule(wk_periodic, reltime, PERIODIC_ONESHOT,
-	    cb, i2sa, idp);
+	    cb, arg, idp);
 	if (rc != 0)
 		VERIFY3S(errno, ==, ENOMEM);
 
@@ -432,15 +465,21 @@ ikev2_sa_arm_timer(ikev2_sa_t *i2sa, i2sa_evt_t event, hrtime_t reltime)
  * i2sa_queue_lock not held, etc).
  */
 boolean_t
-ikev2_sa_disarm_timer(ikev2_sa_t *i2sa, i2sa_evt_t event)
+ikev2_sa_disarm_timer(ikev2_sa_t *i2sa, i2sa_evt_t event, ...)
 {
 	VERIFY(!MUTEX_HELD(&i2sa->i2sa_queue_lock));
 	VERIFY(MUTEX_HELD(&i2sa->i2sa_lock));
 	VERIFY3U(i2sa->i2sa_tid, ==, thr_self());
 
+	periodic_id_t *idp = NULL;
+	i2sa_req_t *i2r = NULL;
+	periodic_id_t id = 0;
+	i2sa_evt_t pkt_events = 0;
 	int rc = 0;
-	periodic_id_t id = 0, *idp = NULL;
 	boolean_t fired = B_FALSE;
+	va_list ap;
+
+	va_start(ap, event);
 
 	switch (event) {
 	case I2SA_EVT_NONE:
@@ -448,7 +487,8 @@ ikev2_sa_disarm_timer(ikev2_sa_t *i2sa, i2sa_evt_t event)
 		/*NOTREACHED*/
 		break;
 	case I2SA_EVT_PKT_XMIT:
-		idp = &i2sa->i2sa_xmit_timer;
+		i2r = va_arg(ap, i2sa_req_t *);
+		idp = &i2r->i2r_timer;
 		break;
 	case I2SA_EVT_P1_EXPIRE:
 		idp = &i2sa->i2sa_p1_timer;
@@ -460,6 +500,8 @@ ikev2_sa_disarm_timer(ikev2_sa_t *i2sa, i2sa_evt_t event)
 		idp = &i2sa->i2sa_hardlife_timer;
 		break;
 	}
+
+	va_end(ap);
 
 	/*
 	 * If the timer callback is executing on another thread while
@@ -492,10 +534,25 @@ ikev2_sa_disarm_timer(ikev2_sa_t *i2sa, i2sa_evt_t event)
 
 	mutex_enter(&i2sa->i2sa_queue_lock);
 
-	if (id == 0 || i2sa->i2sa_events & event) {
+	if (i2r != NULL) {
+		fired = i2r->i2r_fired;
+		i2r->i2r_fired = B_FALSE;
+
+		/*
+		 * XXX: Once WINDOW_SIZE support is finished, an IKEv2 SA will
+		 * have multiple i2sa_req_t's, and pkt_events will be something
+		 * like:
+		 *
+		 * foreach (i2sa_evt_t evt in i2sa)
+		 *	pkt_events |= evt->i2r_fired;
+		 *
+		 * (after we've cleared i2r_fired in the request whose timer
+		 * is being disarmed).
+		 */
+	} else if (id == 0 || i2sa->i2sa_events & event) {
 		fired = B_TRUE;
-		i2sa->i2sa_events &= ~event;
 	}
+	i2sa->i2sa_events &= (~event | pkt_events);
 	*idp = 0;
 
 	mutex_enter(&i2sa->i2sa_lock);
@@ -526,7 +583,6 @@ ikev2_sa_post_event(ikev2_sa_t *i2sa, i2sa_evt_t event)
 		/*NOTREACHED*/
 		break;
 	case I2SA_EVT_PKT_XMIT:
-		i2sa->i2sa_xmit_timer = 0;
 		break;
 	case I2SA_EVT_P1_EXPIRE:
 		i2sa->i2sa_p1_timer = 0;
@@ -609,7 +665,7 @@ ikev2_sa_condemn(ikev2_sa_t *i2sa)
 	 * The ref for the packet retransmit timer is held by i2sa->last_sent,
 	 * so it will get released (if needed) later.
 	 */
-	(void) ikev2_sa_disarm_timer(i2sa, I2SA_EVT_PKT_XMIT);
+	(void) ikev2_sa_disarm_timer(i2sa, I2SA_EVT_PKT_XMIT, &i2sa->last_req);
 
 	if (ikev2_sa_disarm_timer(i2sa, I2SA_EVT_P1_EXPIRE))
 		I2SA_REFRELE(i2sa);
@@ -622,22 +678,16 @@ ikev2_sa_condemn(ikev2_sa_t *i2sa)
 	 * Since packets keep a reference to the SA they are associated with,
 	 * we must free them here so that their references go away
 	 */
-	if (i2sa->init_i != i2sa->last_sent)
-		ikev2_pkt_free(i2sa->init_i);
-	i2sa->init_i = NULL;
-
-	if (i2sa->init_r != i2sa->last_resp_sent)
-		ikev2_pkt_free(i2sa->init_r);
-	i2sa->init_r = NULL;
-
 	ikev2_pkt_free(i2sa->last_resp_sent);
 	i2sa->last_resp_sent = NULL;
 
-	ikev2_pkt_free(i2sa->last_sent);
-	i2sa->last_sent = NULL;
-
 	ikev2_pkt_free(i2sa->last_recvd);
 	i2sa->last_recvd = NULL;
+
+	if (i2sa->last_req.i2r_pkt != NULL) {
+		ikev2_pkt_free(i2sa->last_req.i2r_pkt);
+		i2sa->last_req.i2r_pkt = NULL;
+	}
 
 	ikev2_child_sa_t *i2c = refhash_first(i2sa->i2sa_child_sas);
 
@@ -700,10 +750,7 @@ ikev2_sa_free(ikev2_sa_t *i2sa)
 		return;
 
 	VERIFY3U(i2sa->refcnt, ==, 0);
-	VERIFY3P(i2sa->init_i, ==, NULL);
-	VERIFY3P(i2sa->init_r, ==, NULL);
 	VERIFY3P(i2sa->last_resp_sent, ==, NULL);
-	VERIFY3P(i2sa->last_sent, ==, NULL);
 	VERIFY3P(i2sa->last_recvd, ==, NULL);
 
 	if (i2sa->i2sa_rule != NULL)
@@ -718,9 +765,6 @@ ikev2_sa_free(ikev2_sa_t *i2sa)
 		dec_half_open();
 
 #define	DESTROY(x, y) pkcs11_destroy_obj(#y, &(x)->y)
-	DESTROY(i2sa, dh_pubkey);
-	DESTROY(i2sa, dh_privkey);
-	DESTROY(i2sa, dh_key);
 	DESTROY(i2sa, sk_d);
 	DESTROY(i2sa, sk_ai);
 	DESTROY(i2sa, sk_ar);
@@ -731,8 +775,29 @@ ikev2_sa_free(ikev2_sa_t *i2sa)
 	DESTROY(i2sa, psk);
 #undef  DESTROY
 
-	i2sa_dtor(i2sa, NULL);
-	(void) i2sa_ctor(i2sa, NULL, 0);
+	ikev2_sa_args_free(i2sa->sa_init_args);
+
+	/*
+	 * This is likely redundant with the bzero of everything a few lines
+	 * down, but would rather be safe than sorry.
+	 */
+	explicit_bzero(i2sa->salt_i, sizeof (i2sa->salt_i));
+	explicit_bzero(i2sa->salt_r, sizeof (i2sa->salt_r));
+
+	/* Return it to it's initial constructed state */
+	refhash_t *refhash = i2sa->i2sa_child_sas;
+
+	VERIFY0(mutex_destroy(&i2sa->i2sa_queue_lock));
+	VERIFY0(mutex_destroy(&i2sa->i2sa_lock));
+
+	bzero(i2sa, sizeof (*i2sa));
+	i2sa->i2sa_child_sas = refhash;
+	VERIFY0(mutex_init(&i2sa->i2sa_queue_lock, USYNC_THREAD|LOCK_ERRORCHECK,
+	    NULL));
+	VERIFY0(mutex_init(&i2sa->i2sa_lock, USYNC_THREAD|LOCK_ERRORCHECK,
+	    NULL));
+	i2sa->msgwin = 1;
+
 	umem_cache_free(i2sa_cache, i2sa);
 }
 
@@ -860,7 +925,6 @@ ikev2_child_sa_alloc(boolean_t inbound)
 	if ((csa = umem_cache_alloc(i2c_cache, UMEM_DEFAULT)) == NULL)
 		return (NULL);
 
-	csa->i2c_birth = gethrtime();
 	csa->i2c_inbound = inbound;
 	return (csa);
 }
@@ -871,7 +935,9 @@ ikev2_child_sa_free(ikev2_sa_t *restrict i2sa, ikev2_child_sa_t *restrict csa)
 	if (csa == NULL)
 		return;
 
-	VERIFY(!refhash_obj_valid(i2sa->i2sa_child_sas, csa));
+	if (i2sa != NULL)
+		VERIFY(!refhash_obj_valid(i2sa->i2sa_child_sas, csa));
+
 	bzero(csa, sizeof (*csa));
 	umem_cache_free(i2c_cache, csa);
 }
@@ -891,6 +957,16 @@ void
 ikev2_sa_add_child(ikev2_sa_t *restrict i2sa, ikev2_child_sa_t *restrict i2c)
 {
 	refhash_insert(i2sa->i2sa_child_sas, i2c);
+}
+
+void
+ikev2_sa_clear_req(ikev2_sa_t *restrict i2sa, i2sa_req_t *restrict i2req)
+{
+        (void) ikev2_sa_disarm_timer(i2sa, I2SA_EVT_PKT_XMIT, i2req);
+        i2req->i2r_fired = B_FALSE;
+        ikev2_pkt_free(i2req->i2r_pkt);
+        i2req->i2r_pkt = NULL;
+        i2req->i2r_arg = NULL;
 }
 
 static uint64_t
@@ -1018,7 +1094,7 @@ i2sa_msgtype_str(i2sa_msg_type_t type)
 	}
 #undef STR
 
-	INVALID("type");
+	INVALID(type);
 	/*NOTREACHED*/
 	return (NULL);
 }
@@ -1074,14 +1150,14 @@ i2sa_rspi_hash(const void *arg)
 	const uint8_t *addrp[2] = { 0 };
 	uint64_t hash = remote_noise;
 	uint8_t *hashp = (uint8_t *)&hash;
-	size_t addrlen = 0, hashidx = 0;
-	pkt_payload_t *ni = NULL;
+	uint8_t *ni = NULL;
+	size_t addrlen = 0, hashidx = 0, ni_len = 0;
 
 	hash ^= I2SA_REMOTE_SPI(i2sa);
 
-	addrlen = ss_addrlen(&i2sa->laddr);
-	addrp[0] = ss_addr(&i2sa->laddr);
-	addrp[1] = ss_addr(&i2sa->raddr);
+	addrlen = ss_addrlen(SSTOSA(&i2sa->laddr));
+	addrp[0] = ss_addr(SSTOSA(&i2sa->laddr));
+	addrp[1] = ss_addr(SSTOSA(&i2sa->raddr));
 
 	for (size_t i = 0; i < 2; i++) {
 		for (size_t j = 0; j < addrlen; j++) {
@@ -1090,10 +1166,11 @@ i2sa_rspi_hash(const void *arg)
 		}
 	}
 
-	ni = pkt_get_payload(i2sa->init_i, IKEV2_PAYLOAD_NONCE, NULL);
+	ni = i2sa->sa_init_args->i2a_nonce_i;
+	ni_len = i2sa->sa_init_args->i2a_nonce_i_len;
 
-	for (size_t i = 0; i < ni->pp_len; i++) {
-		hashp[hashidx++] ^= ni->pp_ptr[i];
+	for (size_t i = 0; i < ni_len; i++) {
+		hashp[hashidx++] ^= ni[i];
 		hashidx %= sizeof (hash);
 	}
 
@@ -1107,32 +1184,41 @@ i2sa_rspi_cmp(const void *larg, const void *rarg)
 	const ikev2_sa_t *r = rarg;
 	uint64_t l_rspi = I2SA_REMOTE_SPI(l);
 	uint64_t r_rspi = I2SA_REMOTE_SPI(r);
-	pkt_payload_t *ni_l = NULL, *ni_r = NULL;
+	int cmp = 0;
 
 	if (l_rspi < r_rspi)
 		return (-1);
 	if (l_rspi > r_rspi)
 		return (1);
 
-	int cmp = sockaddr_cmp(&l->laddr, &r->raddr);
-	if (cmp != 0)
+	if ((cmp = sockaddr_cmp(SSTOSA(&l->laddr), SSTOSA(&r->laddr))) != 0)
 		return (cmp);
 
-	cmp = sockaddr_cmp(&r->raddr, &r->raddr);
-	if (cmp != 0)
+	if ((cmp = sockaddr_cmp(SSTOSA(&r->raddr), SSTOSA(&r->raddr))) != 0)
 		return (cmp);
 
-	ni_l = pkt_get_payload(l->init_i, IKEV2_PAYLOAD_NONCE, NULL);
-	ni_r = pkt_get_payload(r->init_i, IKEV2_PAYLOAD_NONCE, NULL);
+	if (l->sa_init_args == NULL && r->sa_init_args == NULL)
+		return (0);
 
-	cmp = memcmp(ni_l->pp_ptr, ni_r->pp_ptr,
-	    MIN(ni_l->pp_len, ni_r->pp_len));
-	if (cmp != 0)
-		return (cmp);
-
-	if (ni_l->pp_len < ni_r->pp_len)
+	if (l->sa_init_args == NULL)
 		return (-1);
-	if (ni_r->pp_len > ni_r->pp_len)
+	if (r->sa_init_args == NULL)
+		return (1);
+
+	uint8_t *ni_l = l->sa_init_args->i2a_nonce_i;
+	uint8_t *ni_r = r->sa_init_args->i2a_nonce_r;
+	size_t ni_l_len = l->sa_init_args->i2a_nonce_i_len;
+	size_t ni_r_len = r->sa_init_args->i2a_nonce_r_len;
+
+	if (ni_l_len == 0 && ni_r_len == 0)
+		return (0);
+
+	if ((cmp = memcmp(ni_l, ni_r, MIN(ni_l_len, ni_r_len))) != 0)
+		return (cmp);
+
+	if (ni_l_len < ni_r_len)
+		return (-1);
+	if (ni_r_len > ni_r_len)
 		return (1);
 	return (0);
 }
@@ -1146,9 +1232,11 @@ i2sa_addr_hash(const void *arg)
 	uint8_t *hashp = (uint8_t *)&hash;
 	size_t addrlen = 0, hashidx = 0;
 
-	addrlen = ss_addrlen(&i2sa->laddr);
-	addrp[0] = ss_addr(&i2sa->laddr);
-	addrp[1] = ss_addr(&i2sa->raddr);
+	VERIFY3U(i2sa->laddr.ss_family, ==, i2sa->raddr.ss_family);
+
+	addrlen = ss_addrlen(SSTOSA(&i2sa->laddr));
+	addrp[0] = ss_addr(SSTOSA(&i2sa->laddr));
+	addrp[1] = ss_addr(SSTOSA(&i2sa->raddr));
 
 	for (size_t i = 0; i < 2; i++) {
 		for (size_t j = 0; j < addrlen; j++) {
@@ -1167,10 +1255,10 @@ i2sa_addr_cmp(const void *larg, const void *rarg)
 	const ikev2_sa_t *r = rarg;
 	int cmp;
 
-	cmp = sockaddr_cmp(&l->laddr, &r->raddr);
+	cmp = sockaddr_cmp(SSTOSA(&l->laddr), SSTOSA(&r->laddr));
 	if (cmp != 0)
 		return (cmp);
-	return (sockaddr_cmp(&l->raddr, &r->raddr));
+	return (sockaddr_cmp(SSTOSA(&l->raddr), SSTOSA(&r->raddr)));
 }
 
 static void

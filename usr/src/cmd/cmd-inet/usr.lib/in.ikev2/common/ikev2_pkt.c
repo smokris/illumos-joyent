@@ -41,7 +41,6 @@
 #include "ikev2_proto.h"
 #include "ikev2_enum.h"
 #include "pkcs11.h"
-#include "range.h"
 #include "worker.h"
 
 /* Allocate an outbound IKEv2 pkt for a new exchange */
@@ -183,6 +182,13 @@ ikev2_pkt_new_inbound(void *restrict buf, size_t buflen)
 		ikev2_pkt_free(pkt);
 		return (NULL);
 	}
+
+	/*
+	 * Since these aren't encrypted or decrypted, once received it's
+	 * contents are treated as immutable.
+	 */
+	if (hdr->exch_type == IKEV2_EXCH_IKE_SA_INIT)
+		pkt->pkt_done = B_TRUE;
 
 	return (pkt);
 }
@@ -467,7 +473,7 @@ boolean_t
 ikev2_add_xf_encr(pkt_sa_state_t *pss, ikev2_xf_encr_t encr, uint16_t minbits,
     uint16_t maxbits)
 {
-	encr_data_t *ed = &encr_data[encr];
+	const encr_data_t *ed = encr_data(encr);
 	uint16_t incr = 0;
 	boolean_t ok = B_TRUE;
 
@@ -477,13 +483,13 @@ ikev2_add_xf_encr(pkt_sa_state_t *pss, ikev2_xf_encr_t encr, uint16_t minbits,
 		return (B_FALSE);
 	}
 
-	if (!encr_keylen_allowed(encr)) {
+	if (!encr_keylen_allowed(ed)) {
 		VERIFY3U(minbits, ==, 0);
 		VERIFY3U(maxbits, ==, 0);
 		return (ikev2_add_xform(pss, IKEV2_XF_ENCR, encr));
 	}
 
-	if (minbits == 0 && maxbits == 0 && !encr_keylen_req(encr))
+	if (minbits == 0 && maxbits == 0 && !encr_keylen_req(ed))
 		return (ikev2_add_xform(pss, IKEV2_XF_ENCR, encr));
 
 	VERIFY3U(minbits, >=, ed->ed_keymin);
@@ -727,13 +733,19 @@ ikev2_add_nonce(pkt_t *restrict pkt, uint8_t *restrict nonce, size_t len)
 }
 
 boolean_t
-ikev2_add_notify(pkt_t *restrict pkt, ikev2_spi_proto_t proto, uint64_t spi,
-    ikev2_notify_type_t ntfy_type, const void *restrict data, size_t len)
+ikev2_add_notify_full(pkt_t *restrict pkt, ikev2_spi_proto_t proto,
+    uint64_t spi, ikev2_notify_type_t type, const void *restrict data,
+    size_t len)
 {
 	size_t spisize = (spi == 0) ? 0 : ikev2_spilen(proto);
 
-	return (pkt_add_notify(pkt, 0, proto, spisize, spi, ntfy_type, data,
-	    len));
+	return (pkt_add_notify(pkt, 0, proto, spisize, spi, type, data, len));
+}
+
+boolean_t
+ikev2_add_notify(pkt_t *restrict pkt, ikev2_notify_type_t type)
+{
+	return (ikev2_add_notify_full(pkt, IKEV2_PROTO_NONE, 0, type, NULL, 0));
 }
 
 static boolean_t delete_finish(pkt_t *restrict, uint8_t *restrict, uintptr_t,
@@ -819,7 +831,7 @@ add_ts_common(pkt_t *restrict pkt, ikev2_pkt_ts_state_t *restrict tstate,
 
 boolean_t
 ikev2_add_ts(ikev2_pkt_ts_state_t *restrict tstate, uint8_t ip_proto,
-    const sockrange_t *restrict range)
+    const struct sockaddr *restrict start, const struct sockaddr *restrict end)
 {
 	ikev2_ts_t ts = { 0 };
 	const void *startptr = NULL;
@@ -827,6 +839,8 @@ ikev2_add_ts(ikev2_pkt_ts_state_t *restrict tstate, uint8_t ip_proto,
 	size_t len = 0;
 	size_t addrlen = 0;
 	uint32_t start_port = 0, end_port = 0;
+
+	VERIFY3U(start->sa_family, ==, end->sa_family);
 
 	if (*tstate->i2ts_countp == UINT8_MAX) {
 		(void) bunyan_error(log,
@@ -836,16 +850,18 @@ ikev2_add_ts(ikev2_pkt_ts_state_t *restrict tstate, uint8_t ip_proto,
 	}
 
 	ts.ts_protoid = ip_proto;
-	startptr = ss_addr(&range->sr_start);
-	endptr = ss_addr(&range->sr_end);
-	addrlen = ss_addrlen(&range->sr_start);
 
-	start_port = ss_port(&range->sr_start);
+	startptr = ss_addr(start);
+	endptr = ss_addr(end);
+	addrlen = ss_addrlen(start);
+
+	start_port = ss_port(start);
+	end_port = ss_port(end);
+
 	ts.ts_startport = htons((uint16_t)start_port);
-	end_port = ss_port(&range->sr_end);
 	ts.ts_endport = htons((uint16_t)end_port);
 
-	switch (range->sr_start.ss_family) {
+	switch (start->sa_family) {
 	case AF_INET:
 		ts.ts_type = IKEV2_TS_IPV4_ADDR_RANGE;
 		break;
@@ -853,7 +869,7 @@ ikev2_add_ts(ikev2_pkt_ts_state_t *restrict tstate, uint8_t ip_proto,
 		ts.ts_type = IKEV2_TS_IPV6_ADDR_RANGE;
 		break;
 	default:
-		INVALID(range->sr_start.ss_family);
+		INVALID(start->sa_family);
 	}
 
 	len = sizeof (ts) + 2 * addrlen;
@@ -888,41 +904,38 @@ ikev2_add_ts(ikev2_pkt_ts_state_t *restrict tstate, uint8_t ip_proto,
 }
 
 static void
-ts_get_addrs(ikev2_ts_t *restrict ts, sockrange_t *restrict range)
+ts_get_addrs(ikev2_ts_t *restrict ts, struct sockaddr_storage *restrict start,
+    struct sockaddr_storage *restrict end)
 {
-	uint8_t *start = NULL, *end = NULL;
-	uint16_t *start_port = NULL, *end_port = NULL;
-	uint8_t *p = (uint8_t *)(ts + 1);
-	size_t len = 0;
+	uint8_t *startp = NULL, *endp = NULL, *addrp = NULL;
+	size_t len = 0, port_offset = 0;
 
-	bzero(range, sizeof (*range));
+	bzero(start, sizeof (*start));
+	bzero(end, sizeof (*end));
 
 	switch (ts->ts_type) {
 	case IKEV2_TS_IPV4_ADDR_RANGE:
 		len = sizeof (in_addr_t);
-		range_set_family(range, AF_INET);
-
-		start_port = &SSTOSIN(&range->sr_start)->sin_port;
-		end_port = &SSTOSIN(&range->sr_end)->sin_port;
+		start->ss_family = end->ss_family = AF_INET;
+		port_offset = offsetof(struct sockaddr_in, sin_port);
 		break;
 	case IKEV2_TS_IPV6_ADDR_RANGE:
 		len = sizeof (in6_addr_t);
-		range_set_family(range, AF_INET6);
-
-		start_port = &SSTOSIN6(&range->sr_start)->sin6_port;
-		end_port = &SSTOSIN6(&range->sr_end)->sin6_port;
+		start->ss_family = end->ss_family = AF_INET;
+		port_offset = offsetof(struct sockaddr_in6, sin6_port);
 		break;
 	case IKEV2_TS_FC_ADDR_RANGE:
 		break;
 	}
 
-	start = (uint8_t *)ss_addr(&range->sr_start);
-	end = (uint8_t *)ss_addr(&range->sr_end);
+	addrp = (uint8_t *)(ts + 1);
+	startp = (uint8_t *)ss_addr(SSTOSA(start));
+	endp = (uint8_t *)ss_addr(SSTOSA(end));
 
-	bcopy(p, start, len);
-	bcopy(p + len, end, len);
-	bcopy(&ts->ts_startport, start_port, sizeof (*start_port));
-	bcopy(&ts->ts_endport, end_port, sizeof (*end_port));
+	bcopy(addrp, startp, len);
+	bcopy(addrp + len, endp, len);
+	bcopy(&ts->ts_startport, startp + port_offset, sizeof (uint16_t));
+	bcopy(&ts->ts_endport, endp + port_offset, sizeof (uint16_t));
 }
 
 static boolean_t
@@ -945,7 +958,8 @@ ts_type_is_supported(ikev2_ts_type_t type)
 
 ikev2_ts_t *
 ikev2_ts_iter(pkt_payload_t *restrict tsp, ikev2_ts_iter_t *restrict iter,
-    sockrange_t *restrict range)
+    struct sockaddr_storage *restrict start,
+    struct sockaddr_storage *restrict end)
 {
 	iter->i2ti_tsp = (ikev2_tsp_t *)tsp->pp_ptr;
 	iter->i2ti_ts = (ikev2_ts_t *)(iter->i2ti_tsp + 1);
@@ -959,20 +973,22 @@ ikev2_ts_iter(pkt_payload_t *restrict tsp, ikev2_ts_iter_t *restrict iter,
 	 * We also skip unsupported TS types
 	 */
 	if (!ts_type_is_supported(iter->i2ti_ts->ts_type))
-		return (ikev2_ts_iter_next(iter, range));
+		return (ikev2_ts_iter_next(iter, start, end));
 
-	ts_get_addrs(iter->i2ti_ts, range);
+	ts_get_addrs(iter->i2ti_ts, start, end);
 	return (iter->i2ti_ts);
 }
 
 ikev2_ts_t *
-ikev2_ts_iter_next(ikev2_ts_iter_t *restrict iter, sockrange_t *restrict range)
+ikev2_ts_iter_next(ikev2_ts_iter_t *restrict iter,
+    struct sockaddr_storage *restrict start,
+    struct sockaddr_storage *restrict end)
 {
 	boolean_t known = B_FALSE;
 
 	/*
-	 * RFC7296 2.9 -- Unkonwn TS types should be skipped.
-	 * We also skip unsupported TS types
+	 * RFC7296 2.9 -- Unknown TS types should be skipped.
+	 * We also skip unsupported TS types.
 	 */
 	do {
 		if (++iter->i2ti_n > iter->i2ti_tsp->tsp_count)
@@ -985,7 +1001,7 @@ ikev2_ts_iter_next(ikev2_ts_iter_t *restrict iter, sockrange_t *restrict range)
 		known = ts_type_is_supported(iter->i2ti_ts->ts_type);
 	} while (!known);
 
-	ts_get_addrs(iter->i2ti_ts, range);
+	ts_get_addrs(iter->i2ti_ts, start, end);
 	return (iter->i2ti_ts);
 }
 
@@ -1013,13 +1029,13 @@ static boolean_t
 add_iv(pkt_t *restrict pkt)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
-	size_t len = encr_data[sa->encr].ed_blocklen;
-	encr_modes_t mode = encr_data[sa->encr].ed_mode;
+	const encr_data_t *ed = encr_data(sa->encr);
+	size_t len = ed->ed_blocklen;
 
 	if (pkt_write_left(pkt) < len)
 		return (B_FALSE);
 
-	switch (mode) {
+	switch (ed->ed_mode) {
 	case MODE_CCM:
 	case MODE_GCM: {
 		uint32_t msgid = ntohl(pkt_header(pkt)->msgid);
@@ -1050,7 +1066,7 @@ add_iv(pkt_t *restrict pkt)
 	CK_SESSION_HANDLE h = p11h();
 	CK_MECHANISM mech;
 	CK_OBJECT_HANDLE key;
-	CK_ULONG blocklen = encr_data[sa->encr].ed_blocklen;
+	CK_ULONG blocklen = ed->ed_blocklen;
 	CK_RV rc = CKR_OK;
 	uint32_t msgid = ntohl(pkt_header(pkt)->msgid);
 
@@ -1059,7 +1075,7 @@ add_iv(pkt_t *restrict pkt)
 	else
 		key = sa->sk_er;
 
-	switch (pkt->pkt_sa->encr) {
+	switch (sa->encr) {
 	case IKEV2_ENCR_AES_CBC:
 		mech.mechanism = CKM_AES_ECB;
 		mech.pParameter = NULL_PTR;
@@ -1071,7 +1087,7 @@ add_iv(pkt_t *restrict pkt)
 		mech.ulParameterLen = 0;
 		break;
 	default:
-		INVALID("encr");
+		INVALID(sa->encr);
 		/*NOTREACHED*/
 		return (B_FALSE);
 	}
@@ -1117,6 +1133,7 @@ boolean_t
 ikev2_pkt_encryptdecrypt(pkt_t *pkt, boolean_t encrypt)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
+	const encr_data_t *ed = encr_data(sa->encr);
 	pkt_payload_t *sk = pkt_get_payload(pkt, IKEV2_PAYLOAD_SK, NULL);
 	const char *fn = NULL;
 	CK_SESSION_HANDLE h = p11h();
@@ -1129,14 +1146,14 @@ ikev2_pkt_encryptdecrypt(pkt_t *pkt, boolean_t encrypt)
 		CK_CCM_PARAMS		ccm;
 	} params;
 	CK_BYTE_PTR salt = NULL, iv = NULL, data = NULL, icv = NULL;
-	CK_ULONG ivlen = encr_data[sa->encr].ed_blocklen;
+	CK_ULONG ivlen = ed->ed_blocklen;
 	CK_ULONG icvlen = ikev2_auth_icv_size(sa->encr, sa->auth);
-	CK_ULONG blocklen = encr_data[sa->encr].ed_blocklen;
-	CK_ULONG noncelen = ivlen + sa->saltlen;
+	CK_ULONG blocklen = ed->ed_blocklen;
+	CK_ULONG noncelen = ivlen + SADB_1TO8(sa->saltlen);
 	CK_ULONG datalen = 0, outlen = 0;
 	CK_BYTE nonce[noncelen];
 	CK_RV rc = CKR_OK;
-	encr_modes_t mode = encr_data[sa->encr].ed_mode;
+	encr_modes_t mode = ed->ed_mode;
 	uint8_t padlen = 0;
 
 	VERIFY(IS_WORKER);
@@ -1175,9 +1192,9 @@ ikev2_pkt_encryptdecrypt(pkt_t *pkt, boolean_t encrypt)
 
 	bcopy(iv, nonce, ivlen);
 	if (sa->saltlen > 0)
-		bcopy(salt, nonce + ivlen, sa->saltlen);
+		bcopy(salt, nonce + ivlen, SADB_1TO8(sa->saltlen));
 
-	mech.mechanism = encr_data[sa->encr].ed_p11id;
+	mech.mechanism = ed->ed_p11id;
 	switch (mode) {
 	case MODE_NONE:
 		break;
@@ -1257,7 +1274,7 @@ ikev2_pkt_encryptdecrypt(pkt_t *pkt, boolean_t encrypt)
 	 * explicity verify the padding.  This is due to the lessons learned
 	 * from exploits from TLS, etc. that exploit lack of padding checks.
 	 */
-	if (pkt->pkt_sa->vendor == VENDOR_ILLUMOS_1) {
+	if (sa->vendor == VENDOR_ILLUMOS_1) {
 		uint8_t *pad;
 
 		padlen = icv[-1];
@@ -1286,6 +1303,8 @@ ikev2_pkt_encryptdecrypt(pkt_t *pkt, boolean_t encrypt)
 	if (!pkt_index_payloads(pkt, data, datalen, skpay->pay_next))
 		return (B_FALSE);
 
+	/* Indicate packet contents is now treated immutable */
+	pkt->pkt_done = B_TRUE;
 	return (B_TRUE);
 }
 
@@ -1293,8 +1312,10 @@ boolean_t
 ikev2_pkt_signverify(pkt_t *pkt, boolean_t sign)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
+	const encr_data_t *ed = encr_data(sa->encr);
+	const auth_data_t *ad = auth_data(sa->auth);
 
-	if (MODE_IS_COMBINED(encr_data[sa->encr].ed_mode))
+	if (MODE_IS_COMBINED(ed->ed_mode))
 		return (B_TRUE);
 
 	const char *fn = NULL;
@@ -1302,13 +1323,13 @@ ikev2_pkt_signverify(pkt_t *pkt, boolean_t sign)
 	CK_SESSION_HANDLE h = p11h();
 	CK_OBJECT_HANDLE key;
 	CK_MECHANISM mech = {
-		.mechanism = auth_data[sa->auth].ad_p11id,
+		.mechanism = ad->ad_p11id,
 		.pParameter = NULL_PTR,
 		.ulParameterLen = 0
 	};
 	CK_BYTE_PTR icv;
 	CK_ULONG signlen, icvlen;
-	CK_ULONG outlen = auth_data[sa->auth].ad_outlen;
+	CK_ULONG outlen = ad->ad_outlen;
 	CK_BYTE outbuf[outlen];
 	CK_RV rc;
 
@@ -1376,9 +1397,10 @@ ikev2_pkt_done(pkt_t *pkt)
 
 	ike_payload_t *skpay = pkt_idx_to_payload(sk);
 	ikev2_sa_t *sa = pkt->pkt_sa;
+	const encr_data_t *ed = encr_data(sa->encr);
 	CK_ULONG datalen = (CK_ULONG)(pkt->pkt_ptr - sk->pp_ptr);
 	CK_ULONG icvlen = ikev2_auth_icv_size(sa->encr, sa->auth);
-	CK_ULONG blocklen = encr_data[sa->encr].ed_blocklen;
+	CK_ULONG blocklen = ed->ed_blocklen;
 	uint16_t sklen = 0;
 	boolean_t ok = B_TRUE;
 	uint8_t padlen = 0;
@@ -1530,6 +1552,81 @@ ikev2_pkt_log(pkt_t *restrict pkt, bunyan_level_t level, const char *msg)
 	custr_free(desc);
 }
 
+ikev2_sa_proposal_t *
+ikev2_prop_first(pkt_payload_t *sapay)
+{
+	VERIFY3U(sapay->pp_type, ==, IKEV2_PAYLOAD_SA);
+	return ((ikev2_sa_proposal_t *)sapay->pp_ptr);
+}
+
+ikev2_sa_proposal_t *
+ikev2_prop_end(pkt_payload_t *sapay)
+{
+	VERIFY3U(sapay->pp_type, ==, IKEV2_PAYLOAD_SA);
+	return ((ikev2_sa_proposal_t *)(sapay->pp_ptr + sapay->pp_len));
+}
+
+ikev2_sa_proposal_t *
+ikev2_prop_next(ikev2_sa_proposal_t *prop)
+{
+	uint16_t len = BE_IN16(&prop->proto_length);
+	return ((ikev2_sa_proposal_t *)((uint8_t *)prop + len));
+}
+
+uint64_t
+ikev2_prop_spi(ikev2_sa_proposal_t *prop)
+{
+	uint8_t *addr = (uint8_t *)(prop + 1);
+	uint64_t spi = 0;
+
+	if (!pkt_get_spi(&addr, prop->proto_spisize, &spi))
+		return (0);
+	return (spi);
+}
+
+ikev2_transform_t *
+ikev2_xf_first(ikev2_sa_proposal_t *prop)
+{
+	uint8_t *p = (uint8_t *)(prop + 1) + prop->proto_spisize;
+	return ((ikev2_transform_t *)p);
+}
+
+ikev2_transform_t *
+ikev2_xf_next(ikev2_transform_t *xf)
+{
+	uint16_t len = BE_IN16(&xf->xf_length);
+	return ((ikev2_transform_t *)((uint8_t *)xf + len));
+}
+
+ikev2_transform_t *
+ikev2_xf_end(ikev2_sa_proposal_t *prop)
+{
+	return ((ikev2_transform_t *)ikev2_prop_next(prop));
+}
+
+ikev2_attribute_t *
+ikev2_attr_first(ikev2_transform_t *xf)
+{
+	return ((ikev2_attribute_t *)(xf + 1));
+}
+
+ikev2_attribute_t *
+ikev2_attr_end(ikev2_transform_t *xf)
+{
+	return ((ikev2_attribute_t *)ikev2_xf_next(xf));
+}
+
+ikev2_attribute_t *
+ikev2_attr_next(ikev2_attribute_t *attr)
+{
+	uint16_t type = BE_IN16(&attr->attr_type);
+	uint16_t len = BE_IN16(&attr->attr_length);
+
+	if (type & IKEV2_ATTRAF_TV)
+		return (attr + 1);
+	return ((ikev2_attribute_t *)((uint8_t *)attr + len));
+}
+
 /* Retrieve the DH group value from a key exchange payload */
 ikev2_dh_t
 ikev2_get_dhgrp(pkt_t *pkt)
@@ -1563,61 +1660,17 @@ ikev2_spilen(ikev2_spi_proto_t proto)
 	return (0);
 }
 
-/*
- * The NO_PROPOSAL_CHOSEN notification can only appear in a response.  For
- * convenience, if pkt is not a response, we create and send the notification
- * as the response, otherwise we merely add the notification to pkt.
- */
 boolean_t
-ikev2_no_proposal_chosen(pkt_t *pkt, ikev2_spi_proto_t proto)
+ikev2_invalid_ke(pkt_t *resp, ikev2_dh_t dh)
 {
-	pkt_t *resp = NULL;
-
-	if (I2P_RESPONSE(pkt))
-		resp = pkt;
-	else
-		resp = ikev2_pkt_new_response(pkt);
-
-	if (resp == NULL)
-		return (B_FALSE);
-
-	if (!ikev2_add_notify(resp, proto, 0, IKEV2_N_NO_PROPOSAL_CHOSEN,
-	    NULL, 0)) {
-		if (pkt != resp)
-			ikev2_pkt_free(resp);
-		return (B_FALSE);
-	}
-
-	if (pkt != resp)
-		(void) ikev2_send_resp(resp);
-
-	return (B_TRUE);
-}
-
-boolean_t
-ikev2_invalid_ke(pkt_t *pkt, ikev2_spi_proto_t proto, uint64_t spi,
-    ikev2_dh_t dh)
-{
-	pkt_t *resp = NULL;
 	uint16_t val = htons(dh);
 
-	if (I2P_RESPONSE(pkt))
-		resp = pkt;
-	else
-		resp = ikev2_pkt_new_response(pkt);
+	/* This notification can only appear in a response */
+	VERIFY(I2P_RESPONSE(resp));
 
-	if (resp == NULL)
+	if (!ikev2_add_notify_full(resp, IKEV2_PROTO_NONE, 0,
+	    IKEV2_N_INVALID_KE_PAYLOAD, &val, sizeof (val)))
 		return (B_FALSE);
-
-	if (!ikev2_add_notify(resp, proto, spi, IKEV2_N_INVALID_KE_PAYLOAD,
-	    &val, sizeof (val))) {
-		if (pkt != resp)
-			ikev2_pkt_free(resp);
-		return (B_FALSE);
-	}
-
-	if (pkt != resp)
-		(void) ikev2_send_resp(resp);
 
 	return (B_TRUE);
 }

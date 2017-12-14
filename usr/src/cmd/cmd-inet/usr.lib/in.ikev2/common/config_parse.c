@@ -1013,7 +1013,6 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 	}
 
 	if (kwcount[KW_LOCAL_ID_TYPE] > 0 && kwcount[KW_LOCAL_ID] == 0) {
-		config_id_t *id = NULL;
 		switch (local_id_type) {
 		case CFG_AUTH_ID_IPV4:
 		case CFG_AUTH_ID_IPV6:

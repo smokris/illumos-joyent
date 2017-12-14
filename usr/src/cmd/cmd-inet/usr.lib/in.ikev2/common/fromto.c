@@ -110,7 +110,7 @@ recvfromto(int s, void *restrict buf, size_t buflen, int flags,
 		    BUNYAN_T_END);
 		return (-1);
 	}
-	key_add_addr(LOG_KEY_RADDR, from);
+	key_add_addr(LOG_KEY_RADDR, SSTOSA(from));
 
 	if (m.msg_flags & MSG_TRUNC) {
 		/*
@@ -179,7 +179,7 @@ recvfromto(int s, void *restrict buf, size_t buflen, int flags,
 			continue;
 		}
 	}
-	key_add_addr(LOG_KEY_LADDR, to);
+	key_add_addr(LOG_KEY_LADDR, SSTOSA(to));
 
 	(void) bunyan_debug(log, "Received datagram",
 	    BUNYAN_T_INT32, "socket", (int32_t)s,
@@ -198,8 +198,8 @@ recvfromto(int s, void *restrict buf, size_t buflen, int flags,
  */
 ssize_t
 sendfromto(int s, const uint8_t *restrict buf, size_t buflen,
-    const struct sockaddr_storage *restrict src,
-    const struct sockaddr_storage *restrict dst)
+    const struct sockaddr *restrict src,
+    const struct sockaddr *restrict dst)
 {
 	uint32_t cmsgbuf[64] = { 0 };
 	struct msghdr m = { 0 };
@@ -209,22 +209,22 @@ sendfromto(int s, const uint8_t *restrict buf, size_t buflen,
 	struct in_pktinfo *pi;
 	ssize_t n;
 
-	if (src->ss_family != AF_INET && src->ss_family != AF_INET6) {
+	if (src->sa_family != AF_INET && src->sa_family != AF_INET6) {
 		(void) bunyan_error(log, "Unsupported address family",
 		    BUNYAN_T_STRING, LOG_KEY_FUNC, __func__,
 		    BUNYAN_T_STRING, LOG_KEY_FILE, __FILE__,
 		    BUNYAN_T_INT32, LOG_KEY_LINE, __LINE__,
-		    BUNYAN_T_UINT32, "af", (uint32_t)src->ss_family,
+		    BUNYAN_T_UINT32, "af", (uint32_t)src->sa_family,
 		    BUNYAN_T_END);
 		errno = EAFNOSUPPORT;
 		return (-1);
 	}
 
-	if (src->ss_family != dst->ss_family) {
+	if (src->sa_family != dst->sa_family) {
 		(void) bunyan_error(log, "Address family mismatch",
 		    BUNYAN_T_INT32, "socket", (int32_t)s,
-		    BUNYAN_T_UINT32, "srcaf", (uint32_t)src->ss_family,
-		    BUNYAN_T_UINT32, "destaf", (uint32_t)src->ss_family,
+		    BUNYAN_T_UINT32, "srcaf", (uint32_t)src->sa_family,
+		    BUNYAN_T_UINT32, "destaf", (uint32_t)src->sa_family,
 		    BUNYAN_T_END);
 
 		errno = EADDRNOTAVAIL;	/* XXX KEBE ASKS - Better ideas? */
@@ -245,7 +245,7 @@ sendfromto(int s, const uint8_t *restrict buf, size_t buflen,
 	m.msg_iov = iov;
 	m.msg_iovlen = 1;
 	m.msg_control = (caddr_t)cm;
-	if (src->ss_family == AF_INET6) {
+	if (src->sa_family == AF_INET6) {
 		/* v6 setup */
 		struct sockaddr_in6 *src6;
 
@@ -263,7 +263,7 @@ sendfromto(int s, const uint8_t *restrict buf, size_t buflen,
 		} else {
 			pi6->ipi6_ifindex = 0;
 		}
-	} else if (src->ss_family == AF_INET) {
+	} else if (src->sa_family == AF_INET) {
 		/* v4 setup */
 		struct sockaddr_in *src4;
 
@@ -281,13 +281,18 @@ sendfromto(int s, const uint8_t *restrict buf, size_t buflen,
 		pi->ipi_ifindex = 0;
 	} else {
 		/*NOTREACHED*/
-		INVALID("src->ss_family");
+		INVALID(src->ss_family);
 	}
 
 	n = sendmsg(s, &m, 0);
 	if (n < 0) {
 		STDERR(error, "sendmsg() failed",
 		    BUNYAN_T_INT32, "socket", (int32_t)s,
+		    BUNYAN_T_END);
+	} else {
+		(void) bunyan_trace(log, "Sent datagram",
+		    BUNYAN_T_INT32, "socket", (int32_t)s,
+		    BUNYAN_T_INT32, "len", (int32_t)n,
 		    BUNYAN_T_END);
 	}
 

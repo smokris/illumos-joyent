@@ -134,15 +134,15 @@ port_source_str(ushort_t src)
 #undef STR
 
 int
-ss_bunyan(const struct sockaddr_storage *ss)
+ss_bunyan(const struct sockaddr *sa)
 {
-	switch (ss->ss_family) {
+	switch (sa->sa_family) {
 	case AF_INET:
 		return (BUNYAN_T_IP);
 	case AF_INET6:
 		return (BUNYAN_T_IP6);
 	default:
-		INVALID(ss->ss_family);
+		INVALID(sa->sa_family);
 		/*NOTREACHED*/
 		return (0);
 	}
@@ -150,64 +150,64 @@ ss_bunyan(const struct sockaddr_storage *ss)
 
 /* Returns uint32_t to avoid lots of casts w/ libbunyan */
 uint32_t
-ss_port(const struct sockaddr_storage *ss)
+ss_port(const struct sockaddr *sa)
 {
-	sockaddr_u_t sau = { .sau_ss = (struct sockaddr_storage *)ss };
+	const sockaddr_u_t sau = { .sau_sa = (struct sockaddr *)sa };
 
-	switch (ss->ss_family) {
+	switch (sa->sa_family) {
 	case AF_INET:
 		return (ntohs(sau.sau_sin->sin_port));
 	case AF_INET6:
 		return (ntohs(sau.sau_sin6->sin6_port));
 	default:
-		INVALID(ss->ss_family);
+		INVALID(sa->sa_family);
 		/*NOTREACHED*/
 		return (0);
 	}
 }
 
 const void *
-ss_addr(const struct sockaddr_storage *ss)
+ss_addr(const struct sockaddr *sa)
 {
-	sockaddr_u_t sau = { .sau_ss = (struct sockaddr_storage *)ss };
+	sockaddr_u_t sau = { .sau_sa = (struct sockaddr *)sa };
 
-	switch (ss->ss_family) {
+	switch (sa->sa_family) {
 	case AF_INET:
 		return (&sau.sau_sin->sin_addr);
 	case AF_INET6:
 		return (&sau.sau_sin6->sin6_addr);
 	default:
-		INVALID(ss->ss_family);
+		INVALID(sa->sa_family);
 		/*NOTREACHED*/
 		return (0);
 	}
 }
 
 size_t
-ss_addrlen(const struct sockaddr_storage *ss)
+ss_addrlen(const struct sockaddr *sa)
 {
-	switch (ss->ss_family) {
+	switch (sa->sa_family) {
 	case AF_INET:
 		return (sizeof (in_addr_t));
 	case AF_INET6:
 		return (sizeof (in6_addr_t));
 	default:
-		INVALID(ss->ss_family);
+		INVALID(sa->sa_family);
 		/*NOTREACHED*/
 		return (0);
 	}
 }
 
 uint8_t
-ss_addrbits(const struct sockaddr_storage *ss)
+ss_addrbits(const struct sockaddr *sa)
 {
-	switch (ss->ss_family) {
+	switch (sa->sa_family) {
 	case AF_INET:
 		return (IP_ABITS);
 	case AF_INET6:
 		return (IPV6_ABITS);
 	default:
-		INVALID(ss->ss_family);
+		INVALID(sa->sa_family);
 		/*NOTREACHED*/
 		return (0);
 	}
@@ -248,7 +248,11 @@ key_add_ike_spi(const char *name, uint64_t spi)
 {
 	char buf[19] = { 0 };	/* 0x + 64bit hex + NUL */
 
-	(void) snprintf(buf, sizeof (buf), "0x%016" PRIX64, spi);
+	if (spi != 0)
+		(void) snprintf(buf, sizeof (buf), "0x%016" PRIX64, spi);
+	else
+		(void) strlcpy(buf, "0x0", sizeof (buf));
+
 	(void) bunyan_key_add(log, BUNYAN_T_STRING, name, buf, BUNYAN_T_END);
 }
 
@@ -286,10 +290,10 @@ key_add_id(const char *name, const char *typename, config_id_t *id)
 }
 
 void
-key_add_addr(const char *name, const struct sockaddr_storage *addr)
+key_add_addr(const char *name, const struct sockaddr *addr)
 {
 	const void *ptr = NULL;
-	int af = addr->ss_family;
+	int af = addr->sa_family;
 	uint32_t port = 0;
 	char addrbuf[INET6_ADDRSTRLEN];
 
@@ -369,23 +373,14 @@ writehex(uint8_t *data, size_t datalen, char *sep, char *buf, size_t buflen)
 }
 
 void
-sockaddr_copy(const struct sockaddr_storage *src, struct sockaddr_storage *dst,
+sockaddr_copy(const struct sockaddr *src, struct sockaddr_storage *dst,
     boolean_t copy_port)
 {
-	sockaddr_u_t du = { .sau_ss = dst };
+	bcopy(src, dst, sizeof (*src));
 
-	(void) memcpy(dst, src, sizeof (struct sockaddr_storage));
-	if (!copy_port) {
-		switch (src->ss_family) {
-		case AF_INET:
-			du.sau_sin->sin_port = 0;
-			break;
-		case AF_INET6:
-			du.sau_sin6->sin6_port = 0;
-			break;
-		INVALID(src->ss_family);
-		}
-	}
+	/* Take advantage of port being at the same offset */
+	if (!copy_port)
+		((struct sockaddr_in *)dst)->sin_port = 0;
 }
 
 /*
@@ -393,19 +388,36 @@ sockaddr_copy(const struct sockaddr_storage *src, struct sockaddr_storage *dst,
  * does NOT look at the port.
  */
 int
-sockaddr_cmp(const struct sockaddr_storage *l, const struct sockaddr_storage *r)
+sockaddr_cmp(const struct sockaddr *l, const struct sockaddr *r)
 {
 	const uint8_t *lp = ss_addr(l);
 	const uint8_t *rp = ss_addr(r);
 	size_t addrlen = ss_addrlen(l);
 	int cmp = 0;
 
-	if (l->ss_family < r->ss_family)
+	if (l->sa_family < r->sa_family)
 		return (-1);
-	if (l->ss_family > r->ss_family)
+	if (l->sa_family > r->sa_family)
 		return (1);
 
-	return (memcmp(l, r, addrlen));
+	return (memcmp(lp, rp, addrlen));
+}
+
+boolean_t
+addr_is_zero(const struct sockaddr *addr)
+{
+	const uint8_t *p = ss_addr(addr);
+	size_t len = ss_addrlen(addr);
+
+	for (size_t i = 0; i < len; i++) {
+		if (p[i] != 0)
+			return (B_FALSE);
+	}
+
+	if (ss_port(addr) != 0)
+		return (B_FALSE);
+
+	return (B_TRUE);
 }
 
 /* XXX: Might these (possibly renamed) be better moved to libumem? */

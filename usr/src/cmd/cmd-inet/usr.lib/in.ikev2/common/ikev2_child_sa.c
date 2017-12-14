@@ -20,135 +20,94 @@
 #include "dh.h"
 #include "ikev2.h"
 #include "ikev2_common.h"
+#include "ikev2_enum.h"
 #include "ikev2_pkt.h"
 #include "ikev2_proto.h"
 #include "ikev2_sa.h"
 #include "pfkey.h"
 #include "pkcs11.h"
 #include "prf.h"
-#include "range.h"
+#include "ts.h"
 #include "worker.h"
 
-/* Key length maxes in bytes for array sizing */
-#define	ENCR_MAX	SADB_1TO8(IKEV2_ENCR_KEYLEN_MAX)
-#define	AUTH_MAX	SADB_1TO8(IKEV2_AUTH_KEYLEN_MAX)
-
-/* All the interim state to carry around while creating a pair of child SA. */
-struct child_sa_args {
-	ikev2_sa_t		*csa_i2sa;
-	parsedmsg_t		*csa_pmsg;
-	sadb_msg_t		*csa_srcmsg;
-
-	ikev2_dh_t		csa_dh;
-	ikev2_sa_result_t	csa_results;
-
-	CK_OBJECT_HANDLE	csa_pubkey;
-	CK_OBJECT_HANDLE	csa_privkey;
-	CK_OBJECT_HANDLE	csa_dhkey;
-
-	ikev2_child_sa_t	*csa_child_in;
-	uint8_t			csa_child_in_encr[ENCR_MAX];
-	uint8_t			csa_child_in_auth[AUTH_MAX];
-	boolean_t		csa_added_child_in;
-
-	ikev2_child_sa_t	*csa_child_out;
-	uint8_t			csa_child_out_encr[ENCR_MAX];
-	uint8_t			csa_child_out_auth[AUTH_MAX];
-	boolean_t		csa_added_child_out;
-
-	uint8_t			csa_nonce_i[IKEV2_NONCE_MAX];
-	size_t			csa_nonce_i_len;
-	uint8_t			csa_nonce_r[IKEV2_NONCE_MAX];
-	size_t			csa_nonce_r_len;
-
-	boolean_t		csa_is_auth;
-};
-#define	INITIATOR(args) ((args)->csa_child_in->i2c_transport)
-#define	TRANSPORT_MODE(args) ((args)->csa_child_in->i2c_transport)
+#define	IS_AUTH(args) ((args)->i2a_is_auth)
+#define	INITIATOR(args) ((args)->i2a_child[0].csa_child->i2c_initiator)
+#define	TRANSPORT_MODE(args) ((args)->i2a_child[0].csa_child->i2c_transport)
 
 static boolean_t ikev2_create_child_sa_init_common(ikev2_sa_t *restrict,
-    pkt_t *restrict req, struct child_sa_args *restrict);
-static void ikev2_create_child_sa_resp_common(pkt_t *restrict, pkt_t *restrict,
-    struct child_sa_args *restrict);
+    pkt_t *restrict req, ikev2_sa_args_t *restrict);
+static boolean_t ikev2_create_child_sa_resp_common(pkt_t *restrict,
+    pkt_t *restrict, ikev2_sa_args_t *restrict);
+
+static void ikev2_create_child_sa_init_resp(ikev2_sa_t *restrict,
+    pkt_t *restrict, void *restrict);
+static void ikev2_create_child_sa_init_resp_common(ikev2_sa_t *restrict,
+    pkt_t *restrict, void *restrict);
+
+static boolean_t ikev2_sa_from_acquire(pkt_t *restrict, parsedmsg_t *restrict,
+    uint32_t, ikev2_dh_t);
+static boolean_t get_resp_policy(pkt_t *restrict, boolean_t,
+    ikev2_sa_args_t *restrict);
+static boolean_t ikev2_sa_select_acq(parsedmsg_t *restrict, ikev2_dh_t,
+    pkt_t *restrict, ikev2_sa_match_t *restrict);
+static boolean_t ikev2_sa_check_acquire(parsedmsg_t *restrict, ikev2_dh_t,
+    pkt_t *restrict, ikev2_sa_match_t *restrict);
 
 static boolean_t add_ts_init(pkt_t *restrict, parsedmsg_t *restrict);
-static boolean_t add_ts_resp(pkt_t *restrict, pkt_t *restrict,
-    struct child_sa_args *restrict);
+static boolean_t add_ts_resp(pkt_t *restrict, const ts_t *restrict,
+    const ts_t *restrict);
+static void resp_set_child_addr(ikev2_child_sa_t *restrict,
+    ikev2_child_sa_t *restrict, struct sockaddr_storage *restrict, uint8_t,
+    boolean_t);
 static boolean_t add_ts_resp_one(pkt_payload_t *restrict,
     sadb_address_t *restrict, pkt_t *restrict,
     struct sockaddr_storage *restrict, uint8_t *restrict);
-static boolean_t ts_negotiate(pkt_payload_t *restrict,
-    const struct sockaddr_storage *restrict, uint8_t,
-    struct sockaddr_storage *restrict, uint8_t *restrict);
-static boolean_t add_sadb_address(ikev2_pkt_ts_state_t *restrict,
-    const sadb_address_t *restrict);
 
-static boolean_t generate_keys(struct child_sa_args *);
+static boolean_t generate_keys(ikev2_sa_t *restrict, ikev2_sa_args_t *);
 static boolean_t create_keymat(ikev2_sa_t *restrict, boolean_t,
     uint8_t *restrict, size_t,
     uint8_t *restrict, size_t, prfp_t *restrict);
-static boolean_t ikev2_create_child_sas(struct child_sa_args *);
-static void ikev2_save_child_results(struct child_sa_args *restrict,
-    const ikev2_sa_result_t *restrict);
+static boolean_t ikev2_create_child_sas(ikev2_sa_t *restrict,
+    ikev2_sa_args_t *restrict);
+static void ikev2_save_child_results(ikev2_child_sa_state_t *restrict,
+    const ikev2_sa_match_t *restrict, uint32_t);
+static void ikev2_save_child_ts(ikev2_child_sa_state_t *restrict,
+    const ts_t *restrict, const ts_t *restrict);
+static void ikev2_set_child_type(ikev2_child_sa_state_t *restrict, boolean_t,
+    ikev2_spi_proto_t);
+
 static void check_natt_addrs(pkt_t *restrict, boolean_t);
-static ikev2_ts_t *first_ts_addr(pkt_payload_t *restrict,
-    struct sockaddr_storage *restrict, uint8_t *);
 
-static boolean_t ikev2_child_add_dh(struct child_sa_args *restrict,
-    pkt_t *restrict);
-static boolean_t ikev2_child_ke(struct child_sa_args *restrict,
-    pkt_t *restrict);
-static boolean_t ikev2_child_add_nonce(struct child_sa_args *restrict,
-    pkt_t *restrict);
-static void ikev2_child_save_nonce(struct child_sa_args *restrict,
-    pkt_t *restrict);
-
-static struct child_sa_args *create_csa_args(ikev2_sa_t *restrict, boolean_t,
-    boolean_t);
-static void csa_args_free(struct child_sa_args *);
-static uint8_t get_satype(parsedmsg_t *);
 static sadb_address_t *get_sadb_addr(parsedmsg_t *, boolean_t);
 
 /*
  * We are the initiator for an IKE_AUTH exchange, and are performing the
  * child SA creation that occurs during the IKE AUTH exchange.
  */
-void *
-ikev2_create_child_sa_init_auth(ikev2_sa_t *restrict sa, pkt_t *restrict req,
-    parsedmsg_t *pmsg)
+boolean_t
+ikev2_create_child_sa_init_auth(ikev2_sa_t *restrict sa, pkt_t *restrict req)
 {
-	struct child_sa_args *csa = NULL;
+	ikev2_sa_args_t *csa = sa->sa_init_args;
 
 	VERIFY(IS_WORKER);
 	VERIFY(!MUTEX_HELD(&sa->i2sa_queue_lock));
 	VERIFY(MUTEX_HELD(&sa->i2sa_lock));
-	VERIFY3U(pkt_header(req)->exch_type, ==, IKEV2_EXCH_IKE_AUTH);
 
+	VERIFY3U(pkt_header(req)->exch_type, ==, IKEV2_EXCH_IKE_AUTH);
 	VERIFY(sa->flags & I2SA_INITIATOR);
 
-	if ((csa = create_csa_args(sa, B_TRUE, B_TRUE)) == NULL) {
-		pfkey_send_error(pmsg->pmsg_samsg, ENOMEM);
-		parsedmsg_free(pmsg);
-		return (NULL);
-	}
+	csa->i2a_is_auth = B_TRUE;
 
-	csa->csa_pmsg = pmsg;
-	csa->csa_srcmsg = PMSG_FROM_KERNEL(pmsg) ? pmsg->pmsg_samsg : NULL;
-
-	if (!ikev2_create_child_sa_init_common(sa, req, csa)) {
-		csa_args_free(csa);
-		return (NULL);
-	}
-
-	return (csa);
+	return (ikev2_create_child_sa_init_common(sa, req, csa));
 }
 
 /* We are the initiator in a CREATE_CHILD_SA exchange */
 void
 ikev2_create_child_sa_init(ikev2_sa_t *restrict sa, parsedmsg_t *restrict pmsg)
 {
-	struct child_sa_args *csa = NULL;
+	ikev2_sa_args_t *csa = NULL;
 	pkt_t *req = NULL;
+	uint8_t satype = pmsg->pmsg_samsg->sadb_msg_satype;
 
 	VERIFY(IS_WORKER);
 	VERIFY(!MUTEX_HELD(&sa->i2sa_queue_lock));
@@ -160,91 +119,98 @@ ikev2_create_child_sa_init(ikev2_sa_t *restrict sa, parsedmsg_t *restrict pmsg)
 	 */
 	VERIFY(PMSG_FROM_KERNEL(pmsg));
 
+	/*
+	 * We shouldn't try to initiate any other exchanges until we've
+	 * authenticated.
+	 */
+	VERIFY(sa->flags & I2SA_AUTHENTICATED);
+
 	(void) bunyan_debug(log, "Starting CREATE_CHILD_SA exchange",
 	    BUNYAN_T_END);
 
-	if ((csa = create_csa_args(sa, B_FALSE, B_TRUE)) == NULL)
+	if ((csa = ikev2_sa_args_new(B_TRUE, satype)) == NULL) {
+		(void) bunyan_error(log,
+		    "No memory to perform CREATE_CHILD_SA exchange",
+		    BUNYAN_T_END);
 		goto fail;
+	}
 
-	csa->csa_pmsg = pmsg;
-	csa->csa_srcmsg = pmsg->pmsg_samsg;
+	csa->i2a_i2sa = sa;
+	csa->i2a_pmsg = pmsg;
+	csa->i2a_sadb_msg = pmsg->pmsg_samsg;
 
 	req = ikev2_pkt_new_exchange(sa, IKEV2_EXCH_CREATE_CHILD_SA);
 	if (req == NULL)
 		goto fail;
-
 	/* This is the first payload, there should always be space for it */
 	VERIFY(ikev2_add_sk(req));
 
 	if (!ikev2_create_child_sa_init_common(sa, req, csa))
 		goto fail;
+
 	if (!ikev2_send_req(req, ikev2_create_child_sa_init_resp, csa))
 		goto fail;
+
 	return;
 
 fail:
 	pfkey_send_error(pmsg->pmsg_samsg, ENOMEM);
 	parsedmsg_free(pmsg);
-	csa_args_free(csa);
+	ikev2_sa_args_free(csa);
 }
 
 /* We are the initiator, shared bits for IKE_AUTH and CREATE_CHILD_SA */
 static boolean_t
 ikev2_create_child_sa_init_common(ikev2_sa_t *restrict sa, pkt_t *restrict req,
-    struct child_sa_args *restrict csa)
+    ikev2_sa_args_t *restrict csa)
 {
-	parsedmsg_t *pmsg = csa->csa_pmsg;
-	sockaddr_u_t src = { .sau_ss = &sa->laddr };
-	sockaddr_u_t dest = { .sau_ss = &sa->raddr };
+	parsedmsg_t *pmsg = csa->i2a_pmsg;
 	ikev2_dh_t dh = IKEV2_DH_NONE;
-	uint8_t satype = get_satype(pmsg);
-	ikev2_spi_proto_t proto = satype_to_ikev2(satype);
+	ikev2_spi_proto_t proto;
 	uint32_t spi = 0;
-	boolean_t transport_mode = B_FALSE;
+	uint8_t satype = csa->i2a_sadb_msg->sadb_msg_satype;
+	boolean_t transport_mode = PMSG_IS_TRANSPORT(pmsg);
 
-	if (pmsg->pmsg_isau.sau_ss == NULL) {
-		transport_mode = B_TRUE;
-	} else {
-		sadb_ext_t *isrc =
-		    pmsg->pmsg_exts[SADB_X_EXT_ADDRESS_INNER_SRC];
+	csa->i2a_child[CSA_IN].csa_child->i2c_transport = transport_mode;
+	csa->i2a_child[CSA_OUT].csa_child->i2c_transport = transport_mode;
 
-		csa->csa_child_in->i2c_inner_proto =
-		    csa->csa_child_out->i2c_inner_proto =
-		    ((sadb_address_t *)isrc)->sadb_address_proto;
-	}
+	proto = satype_to_ikev2(satype);
 
-	csa->csa_child_in->i2c_transport = csa->csa_child_out->i2c_transport =
-	    transport_mode;
-	csa->csa_child_in->i2c_satype = csa->csa_child_out->i2c_satype = satype;
-
-	if (!pfkey_getspi(csa->csa_srcmsg, pmsg->pmsg_sau, pmsg->pmsg_dau,
-	    satype, &spi)) {
+	if (!pfkey_getspi(pmsg, satype, &spi)) {
 		goto fail;
 	}
-	csa->csa_child_out->i2c_spi = spi;
+
+	/* Stash until we get our reply */
+	csa->i2a_spi = spi;
 
 	/* XXX: IPcomp (when we add support) */
 
-	if (transport_mode && !ikev2_add_notify(req, proto, spi,
-	    IKEV2_N_USE_TRANSPORT_MODE, NULL, 0))
+	if (transport_mode && !ikev2_add_notify(req,
+	    IKEV2_N_USE_TRANSPORT_MODE))
 		goto fail;
 
-	if (!ikev2_add_notify(req, proto, spi,
-	    IKEV2_N_ESP_TFC_PADDING_NOT_SUPPORTED, NULL, 0))
+	if (!ikev2_add_notify(req, IKEV2_N_ESP_TFC_PADDING_NOT_SUPPORTED))
 		goto fail;
 
-	if (!ikev2_add_notify(req, proto, spi,
-	    IKEV2_N_NON_FIRST_FRAGMENTS_ALSO, NULL, 0))
+	if (!ikev2_add_notify(req, IKEV2_N_NON_FIRST_FRAGMENTS_ALSO))
 		goto fail;
 
 	if (!ikev2_sa_from_acquire(req, pmsg, spi, dh))
 		goto fail;
 
-	if (!ikev2_child_add_nonce(csa, req))
-		goto fail;
+	/*
+	 * For the piggy-backed child SA in an IKE_AUTH exchange, the original
+	 * nonces and DH keys from the IKE_SA_INIT packet are used instead of
+	 * generating new ones.
+	 */
+	if (!IS_AUTH(csa)) {
+		if (!ikev2_add_nonce(req, NULL, IKEV2_NONCE_DEFAULT))
+			goto fail;
+		ikev2_save_nonce(csa, req);
 
-	if (!ikev2_child_add_dh(csa, req))
-		goto fail;
+		if (!ikev2_add_dh(csa, req))
+			goto fail;
+	}
 
 	if (!add_ts_init(req, pmsg))
 		goto fail;
@@ -261,198 +227,243 @@ fail:
  * We are the responder, we are doing the child SA creation that
  * occurs during an IKE_AUTH exchange.
  */
-void
+boolean_t
 ikev2_create_child_sa_resp_auth(pkt_t *restrict req, pkt_t *restrict resp)
 {
+	ikev2_sa_args_t *csa = req->pkt_sa->sa_init_args;
+
 	VERIFY3U(pkt_header(resp)->exch_type, ==, IKEV2_EXCH_IKE_AUTH);
-	struct child_sa_args *csa;
 
-	if ((csa = create_csa_args(req->pkt_sa, B_TRUE, B_FALSE)) == NULL) {
-		/*
-		 * XXX: While TEMPORARY_FAILURE seems like it'd be a better
-		 * response, RFC7296 seems to imply that it is only used in
-		 * conjunction with a rekey operation, and not during an
-		 * IKE_AUTH request.  For now at least, we will reply with
-		 * the generic catch-all NO_PROPOSAL_CHOSEN.
-		 */
-		(void) ikev2_no_proposal_chosen(resp, IKEV2_PROTO_IKE);
-		return;
-	}
+	csa->i2a_is_auth = B_TRUE;
 
-	ikev2_create_child_sa_resp_common(req, resp, csa);
-	csa_args_free(csa);
+	/*
+	 * The create child SA operation within an IKE_AUTH exchange cannot
+	 * do a second DH keyexchange.  Instead the exchanged key from the
+	 * IKE_SA_INIT exchange is re-used only for this child SA.
+	 */
+	csa->i2a_dh = IKEV2_DH_NONE;
+
+	return (ikev2_create_child_sa_resp_common(req, resp, csa));
 }
 
 /* We are the responder in a CREATE_CHILD_SA exchange */
 void
 ikev2_create_child_sa_resp(pkt_t *restrict req)
 {
-	pkt_t *resp = ikev2_pkt_new_response(req);
+	ikev2_sa_t *i2sa = req->pkt_sa;
+	pkt_t *resp = NULL;
+	ikev2_sa_args_t *csa = NULL;
 
-	if (resp == NULL) {
+	if (!(i2sa->flags & I2SA_AUTHENTICATED)) {
+		(void) bunyan_info(log,
+		    "Received CREATE_CHILD_SA request on unauthenciated IKE SA;"
+		    " discarding", BUNYAN_T_END);
+		ikev2_pkt_free(req);
+		return;
+	}
+
+	if ((resp = ikev2_pkt_new_response(req)) == NULL) {
 		ikev2_pkt_free(req);
 		return;
 	}
 	/* It's the first payload, it should fit */
 	VERIFY(ikev2_add_sk(resp));
 
-	struct child_sa_args *csa = create_csa_args(req->pkt_sa,
-	    B_FALSE, B_FALSE);
+	if ((csa = ikev2_sa_args_new(B_TRUE, 0)) == NULL) {
+		/*
+		 * There's no specific error notification for this situation,
+		 * however NO_PROPOSAL_CHOSEN is despite it's name a general
+		 * catch-all 'error' notification, so we use that.
+		 */
+		(void) bunyan_error(log,
+		    "No memory to perform CREATE_CHILD_SA exchange; "
+		    "sending NO_PROPOSAL_CHOSEN", BUNYAN_T_END);
 
-	if (csa == NULL) {
-		/* See above -- this is the best we can respond with */
-		(void) ikev2_no_proposal_chosen(resp, IKEV2_PROTO_IKE);
-		(void) ikev2_send_resp(resp);
+		if (ikev2_add_notify(resp, IKEV2_N_NO_PROPOSAL_CHOSEN)) {
+			(void) ikev2_send_resp(resp);
+		} else {
+			ikev2_pkt_free(resp);
+		}
+
 		ikev2_pkt_free(req);
 		return;
 	}
 
-	ikev2_create_child_sa_resp_common(req, resp, csa);
+	if (ikev2_create_child_sa_resp_common(req, resp, csa))
+		(void) ikev2_send_resp(resp);
+	else
+		ikev2_pkt_free(resp);
 
-	csa_args_free(csa);
+	ikev2_sa_args_free(csa);
 	ikev2_pkt_free(req);
 }
 
-static boolean_t get_resp_policy(pkt_t *restrict,
-    struct child_sa_args *restrict);
-
 /*
  * We are the responder (shared bits between IKE_AUTH and CREATE_CHILD_SA).
+ * A fatal error (where we cannot continue) return B_FALSE.  Otherwise
+ * return B_TRUE if we should send the response.
  */
-static void
+static boolean_t
 ikev2_create_child_sa_resp_common(pkt_t *restrict req, pkt_t *restrict resp,
-    struct child_sa_args *restrict csa)
+    ikev2_sa_args_t *restrict csa)
 {
 	ikev2_sa_t *sa = req->pkt_sa;
 	parsedmsg_t *pmsg = NULL;
-	ikev2_spi_proto_t proto = IKEV2_PROTO_NONE;
+	ikev2_spi_proto_t satype = IKEV2_PROTO_NONE;
 	uint32_t spi = 0;
+	ikev2_sa_match_t match = { 0 };
+	ts_t ts_i = { 0 };
+	ts_t ts_r = { 0 };
+	boolean_t narrowed = B_FALSE;
+	boolean_t transport_mode = B_FALSE;
 
-	if (pkt_get_notify(req, IKEV2_N_USE_TRANSPORT_MODE, NULL) != NULL) {
-		csa->csa_child_in->i2c_transport =
-		    csa->csa_child_out->i2c_transport = B_TRUE;
-	}
+	if (pkt_get_notify(req, IKEV2_N_USE_TRANSPORT_MODE, NULL) != NULL)
+		transport_mode = B_TRUE;
 
-	if (csa->csa_is_auth)
-		check_natt_addrs(req, TRANSPORT_MODE(csa));
+	csa->i2a_child[CSA_IN].csa_child->i2c_transport = transport_mode;
+	csa->i2a_child[CSA_OUT].csa_child->i2c_transport = transport_mode;
 
-	if (!get_resp_policy(req, csa))
+	if (csa->i2a_is_auth)
+		check_natt_addrs(req, transport_mode);
+
+	if (!get_resp_policy(req, transport_mode, csa))
 		goto fail;
 
-	if ((pmsg = csa->csa_pmsg) == NULL) {
-		/*
-		 * XXX: Should we pick off the protocol from the SA payload and
-		 * use that instead for the protocol?  However, it's possible
-		 * the initiator has proposed multiple different SPIs in it's
-		 * SA payload, so there's no indication if one of those values
-		 * should be used.
-		 */
-		if (!ikev2_add_notify(resp, IKEV2_PROTO_IKE, 0,
-		    IKEV2_N_TS_UNACCEPTABLE, NULL, 0))
+	if ((pmsg = csa->i2a_pmsg) == NULL) {
+		if (!ikev2_add_notify(resp, IKEV2_N_TS_UNACCEPTABLE))
 			goto fail;
-		goto done;
+		return (B_TRUE);
+	}
+	csa->i2a_sadb_msg = pmsg->pmsg_samsg;
+
+	if (!ikev2_sa_select_acq(pmsg, csa->i2a_dh, req, &match)) {
+		(void) bunyan_info(log,
+		    "No proposals matched from initiator",
+		    BUNYAN_T_END);
+
+		if (!ikev2_add_notify(resp, IKEV2_N_NO_PROPOSAL_CHOSEN))
+			goto fail;
+		return (B_TRUE);
+	}
+	satype = match.ism_satype;
+
+	if (!IS_AUTH(csa) && ikev2_get_dhgrp(req) != match.ism_dh) {
+		if (!ikev2_invalid_ke(resp, match.ism_dh))
+			goto fail;
+		return (B_TRUE);
 	}
 
-	if (!ikev2_sa_match_acquire(pmsg, csa->csa_dh, req,
-	    &csa->csa_results)) {
-		if (!ikev2_no_proposal_chosen(resp, csa->csa_results.sar_proto))
-			goto fail;
-		goto done;
-	}
-	proto = csa->csa_results.sar_proto;
+	sadb_to_ts(get_sadb_addr(pmsg, B_FALSE), &ts_i);
+	sadb_to_ts(get_sadb_addr(pmsg, B_TRUE), &ts_r);
 
-	if (!csa->csa_is_auth && ikev2_get_dhgrp(req) !=
-	    csa->csa_results.sar_dh) {
-		if (!ikev2_invalid_ke(resp, proto, 0, csa->csa_results.sar_dh))
+	if (!ts_negotiate(req, &ts_i, &ts_r, &narrowed)) {
+		if (!ikev2_add_notify(resp, IKEV2_N_TS_UNACCEPTABLE))
 			goto fail;
-		goto done;
+		return (B_TRUE);
 	}
 
-	if (!pfkey_getspi(NULL, pmsg->pmsg_sau, pmsg->pmsg_dau, proto, &spi))
+	if (!pfkey_getspi(pmsg, satype, &spi))
 		goto fail;
 
-	csa->csa_child_out->i2c_spi = spi;
-	ikev2_save_child_results(csa, &csa->csa_results);
+	ikev2_set_child_type(csa->i2a_child, B_FALSE, satype);
+	ikev2_save_child_results(csa->i2a_child, &match, spi);
+	ikev2_save_child_ts(csa->i2a_child, &ts_i, &ts_r);
 
-	if (TRANSPORT_MODE(csa) &&
-	    !ikev2_add_notify(resp, proto, spi, IKEV2_N_USE_TRANSPORT_MODE,
-	    NULL, 0))
+	/*
+	 * TODO: Move nonce creation & child SA creation here so we can send
+	 * failure notification if problems vs. internal error
+	 */
+
+	if (transport_mode &&
+	    !ikev2_add_notify(resp, IKEV2_N_USE_TRANSPORT_MODE))
 		goto fail;
 
 	/* We currently don't support TFC PADDING */
-	if (!ikev2_add_notify(resp, proto, spi,
-	    IKEV2_N_ESP_TFC_PADDING_NOT_SUPPORTED, NULL, 0))
+	if (!ikev2_add_notify(resp, IKEV2_N_ESP_TFC_PADDING_NOT_SUPPORTED))
 		goto fail;
 
 	/* and we always include non-first fragments */
-	if (!ikev2_add_notify(resp, proto, spi,
-	    IKEV2_N_NON_FIRST_FRAGMENTS_ALSO, NULL, 0))
+	if (!ikev2_add_notify(resp, IKEV2_N_NON_FIRST_FRAGMENTS_ALSO))
 		goto fail;
 
-	if (!ikev2_sa_add_result(resp, &csa->csa_results, spi))
+	if (!ikev2_sa_add_result(resp, &match, spi))
 		goto fail;
 
-	if (!ikev2_child_add_nonce(csa, resp))
+	/*
+	 * For the piggy-backed child SA in an IKE_AUTH exchange, the original
+	 * nonces and DH keys from the IKE_SA_INIT packet are used instead of
+	 * generating new ones.
+	 */
+	if (!IS_AUTH(csa)) {
+		if (!ikev2_add_nonce(resp, NULL, IKEV2_NONCE_DEFAULT))
+			goto fail;
+		ikev2_save_nonce(csa, resp);
+		ikev2_save_nonce(csa, req);
+
+		if (!ikev2_add_dh(csa, resp) || !ikev2_ke(csa, req))
+			goto fail;
+	}
+
+	if (!add_ts_resp(resp, &ts_i, &ts_r))
 		goto fail;
-	ikev2_child_save_nonce(csa, req);
 
-	if (!ikev2_child_add_dh(csa, resp) || !ikev2_child_ke(csa, req))
+	if (narrowed && !ikev2_add_notify(resp, IKEV2_N_ADDITIONAL_TS_POSSIBLE))
 		goto fail;
 
-	if (!add_ts_resp(req, resp, csa))
+	if (!generate_keys(sa, csa))
 		goto fail;
 
-	if (!generate_keys(csa))
+	if (!ikev2_create_child_sas(sa, csa))
 		goto fail;
 
-	if (!ikev2_create_child_sas(csa))
-		goto fail;
+	/* XXX: Other notifications? */
 
-	/* XXX: on failures here we need to be sending appropriates NOTIFYS */
-
-done:
-	(void) ikev2_send_resp(resp);
-	ikev2_pkt_free(req);
-	return;
+	return (B_TRUE);
 
 fail:
-	(void) pfkey_delete(proto, spi, pmsg->pmsg_sau, pmsg->pmsg_dau,
+	(void) pfkey_delete(satype, spi, pmsg->pmsg_sau, pmsg->pmsg_dau,
 	    B_FALSE);
-
-	(void) bunyan_info(log, "Sending NO_PROPOSAL_CHOSEN due to error",
-	    BUNYAN_T_END);
-
-	if (!ikev2_no_proposal_chosen(resp, proto))
-		ikev2_pkt_free(resp);
-	else
-		(void) ikev2_send_resp(resp);
-
-	ikev2_pkt_free(req);
+	return (B_FALSE);
 }
 
 /*
  * We are initiator, this is the response from the peer.
- *
- * NOTE: Unlike the analogous functions in other exchanges, this one is
- * not static since in the case of an IKE_AUTH exchange, we call this
- * function after doing the IKE_AUTH specific handling as long as we've
- * successfully authenticated (if authentication fails, this is never called).
- *
- * For CREATE_CHILD_SA, this is directly invoked by ikev2_handle_response()
- * in ikev2_proto.c
  */
 void
-ikev2_create_child_sa_init_resp(ikev2_sa_t *restrict i2sa,
+ikev2_create_child_sa_init_resp_auth(ikev2_sa_t *restrict i2sa,
     pkt_t *restrict resp, void *restrict arg)
 {
-	struct child_sa_args *csa = arg;
-	parsedmsg_t *pmsg = csa->csa_pmsg;
-	ikev2_sa_result_t result = { 0 };
+	ikev2_create_child_sa_init_resp_common(i2sa, resp, arg);
+}
+
+static void
+ikev2_create_child_sa_init_resp(ikev2_sa_t *restrict i2sa, pkt_t *restrict resp,
+    void *restrict arg)
+{
+	ikev2_create_child_sa_init_resp_common(i2sa, resp, arg);
+	ikev2_pkt_free(resp);
+	ikev2_sa_args_free(arg);
+}
+
+static void
+ikev2_create_child_sa_init_resp_common(ikev2_sa_t *restrict i2sa,
+    pkt_t *restrict resp, void *restrict arg)
+{
+	ikev2_sa_args_t *csa = arg;
+	parsedmsg_t *pmsg = csa->i2a_pmsg;
+	ikev2_sa_match_t match = { 0 };
+	ts_t ts_i = { 0 };
+	ts_t ts_r = { 0 };
+	boolean_t narrowed = B_FALSE;
 
 	if (resp == NULL) {
+		uint8_t satype = pmsg->pmsg_samsg->sadb_msg_satype;
 		if (PMSG_FROM_KERNEL(pmsg))
 			pfkey_send_error(pmsg->pmsg_samsg, ETIME);
-		csa_args_free(csa);
+
+		(void) pfkey_delete(satype, csa->i2a_spi,
+		    pmsg->pmsg_sau, pmsg->pmsg_dau, B_FALSE);
+
 		return;
 	}
 
@@ -472,28 +483,55 @@ ikev2_create_child_sa_init_resp(ikev2_sa_t *restrict i2sa,
 
 	/* XXX: INVALID_KE */
 
-	if (!ikev2_sa_match_acquire(pmsg, csa->csa_dh, resp,
-	    &csa->csa_results)) {
+	if (!ikev2_sa_check_acquire(pmsg, csa->i2a_dh, resp, &match)) {
 		(void) bunyan_warn(log,
 		    "Peer tried to select a transform not in the original"
 		    "proposed set", BUNYAN_T_END);
 		goto fail;
 	}
 
-	ikev2_save_child_results(csa, &csa->csa_results);
-	ikev2_child_save_nonce(csa, resp);
+	/*
+	 * This is not fatal -- the traffic we wanted to send can be sent,
+	 * but the responder has chosen a subset of our policy, so we want
+	 * to log this.
+	 */
+	if (pkt_get_notify(resp,
+	    IKEV2_N_ADDITIONAL_TS_POSSIBLE, NULL) != NULL) {
+		(void) bunyan_warn(log,
+		    "Policy mismatch with peer", BUNYAN_T_END);
+		/* XXX: Log more details */
+	}
 
-	if (!ikev2_child_ke(csa, resp))
+	if (csa->i2a_is_auth)
+		check_natt_addrs(resp, TRANSPORT_MODE(csa));
+
+	sadb_to_ts(get_sadb_addr(pmsg, B_TRUE), &ts_i);
+	sadb_to_ts(get_sadb_addr(pmsg, B_FALSE), &ts_r);
+
+	if (!ts_negotiate(resp, &ts_i, &ts_r, &narrowed)) {
+		(void) bunyan_warn(log,
+		    "Responder sent traffic selectors not in our policy",
+		    BUNYAN_T_END);
+		goto fail;
+	}
+
+	ikev2_set_child_type(csa->i2a_child, B_TRUE, match.ism_satype);
+	ikev2_save_child_results(csa->i2a_child, &match, csa->i2a_spi);
+	ikev2_save_child_ts(csa->i2a_child, &ts_i, &ts_r);
+
+	if (!IS_AUTH(csa)) {
+		ikev2_save_nonce(csa, resp);
+
+		if (!ikev2_ke(csa, resp))
+			goto fail;
+	}
+
+	if (!generate_keys(i2sa, csa))
 		goto fail;
 
-	if (!generate_keys(csa))
+	if (!ikev2_create_child_sas(i2sa, csa))
 		goto fail;
 
-	if (!ikev2_create_child_sas(csa))
-		goto fail;
-
-	csa_args_free(csa);
-	ikev2_pkt_free(resp);
 	return;
 
 fail:
@@ -503,7 +541,658 @@ fail:
 remote_fail:
 	if (PMSG_FROM_KERNEL(pmsg))
 		pfkey_send_error(pmsg->pmsg_samsg, EINVAL);
-	ikev2_pkt_free(resp);
+}
+
+/*
+ * Generate an SA payload from a regular SADB_ACQUIRE message.
+ *	pkt	The packet the payload is being added to
+ *	pmsg	The parsed SADB_ACQUIRE message
+ *	spi	The outbound SPI to include in each proposal in the SA payload
+ *	dh	The DH group to include in each proposal (or IKEV2_DH_NONE to
+ *		not request a new DH key exchange.
+ *
+ * Returns B_TRUE if payload as successfully added, B_FALSE on error.
+ */
+static boolean_t
+ikev2_sa_from_acquire(pkt_t *restrict pkt, parsedmsg_t *restrict pmsg,
+    uint32_t spi, ikev2_dh_t dh)
+{
+	sadb_msg_t *samsg = pmsg->pmsg_samsg;
+	sadb_prop_t *prop;
+	sadb_comb_t *comb, *end;
+	size_t propnum = 0;
+	ikev2_spi_proto_t spi_type = IKEV2_PROTO_NONE;
+	boolean_t ok;
+	pkt_sa_state_t pss;
+
+	VERIFY3U(samsg->sadb_msg_type, ==, SADB_ACQUIRE);
+
+	switch (samsg->sadb_msg_satype) {
+	case SADB_SATYPE_AH:
+		spi_type = IKEV2_PROTO_AH;
+		break;
+	case SADB_SATYPE_ESP:
+		spi_type = IKEV2_PROTO_ESP;
+		break;
+	default:
+		(void) bunyan_error(log,
+		    "Unknown/unexpected SA type received from kernel; aborting "
+		    "IPsec SA creation",
+		    BUNYAN_T_UINT32, "satype",
+		    (uint32_t)samsg->sadb_msg_satype);
+		return (B_FALSE);
+	}
+
+	prop = (sadb_prop_t *)pmsg->pmsg_exts[SADB_EXT_PROPOSAL];
+	VERIFY3U(prop->sadb_prop_exttype, ==, SADB_EXT_PROPOSAL);
+
+	ok = ikev2_add_sa(pkt, &pss);
+
+	end = (sadb_comb_t *)((uint64_t *)prop + prop->sadb_prop_len);
+	for (comb = (sadb_comb_t *)(prop + 1); comb < end; comb++) {
+		/* RFC7296 3.3.1 proposal numbers start with 1 */
+		ok &= ikev2_add_prop(&pss, ++propnum, spi_type, spi);
+
+		if (comb->sadb_comb_encrypt != SADB_EALG_NONE) {
+			ikev2_xf_encr_t encr;
+			uint16_t minbits, maxbits;
+
+			encr = ikev2_pfkey_to_encr(comb->sadb_comb_encrypt);
+			minbits = comb->sadb_comb_encrypt_minbits;
+			maxbits = comb->sadb_comb_encrypt_maxbits;
+			ok &= ikev2_add_xf_encr(&pss, encr, minbits, maxbits);
+		}
+
+		if (comb->sadb_comb_auth != SADB_AALG_NONE) {
+			ikev2_xf_auth_t xf_auth;
+			size_t keylen;
+
+			xf_auth = ikev2_pfkey_to_auth(comb->sadb_comb_auth);
+			VERIFY3S(xf_auth, <=, IKEV2_XF_AUTH_MAX);
+
+			keylen = SADB_8TO1(auth_data(xf_auth)->ad_keylen);
+			VERIFY3U(comb->sadb_comb_auth_minbits, ==, keylen);
+			VERIFY3U(comb->sadb_comb_auth_maxbits, ==, keylen);
+
+			ok &= ikev2_add_xform(&pss, IKEV2_XF_AUTH, xf_auth);
+		}
+
+		if (dh != IKEV2_DH_NONE)
+			ok &= ikev2_add_xform(&pss, IKEV2_XF_DH, dh);
+
+		/* We currently don't support ESNs */
+		ok &= ikev2_add_xform(&pss, IKEV2_XF_ESN, IKEV2_ESN_NONE);
+	}
+
+	return (ok);
+}
+
+static boolean_t ikev2_sa_select_ecomb(sadb_x_ecomb_t *restrict, ikev2_dh_t,
+    pkt_payload_t *restrict, uint_t, ikev2_sa_match_t *restrict);
+static boolean_t ikev2_sa_select_prop(sadb_x_ecomb_t *restrict, ikev2_dh_t,
+    ikev2_sa_proposal_t *restrict, uint_t, ikev2_sa_match_t *restrict);
+static boolean_t ikev2_sa_select_encr_attr(sadb_x_algdesc_t *restrict,
+    ikev2_transform_t *restrict, ikev2_sa_match_t *restrict);
+
+/*
+ * Select an SA proposal from the initiator.
+ *	pmsg	Our local policy (an extended SADB_ACQUIRE message)
+ *	req	The initiator's request packet
+ *	m	Where the matching parameters are written
+ *
+ * Returns B_TRUE if a match was found, B_FALSE otherwise.
+ *
+ * An SA payload contains one or more proposals.  Each proposal contains a
+ * protocol (SA type -- AH, ESP, etc.) and SPI value followed by the list of
+ * allowable transforms for the proposal.  While unusual, there doesn't appear
+ * to be anything in RFC7296 that forbids an initiator from proposing different
+ * protocols in an SA payload.  As it happens, when we query the kernel for
+ * the local policy using an SADB_X_INVERSE_ACQUIRE, it returns extended
+ * ACQUIRE messages (which will contain the policy for all SA types between
+ * the given addresses), but we can only choose a single proposal (or none),
+ * thus must also potentially decide on what type of SA to create.
+ *
+ * To solve these issues, we check for matches for all supported SA types
+ * (AH and ESP).  If only one SA type has a match, it is used.  If multiple
+ * SA types match, we use an ESP match over an AH match.  If none match, we
+ * fail and nothing is chosen.
+ */
+static boolean_t
+ikev2_sa_select_acq(parsedmsg_t *restrict pmsg, ikev2_dh_t dh,
+    pkt_t *restrict req, ikev2_sa_match_t *restrict m)
+{
+	/* In order of preference */
+	static const uint_t sa_types[] = { SADB_SATYPE_ESP, SADB_SATYPE_AH };
+
+	pkt_payload_t *sa_pay = pkt_get_payload(req, IKEV2_PAYLOAD_SA, NULL);
+	sadb_prop_t *eprop = (sadb_prop_t *)pmsg->pmsg_exts[SADB_X_EXT_EPROP];
+	sadb_x_ecomb_t *ecomb = NULL;
+
+	if (sa_pay == NULL) {
+		(void) bunyan_warn(log,
+		    "CREATE_CHILD_SA request is missing an SA payload; "
+		    "cannot create IPsec SA", BUNYAN_T_END);
+		return (B_FALSE);
+	}
+
+	/* get_resp_policy fails if an SADB_X_EXT_EPROP extension is missing */
+	VERIFY3P(eprop, !=, NULL);
+
+	ecomb = (sadb_x_ecomb_t *)(eprop + 1);
+
+	for (size_t i = 0; i < eprop->sadb_x_prop_numecombs; i++) {
+		sadb_x_algdesc_t *alg = (sadb_x_algdesc_t *)(ecomb + 1);
+
+		(void) bunyan_debug(log, "Checking extended combination",
+		    BUNYAN_T_UINT32, "idx", (uint32_t)i,
+		    BUNYAN_T_END);
+
+		for (size_t j = 0; j < ARRAY_SIZE(sa_types); j++) {
+			if (ikev2_sa_select_ecomb(ecomb, dh, sa_pay,
+			    sa_types[j], m))
+				return (B_TRUE);
+		}
+
+		ecomb = (sadb_x_ecomb_t *)(alg + ecomb->sadb_x_ecomb_numalgs);
+	}
+
+	return (B_FALSE);
+}
+
+static boolean_t
+ikev2_sa_select_ecomb(sadb_x_ecomb_t *restrict ecomb, ikev2_dh_t dh,
+    pkt_payload_t *restrict sa, uint_t satype, ikev2_sa_match_t *restrict m)
+{
+	sadb_x_algdesc_t *alg = NULL;
+	ikev2_sa_proposal_t *i2prop = NULL;
+
+	(void) bunyan_debug(log, "Checking proposals for satype",
+	    BUNYAN_T_STRING, "satype", ikev2_spi_str(satype),
+	    BUNYAN_T_END);
+
+	FOREACH_PROP(i2prop, sa) {
+		if (i2prop->proto_protoid != satype)
+			continue;
+
+		bzero(m, sizeof (*m));
+
+		m->ism_spi = ikev2_prop_spi(i2prop);
+		m->ism_satype = satype;
+		m->ism_propnum = i2prop->proto_proposalnr;
+
+		(void) bunyan_debug(log, "Checking proposal",
+		    BUNYAN_T_UINT32, "proposal_num", (uint32_t)m->ism_propnum,
+		    BUNYAN_T_STRING, "protocol", ikev2_spi_str(m->ism_satype),
+		    BUNYAN_T_STRING, "spi", enum_printf("0x%08x", m->ism_spi),
+		    BUNYAN_T_END);
+
+		/* Found a proposal with the SA type we're interested in */
+		if (ikev2_sa_select_prop(ecomb, dh, i2prop, satype, m))
+			return (B_TRUE);
+	}
+
+	return (B_FALSE);
+}
+
+static boolean_t
+ikev2_sa_select_prop(sadb_x_ecomb_t *restrict ecomb, ikev2_dh_t dh,
+    ikev2_sa_proposal_t *restrict i2prop, uint_t satype,
+    ikev2_sa_match_t *restrict m)
+{
+	sadb_x_algdesc_t *alg = (sadb_x_algdesc_t *)(ecomb + 1);
+	ikev2_transform_t *xf = NULL;
+
+	VERIFY3U(i2prop->proto_protoid, ==, satype);
+
+	for (size_t i = 0; i < ecomb->sadb_x_ecomb_numalgs; i++, alg++) {
+		ikev2_xf_type_t algtype = 0;
+		uint16_t sadb_id = 0;
+
+		if (alg->sadb_x_algdesc_satype != satype)
+			continue;
+
+		/* Odd, but treat 'no alg' the same as if it wasn't present */
+		if (alg->sadb_x_algdesc_alg == 0)
+			continue;
+
+		switch (alg->sadb_x_algdesc_algtype) {
+		case SADB_X_ALGTYPE_CRYPT:
+			algtype = IKEV2_XF_ENCR;
+			sadb_id = ikev2_pfkey_to_encr(alg->sadb_x_algdesc_alg);
+			break;
+		case SADB_X_ALGTYPE_AUTH:
+			algtype = IKEV2_XF_AUTH;
+			sadb_id = ikev2_pfkey_to_auth(alg->sadb_x_algdesc_alg);
+			break;
+		default:
+			(void) bunyan_warn(log,
+			    "Received an extended proposal from the kernel "
+			    " with an unknown algtype; discarding",
+			    BUNYAN_T_UINT32, "algtype",
+			    (uint32_t)alg->sadb_x_algdesc_alg, BUNYAN_T_END);
+			return (B_FALSE);
+		}
+
+		m->ism_have |= SEEN(algtype);
+
+		FOREACH_XF(xf, i2prop) {
+			uint16_t xfid = BE_IN16(&xf->xf_id);
+
+			/*
+			 * Make note of the types of transforms seen in the
+			 * IKEv2 proposal.  Any unknown transform types
+			 * cause us to reject the proposal (RFC7296 3.3.6)
+			 */
+			switch ((ikev2_xf_type_t)xf->xf_type) {
+			case IKEV2_XF_DH:
+			case IKEV2_XF_ESN:
+				/*
+				 * SADB proposals do not support indicating a
+				 * DH group or the use of ESNs.  These
+				 * transforms are handled after the rest.
+				 */
+				continue;
+			case IKEV2_XF_PRF:
+				/* Never valid for a child SA creation */
+				(void) bunyan_warn(log,
+				    "Proposal contained PRF transform",
+				    BUNYAN_T_END);
+				return (B_FALSE);
+			default:
+				(void) bunyan_debug(log,
+				    "Unknown transform type",
+				    BUNYAN_T_UINT32, "xftype",
+				    (uint32_t)xf->xf_type, BUNYAN_T_END);
+				break;
+			case IKEV2_XF_ENCR:
+			case IKEV2_XF_AUTH:
+				/* Ignore 'none' ids */
+				if (xfid != 0)
+					m->ism_seen |= SEEN(xf->xf_type);
+				break;
+			}
+
+			if (xf->xf_type != algtype)
+				continue;
+
+			(void) bunyan_debug(log, "Checking transform",
+			    BUNYAN_T_STRING, "xftype",
+			    ikev2_xf_type_str(xf->xf_type),
+			    BUNYAN_T_STRING, "xfval",
+			    ikev2_xf_str(xf->xf_type, xfid), BUNYAN_T_END);
+
+			/*
+			 * Use the first match found for a given transform
+			 * type.  The mechanisms given to us by the kernel
+			 * are in the same order the policies were added
+			 * via ipsecconf(1M), so this allows the operator
+			 * supplied order to act as the preference in which
+			 * to pick mechanisms.
+			 */
+			if (SA_MATCHES(m, xf->xf_type))
+				continue;
+
+			if (sadb_id != xfid)
+				continue;
+
+			switch ((ikev2_xf_type_t)xf->xf_type) {
+			case IKEV2_XF_ENCR:
+				if (encr_data(xfid) == NULL)
+					return (B_FALSE);
+				if (!ikev2_sa_select_encr_attr(alg, xf, m))
+					return (B_FALSE);
+
+				m->ism_encr = xfid;
+				m->ism_encr_saltlen =
+				    alg->sadb_x_algdesc_reserved;
+				m->ism_match |= SEEN(xf->xf_type);
+				break;
+			case IKEV2_XF_PRF:
+				/*
+				 * Our local policy should NEVER allow us to
+				 * have a PRF match on an IPsec SA.  PRFs are
+				 * only neogitated for IKE SAs.
+				 */
+				INVALID(xf->xf_type);
+				break;
+			case IKEV2_XF_AUTH:
+				if (auth_data(xfid) == NULL)
+					return (B_FALSE);
+				if (XF_HAS_ATTRS(xf))
+					return (B_FALSE);
+
+				m->ism_auth = xfid;
+				m->ism_match |= SEEN(xf->xf_type);
+				break;
+			case IKEV2_XF_DH:
+			case IKEV2_XF_ESN:
+				continue;
+			}
+
+			(void) bunyan_debug(log, "Transform match",
+			    BUNYAN_T_STRING, "xftype",
+			    ikev2_xf_type_str(xf->xf_type),
+			    BUNYAN_T_STRING, "xfval",
+			    ikev2_xf_str(xf->xf_type, xfid), BUNYAN_T_END);
+		}
+	}
+
+	/* Check DH and ESN if everything else has matched */
+	if (!SA_MATCH(m))
+		return (B_FALSE);
+
+	/* ESN transform is always required for AH and ESN */
+	m->ism_have |= SEEN(IKEV2_XF_ESN);
+
+	if (dh != IKEV2_DH_NONE)
+		m->ism_have |= SEEN(IKEV2_XF_DH);
+
+	FOREACH_XF(xf, i2prop) {
+		uint16_t id = BE_IN16(&xf->xf_id);
+
+		if (xf->xf_type != IKEV2_XF_DH && xf->xf_type != IKEV2_XF_ESN)
+			continue;
+
+		(void) bunyan_debug(log, "Checking transform",
+		    BUNYAN_T_STRING, "xftype", ikev2_xf_type_str(xf->xf_type),
+		    BUNYAN_T_STRING, "xfval", ikev2_xf_str(xf->xf_type, id),
+		    BUNYAN_T_END);
+
+		if (SA_MATCHES(m, xf->xf_type))
+			continue;
+
+		switch (xf->xf_type) {
+		case IKEV2_XF_DH:
+			/* Ignore a none transform */
+			if (id != IKEV2_DH_NONE)
+				m->ism_seen |= SEEN(IKEV2_XF_DH);
+
+			if (id != dh)
+				continue;
+
+			m->ism_match |= SEEN(IKEV2_XF_DH);
+			m->ism_dh = id;
+			break;
+		case IKEV2_XF_ESN:
+			m->ism_seen |= SEEN(IKEV2_XF_ESN);
+
+			if (id != IKEV2_ESN_NONE)
+				continue;
+
+			m->ism_match |= SEEN(IKEV2_XF_ESN);
+			m->ism_esn = B_FALSE;
+			break;
+		}
+
+		if (SA_MATCH_HAS(m, xf->xf_type)) {
+			(void) bunyan_debug(log, "Transform match",
+			    BUNYAN_T_STRING, "xftype",
+			    ikev2_xf_type_str(xf->xf_type),
+			    BUNYAN_T_STRING, "xfval",
+			    ikev2_xf_str(xf->xf_type, id),
+			    BUNYAN_T_END);
+		}
+	}
+
+	if (SA_MATCH(m)) {
+		(void) bunyan_debug(log, "Propsal match",
+		    BUNYAN_T_UINT32, "proposal_num", (uint32_t)m->ism_propnum,
+		    BUNYAN_T_STRING, "protocol", ikev2_spi_str(m->ism_satype),
+		    BUNYAN_T_STRING, "spi", enum_printf("0x%08x", m->ism_spi),
+		    BUNYAN_T_STRING, "encr", ikev2_xf_encr_str(m->ism_encr),
+		    BUNYAN_T_UINT32, "encr_keylen",
+		    (uint32_t)m->ism_encr_keylen,
+		    BUNYAN_T_STRING, "auth", ikev2_xf_auth_str(m->ism_auth),
+		    BUNYAN_T_STRING, "dh", ikev2_dh_str(m->ism_dh),
+		    BUNYAN_T_STRING, "esn", m->ism_esn ? "YES" : "NO",
+		    BUNYAN_T_END);
+		return (B_TRUE);
+	}
+
+	return (B_FALSE);
+}
+
+static boolean_t
+ikev2_sa_select_encr_attr(sadb_x_algdesc_t *restrict alg,
+    ikev2_transform_t *restrict xf, ikev2_sa_match_t *restrict m)
+{
+	ikev2_attribute_t *attr = NULL;
+	const encr_data_t *ed = NULL;
+	uint16_t xfid = BE_IN16(&xf->xf_id);
+
+	ed = encr_data(xfid);
+	VERIFY3U(alg->sadb_x_algdesc_algtype, ==, SADB_X_ALGTYPE_CRYPT);
+
+	/*
+	 * Currently, only a single attribute (IKEV2_XF_ATTR_KEYLEN) is
+	 * defined.  It is only defined for encryption transforms.
+	 * Unfortunately, encryption mechanism keylenghts are somewhat
+	 * complicated.  Some mechanisms (e.g. AES) always require a
+	 * keylength attribute, some (e.g. blowfish) can optionally specify a
+	 * keylength while others (e.g. 3DES) have a fixed key size and should
+	 * not include * a keylength attribute.
+	 */
+
+	/* Should there be a keylength included? */
+	if (!XF_HAS_ATTRS(xf) && encr_keylen_req(ed)) {
+		(void) bunyan_warn(log,
+		    "Transform missing required key length attribute",
+		    BUNYAN_T_STRING, "xftype", ikev2_xf_type_str(xf->xf_type),
+		    BUNYAN_T_STRING, "xfid", ikev2_xf_str(xf->xf_type, xfid),
+		    BUNYAN_T_END);
+		return (B_FALSE);
+	}
+
+	FOREACH_ATTR(attr, xf) {
+		uint16_t attr_type = BE_IN16(&attr->attr_type);
+		uint16_t attr_len = BE_IN16(&attr->attr_length);
+		boolean_t tv = B_FALSE;
+
+		if (IKE_ATTR_GET_TYPE(attr_type) == IKE_ATTR_TV)
+			tv = B_TRUE;
+
+		attr_type = IKE_ATTR_GET_TYPE(attr_type);
+
+		/* Unsupported attributes cause the transform to be rejected */
+		if (attr_type != IKEV2_XF_ATTR_KEYLEN)
+			return (B_FALSE);
+
+		/*
+		 * IKEV2_XF_ATTR_KEYLEN is a TV style attribute, so the length
+		 * field contains the value instead of the length of the
+		 * attribute.
+		 */
+		if (attr_len < alg->sadb_x_algdesc_minbits ||
+		    attr_len > alg->sadb_x_algdesc_maxbits)
+			return (B_FALSE);
+
+		m->ism_encr_keylen = attr_len;
+		(void) bunyan_debug(log, "Encryption keylength match",
+		    BUNYAN_T_STRING, "xftype", ikev2_xf_type_str(xf->xf_type),
+		    BUNYAN_T_STRING, "xfval", ikev2_xf_str(xf->xf_type, xfid),
+		    BUNYAN_T_UINT32, "keylen", (uint32_t)attr_len,
+		    BUNYAN_T_END);
+	}
+
+	return (B_TRUE);
+}
+
+/*
+ * Verify that the chosen proposal from the responder conforms to our policy.
+ *
+ *	pmsg	The parsed SADB_ACQUIRE message with our policy
+ *	dh	The DH group (if any) proposed to the responder
+ *	resp	The responder's response packet
+ *	m	The match structure.  Contents will be set to value of the
+ *		responder's chosen proposal.
+ *
+ * Returns B_TRUE if the SA response was valid, B_FALSE otherwise.
+ */
+static boolean_t
+ikev2_sa_check_acquire(parsedmsg_t *restrict pmsg, ikev2_dh_t dh,
+    pkt_t *restrict resp, ikev2_sa_match_t *restrict m)
+{
+	const encr_data_t *ed = NULL;
+
+	pkt_payload_t *sa_pay = pkt_get_payload(resp, IKEV2_PAYLOAD_SA, NULL);
+	sadb_prop_t *prop = NULL;
+	sadb_comb_t *comb = NULL, *end = NULL;
+	ikev2_sa_proposal_t *i2prop = NULL;
+	ikev2_transform_t *i2xf = NULL;
+	ikev2_attribute_t *xfattr = NULL;
+
+	bzero(m, sizeof (*m));
+
+	prop = (sadb_prop_t *)pmsg->pmsg_exts[SADB_EXT_PROPOSAL];
+	comb = (sadb_comb_t *)(prop + 1);
+	end = (sadb_comb_t *)((uint64_t *)prop + prop->sadb_prop_len);
+
+	i2prop = ikev2_prop_first(sa_pay);
+
+	/*
+	 * Responders MUST only send back one response with the proposal
+	 * number set the proposal chosen, which for proposals we generate
+	 * is just the position of the sadb_comb_t in the SADB_EXT_PROPOSAL
+	 * extension (starting with 1 -- as proposal numbers MUST start with
+	 * 1).  We can therefore just check that single sadb_comb_t (as long
+	 * as it exists), and not have to check the entire SADB_EXT_PROPOSAL.
+	 */
+	for (size_t i = 1; i < i2prop->proto_proposalnr; i++, comb++) {
+		if (comb < end)
+			continue;
+
+		(void) bunyan_warn(log,
+		    "Responder sent an SA reply with an invalid proposal "
+		    "number; aborting IPsec SA creation",
+		    BUNYAN_T_UINT32, "proposal_num",
+		    (uint32_t)i2prop->proto_proposalnr, BUNYAN_T_END);
+
+		return (B_FALSE);
+	}
+
+	if (pmsg->pmsg_samsg->sadb_msg_satype != i2prop->proto_protoid) {
+		(void) bunyan_warn(log,
+		    "SA reply contains a different SA type than what was sent; "
+		    "aborting IPsec SA creation",
+		    BUNYAN_T_STRING, "satype",
+		    ikev2_spi_str(i2prop->proto_protoid), BUNYAN_T_END);
+		return (B_FALSE);
+	}
+
+	m->ism_propnum = i2prop->proto_proposalnr;
+	m->ism_satype = i2prop->proto_protoid;
+	m->ism_spi = ikev2_prop_spi(i2prop);
+
+	if (comb->sadb_comb_auth != SADB_AALG_NONE)
+		m->ism_seen |= SEEN(IKEV2_XF_AUTH);
+	if (comb->sadb_comb_auth != SADB_EALG_NONE)
+		m->ism_seen |= SEEN(IKEV2_XF_ENCR);
+
+	FOREACH_XF(i2xf, i2prop) {
+		uint16_t id = BE_IN16(&i2xf->xf_id);
+
+		switch (i2xf->xf_type) {
+		case IKEV2_XF_PRF:
+			goto invalid_xf;
+		case IKEV2_XF_ESN:
+			if (id != IKEV2_ESN_NONE)
+				goto invalid_xf;
+
+			m->ism_esn = B_FALSE;
+			break;
+		case IKEV2_XF_AUTH:
+			if (id != ikev2_pfkey_to_auth(comb->sadb_comb_auth))
+				goto invalid_xf;
+
+			m->ism_auth = id;
+			break;
+		case IKEV2_XF_DH:
+			if (id != dh)
+				goto invalid_xf;
+
+			m->ism_dh = id;
+			break;
+		case IKEV2_XF_ENCR:
+			if (id != comb->sadb_comb_encrypt)
+				goto invalid_xf;
+
+			m->ism_encr = id;
+			ed = encr_data(id);
+#ifdef notyet
+			m->ism_encr_saltlen = comb->sadb_comb_saltlen;
+#else
+			/* Should use whatever size the kernel is expecting */
+			/* This is until OS-6525 is fixed */
+			m->ism_encr_saltlen = ed->ed_saltlen;
+#endif
+
+			FOREACH_ATTR(xfattr, i2xf) {
+				uint16_t type = BE_IN16(&xfattr->attr_type);
+				uint16_t len = BE_IN16(&xfattr->attr_length);
+
+				type = IKE_ATTR_GET_TYPE(type);
+				if (type != IKEV2_XF_ATTR_KEYLEN) {
+					(void) bunyan_error(log,
+					    "Responder replied with an unknown "
+					    "encryption attribute",
+					    BUNYAN_T_UINT32, "attrtype",
+					    (uint32_t)type, BUNYAN_T_END);
+					return (B_FALSE);
+				}
+
+				if (!encr_keylen_allowed(ed)) {
+					(void) bunyan_error(log,
+					    "Responder replied with an invalid "
+					    "keysize", BUNYAN_T_END);
+					return (B_FALSE);
+				}
+
+				if (len < comb->sadb_comb_encrypt_minbits ||
+				    len > comb->sadb_comb_encrypt_maxbits) {
+					uint32_t min, max;
+					min = comb->sadb_comb_encrypt_minbits;
+					max = comb->sadb_comb_encrypt_maxbits;
+
+					(void) bunyan_error(log,
+					    "Responder replied with a keysize "
+					    "outside the allowed range",
+					    BUNYAN_T_UINT32, "keylen",
+					    (uint32_t)len,
+					    BUNYAN_T_UINT32, "keymin", min,
+					    BUNYAN_T_UINT32, "keymax", max,
+					    BUNYAN_T_END);
+
+					return (B_FALSE);
+				}
+
+				m->ism_encr_keylen = len;
+			}
+
+			if (!XF_HAS_ATTRS(i2xf) && encr_keylen_req(ed)) {
+				(void) bunyan_error(log,
+				    "Responder reply is missing a required "
+				    "keysize", BUNYAN_T_END);
+
+				return (B_FALSE);
+			}
+			break;
+		}
+		m->ism_match |= SEEN(i2xf->xf_type);
+	}
+
+	return (SA_MATCH(m));
+
+invalid_xf:
+	(void) bunyan_warn(log,
+	    "SA reply contains a transform that was not in the proposed set; "
+	    "aborting IPsec SA creation",
+	    BUNYAN_T_STRING, "satype", ikev2_spi_str(i2prop->proto_protoid),
+	    BUNYAN_T_UINT32, "proposal_num", (uint32_t)i2prop->proto_proposalnr,
+	    BUNYAN_T_STRING, "xftype", ikev2_xf_type_str(i2xf->xf_type),
+	    BUNYAN_T_STRING, "xfid",
+	    ikev2_xf_str(i2xf->xf_type, BE_IN16(&i2xf->xf_id)),
+	    BUNYAN_T_END);
+	return (B_FALSE);
 }
 
 /*
@@ -514,6 +1203,7 @@ static boolean_t
 add_ts_init(pkt_t *restrict req, parsedmsg_t *restrict pmsg)
 {
 	ikev2_pkt_ts_state_t tstate = { 0 };
+	ts_t ts = { 0 };
 	sadb_address_t *addr = NULL;
 
 	if (!ikev2_add_ts_i(req, &tstate))
@@ -527,12 +1217,12 @@ add_ts_init(pkt_t *restrict req, parsedmsg_t *restrict pmsg)
 	 * Followed the the traffic selectors for our policy.
 	 */
 	addr = (sadb_address_t *)pmsg->pmsg_exts[SADB_X_EXT_ADDRESS_OPS];
-	if (addr != NULL && !add_sadb_address(&tstate, addr))
+	if (addr != NULL && !ts_add(&tstate, sadb_to_ts(addr, &ts)))
 		return (B_FALSE);
 #endif
 
 	addr = get_sadb_addr(pmsg, B_TRUE);
-	if (!add_sadb_address(&tstate, addr))
+	if (!ts_add(&tstate, sadb_to_ts(addr, &ts)))
 		return (B_FALSE);
 
 	bzero(&tstate, sizeof (tstate));
@@ -541,401 +1231,105 @@ add_ts_init(pkt_t *restrict req, parsedmsg_t *restrict pmsg)
 
 #ifdef notyet
 	addr = (sadb_address_t *)pmsg->pmsg_exts[SADB_X_EXT_ADDRESS_OPD];
-	if (addr != NULL && !add_sadb_address(&tstate, addr))
+	if (addr != NULL && !ts_add(&tstate, sadb_to_ts(addr, &ts)))
 		return (B_FALSE);
 #endif
 
 	addr = get_sadb_addr(pmsg, B_FALSE);
-	if (!add_sadb_address(&tstate, addr))
+	if (!ts_add(&tstate, sadb_to_ts(addr, &ts)))
 		return (B_FALSE);
 
 	return (B_TRUE);
 }
 
 static boolean_t
-add_ts_resp(pkt_t *restrict req, pkt_t *restrict resp,
-    struct child_sa_args *restrict csa)
+add_ts_resp(pkt_t *restrict resp, const ts_t *restrict ts_i,
+    const ts_t *restrict ts_r)
 {
-	parsedmsg_t *pmsg = csa->csa_pmsg;
-	pkt_payload_t *tspay = NULL;
-	sadb_address_t *src_addr = NULL, *dst_addr = NULL;
-	ikev2_child_sa_t *in = csa->csa_child_in;
-	ikev2_child_sa_t *out = csa->csa_child_out;
-	struct sockaddr_storage ts_addr = { 0 };
-	uint8_t ts_prefix = 0;
-	uint8_t proto = 0;
-	boolean_t transport = csa->csa_child_in->i2c_transport;
+	ikev2_pkt_ts_state_t tss = { 0 };
+	boolean_t ok = B_FALSE;
 
-	src_addr = get_sadb_addr(pmsg, B_TRUE);
-	dst_addr = get_sadb_addr(pmsg, B_FALSE);
+	(void) bunyan_trace(log, "add_ts_resp: enter", BUNYAN_T_END);
 
-	/* These come from our kernel policy, so they better match */
-	VERIFY3U(src_addr->sadb_address_proto, ==,
-	    dst_addr->sadb_address_proto);
-	proto = src_addr->sadb_address_proto;
+	if (!ikev2_add_ts_i(resp, &tss) || !ts_add(&tss, ts_i))
+		goto done;
 
-	tspay = pkt_get_payload(req, IKEV2_PAYLOAD_TSr, NULL);
-	if (!add_ts_resp_one(tspay, src_addr, resp, &ts_addr, &ts_prefix))
-		return (B_FALSE);
+	if (!ikev2_add_ts_r(resp, &tss) || !ts_add(&tss, ts_r))
+		goto done;
 
-	if (transport) {
-		in->i2c_lprefix = out->i2c_lprefix = ts_prefix;
-		sockaddr_copy(&ts_addr, &in->i2c_laddr, B_TRUE);
-		sockaddr_copy(&ts_addr, &out->i2c_laddr, B_TRUE);
-	} else {
-		in->i2c_inner_lprefix = out->i2c_inner_lprefix = ts_prefix;
-		sockaddr_copy(&ts_addr, &in->i2c_inner_laddr, B_TRUE);
-		sockaddr_copy(&ts_addr, &out->i2c_inner_laddr, B_TRUE);
-	}
+	ok = B_TRUE;
 
-	tspay = pkt_get_payload(req, IKEV2_PAYLOAD_TSi, NULL);
-	if (!add_ts_resp_one(tspay, dst_addr, resp, &ts_addr, &ts_prefix))
-		return (B_FALSE);
+done:
+	(void) bunyan_trace(log, "add_ts_resp: exit",
+	    BUNYAN_T_BOOLEAN, "success", ok,
+	    BUNYAN_T_END);
 
-	if (transport) {
-		in->i2c_rprefix = out->i2c_rprefix = ts_prefix;
-		sockaddr_copy(&ts_addr, &in->i2c_raddr, B_TRUE);
-		sockaddr_copy(&ts_addr, &out->i2c_raddr, B_TRUE);
-	} else {
-		in->i2c_inner_rprefix = out->i2c_inner_rprefix = ts_prefix;
-		sockaddr_copy(&ts_addr, &in->i2c_inner_raddr, B_TRUE);
-		sockaddr_copy(&ts_addr, &out->i2c_inner_raddr, B_TRUE);
-	}
-
-	if (!transport) {
-		ikev2_sa_t *i2sa = csa->csa_i2sa;
-		struct sockaddr_storage *laddr = &i2sa->laddr;
-		struct sockaddr_storage *raddr = &i2sa->raddr;
-
-		sockaddr_copy(laddr, &in->i2c_laddr, B_FALSE);
-		sockaddr_copy(laddr, &out->i2c_laddr, B_FALSE);
-		sockaddr_copy(raddr, &in->i2c_raddr, B_FALSE);
-		sockaddr_copy(raddr, &out->i2c_raddr, B_FALSE);
-
-		in->i2c_addr_proto = out->i2c_addr_proto = 0;
-		in->i2c_inner_proto = out->i2c_inner_proto = proto;
-		in->i2c_lprefix = out->i2c_lprefix = 0;
-		in->i2c_rprefix = out->i2c_rprefix = 0;
-	} else {
-		in->i2c_addr_proto = out->i2c_addr_proto = proto;
-	}
-
-	return (B_TRUE);
-}
-
-static boolean_t
-add_ts_resp_one(pkt_payload_t *restrict tspay,
-    sadb_address_t *restrict sadb_addr, pkt_t *restrict resp,
-    struct sockaddr_storage *restrict ts_addr, uint8_t *restrict ts_prefixp)
-{
-	struct sockaddr_storage *restrict acq_addr =
-	    (struct sockaddr_storage *restrict)(sadb_addr + 1);
-	size_t acq_prefix = sadb_addr->sadb_address_prefixlen;
-	uint8_t proto = sadb_addr->sadb_address_proto;
-	ikev2_pkt_ts_state_t tstate = { 0 };
-	sockrange_t res_range = { 0 };
-
-	/*
-	 * If the INVERSE_ACQUIRE returns successfully, there must be some
-	 * non-NULL intersection between the proposed addresses and our
-	 * policy, even if it's just a single IP.
-	 */
-	VERIFY(ts_negotiate(tspay, acq_addr, acq_prefix, ts_addr, ts_prefixp));
-	net_to_range(SSTOSA(ts_addr), *ts_prefixp, &res_range);
-
-	if (!ikev2_add_ts_r(resp, &tstate))
-		return (B_FALSE);
-	if (!ikev2_add_ts(&tstate, proto, &res_range))
-		return (B_FALSE);
-
-	return (B_TRUE);
-}
-
-static boolean_t
-check_ts_resp(pkt_t *restrict resp, parsedmsg_t *restrict pmsg)
-{
-	return (B_TRUE);
-}
-
-/*
- * Take a TS{i,r} payload and an address/mask from an ACQUIRE or INVERSE_ACQUIRE
- * and calculate what the resulting address/mask that satisifies both policies.
- */
-static boolean_t
-ts_negotiate(pkt_payload_t *restrict ts_pay,
-    const struct sockaddr_storage *restrict acq_addr, uint8_t acq_prefix,
-    struct sockaddr_storage *restrict result, uint8_t *restrict result_prefixp)
-{
-	ikev2_ts_t *ts = NULL;
-	ikev2_ts_iter_t iter = { 0 };
-	sockrange_t range = { 0 };
-	sockrange_t acq = { 0 };
-	sockrange_t res_range = { 0 };
-
-	bzero(result, sizeof (*result));
-	*result_prefixp = 0;
-
-	/*
-	 * The first traffic selector is what is used during the
-	 * INVERSE_ACQUIRE request, however what we get back from the kernel
-	 * is a network address + netmask e.g. 192.168.1.0/24 or 10.1.2.3/32
-	 * and not an address range (with arbitrary start and ending addresses
-	 * as with the traffic selectors).
-	 *
-	 * This is possibly more permissive than what the peer is proposing.
-	 * Therefore, we first constrain the two ranges (TS[0] and ACQUIRE
-	 * address) to the intersection of the two.  However, if the original
-	 * packet selector was sent, it is sent as the first traffic selector
-	 * and the result can be too narrow (i.e. the result will be a single
-	 * IP address).  If this is the case, there should be at least one
-	 * more traffic selector present, and we should attempt to widen our
-	 * range, however the result should never be wider (but may be narrower)
-	 * than the range given from the ACQUIRE response from the kernel.
-	 * As such, we look through the subsequent selectors looking for the
-	 * largest intersection between a given traffic selector and the ACQUIRE
-	 * address range.
-	 *
-	 * Some examples to illustrate:
-	 *
-	 * Assume our local policy returns an address of 192.168.5.0/24
-	 * This could be a source or destination address, the logic is the
-	 * same.
-	 *
-	 * If the initiator sends:
-	 *	192.168.5.0 - 192.168.5.255
-	 *
-	 * We should respond with:
-	 *	192.168.5.0 - 192.168.5.255
-	 *
-	 * If the initiator sends:
-	 *	192.168.5.15 - 192.168.5.15
-	 *	192.168.5.0 - 192.168.5.255
-	 *
-	 * We should respond with:
-	 *	192.168.5.0 - 192.168.5.255
-	 *
-	 * If the initiator sends:
-	 *	192.168.5.15 - 192.168.5.15
-	 *	192.168.4.0 - 192.168.4.255
-	 *
-	 * We should respond with:
-	 *	192.168.5.0 - 192.168.5.255
-	 *
-	 *	TBD: Should we check to see if there is a policy for
-	 *	192.168.4.0/24 and return ADDITIONAL_TS_POSSIBLE w/ our
-	 *	response?
-	 *
-	 * If the initiator sends:
-	 *	192.168.5.0 - 192.168.5.127
-	 *
-	 * We should respond with:
-	 *	192.168.5.0 - 192.168.5.127
-	 *
-	 */
-
-	net_to_range(SSTOSA(acq_addr), acq_prefix, &acq);
-	range_log(log, BUNYAN_L_TRACE, "acquire address", &acq);
-
-	ts = ikev2_ts_iter(ts_pay, &iter, &range);
-	range_log(log, BUNYAN_L_TRACE, "TS[0] address", &range);
-
-	range_intersection(&acq, &range, &res_range);
-	range_log(log, BUNYAN_L_TRACE, "acquire & TS[0]", &res_range);
-
-	while ((ts = ikev2_ts_iter_next(&iter, &range)) != NULL) {
-		sockrange_t cmp = { 0 };
-
-		/* cmp = intersection(acq, range) */
-		range_intersection(&range, &acq, &cmp);
-		if (range_is_empty(&cmp))
-			continue;
-
-		if (range_cmp_size(&cmp, &res_range) > 0)
-			bcopy(&cmp, &res_range, sizeof (cmp));
-	}
-
-	if (range_is_empty(&res_range)) {
-		(void) bunyan_trace(log, "Resulting range is empty",
-		    BUNYAN_T_END);
-		return (B_FALSE);
-	}
-
-	range_log(log, BUNYAN_L_TRACE, "resulting range", &res_range);
-
-	/*
-	 * As the kernel cannot deal with arbitrary ranges in it's policy,
-	 * we must potentially again narrow the result until range (without
-	 * changing the starting address) can be expressed as start_addr/mask
-	 */
-	range_to_net(&res_range, SSTOSA(result), result_prefixp);
-
-	/* XXX: Log */
-	return (B_TRUE);
-}
-
-/*
- * Take a pf_key(7P) sadb_address extension and convert it into
- * an IKEv2 traffic selector that is added to the TS{i,r} payload being
- * constructed using tstate.
- *
- * An sadb_address consists of an IPv4 or IPv6 address and port, a protocol
- * (TCP, UDP, etc.), and a prefix length. There currently is no way to express
- * a range of ports -- either a specific port is given or 0 for any.  To
- * translate to an IKEv2 traffic selector, we merely use the prefix length to
- * map the address into a subnet range, and then either use the single port
- * or 0-UINT16_MAX for the port range (if 0 was given for the port).
- */
-static boolean_t
-add_sadb_address(ikev2_pkt_ts_state_t *restrict tstate,
-    const sadb_address_t *restrict addr)
-{
-	sockrange_t range = { 0 };
-	uint8_t proto = addr->sadb_address_proto;
-	uint8_t prefixlen = addr->sadb_address_prefixlen;
-
-	/*
-	 * pf_key uses a prefix length of 0 for single addresses
-	 * (instead of 32 or 128). Sigh.
-	 */
-	if (prefixlen == 0)
-		prefixlen = ss_addrbits((struct sockaddr_storage *)(addr + 1));
-
-	net_to_range((struct sockaddr *)(addr + 1), prefixlen, &range);
-
-	return (ikev2_add_ts(tstate, proto, &range));
-}
-
-static boolean_t
-ikev2_child_add_nonce(struct child_sa_args *restrict csa, pkt_t *restrict pkt)
-{
-	if (csa->csa_is_auth)
-		return (B_TRUE);
-
-	pkt_payload_t *nonce = NULL;
-	size_t noncelen = ikev2_prf_outlen(csa->csa_i2sa->prf) / 2;
-
-	if (!ikev2_add_nonce(pkt, NULL, noncelen))
-		return (B_FALSE);
-
-	nonce = pkt_get_payload(pkt, IKEV2_PAYLOAD_NONCE, NULL);
-	if (INITIATOR(csa)) {
-		bcopy(nonce->pp_ptr, csa->csa_nonce_i, nonce->pp_len);
-		csa->csa_nonce_i_len = nonce->pp_len;
-	} else {
-		bcopy(nonce->pp_ptr, csa->csa_nonce_r, nonce->pp_len);
-		csa->csa_nonce_r_len = nonce->pp_len;
-	}
-	return (B_TRUE);
-}
-
-static void
-ikev2_child_save_nonce(struct child_sa_args *restrict csa, pkt_t *restrict pkt)
-{
-	if (csa->csa_is_auth)
-		return;
-
-	pkt_payload_t *nonce = pkt_get_payload(pkt, IKEV2_PAYLOAD_NONCE, NULL);
-
-	if (INITIATOR(csa)) {
-		bcopy(nonce->pp_ptr, csa->csa_nonce_r, nonce->pp_len);
-		csa->csa_nonce_r_len = nonce->pp_len;
-	} else {
-		bcopy(nonce->pp_ptr, csa->csa_nonce_i, nonce->pp_len);
-		csa->csa_nonce_i_len = nonce->pp_len;
-	}
-}
-
-static boolean_t
-ikev2_child_add_dh(struct child_sa_args *restrict csa, pkt_t *restrict pkt)
-{
-	if (csa->csa_is_auth || csa->csa_dh == IKEV2_DH_NONE)
-		return (B_TRUE);
-
-	if (!dh_genpair(csa->csa_dh, &csa->csa_pubkey, &csa->csa_privkey))
-		return (B_FALSE);
-
-	if (!ikev2_add_ke(pkt, csa->csa_dh, csa->csa_pubkey))
-		return (B_FALSE);
-
-	return (B_TRUE);
-}
-
-static boolean_t
-ikev2_child_ke(struct child_sa_args *restrict csa, pkt_t *restrict pkt)
-{
-	if (csa->csa_is_auth || csa->csa_dh == IKEV2_DH_NONE)
-		return (B_TRUE);
-
-	pkt_payload_t *ke_pay = pkt_get_payload(pkt, IKEV2_PAYLOAD_KE, NULL);
-	uint8_t *ke = ke_pay->pp_ptr + sizeof (ikev2_ke_t);
-	size_t kelen = ke_pay->pp_len - sizeof (ikev2_ke_t);
-
-	if (!dh_derivekey(csa->csa_privkey, ke, kelen, &csa->csa_dhkey))
-		return (B_FALSE);
-
-	return (B_TRUE);
+	return (ok);
 }
 
 /*
  * Queries kernel for IPsec policy for IPs in TS{i,r} payloads from initiator.
- * Result in saved in csa->csa_pmsg (set to NULL if no policy found).
+ * Result in saved in csa->i2a_pmsg (set to NULL if no policy found).
  *
  * If there was an error looking up the policy (not found is not considered
  * an error), return B_FALSE, otherwise B_TRUE.
  */
 static boolean_t
-get_resp_policy(pkt_t *restrict pkt, struct child_sa_args *restrict csa)
+get_resp_policy(pkt_t *restrict pkt, boolean_t transport_mode,
+    ikev2_sa_args_t *restrict csa)
 {
 	ikev2_sa_t *i2sa = pkt->pkt_sa;
 	pkt_payload_t *ts_ip = pkt_get_payload(pkt, IKEV2_PAYLOAD_TSi, NULL);
 	pkt_payload_t *ts_rp = pkt_get_payload(pkt, IKEV2_PAYLOAD_TSr, NULL);
-	struct sockaddr_storage ss_src = { 0 };
-	struct sockaddr_storage ss_dst = { 0 };
-	struct sockaddr_storage ss_isrc = { 0 };
-	struct sockaddr_storage ss_idst = { 0 };
-	sockaddr_u_t src = { .sau_ss = &ss_src };
-	sockaddr_u_t dst = { .sau_ss = &ss_dst };
-	sockaddr_u_t isrc = { .sau_ss = &ss_isrc };
-	sockaddr_u_t idst = { .sau_ss = &ss_idst };
-	ikev2_ts_t *ts_i = NULL;
-	ikev2_ts_t *ts_r = NULL;
-	uint8_t ts_proto = 0, tsi_prefix = 0, tsr_prefix = 0;
+	ts_t ts_i = { 0 };
+	ts_t ts_r = { 0 };
 
-	sockaddr_copy(&i2sa->raddr, &ss_dst, B_FALSE);
-	sockaddr_copy(&i2sa->laddr, &ss_src, B_FALSE);
+	/*
+	 * We should only be called from the responder, so this packet should
+	 * be from the initiator.
+	 */
+	VERIFY(I2P_INITIATOR(pkt));
 
-	if (TRANSPORT_MODE(csa)) {
-		isrc.sau_ss = NULL;
-		idst.sau_ss = NULL;
-	} else {
-		ts_i = first_ts_addr(ts_ip, &ss_idst, &tsi_prefix);
-		ts_r = first_ts_addr(ts_rp, &ss_isrc, &tsr_prefix);
+	ts_first(ts_ip, &ts_i);
+	ts_first(ts_rp, &ts_r);
 
-		if (ts_i->ts_protoid != ts_r->ts_protoid) {
-			/* XXX: log */
-			return (B_FALSE);
+	if (transport_mode) {
+		if (pfkey_inverse_acquire(&ts_r, &ts_i, NULL, NULL,
+		    &csa->i2a_pmsg)) {
+			return (B_TRUE);
 		}
-		ts_proto = ts_i->ts_protoid;
+	} else {
+		/* IPPROTO_ENCAP is ipip */
+		ts_t src = { .ts_proto = IPPROTO_ENCAP };
+		ts_t dst = { .ts_proto = IPPROTO_ENCAP };
+
+		/* We don't specify ports for the outer address */
+		sockaddr_copy(SSTOSA(&i2sa->laddr), &src.ts_ss, B_FALSE);
+		sockaddr_copy(SSTOSA(&i2sa->raddr), &dst.ts_ss, B_FALSE);
+
+		if (pfkey_inverse_acquire(&src, &dst, &ts_r, &ts_i,
+		    &csa->i2a_pmsg)) {
+			return (B_TRUE);
+		}
 	}
 
-	if (pfkey_inverse_acquire(src, dst, ts_proto, isrc, tsi_prefix,
-	    idst, tsr_prefix, &csa->csa_pmsg))
-		return (B_TRUE);
+	/* Error handling / logging */
 
-	if (csa->csa_pmsg == NULL || csa->csa_pmsg->pmsg_samsg == NULL)
+	if (csa->i2a_pmsg == NULL || csa->i2a_pmsg->pmsg_samsg == NULL)
 		return (B_FALSE);
 
-	sadb_msg_t *m = csa->csa_pmsg->pmsg_samsg;
+	sadb_msg_t *m = csa->i2a_pmsg->pmsg_samsg;
 
 	switch (m->sadb_msg_errno) {
 	case ENOENT:
 		(void) bunyan_warn(log,
 		    "No policy found for proposed IPsec traffic",
 		    BUNYAN_T_END);
-		parsedmsg_free(csa->csa_pmsg);
-		csa->csa_pmsg = NULL;
+		parsedmsg_free(csa->i2a_pmsg);
+		csa->i2a_pmsg = NULL;
 		return (B_TRUE);
-	/* XXX: Other possible errors? */
+
+	/* XXX: Other possible errors to explicitly handle? */
 	default:
 		TSTDERR(m->sadb_msg_errno, warn,
 		    "Error while looking up IPsec policy",
@@ -944,116 +1338,103 @@ get_resp_policy(pkt_t *restrict pkt, struct child_sa_args *restrict csa)
 		    BUNYAN_T_UINT32, "diagcode",
 		    (uint32_t)m->sadb_x_msg_diagnostic);
 	}
-	parsedmsg_free(csa->csa_pmsg);
-	csa->csa_pmsg = NULL;
+
+	parsedmsg_free(csa->i2a_pmsg);
+	csa->i2a_pmsg = NULL;
 	return (B_FALSE);
 }
 
 static void
 check_natt_addrs(pkt_t *restrict pkt, boolean_t transport_mode)
 {
-	ikev2_sa_t *i2sa = pkt->pkt_sa;
+	/*
+	 * TODO: Check TSi[0] and TSr[0] in pkt.  If #TS > 1 (i.e.
+	 * TS{i,r}[0] is the OPS/OPD), compare with ikev2_sa_t->{l,r}addr
+	 * to and save to IKE SA if different (thus we know the NATed address)
+	 */
+}
 
-	if (pkt_header(pkt)->exch_type != IKEV2_EXCH_IKE_AUTH)
-		return;
+static void
+ikev2_set_child_type(ikev2_child_sa_state_t *restrict kids, boolean_t initiator,
+    ikev2_spi_proto_t satype)
+{
+	for (size_t i = 0; i < 2; i++) {
+		ikev2_child_sa_t *child = kids[i].csa_child;
 
-	if (transport_mode) {
-		pkt_payload_t *ts_ip = NULL;
-		pkt_payload_t *ts_rp = NULL;
-		ikev2_ts_t *ts_i = NULL;
-		ikev2_ts_t *ts_r = NULL;
-		struct sockaddr_storage loc = { 0 };
-		struct sockaddr_storage rem = { 0 };
-		boolean_t init = !!(i2sa->flags & I2SA_INITIATOR);
-
-		ts_ip = pkt_get_payload(pkt, IKEV2_PAYLOAD_TSi, NULL);
-		ts_rp = pkt_get_payload(pkt, IKEV2_PAYLOAD_TSr, NULL);
-
-		ts_i = first_ts_addr(ts_ip, init ? &loc : &rem, NULL);
-		ts_r = first_ts_addr(ts_rp, init ? &rem : &loc, NULL);
-
-		/*
-		 * XXX: The results here should match the NAT_DETECTION_*
-		 * notification checks (but those can't tell us the actual
-		 * internal IPs).  What to do if there's a mismatch?
-		 */
-		if (!SA_ADDR_EQ(&i2sa->laddr, &loc)) {
-			if (!(i2sa->flags & I2SA_NAT_LOCAL)) {
-				/* TODO: log */
-			}
-			sockaddr_copy(&loc, &i2sa->lnatt, B_TRUE);
-		}
-		if (!SA_ADDR_EQ(&i2sa->raddr, &rem)) {
-			if (!(i2sa->flags & I2SA_NAT_REMOTE)) {
-				/* TODO: log */
-			}
-			sockaddr_copy(&rem, &i2sa->rnatt, B_TRUE);
-		}
-	}
-
-	if (i2sa->lnatt.ss_family != AF_UNSPEC) {
-		(void) bunyan_info(log, "Local NATT address",
-		    ss_bunyan(&i2sa->lnatt), "address", ss_addr(&i2sa->lnatt),
-		    BUNYAN_T_END);
-	}
-	if (i2sa->rnatt.ss_family != AF_UNSPEC) {
-		(void) bunyan_info(log, "Remote NATT address",
-		    ss_bunyan(&i2sa->rnatt), "address", ss_addr(&i2sa->rnatt),
-		    BUNYAN_T_END);
+		child->i2c_initiator = initiator;
+		child->i2c_satype = satype;
 	}
 }
 
 static void
-ikev2_save_child_results(struct child_sa_args *restrict csa,
-    const ikev2_sa_result_t *restrict results)
+ikev2_save_child_results(ikev2_child_sa_state_t *restrict kids,
+    const ikev2_sa_match_t *restrict results, uint32_t out_spi)
 {
-	ikev2_child_sa_t *in = csa->csa_child_in;
-	ikev2_child_sa_t *out = csa->csa_child_out;
+	kids[CSA_IN].csa_child->i2c_spi = results->ism_spi;
+	kids[CSA_OUT].csa_child->i2c_spi = out_spi;
 
-	/*
-	 * The outbound SPI is set from the SADB_GETSPI call, the inbound is
-	 * taken from the peer's SA payload (saved in ikev2_sa_result_t)
-	 */
-	in->i2c_spi = results->sar_spi;
+	for (size_t i = 0; i < 2; i++) {
+		ikev2_child_sa_t *child = kids[i].csa_child;
 
-	in->i2c_satype = out->i2c_satype = results->sar_proto;
-	in->i2c_encr = out->i2c_encr = results->sar_encr;
-	in->i2c_auth = out->i2c_auth = results->sar_auth;
-	in->i2c_encr_keylen = out->i2c_encr_keylen = results->sar_encr_keylen;
-	in->i2c_dh = out->i2c_dh = results->sar_dh;
+		child->i2c_satype = results->ism_satype;
+		child->i2c_encr = results->ism_encr;
+		child->i2c_auth = results->ism_auth;
+		child->i2c_encr_keylen = results->ism_encr_keylen;
+		child->i2c_dh = results->ism_dh;
+	}
+}
+
+static void
+ikev2_save_child_ts(ikev2_child_sa_state_t *restrict kids,
+    const ts_t *restrict ts_i, const ts_t *restrict ts_r)
+{
+	for (size_t i = 0; i < 2; i++) {
+		ikev2_child_sa_t *child = kids[i].csa_child;
+
+		child->i2c_ts_i = *ts_i;
+		child->i2c_ts_r = *ts_r;
+	}
 }
 
 /* Sends the pf_key(7P) messages to establish the IPsec SAs */
 static boolean_t
-ikev2_create_child_sas(struct child_sa_args *restrict csa)
+ikev2_create_child_sas(ikev2_sa_t *restrict sa, ikev2_sa_args_t *restrict args)
 {
-	ikev2_sa_t *sa = csa->csa_i2sa;
-	sadb_msg_t *samsg = NULL;
+	ikev2_child_sa_state_t *kid = args->i2a_child;
 
-	if (PMSG_FROM_KERNEL(csa->csa_pmsg))
-		samsg = csa->csa_pmsg->pmsg_samsg;
+	/* We always create IPsec SAs in pairs, so there's _always_ 2 */
+	for (size_t i = 0; i < 2; i++, kid++) {
+		ikev2_child_sa_t *csa = kid->csa_child;
 
-	if (!pfkey_sadb_add_update(sa, csa->csa_child_in,
-	    csa->csa_child_in_encr, csa->csa_child_in_auth, samsg))
-		return (B_FALSE);
+		if (!pfkey_sadb_add_update(sa, csa, kid->csa_child_encr,
+		    kid->csa_child_auth, args->i2a_pmsg))
+			return (B_FALSE);
 
-	ikev2_sa_add_child(sa, csa->csa_child_in);
-	csa->csa_added_child_in = B_TRUE;
-	csa->csa_child_out->i2c_pair = csa->csa_child_in;
+		ikev2_sa_add_child(sa, csa);
+		kid->csa_child_added = B_TRUE;
+		csa->i2c_birth = gethrtime();
 
-	if (!pfkey_sadb_add_update(sa, csa->csa_child_out,
-	    csa->csa_child_out_encr, csa->csa_child_out_auth, samsg))
-		return (B_FALSE);
+		/*
+		 * We want the two IPsec SAs to be paired in the kernel, but
+		 * AFAIK when adding the SADB_X_EXT_PAIR to a SADB_{ADD,UPDATE}
+		 * message, it must reference an existing SA, so we don't
+		 * set i2c_pair until after we've created/added the first SA.
+		 */
+		kid[i ^ 1].csa_child->i2c_pair = kid[i ^ 0].csa_child;
 
-	ikev2_sa_add_child(sa, csa->csa_child_out);
-	csa->csa_added_child_out = B_TRUE;
-	csa->csa_child_in->i2c_pair = csa->csa_child_out;
+		/* TODO: Log more keys */
+		(void) bunyan_debug(log, "Created IPsec SA",
+		    BUNYAN_T_STRING, "spi", enum_printf("0x%" PRIx32,
+		    ntohl(csa->i2c_spi)),
+		    BUNYAN_T_BOOLEAN, "inbound", csa->i2c_inbound,
+		    BUNYAN_T_END);
+	}
 
 	return (B_TRUE);
 }
 
 static boolean_t
-generate_keys(struct child_sa_args *csa)
+generate_keys(ikev2_sa_t *restrict i2sa, ikev2_sa_args_t *restrict csa)
 {
 	/*
 	 * RFC7296 2.17 - If we are doing a DH key exchange, the order of the
@@ -1065,33 +1446,26 @@ generate_keys(struct child_sa_args *csa)
 		size_t len;
 	} prfp_args[] = {
 		{ NULL, 0 },		/* g^ir if doing a key exchange */
-		{ csa->csa_nonce_i, csa->csa_nonce_i_len },
-		{ csa->csa_nonce_r, csa->csa_nonce_r_len },
+		{ csa->i2a_nonce_i, csa->i2a_nonce_i_len },
+		{ csa->i2a_nonce_r, csa->i2a_nonce_r_len },
 		{ NULL, 0 }
 	};
 	size_t idx = 1;		/* index of first arg to prfplus_init */
 	prfp_t prfp = { 0 };
-	uint8_t *init_encr = NULL, *init_auth = NULL;
-	uint8_t *resp_encr = NULL, *resp_auth = NULL;
+	ikev2_child_sa_state_t *init = NULL, *resp = NULL;
 	size_t encrlen = 0, authlen = 0;
 	boolean_t ret = B_FALSE;
 
-	if (INITIATOR(csa)) {
-		init_encr = csa->csa_child_out_encr;
-		init_auth = csa->csa_child_out_auth;
-		resp_encr = csa->csa_child_in_encr;
-		resp_auth = csa->csa_child_in_auth;
-	} else {
-		init_encr = csa->csa_child_in_encr;
-		init_auth = csa->csa_child_in_auth;
-		resp_encr = csa->csa_child_out_encr;
-		resp_auth = csa->csa_child_out_auth;
-	}
+	init = &csa->i2a_child[INITIATOR(csa) ? CSA_OUT : CSA_IN];
+	resp = &csa->i2a_child[INITIATOR(csa) ? CSA_IN : CSA_OUT];
 
-	if (csa->csa_dhkey != CK_INVALID_HANDLE) {
+	(void) bunyan_trace(log, "Generating child SA keys",
+	    BUNYAN_T_END);
+
+	if (csa->i2a_dhkey != CK_INVALID_HANDLE) {
 		CK_RV rv = CKR_OK;
 
-		rv = pkcs11_ObjectToKey(p11h(), csa->csa_dhkey,
+		rv = pkcs11_ObjectToKey(p11h(), csa->i2a_dhkey,
 		    (void **)&prfp_args[0].ptr, &prfp_args[0].len, B_FALSE);
 		if (rv != CKR_OK) {
 			PKCS11ERR(error, "pkcs11_ObjectToKey",
@@ -1102,7 +1476,7 @@ generate_keys(struct child_sa_args *csa)
 		idx = 0;
 	}
 
-	ret = prfplus_init(&prfp, csa->csa_i2sa->prf, csa->csa_i2sa->sk_d,
+	ret = prfplus_init(&prfp, i2sa->prf, i2sa->sk_d,
 	    prfp_args[idx].ptr, prfp_args[idx].len,
 	    prfp_args[idx + 1].ptr, prfp_args[idx + 1].len,
 	    prfp_args[idx + 2].ptr, prfp_args[idx + 2].len,
@@ -1115,13 +1489,13 @@ generate_keys(struct child_sa_args *csa)
 		return (B_FALSE);
 
 	/* Sanity checks that both pairs agree on algs and key lengths */
-	VERIFY3S(csa->csa_child_in->i2c_encr, ==, csa->csa_child_out->i2c_encr);
-	VERIFY3S(csa->csa_child_in->i2c_auth, ==, csa->csa_child_out->i2c_auth);
-	VERIFY3U(csa->csa_child_in->i2c_encr_keylen, ==,
-	    csa->csa_child_out->i2c_encr_keylen);
+	VERIFY3S(init->csa_child->i2c_encr, ==, resp->csa_child->i2c_encr);
+	VERIFY3S(init->csa_child->i2c_auth, ==, resp->csa_child->i2c_auth);
+	VERIFY3U(init->csa_child->i2c_encr_keylen, ==,
+	    resp->csa_child->i2c_encr_keylen);
 
-	encrlen = SADB_1TO8(csa->csa_child_in->i2c_encr_keylen);
-	authlen = auth_data[csa->csa_child_in->i2c_auth].ad_keylen;
+	encrlen = SADB_1TO8(init->csa_child->i2c_encr_keylen);
+	authlen = auth_data(init->csa_child->i2c_auth)->ad_keylen;
 
 	VERIFY3U(encrlen, <=, ENCR_MAX);
 	VERIFY3U(authlen, <=, AUTH_MAX);
@@ -1131,127 +1505,26 @@ generate_keys(struct child_sa_args *csa)
 	 * responder.  For each side, we always start with encryption keys
 	 * then authentication keys.
 	 */
-	ret = prfplus(&prfp, init_encr, encrlen) &&
-	    prfplus(&prfp, init_auth, authlen) &&
-	    prfplus(&prfp, resp_encr, encrlen) &&
-	    prfplus(&prfp, resp_auth, authlen);
+	ret = prfplus(&prfp, init->csa_child_encr, encrlen) &&
+	    prfplus(&prfp, init->csa_child_auth, authlen) &&
+	    prfplus(&prfp, resp->csa_child_encr, encrlen) &&
+	    prfplus(&prfp, resp->csa_child_auth, authlen);
 
 done:
 	prfplus_fini(&prfp);
+
+	(void) bunyan_trace(log, "Finished generating keys",
+	    BUNYAN_T_BOOLEAN, "success", ret,
+	    BUNYAN_T_END);
+
 	return (ret);
-}
-
-
-static struct child_sa_args *
-create_csa_args(ikev2_sa_t *restrict i2sa, boolean_t is_auth,
-    boolean_t initiator)
-{
-	struct child_sa_args *csa = umem_zalloc(sizeof (*csa), UMEM_DEFAULT);
-
-	if (csa == NULL) {
-		(void) bunyan_warn(log,
-		   "Unable to allocate memory for child sa negotiation",
-		    BUNYAN_T_END);
-		return (NULL);
-	}
-
-	csa->csa_i2sa = i2sa;
-	csa->csa_child_in = ikev2_child_sa_alloc(B_TRUE);
-	csa->csa_child_out = ikev2_child_sa_alloc(B_FALSE);
-	if (csa->csa_child_in == NULL || csa->csa_child_out == NULL) {
-		(void) bunyan_warn(log,
-		    "Unable to allocate memory for child SAs",
-		    BUNYAN_T_END);
-		csa_args_free(csa);
-		return (NULL);
-	}
-
-	csa->csa_is_auth = is_auth;
-
-	/*
-	 * RFC7296 2.17 - For an IKE_AUTH exchange, we reuse the nonces
-	 * from the IKE_SA_INIT exchange.  For a CREATE_CHILD_SA
-	 * exchange, we create new ones when we add the payloads to
-	 * our outgoing packet.  We also can only perform an optional DH
-	 * key exchange during a CREATE_CHILD_SA exchange -- for an IKE_AUTH
-	 * exchange, we cannot perform a DH key exchange (we instead rely on
-	 * the exchange done during the IKE_SA_INIT exchange).
-	 */
-	if (is_auth) {
-		pkt_payload_t *ni = NULL;
-		pkt_payload_t *nr = NULL;
-
-		ni = pkt_get_payload(i2sa->init_i, IKEV2_PAYLOAD_NONCE, NULL);
-		nr = pkt_get_payload(i2sa->init_r, IKEV2_PAYLOAD_NONCE, NULL);
-
-		bcopy(ni->pp_ptr, csa->csa_nonce_i, ni->pp_len);
-		bcopy(nr->pp_ptr, csa->csa_nonce_r, nr->pp_len);
-		csa->csa_nonce_i_len = ni->pp_len;
-		csa->csa_nonce_r_len = nr->pp_len;
-	} else {
-		csa->csa_dh = i2sa->i2sa_rule->rule_p2_dh;
-	}
-
-	csa->csa_child_in->i2c_initiator = csa->csa_child_out->i2c_initiator =
-	    initiator;
-
-	return (csa);
-}
-
-static void
-csa_args_free(struct child_sa_args *csa)
-{
-	if (csa == NULL)
-		return;
-
-	pkcs11_destroy_obj("child dh_pubkey", &csa->csa_pubkey);
-	pkcs11_destroy_obj("child dh_privkey", &csa->csa_privkey);
-	pkcs11_destroy_obj("child gir", &csa->csa_dhkey);
-
-	if (!csa->csa_added_child_in)
-		ikev2_child_sa_free(csa->csa_i2sa, csa->csa_child_in);
-	if (!csa->csa_added_child_out)
-		ikev2_child_sa_free(csa->csa_i2sa, csa->csa_child_out);
-
-	explicit_bzero(csa, sizeof (*csa));
-	umem_free(csa, sizeof (*csa));
-}
-
-/*
- * XXX: Just return the first non-UNSPEC SATYPE found.
- * This is very temporary until more of the CREATE_CHILD_SA stuff is complete.
- */
-static uint8_t
-get_satype(parsedmsg_t *pmsg)
-{
-	sadb_msg_t *msg = pmsg->pmsg_samsg;
-	sadb_prop_t *prop = (sadb_prop_t *)pmsg->pmsg_exts[SADB_X_EXT_EPROP];
-	sadb_x_ecomb_t *ecomb = NULL;
-
-	if (prop == NULL || msg->sadb_msg_satype != SADB_SATYPE_UNSPEC)
-		return (msg->sadb_msg_satype);
-
-	ecomb = (sadb_x_ecomb_t *)(prop + 1);
-	for (size_t i = 0; i < prop->sadb_x_prop_numecombs; i++) {
-		sadb_x_algdesc_t *alg = (sadb_x_algdesc_t *)(ecomb + 1);
-
-		for (size_t j = 0; j < ecomb->sadb_x_ecomb_numalgs;
-		   j++, alg++) {
-			if (alg->sadb_x_algdesc_satype != SADB_SATYPE_UNSPEC)
-				return (alg->sadb_x_algdesc_satype);
-		}
-
-		prop = (sadb_prop_t *)alg;
-	}
-
-	return (SADB_SATYPE_UNSPEC);
 }
 
 /*
  * Get the sadb address from a parsed message that will actually be subjected
- * to IPsec.  For transport mode, this is the SRC/DST address, while for
- * tunnel mode, this is the inner SRC/DST address.  'src' determines if
- * we want the appropirate SRC or DST address.
+ * to IPsec.  For transport mode, this is the SRC/DST address, for tunnel
+ * mode, this is the inner SRC/DST address.  'src' determines if we want
+ * the appropriate SRC or DST address.
  */
 static sadb_address_t *
 get_sadb_addr(parsedmsg_t *pmsg, boolean_t src)
@@ -1278,26 +1551,4 @@ get_sadb_addr(parsedmsg_t *pmsg, boolean_t src)
 	}
 
 	return ((sadb_address_t *)ext);
-}
-
-static ikev2_ts_t *
-first_ts_addr(pkt_payload_t *restrict tspay,
-    struct sockaddr_storage *restrict addr,
-    uint8_t *prefixp)
-{
-	ikev2_ts_t *ts = NULL;
-	ikev2_ts_iter_t iter = { 0 };
-	sockrange_t range = { 0 };
-	uint8_t prefix = 0;
-
-	VERIFY(tspay->pp_type == IKEV2_PAYLOAD_TSi ||
-	    tspay->pp_type == IKEV2_PAYLOAD_TSr);
-
-	ts = ikev2_ts_iter(tspay, &iter, &range);
-	range_to_net(&range, SSTOSA(addr), &prefix);
-	if (prefixp != NULL) {
-		VERIFY3U(prefix, <=, UINT8_MAX);
-		*prefixp = prefix;
-	}
-	return (ts);
 }

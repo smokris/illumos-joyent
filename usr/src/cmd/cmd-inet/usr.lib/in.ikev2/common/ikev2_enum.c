@@ -297,6 +297,31 @@ ikev2_prf_str(ikev2_prf_t id)
 }
 
 const char *
+ikev2_xf_str(ikev2_xf_type_t type, uint16_t val)
+{
+	switch (type) {
+	case IKEV2_XF_ENCR:
+		return (ikev2_xf_encr_str(val));
+	case IKEV2_XF_PRF:
+		return (ikev2_prf_str(val));
+	case IKEV2_XF_AUTH:
+		return (ikev2_xf_auth_str(val));
+	case IKEV2_XF_DH:
+		return (ikev2_dh_str(val));
+	case IKEV2_XF_ESN:
+		switch (val) {
+		case 0:
+			return ("NO");
+		case 1:
+			return ("YES");
+		}
+		/* Let default print numeric value */
+		break;
+	}
+	return (enum_printf("%hhu", val));
+}
+
+const char *
 ikev2_notify_str(ikev2_notify_type_t id)
 {
 	switch (id) {

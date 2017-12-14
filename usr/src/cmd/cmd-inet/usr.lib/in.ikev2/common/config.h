@@ -159,7 +159,8 @@ config_rule_t *config_get_rule(union sockaddr_u_s,
 void cfg_rule_free(config_rule_t *);
 void cfg_free(config_t *);
 
-boolean_t config_addr_to_ss(config_addr_t *, union sockaddr_u_s);
+boolean_t config_addr_to_ss(const config_addr_t *restrict,
+    struct sockaddr_storage *restrict);
 
 config_auth_id_t ikev2_id_to_cfg(ikev2_id_type_t);
 config_id_t *config_id_new(config_auth_id_t, const void *, size_t);

@@ -30,15 +30,17 @@ extern "C" {
 struct ikev2_sa_s;
 struct ikev2_child_sa_s;
 struct ikev2_sa_result_s;
+struct parsedmsg_s;
+struct ts_s;
 
 void pfkey_send_error(const sadb_msg_t *, uint8_t);
-boolean_t pfkey_getspi(const sadb_msg_t *restrict, sockaddr_u_t, sockaddr_u_t,
-    uint8_t, uint32_t *restrict);
-boolean_t pfkey_inverse_acquire(sockaddr_u_t, sockaddr_u_t, uint8_t,
-    sockaddr_u_t, uint8_t, sockaddr_u_t, uint8_t, struct parsedmsg_s **);
+boolean_t pfkey_getspi(const struct parsedmsg_s *restrict, uint8_t,
+    uint32_t *restrict);
+boolean_t pfkey_inverse_acquire(const struct ts_s *, const struct ts_s *,
+    const struct ts_s *, const struct ts_s *, struct parsedmsg_s **);
 boolean_t pfkey_sadb_add_update(struct ikev2_sa_s *restrict,
     struct ikev2_child_sa_s *restrict, const uint8_t *restrict,
-    const uint8_t *restrict, const sadb_msg_t *restrict);
+    const uint8_t *restrict, const struct parsedmsg_s *restrict);
 boolean_t pfkey_delete(uint8_t, uint32_t, sockaddr_u_t, sockaddr_u_t,
     boolean_t);
 

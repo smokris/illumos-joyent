@@ -17,6 +17,7 @@
 #include <security/cryptoki.h>
 #include <stdarg.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/debug.h>
 #include <sys/md5.h>	/* For length constants */
 #include <sys/sha1.h>	/* For length constants */
@@ -101,7 +102,6 @@ prf(ikev2_prf_t alg, CK_OBJECT_HANDLE key, uint8_t *restrict out, size_t outlen,
 
 		rc = C_SignUpdate(h, segp, seglen);
 		if (rc != CKR_OK) {
-			/* XXX: should we still call C_SignFinal? */
 			PKCS11ERR(error, "C_SignUpdate", rc);
 			return (B_FALSE);
 		}
@@ -129,7 +129,7 @@ prfplus_init(prfp_t *restrict prfp, ikev2_prf_t alg, CK_OBJECT_HANDLE key, ...)
 	size_t		len = 0;
 	va_list		ap;
 
-	(void) memset(prfp, 0, sizeof (*prfp));
+	bzero(prfp, sizeof (*prfp));
 
 	prfp->prfp_alg = alg;
 	prfp->prfp_key = key;
@@ -154,7 +154,7 @@ prfplus_init(prfp_t *restrict prfp, ikev2_prf_t alg, CK_OBJECT_HANDLE key, ...)
 	while ((p = va_arg(ap, uint8_t *)) != NULL) {
 		size_t seglen = va_arg(ap, size_t);
 
-		(void) memcpy(prfp->prfp_seed + len, p, seglen);
+		bcopy(p, prfp->prfp_seed + len, seglen);
 		len += seglen;
 	}
 	va_end(ap);
@@ -190,6 +190,7 @@ prfplus_init(prfp_t *restrict prfp, ikev2_prf_t alg, CK_OBJECT_HANDLE key, ...)
 		goto fail;
 
 	return (B_TRUE);
+
 fail:
 	prfplus_fini(prfp);
 	return (B_FALSE);
@@ -286,8 +287,8 @@ prfplus_fini(prfp_t *prfp)
  * passed for debugging purposes.
  */
 boolean_t
-prf_to_p11key(prfp_t *restrict prfp, const char *restrict name, int alg,
-    size_t len, CK_OBJECT_HANDLE_PTR restrict objp)
+prf_to_p11key(prfp_t *restrict prfp, const char *restrict name,
+    CK_MECHANISM_TYPE alg, size_t len, CK_OBJECT_HANDLE_PTR restrict objp)
 {
 	CK_RV rc = CKR_OK;
 	/*
@@ -305,7 +306,6 @@ prf_to_p11key(prfp_t *restrict prfp, const char *restrict name, int alg,
 	}
 
 	rc = SUNW_C_KeyToObject(p11h(), alg, buf, len, objp);
-	explicit_bzero(buf, len);
 
 	/*
 	 * XXX: Might it be worth setting the object label attribute to 'name'
@@ -314,8 +314,24 @@ prf_to_p11key(prfp_t *restrict prfp, const char *restrict name, int alg,
 	if (rc != CKR_OK) {
 		PKCS11ERR(error, "SUNW_C_KeyToObject", rc,
 		    BUNYAN_T_STRING, "objname", name);
+	} else {
+		size_t hexlen = len * 2 + 1;
+		char hex[hexlen];
+
+		bzero(hex, hexlen);
+		if (show_keys)
+			(void) writehex(buf, len, "", hex, hexlen);
+
+		(void) bunyan_trace(log, "Created PKCS#11 key",
+		    BUNYAN_T_STRING, "objname", name,
+		    show_keys ? BUNYAN_T_STRING : BUNYAN_T_END, "key", hex,
+		    BUNYAN_T_UINT32, "keybits", (uint32_t)SADB_8TO1(len),
+		    BUNYAN_T_END);
+
+		explicit_bzero(hex, hexlen);
 	}
 
+	explicit_bzero(buf, len);
 	return ((rc == CKR_OK) ? B_TRUE : B_FALSE);
 }
 

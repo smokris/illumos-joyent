@@ -42,8 +42,8 @@ boolean_t prfplus_init(prfp_t *restrict, ikev2_prf_t, CK_OBJECT_HANDLE, ...);
 void prfplus_fini(prfp_t *);
 boolean_t prfplus(prfp_t *restrict, uint8_t *restrict, size_t);
 
-boolean_t prf_to_p11key(prfp_t *restrict, const char *restrict, int, size_t,
-    CK_OBJECT_HANDLE_PTR restrict);
+boolean_t prf_to_p11key(prfp_t *restrict, const char *restrict,
+    CK_MECHANISM_TYPE, size_t, CK_OBJECT_HANDLE_PTR restrict);
 
 CK_MECHANISM_TYPE ikev2_prf_to_p11(ikev2_prf_t);
 size_t	ikev2_prf_keylen(ikev2_prf_t);

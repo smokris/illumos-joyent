@@ -94,7 +94,8 @@ config_get_rule(sockaddr_u_t local, sockaddr_u_t remote)
 }
 
 boolean_t
-config_addr_to_ss(config_addr_t *caddr, sockaddr_u_t saddr)
+config_addr_to_ss(const config_addr_t *restrict caddr,
+    struct sockaddr_storage *restrict ss)
 {
 	switch (caddr->cfa_type) {
 	case CFG_ADDR_IPV4_PREFIX:
@@ -103,15 +104,15 @@ config_addr_to_ss(config_addr_t *caddr, sockaddr_u_t saddr)
 	case CFG_ADDR_IPV6_RANGE:
 		return (B_FALSE);
 	case CFG_ADDR_IPV4:
-		saddr.sau_sin->sin_family = AF_INET;
-		saddr.sau_sin->sin_port = htons(IPPORT_IKE);
-		(void) memcpy(&saddr.sau_sin->sin_addr, &caddr->cfa_start4,
+		ss->ss_family = AF_INET;
+		((struct sockaddr_in *)ss)->sin_port = htons(IPPORT_IKE);
+		bcopy(&caddr->cfa_start4, (void *)ss_addr(SSTOSA(ss)),
 		    sizeof (in_addr_t));
 		break;
 	case CFG_ADDR_IPV6:
-		saddr.sau_sin6->sin6_family = AF_INET6;
-		saddr.sau_sin6->sin6_port = htons(IPPORT_IKE);
-		(void) memcpy(&saddr.sau_sin6->sin6_addr, &caddr->cfa_start6,
+		ss->ss_family = AF_INET6;
+		((struct sockaddr_in6 *)ss)->sin6_port = htons(IPPORT_IKE);
+		bcopy(&caddr->cfa_start6, (void *)ss_addr(SSTOSA(ss)),
 		    sizeof (in6_addr_t));
 		break;
 	}

@@ -31,14 +31,14 @@ extern uint_t ikev2_cookie_secret_lifetime;
 /* How long after a cookie expires do we still accept it in seconds */
 extern uint_t ikev2_cookie_secret_grace;
 
-struct sockaddr_storage;
+struct sockaddr;
 struct pkt_s;
 
 void ikev2_cookie_enable(void);
 void ikev2_cookie_disable(void);
 boolean_t ikev2_cookie_check(struct pkt_s *restrict,
-    const struct sockaddr_storage *restrict,
-    const struct sockaddr_storage *restrict);
+    const struct sockaddr *restrict,
+    const struct sockaddr *restrict);
 void ikev2_cookie_init(void);
 
 #ifdef __cplusplus

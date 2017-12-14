@@ -113,7 +113,7 @@ inbound(int s)
 		pkt = ikev2_pkt_new_inbound(worker->w_buf, pktlen);
 		if (pkt == NULL)
 			return;
-		ikev2_inbound(pkt, &from, &to);
+		ikev2_inbound(pkt, SSTOSA(&from), SSTOSA(&to));
 		return;
 	default:
 		(void) bunyan_info(log, "Unsupported ISAKMP/IKE version",
@@ -178,11 +178,11 @@ udp_listener_socket(sa_family_t af, uint16_t port, boolean_t natt)
 	sau.sau_ss->ss_family = af;
 	/* Exploit that sin_port and sin6_port live at the same offset. */
 	sau.sau_sin->sin_port = htons(port);
-	if (bind(sock, (const struct sockaddr *)sau.sau_ss, socksize) == -1) {
+	if (bind(sock, sau.sau_sa, socksize) == -1) {
 		STDERR(fatal, "bind(fd, addr) failed",
 		    BUNYAN_T_INT32, "fd", (int32_t)sock,
-		    ss_bunyan(sau.sau_ss), "addr", ss_addr(sau.sau_ss),
-		    BUNYAN_T_UINT32, "port", ss_port(sau.sau_ss),
+		    ss_bunyan(sau.sau_sa), "addr", ss_addr(sau.sau_sa),
+		    BUNYAN_T_UINT32, "port", ss_port(sau.sau_sa),
 		    BUNYAN_T_END);
 		exit(EXIT_FAILURE);
 	}

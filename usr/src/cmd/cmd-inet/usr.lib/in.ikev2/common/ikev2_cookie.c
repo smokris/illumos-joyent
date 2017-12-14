@@ -127,7 +127,7 @@ ikev2_cookie_disable(void)
 
 static boolean_t
 cookie_calc(uint8_t v, uint8_t *restrict nonce, size_t noncelen,
-    const struct sockaddr_storage *restrict ip, uint64_t spi,
+    const struct sockaddr *restrict ip, uint64_t spi,
     uint8_t *out, CK_ULONG outlen)
 {
 	VERIFY(IS_WORKER);
@@ -149,16 +149,8 @@ cookie_calc(uint8_t v, uint8_t *restrict nonce, size_t noncelen,
 		goto done;
 	}
 
-	switch (ip->ss_family) {
-	case AF_INET:
-		iplen = sizeof (in_addr_t);
-		break;
-	case AF_INET6:
-		iplen = sizeof (in6_addr_t);
-		break;
-	default:
-		INVALID("ss_family");
-	}
+	iplen = ss_addrlen(ip);
+
 	rc = C_DigestUpdate(h, (CK_BYTE_PTR)ss_addr(ip), iplen);
 	if (rc != CKR_OK) {
 		PKCS11ERR(error, "C_DigestUpdate", rc);
@@ -189,8 +181,8 @@ done:
 
 static void
 send_cookie(pkt_t *restrict pkt,
-    const struct sockaddr_storage *restrict laddr,
-    const struct sockaddr_storage *restrict raddr)
+    const struct sockaddr *restrict laddr,
+    const struct sockaddr *restrict raddr)
 {
 	pkt_payload_t *nonce = pkt_get_payload(pkt, IKEV2_PAYLOAD_NONCE, NULL);
 	pkt_t *resp = ikev2_pkt_new_response(pkt);
@@ -206,8 +198,8 @@ send_cookie(pkt_t *restrict pkt,
 		return;
 	}
 
-	if (!ikev2_add_notify(resp, IKEV2_PROTO_IKE, 0, IKEV2_N_COOKIE, buf,
-	    sizeof (buf))) {
+	if (!ikev2_add_notify_full(resp, IKEV2_PROTO_NONE, 0,
+	    IKEV2_N_COOKIE, buf, sizeof (buf))) {
 		ikev2_pkt_free(resp);
 		return;
 	}
@@ -219,7 +211,7 @@ send_cookie(pkt_t *restrict pkt,
 
 static boolean_t
 cookie_compare(uint8_t *restrict nonce, size_t noncelen,
-    const struct sockaddr_storage *restrict ip, uint64_t spi,
+    const struct sockaddr *restrict ip, uint64_t spi,
     uint8_t *restrict cmp, size_t cmplen)
 {
 	uint8_t buf[COOKIE_LEN] = { 0 };
@@ -240,8 +232,8 @@ cookie_compare(uint8_t *restrict nonce, size_t noncelen,
  */
 boolean_t
 ikev2_cookie_check(pkt_t *restrict pkt,
-    const struct sockaddr_storage *restrict laddr,
-    const struct sockaddr_storage *restrict raddr)
+    const struct sockaddr *restrict laddr,
+    const struct sockaddr *restrict raddr)
 {
 	pkt_notify_t *cookie = pkt_get_notify(pkt, IKEV2_N_COOKIE, NULL);
 	pkt_payload_t *nonce = pkt_get_payload(pkt, IKEV2_PAYLOAD_NONCE, NULL);

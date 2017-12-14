@@ -18,6 +18,7 @@
 #include <strings.h>
 #include <synch.h>
 #include <sys/debug.h>
+#include <sys/sha2.h>	/* For digest sizes */
 #include "config.h"
 #include "defs.h"
 #include "ikev2.h"
@@ -34,12 +35,11 @@
 
 static void ikev2_ike_auth_init_resp(ikev2_sa_t *restrict, pkt_t *restrict,
     void *restrict);
-
-static boolean_t ikev2_auth_failed(const pkt_t *);
+static boolean_t ikev2_auth_failed(ikev2_sa_t *);
 static boolean_t create_psk(ikev2_sa_t *);
 static boolean_t calc_auth(ikev2_sa_t *restrict, boolean_t,
     pkt_payload_t *restrict, uint8_t *restrict, size_t);
-static boolean_t add_id(pkt_t *, config_id_t *id, boolean_t);
+static boolean_t add_id(pkt_t *, const config_id_t *id, boolean_t);
 static boolean_t add_auth(pkt_t *);
 static boolean_t check_auth(pkt_t *);
 static boolean_t check_remote_id(pkt_t *, config_id_t **);
@@ -48,15 +48,23 @@ static config_id_t *i2id_to_cid(pkt_payload_t *);
 static size_t get_authlen(const ikev2_sa_t *);
 
 void
-ikev2_ike_auth_init(ikev2_sa_t *restrict sa, parsedmsg_t *restrict pmsg)
+ikev2_ike_auth_init(ikev2_sa_t *restrict sa)
 {
 	VERIFY(IS_WORKER);
 	VERIFY(!MUTEX_HELD(&sa->i2sa_queue_lock));
 	VERIFY(MUTEX_HELD(&sa->i2sa_lock));
 
+	ikev2_sa_args_t *sa_args = sa->sa_init_args;
 	config_rule_t *rule = sa->i2sa_rule;
 	pkt_t *req = ikev2_pkt_new_exchange(sa, IKEV2_EXCH_IKE_AUTH);
-	void *arg = NULL;
+
+	/*
+	 * Once we start the IKE_AUTH exchange, we no longer need the
+	 * DH keys used during the IKE_SA_INIT exchange
+	 */
+	pkcs11_destroy_obj("dh_pubkey", &sa_args->i2a_pubkey);
+	pkcs11_destroy_obj("dh_privkey", &sa_args->i2a_privkey);
+	pkcs11_destroy_obj("dh_key", &sa_args->i2a_dhkey);
 
 	(void) bunyan_debug(log, "Starting IKE_AUTH exchange", BUNYAN_T_END);
 
@@ -75,17 +83,16 @@ ikev2_ike_auth_init(ikev2_sa_t *restrict sa, parsedmsg_t *restrict pmsg)
 	 * XXX: We can optionally add _1_ IDr payload to indicate a preferred
 	 * ID for the responder to use.  Since we currently support multiple
 	 * remote ids in a rule, not sure there's any benefit to do this.
-	 * For now, we will elect not to do this.
+	 * For now, we elect not to do this.
 	 */
 
 	if (!add_auth(req))
 		goto fail;
 
-	arg = ikev2_create_child_sa_init_auth(sa, req, pmsg);
-	if (arg == NULL)
+	if (!ikev2_create_child_sa_init_auth(sa, req))
 		goto fail;
 
-	if (!ikev2_send_req(req, ikev2_ike_auth_init_resp, arg))
+	if (!ikev2_send_req(req, ikev2_ike_auth_init_resp, sa_args))
 		goto fail;
 
 	return;
@@ -103,14 +110,12 @@ ikev2_ike_auth_resp(pkt_t *req)
 	VERIFY(MUTEX_HELD(&req->pkt_sa->i2sa_lock));
 
 	ikev2_sa_t *sa = req->pkt_sa;
+	ikev2_sa_args_t *sa_args = sa->sa_init_args;
 	config_rule_t *rule = sa->i2sa_rule;
 	pkt_t *resp = NULL;
 	pkt_payload_t *id_r = NULL;
 	config_id_t *cid_i = NULL;
 	const char *mstr = NULL;
-
-	(void) bunyan_debug(log, "Responding to IKE_AUTH request",
-	    BUNYAN_T_END);
 
 	resp = ikev2_pkt_new_response(req);
 
@@ -122,8 +127,44 @@ ikev2_ike_auth_resp(pkt_t *req)
 	if (resp == NULL)
 		goto fail;
 
-	if (!ikev2_add_sk(resp))
-		goto fail;
+	/* This is the first payload, so it better fit */
+	VERIFY(ikev2_add_sk(resp));
+
+	/*
+	 * This is possible, but strange -- we've authenticated
+	 * (IKE_AUTH messages always start with msgid 1, but could go higher
+	 * if/when we support EAP, so it must be > 1 or else we should have
+	 * already handled it as a duplicate), but are receiving another
+	 * IKE_AUTH request.  RFC7296 says nothing about this, however the
+	 * peer is expecting a response, the only good candidates are
+	 * AUTHENTICATION_FAILED or INVALID_SYNTAX.  The latter seems better
+	 * since we've already authenticated.
+	 */
+	if (sa->flags & I2SA_AUTHENTICATED) {
+		VERIFY3U(ntohl(pkt_header(req)->msgid), >, 1);
+		(void) bunyan_warn(log,
+		    "Received an IKE_AUTH request to an already authenticated "
+		    "IKE SA;", BUNYAN_T_END);
+
+		if (ikev2_add_notify(resp, IKEV2_N_INVALID_SYNTAX))
+			ikev2_send_resp(resp);
+		else
+			ikev2_pkt_free(resp);
+
+		ikev2_pkt_free(req);
+		return;
+	}
+
+	/*
+	 * Once we start the IKE_AUTH exchange, we no longer need the
+	 * DH keys used during the IKE_SA_INIT exchange
+	 */
+	pkcs11_destroy_obj("dh_pubkey", &sa_args->i2a_pubkey);
+	pkcs11_destroy_obj("dh_privkey", &sa_args->i2a_privkey);
+	pkcs11_destroy_obj("dh_key", &sa_args->i2a_dhkey);
+
+	(void) bunyan_debug(log, "Responding to IKE_AUTH request",
+	    BUNYAN_T_END);
 
 	if (!check_remote_id(req, &cid_i))
 		goto authfail;
@@ -140,6 +181,7 @@ ikev2_ike_auth_resp(pkt_t *req)
 		(void) bunyan_warn(log, "Authentication failed",
 		    BUNYAN_T_STRING, "authmethod", mstr,
 		    BUNYAN_T_END);
+
 		goto authfail;
 	}
 
@@ -186,10 +228,20 @@ ikev2_ike_auth_resp(pkt_t *req)
 	if (!add_auth(resp))
 		goto fail;
 
-	ikev2_create_child_sa_resp_auth(req, resp);
+	if (!ikev2_create_child_sa_resp_auth(req, resp))
+		goto fail;
+
+	if (!ikev2_send_resp(resp))
+		goto fail;
+
+	ikev2_sa_args_free(sa->sa_init_args);
+	sa->sa_init_args = NULL;
 	return;
 
 fail:
+	ikev2_sa_args_free(sa->sa_init_args);
+	sa->sa_init_args = NULL;
+	ikev2_sa_condemn(sa);
 	ikev2_pkt_free(resp);
 	ikev2_pkt_free(req);
 	return;
@@ -197,13 +249,15 @@ fail:
 authfail:
 	config_id_free(cid_i);
 	ikev2_pkt_free(resp);
+	ikev2_sa_args_free(sa->sa_init_args);
+	sa->sa_init_args = NULL;
 
-	if (!ikev2_add_notify(resp, IKEV2_PROTO_IKE, 0,
-	    IKEV2_N_AUTHENTICATION_FAILED, NULL, 0)) {
-		ikev2_pkt_free(resp);
+	if (ikev2_add_notify(resp, IKEV2_N_AUTHENTICATION_FAILED)) {
+		(void) ikev2_send_resp(resp);
 	} else {
-		ikev2_send_resp(resp);
+		ikev2_pkt_free(resp);
 	}
+
 	ikev2_sa_condemn(sa);
 }
 
@@ -214,18 +268,20 @@ static void
 ikev2_ike_auth_init_resp(ikev2_sa_t *restrict sa, pkt_t *restrict resp,
     void *restrict arg)
 {
-	VERIFY(IS_WORKER);
-	VERIFY(MUTEX_HELD(&sa->i2sa_lock));
-
+	ikev2_sa_args_t *sa_args = arg;
 	config_id_t *cid_r = NULL;
 	const char *mstr = NULL;
+
+	VERIFY(IS_WORKER);
+	VERIFY(MUTEX_HELD(&sa->i2sa_lock));
 
 	(void) bunyan_debug(log, "Received IKE_AUTH response",
 	    BUNYAN_T_END);
 
+	/* ikev2_retransmit() will condemn the IKE SA if we timeout */
 	if (resp == NULL) {
-		ikev2_create_child_sa_init_resp(sa, NULL, arg);
-		ikev2_sa_condemn(sa);
+		/* Let the piggy-backed child SA creation cleanup */
+		ikev2_create_child_sa_init_resp_auth(sa, NULL, arg);
 		return;
 	}
 
@@ -236,13 +292,15 @@ ikev2_ike_auth_init_resp(ikev2_sa_t *restrict sa, pkt_t *restrict resp,
 	 * necessairly cause the IKE SA to be deleted -- if we wish to
 	 * delete the IKE SA, or if we (the initiator) reject the IKE SA
 	 * (as opposed to the responder), it all must be done in a separate
-	 * exchange.  All of that to say, that this is the only notification
+	 * exchange.  All of that is to say, that this is the only notification
 	 * we check for doing the authentication portion of the processing.
 	 */
 	if (pkt_get_notify(resp, IKEV2_N_AUTHENTICATION_FAILED, NULL) != NULL) {
 		(void) bunyan_warn(log,
 		    "Remote rejected our authentication attempt",
 		    BUNYAN_T_END);
+
+		ikev2_create_child_sa_init_resp_auth(sa, NULL, arg);
 		ikev2_pkt_free(resp);
 		ikev2_sa_condemn(sa);
 		return;
@@ -271,13 +329,18 @@ ikev2_ike_auth_init_resp(ikev2_sa_t *restrict sa, pkt_t *restrict resp,
 	if (ikev2_sa_disarm_timer(sa, I2SA_EVT_P1_EXPIRE))
 		I2SA_REFRELE(sa);
 
-	ikev2_create_child_sa_init_resp(sa, resp, arg);
+	ikev2_create_child_sa_init_resp_auth(sa, resp, arg);
+	ikev2_pkt_free(resp);
+	ikev2_sa_args_free(sa->sa_init_args);
+	sa->sa_init_args = NULL;
 	return;
 
 fail:
-	/* TODO */
-	config_id_free(cid_r);
+	ikev2_create_child_sa_init_resp_auth(sa, NULL, arg);
+	ikev2_sa_args_free(sa->sa_init_args);
+	sa->sa_init_args = NULL;
 	ikev2_pkt_free(resp);
+	ikev2_auth_failed(sa);
 }
 
 static boolean_t
@@ -286,25 +349,17 @@ add_auth(pkt_t *pkt)
 	ikev2_sa_t *sa = pkt->pkt_sa;
 	pkt_payload_t *payid = NULL;
 	config_id_t *cid = NULL;
-	uint8_t *auth = NULL;
 	size_t authlen = get_authlen(sa);
 	boolean_t initiator = I2P_INITIATOR(pkt);
 	boolean_t ret = B_FALSE;
-
-	if (authlen == 0)
-		return (B_FALSE);
+	/* This is at most 64 bytes */
+	uint8_t auth[authlen];
 
 	payid = pkt_get_payload(pkt,
 	    initiator ? IKEV2_PAYLOAD_IDi : IKEV2_PAYLOAD_IDr, NULL);
 
 	/* We're constructing the pkt, so we've messed up badly if missing */
 	VERIFY3P(payid, !=, NULL);
-
-	if ((auth = umem_zalloc(authlen, UMEM_DEFAULT)) == NULL) {
-		(void) bunyan_error(log, "No memory for AUTH creation",
-		    BUNYAN_T_END);
-		return (B_FALSE);
-	}
 
 	if (!calc_auth(sa, initiator, payid, auth, authlen))
 		goto done;
@@ -320,7 +375,6 @@ add_auth(pkt_t *pkt)
 
 done:
 	explicit_bzero(auth, authlen);
-	umem_free(auth, authlen);
 	return (ret);
 }
 
@@ -330,14 +384,16 @@ check_auth(pkt_t *pkt)
 	ikev2_sa_t *sa = pkt->pkt_sa;
 	pkt_payload_t *payid = NULL;
 	pkt_payload_t *payauth = NULL;
-	uint8_t *auth = NULL, *buf = NULL;
-	size_t authlen = 0, buflen = 0;
+	uint8_t *auth = NULL;
+	size_t authlen = 0;
+	size_t buflen = get_authlen(sa);
 	boolean_t initiator = I2P_INITIATOR(pkt);
 	boolean_t ret = B_FALSE;
+	/* This is at most 64 bytes each */
+	uint8_t buf[buflen];
 
 	(void) bunyan_trace(log, "Checking AUTH payload", BUNYAN_T_END);
 
-	buflen = get_authlen(sa);
 	payauth = pkt_get_payload(pkt, IKEV2_PAYLOAD_AUTH, NULL);
 
 	/* XXX: Move these to inbound packet checks? */
@@ -356,17 +412,8 @@ check_auth(pkt_t *pkt)
 		return (B_FALSE);
 	}
 
-	if (payauth->pp_len < sizeof (ikev2_auth_t)) {
-		uint32_t len = payauth->pp_len + sizeof (ikev2_payload_t);
-		uint32_t minlen = sizeof (ikev2_auth_t) +
-		    sizeof (ikev2_payload_t);
-
-		(void) bunyan_warn(log, "AUTH payload is truncated",
-		    BUNYAN_T_UINT32, "len", len,
-		    BUNYAN_T_UINT32, "minlen", minlen,
-		    BUNYAN_T_END);
-		return (B_FALSE);
-	}
+	/* Our packet checks should catch this */
+	VERIFY3U(payauth->pp_len, >, sizeof (ikev2_auth_t));
 
 	/*
 	 * XXX: It seems that in theory (at least) we could support different
@@ -400,12 +447,6 @@ check_auth(pkt_t *pkt)
 		return (B_FALSE);
 	}
 
-	if ((buf = umem_zalloc(buflen, UMEM_DEFAULT)) == NULL) {
-		(void) bunyan_error(log,
-		    "No memory to validate AUTH payload", BUNYAN_T_END);
-		return (B_FALSE);
-	}
-
 	if (!calc_auth(sa, initiator, payid, buf, buflen))
 		goto done;
 
@@ -415,7 +456,6 @@ check_auth(pkt_t *pkt)
 
 done:
 	explicit_bzero(buf, buflen);
-	umem_free(buf, buflen);
 	return (ret);
 }
 
@@ -423,11 +463,12 @@ static boolean_t
 calc_auth(ikev2_sa_t *restrict sa, boolean_t initiator,
     pkt_payload_t *restrict id, uint8_t *restrict out, size_t outlen)
 {
-	pkt_t *init = NULL;
-	pkt_payload_t *nonce = NULL;
+	ikev2_sa_args_t *sa_args = sa->sa_init_args;
+	uint8_t *nonce = NULL, *init = NULL;
+	size_t noncelen = 0, initlen = 0;
+	size_t maclen = ikev2_prf_outlen(sa->prf);
 	CK_OBJECT_HANDLE mackey;
 	CK_RV rc;
-	size_t maclen = ikev2_prf_outlen(sa->prf);
 	boolean_t ret = B_FALSE;
 	/* This is at most 64 bytes */
 	uint8_t mac[maclen];
@@ -445,13 +486,17 @@ calc_auth(ikev2_sa_t *restrict sa, boolean_t initiator,
 	 * the data to sign, we use the nonce of our peer.
 	 */
 	if (initiator) {
-		init = sa->init_i;
-		nonce = pkt_get_payload(sa->init_r, IKEV2_PAYLOAD_NONCE, NULL);
+		nonce = sa_args->i2a_nonce_r;
+		noncelen = sa_args->i2a_nonce_r_len;
 		mackey = sa->sk_pi;
+		init = sa_args->i2a_init_i;
+		initlen = sa_args->i2a_init_i_len;
 	} else {
-		init = sa->init_r;
-		nonce = pkt_get_payload(sa->init_i, IKEV2_PAYLOAD_NONCE, NULL);
+		nonce = sa_args->i2a_nonce_i;
+		noncelen = sa_args->i2a_nonce_r_len;
 		mackey = sa->sk_pr;
+		init = sa_args->i2a_init_r;
+		initlen = sa_args->i2a_init_r_len;
 	}
 
 	/* MACedIDFor{R|I} */
@@ -464,8 +509,8 @@ calc_auth(ikev2_sa_t *restrict sa, boolean_t initiator,
 			goto done;
 
 		ret = prf(sa->prf, sa->psk, out, outlen,
-		    pkt_start(init), pkt_len(init),	/* RealMessage{1|2} */
-		    nonce->pp_ptr, nonce->pp_len,	/* Nonce{R|I}Data */
+		    init, initlen,			/* RealMessage{1|2} */
+		    nonce, noncelen,			/* Nonce{R|I}Data */
 		    mac, maclen, NULL);			/* MACedIDFor{I|R} */
 		break;
 	case IKEV2_AUTH_RSA_SIG:
@@ -558,13 +603,13 @@ done:
 }
 
 static boolean_t
-add_id(pkt_t *pkt, config_id_t *id, boolean_t initiator)
+add_id(pkt_t *pkt, const config_id_t *id, boolean_t initiator)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
 	config_auth_id_t cid_type = 0;
 	ikev2_id_type_t id_type = IKEV2_ID_FQDN; /* set default to quiet GCC */
+	const void *ptr = NULL;
 	size_t idlen = 0;
-	void *ptr = NULL;
 
 	/* Default to IP if no id was specified */
 	if (id == NULL) {
@@ -572,18 +617,16 @@ add_id(pkt_t *pkt, config_id_t *id, boolean_t initiator)
 		case AF_INET:
 			cid_type = CFG_AUTH_ID_IPV4;
 			id_type = IKEV2_ID_IPV4_ADDR;
-			idlen = sizeof (in_addr_t);
-			ptr = &((struct sockaddr_in *)&sa->laddr)->sin_addr;
 			break;
 		case AF_INET6:
 			cid_type = CFG_AUTH_ID_IPV6;
 			id_type = IKEV2_ID_IPV6_ADDR;
-			idlen = sizeof (in6_addr_t);
-			ptr = &((struct sockaddr_in6 *)&sa->laddr)->sin6_addr;
 			break;
 		default:
 			INVALID("ss_family");
 		}
+		ptr = ss_addr(SSTOSA(&sa->laddr));
+		idlen = ss_addrlen(SSTOSA(&sa->laddr));
 	} else if (id->cid_len == 0) {
 		/* parsing should prevent this */
 		INVALID(id->cid_len);
@@ -768,6 +811,11 @@ i2id_to_cid(pkt_payload_t *i2id)
 	return (cid);
 }
 
+/*
+ * If we are the initiator and the responder failed to authenticate, we
+ * must immediately start a new INFORMATIONAL exchange with the
+ * AUTHENTICATION_FAILED notification as it's contents (RFC7296 2.21.2).
+ */
 static void
 ikev2_auth_failed_resp(ikev2_sa_t *restrict i2sa, pkt_t *restrict resp,
     void *arg)
@@ -777,29 +825,18 @@ ikev2_auth_failed_resp(ikev2_sa_t *restrict i2sa, pkt_t *restrict resp,
 }
 
 static boolean_t
-ikev2_auth_failed(const pkt_t *src)
+ikev2_auth_failed(ikev2_sa_t *sa)
 {
-	pkt_t *msg = NULL;
-	boolean_t resp =
-	    pkt_header(src)->flags & IKEV2_FLAG_INITIATOR ? B_TRUE : B_FALSE;
-
-	if (resp)
-		msg = ikev2_pkt_new_response(src);
-	else
-		msg = ikev2_pkt_new_exchange(src->pkt_sa,
-		    IKEV2_EXCH_INFORMATIONAL);
-
+	pkt_t *msg = ikev2_pkt_new_exchange(sa, IKEV2_EXCH_INFORMATIONAL);
 	if (msg == NULL)
 		return (B_FALSE);
 
-	if (!ikev2_add_notify(msg, IKEV2_PROTO_IKE, 0,
-	    IKEV2_N_AUTHENTICATION_FAILED, NULL, 0)) {
+	if (!ikev2_add_notify(msg, IKEV2_N_AUTHENTICATION_FAILED)) {
 		ikev2_pkt_free(msg);
 		return (B_FALSE);
 	}
 
-	return (resp ? ikev2_send_resp(msg) :
-	    ikev2_send_req(msg, ikev2_auth_failed_resp, NULL));
+	return (ikev2_send_req(msg, ikev2_auth_failed_resp, NULL));
 }
 
 static size_t
@@ -813,10 +850,16 @@ get_authlen(const ikev2_sa_t *sa)
 	case IKEV2_AUTH_SHARED_KEY_MIC:
 		return (ikev2_prf_outlen(sa->prf));
 	case IKEV2_AUTH_RSA_SIG:
+		/* XXX: This may need to vary based on the cert used */
+		return (SHA1_DIGEST_LENGTH);
 	case IKEV2_AUTH_DSS_SIG:
+		return (SHA1_DIGEST_LENGTH);
 	case IKEV2_AUTH_ECDSA_256:
+		return (SHA256_DIGEST_LENGTH);
 	case IKEV2_AUTH_ECDSA_384:
+		return (SHA384_DIGEST_LENGTH);
 	case IKEV2_AUTH_ECDSA_512:
+		return (SHA512_DIGEST_LENGTH);
 	case IKEV2_AUTH_GSPM:
 		(void) bunyan_error(log,
 		    "IKE SA authentication method not yet implemented",

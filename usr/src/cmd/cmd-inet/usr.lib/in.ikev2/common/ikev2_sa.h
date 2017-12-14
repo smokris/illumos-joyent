@@ -42,6 +42,7 @@
 #include <thread.h>
 #include "defs.h"
 #include "ikev2.h"
+#include "ts.h"
 
 #ifdef  __cplusplus
 extern "C" {
@@ -49,15 +50,12 @@ extern "C" {
 
 struct ikev2_sa_s;
 struct ikev2_child_sa;
-struct i2sa_bucket;
+struct ikev2_sa_args_s;
 struct pkt_s;
 struct config_rule_s;
 
-#ifndef IKEV2_SA_T
-#define	IKEV2_SA_T
 typedef struct ikev2_sa_s ikev2_sa_t;
 typedef struct ikev2_child_sa_s ikev2_child_sa_t;
-#endif /* IKEV2_SA_T */
 
 #define	I2SA_SALT_LEN		32	/* Max size of salt, may be smaller */
 
@@ -76,10 +74,13 @@ typedef struct i2sa_msg {
 /* Outbound requests */
 typedef struct i2sa_req {
 	struct pkt_s	*i2r_pkt;
-	uint32_t	i2r_msgid;
 	void		*i2r_cb;
 	void		*i2r_arg;
+	periodic_id_t	i2r_timer;
+	uint32_t	i2r_msgid;
+	boolean_t	i2r_fired;
 } i2sa_req_t;
+#define	I2REQ_ACTIVE(i2r) ((i2r)->i2r_pkt != NULL)
 
 /* Timer events */
 typedef enum i2sa_evt {
@@ -111,7 +112,6 @@ struct ikev2_sa_s {
 	size_t		i2sa_queue_start;
 	size_t		i2sa_queue_end;
 	i2sa_evt_t	i2sa_events;
-	periodic_id_t	i2sa_xmit_timer;
 	periodic_id_t	i2sa_p1_timer;
 	periodic_id_t	i2sa_softlife_timer;
 	periodic_id_t	i2sa_hardlife_timer;
@@ -155,7 +155,7 @@ struct ikev2_sa_s {
 
 	ikev2_auth_type_t authmethod;	/* How the IKEV2 SA is authenticated */
 	ikev2_xf_encr_t	encr;		/* Encryption algorithm */
-	size_t		encr_key_len;	/* Key length (bytes) for encr */
+	size_t		encr_keylen;	/* Key length (bits) for encr */
 	ikev2_xf_auth_t	auth;		/* Authentication algorithm */
 	ikev2_prf_t	prf;		/* PRF algorithm */
 	ikev2_dh_t	dhgrp;		/* Diffie-Hellman group. */
@@ -165,10 +165,7 @@ struct ikev2_sa_s {
 	uint32_t	outmsgid;	/* Next msgid for outbound packets. */
 	uint32_t	inmsgid;	/* Next expected inbound msgid. */
 
-	struct pkt_s	*init_i;	/* IKE_SA_INIT packet. */
-	struct pkt_s	*init_r;
 	struct pkt_s	*last_resp_sent;
-	struct pkt_s	*last_sent;
 	struct pkt_s	*last_recvd;
 	i2sa_req_t	last_req;
 
@@ -177,10 +174,6 @@ struct ikev2_sa_s {
 	hrtime_t	hardexpire;
 
 	refhash_t	*i2sa_child_sas;
-
-	CK_OBJECT_HANDLE dh_pubkey;
-	CK_OBJECT_HANDLE dh_privkey;
-	CK_OBJECT_HANDLE dh_key;
 
 	CK_OBJECT_HANDLE sk_d;
 	CK_OBJECT_HANDLE sk_ai;
@@ -196,37 +189,8 @@ struct ikev2_sa_s {
 	uint8_t		salt_i[I2SA_SALT_LEN];
 	uint8_t		salt_r[I2SA_SALT_LEN];
 	size_t		saltlen;
-};
 
-struct ikev2_child_sa_s {
-	refhash_link_t		i2c_link;
-	ikev2_child_sa_t	*i2c_pair;
-	hrtime_t		i2c_birth;
-	ikev2_spi_proto_t	i2c_satype;
-	uint32_t		i2c_spi;
-	boolean_t		i2c_initiator;
-	boolean_t		i2c_inbound;
-	boolean_t		i2c_transport;
-
-	/* A subset of the child SAs state duplicated for observability */
-	ikev2_xf_encr_t		i2c_encr;
-	size_t			i2c_encr_keylen; /* in bits */
-	ikev2_xf_auth_t		i2c_auth;
-	ikev2_dh_t		i2c_dh;
-
-	uint8_t			i2c_addr_proto;
-	struct sockaddr_storage	i2c_laddr;
-	uint8_t			i2c_lprefix;
-	struct sockaddr_storage	i2c_raddr;
-	uint8_t			i2c_rprefix;
-
-	uint8_t			i2c_inner_proto;
-	struct sockaddr_storage	i2c_inner_laddr;
-	uint8_t			i2c_inner_lprefix;
-	struct sockaddr_storage	i2c_inner_raddr;
-	uint8_t			i2c_inner_rprefix;
-
-	/* XXX: More to come.  Traffic selectors perhaps? */
+	struct ikev2_sa_args_s	*sa_init_args;
 };
 
 /* SA flags */
@@ -265,17 +229,51 @@ struct ikev2_child_sa_s {
 	((((i2sa)->i2sa_queue_end + 1) % I2SA_QUEUE_DEPTH) == \
 	(i2sa)->i2sa_queue_start)
 
+struct ikev2_child_sa_s {
+	refhash_link_t		i2c_link;
+	ikev2_child_sa_t	*i2c_pair;
+	hrtime_t		i2c_birth;
+	ikev2_spi_proto_t	i2c_satype;
+	uint32_t		i2c_spi;
+	boolean_t		i2c_initiator;
+	boolean_t		i2c_inbound;
+	boolean_t		i2c_transport;
+
+	/* A subset of the child SAs state duplicated for observability */
+	ikev2_xf_encr_t		i2c_encr;
+	uint16_t		i2c_encr_keylen; /* in bits */
+	uint16_t		i2c_encr_saltlen; /* in bits */
+	ikev2_xf_auth_t		i2c_auth;
+	ikev2_dh_t		i2c_dh;
+
+	ts_t			i2c_ts_i;
+	ts_t			i2c_ts_r;
+};
+
+#define	I2C_SRC(_c) \
+    ((_c)->i2c_initiator ^ (_c)->i2c_inbound) ? \
+	&(_c)->i2c_ts_i : &(_c)->i2c_ts_r
+
+#define	I2C_DST(_c) \
+    ((_c)->i2c_initiator ^ (_c)->i2c_inbound) ? \
+	&(_c)->i2c_ts_r : &(_c)->i2c_ts_i
+
+#define	I2C_SRC_ID(_i2sa, _i2csa) \
+    ((_i2csa)->i2c_inbound ? (_i2sa)->remote_id : (_i2sa)->local_id)
+#define	I2C_DST_ID(_i2sa, _i2csa) \
+    ((_i2csa)->i2c_inbound ? (_i2sa)->local_id : (_i2sa)->remote_id)
+
 ikev2_sa_t *ikev2_sa_getbylspi(uint64_t, boolean_t);
 ikev2_sa_t *ikev2_sa_getbyrspi(uint64_t,
-    const struct sockaddr_storage *restrict,
-    const struct sockaddr_storage *restrict,
-    const struct pkt_s *restrict);
-ikev2_sa_t *ikev2_sa_getbyaddr(const struct sockaddr_storage *restrict,
-    const struct sockaddr_storage *restrict);
+    const struct sockaddr *restrict,
+    const struct sockaddr *restrict,
+    struct pkt_s *restrict);
+ikev2_sa_t *ikev2_sa_getbyaddr(const struct sockaddr *restrict,
+    const struct sockaddr *restrict);
 
 ikev2_sa_t *ikev2_sa_alloc(struct pkt_s *restrict,
-    const struct sockaddr_storage *restrict,
-    const struct sockaddr_storage *restrict);
+    const struct sockaddr *restrict,
+    const struct sockaddr *restrict);
 
 void	ikev2_sa_set_remote_spi(ikev2_sa_t *, uint64_t);
 void	ikev2_sa_free(ikev2_sa_t *);
@@ -287,8 +285,8 @@ struct pkt_s *ikev2_sa_get_response(ikev2_sa_t *restrict,
     const struct pkt_s *restrict);
 
 void ikev2_sa_post_event(ikev2_sa_t *, i2sa_evt_t);
-boolean_t ikev2_sa_arm_timer(ikev2_sa_t *, i2sa_evt_t, hrtime_t);
-boolean_t ikev2_sa_disarm_timer(ikev2_sa_t *, i2sa_evt_t);
+boolean_t ikev2_sa_arm_timer(ikev2_sa_t *, hrtime_t, i2sa_evt_t, ...);
+boolean_t ikev2_sa_disarm_timer(ikev2_sa_t *, i2sa_evt_t, ...);
 boolean_t ikev2_sa_queuemsg(ikev2_sa_t *, i2sa_msg_type_t, void *);
 const char *i2sa_msgtype_str(i2sa_msg_type_t);
 
@@ -297,6 +295,7 @@ void ikev2_child_sa_free(ikev2_sa_t *restrict, ikev2_child_sa_t *restrict);
 ikev2_child_sa_t *ikev2_sa_get_child(ikev2_sa_t *, uint32_t, boolean_t);
 void ikev2_sa_add_child(ikev2_sa_t *restrict, ikev2_child_sa_t *restrict);
 
+void ikev2_sa_clear_req(ikev2_sa_t *restrict, i2sa_req_t *restrict);
 void ikev2_sa_init(void);
 void ikev2_sa_fini(void);
 

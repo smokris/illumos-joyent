@@ -70,27 +70,36 @@ typedef struct parsedmsg_s {
 	sockaddr_u_t pmsg_nrau;
 } parsedmsg_t;
 
+#define	pmsg_ssa pmsg_sau.sau_sa
 #define	pmsg_sss pmsg_sau.sau_ss
 #define	pmsg_ssin pmsg_sau.sau_sin
 #define	pmsg_ssin6 pmsg_sau.sau_sin6
+#define	pmsg_dsa pmsg_dau.sau_sa
 #define	pmsg_dss pmsg_dau.sau_ss
 #define	pmsg_dsin pmsg_dau.sau_sin
 #define	pmsg_dsin6 pmsg_dau.sau_sin6
+#define	pmsg_issa pmsg_isau.sau_sa
 #define	pmsg_isss pmsg_isau.sau_ss
 #define	pmsg_issin pmsg_isau.sau_sin
 #define	pmsg_issin6 pmsg_isau.sau_sin6
+#define	pmsg_idsa pmsg_idau.sau_sa
 #define	pmsg_idss pmsg_idau.sau_ss
 #define	pmsg_idsin pmsg_idau.sau_sin
 #define	pmsg_idsin6 pmsg_idau.sau_sin6
+#define	pmsg_nlsa pmsg_nlau.sau_sa
 #define	pmsg_nlss pmsg_nlau.sau_ss
 #define	pmsg_nlsin pmsg_nlau.sau_sin
 #define	pmsg_nlsin6 pmsg_nlau.sau_sin6
+#define	pmsg_nrsa pmsg_nrau.sau_sa
 #define	pmsg_nrss pmsg_nrau.sau_ss
 #define	pmsg_nrsin pmsg_rnau.sau_sin
 #define	pmsg_nrsin6 pmsg_nrau.sau_sin6
 void parsedmsg_free(parsedmsg_t *);
 
 #define	PMSG_FROM_KERNEL(pmsg) ((pmsg)->pmsg_samsg->sadb_msg_pid == 0)
+
+/* XXX: Any better way to determine this? */
+#define	PMSG_IS_TRANSPORT(pmsg) ((pmsg)->pmsg_isss == NULL)
 
 typedef struct algindex {
 	const char *desc;
@@ -124,18 +133,20 @@ typedef struct algindex {
  */
 #define	SA_FULL_EQ(sa1, sa2) (SA_ADDR_EQ(sa1, sa2) && SA_PORT_EQ(sa1, sa2))
 
+#define	SSTOSA(ss) ((struct sockaddr *)(ss))
+
 #define	INVALID(var) assfail("Invalid value of " # var, __FILE__, __LINE__)
 
 #ifndef ARRAY_SIZE
 #define	ARRAY_SIZE(x) (sizeof (x) / sizeof (x[0]))
 #endif
 
-/* A few simple functions to simplify using struct sockaddr's w/ bunyan */
-int ss_bunyan(const struct sockaddr_storage *);
-uint32_t ss_port(const struct sockaddr_storage *);
-const void *ss_addr(const struct sockaddr_storage *);
-size_t ss_addrlen(const struct sockaddr_storage *);
-uint8_t ss_addrbits(const struct sockaddr_storage *);
+/* A few simple functions to simplify using sockaddr's w/ bunyan */
+int ss_bunyan(const struct sockaddr *);
+uint32_t ss_port(const struct sockaddr *);
+const void *ss_addr(const struct sockaddr *);
+size_t ss_addrlen(const struct sockaddr *);
+uint8_t ss_addrbits(const struct sockaddr *);
 
 #define	LOG_KEY_ERRMSG	"err"
 #define	LOG_KEY_ERRNO	"errno"
@@ -186,6 +197,7 @@ typedef enum event {
 extern char *my_fmri;
 
 extern int main_port;
+extern boolean_t show_keys;
 
 /*
  * While bunyan itself is multithreaded, since every thread runs some sort
@@ -209,15 +221,15 @@ const char *symstr(void *, char *, size_t);
 void log_reset_keys(void);
 void key_add_ike_version(const char *, uint8_t);
 void key_add_ike_spi(const char *, uint64_t);
-void key_add_addr(const char *, const struct sockaddr_storage *);
+void key_add_addr(const char *, const struct sockaddr *);
 struct config_id_s;
 void key_add_id(const char *, const char *, struct config_id_s *);
 char *writehex(uint8_t *, size_t, char *, char *, size_t);
 
-void sockaddr_copy(const struct sockaddr_storage *, struct sockaddr_storage *,
+void sockaddr_copy(const struct sockaddr *, struct sockaddr_storage *,
     boolean_t);
-int sockaddr_cmp(const struct sockaddr_storage *,
-    const struct sockaddr_storage *);
+int sockaddr_cmp(const struct sockaddr *, const struct sockaddr *);
+boolean_t addr_is_zero(const struct sockaddr *);
 
 char *ustrdup(const char *, int);
 void ustrfree(char *);

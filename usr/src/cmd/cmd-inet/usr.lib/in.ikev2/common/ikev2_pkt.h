@@ -29,8 +29,7 @@ extern "C" {
 
 struct ikev2_sa_s;
 struct bunyan_logger;
-struct sockaddr_storage;
-struct sockrange_s;
+struct sockaddr;
 
 #define	I2P_RESPONSE(p) (!!(pkt_header(p)->flags & IKEV2_FLAG_RESPONSE))
 #define	I2P_INITIATOR(p) (pkt_header(p)->flags & IKEV2_FLAG_INITIATOR)
@@ -80,7 +79,8 @@ boolean_t ikev2_add_certreq(pkt_t *restrict, ikev2_cert_t,
 boolean_t ikev2_add_auth(pkt_t *restrict, ikev2_auth_type_t,
     const uint8_t *restrict, size_t);
 boolean_t ikev2_add_nonce(pkt_t *restrict, uint8_t *restrict, size_t);
-boolean_t ikev2_add_notify(pkt_t *restrict, ikev2_spi_proto_t, uint64_t,
+boolean_t ikev2_add_notify(pkt_t *restrict, ikev2_notify_type_t);
+boolean_t ikev2_add_notify_full(pkt_t *restrict, ikev2_spi_proto_t, uint64_t,
     ikev2_notify_type_t, const void *restrict, size_t);
 
 boolean_t ikev2_add_delete(pkt_t *, ikev2_spi_proto_t, uint64_t *restrict,
@@ -90,15 +90,23 @@ boolean_t ikev2_add_delete_spi(pkt_t *, uint64_t);
 boolean_t ikev2_add_vendor(pkt_t *restrict, const void *restrict,
     size_t);
 
+/*
+ * The usage of 'struct sockaddr *' vs 'struct sockaddr_storage *'
+ * reflects the assumptions about the side of the struct pointed to --
+ * functions that take 'struct sockaddr' are assumed to be sized according
+ * to the value of sa_family (i.e. AF_INET implies 'struct sockaddr_in'
+ * while AF_INET6 implies 'struct sockaddr_in6'), while 'sockaddr_storage'
+ * implies it must be large enough to hold any possible address.
+ */
 boolean_t ikev2_add_ts_i(pkt_t *restrict, ikev2_pkt_ts_state_t *restrict);
 boolean_t ikev2_add_ts_r(pkt_t *restrict, ikev2_pkt_ts_state_t *restrict);
 boolean_t ikev2_add_ts(ikev2_pkt_ts_state_t *restrict, uint8_t,
-    const struct sockrange_s *restrict);
+    const struct sockaddr *restrict, const struct sockaddr *restrict);
 
 ikev2_ts_t *ikev2_ts_iter(pkt_payload_t *restrict, ikev2_ts_iter_t *restrict,
-    struct sockrange_s *restrict);
+    struct sockaddr_storage *restrict, struct sockaddr_storage *restrict);
 ikev2_ts_t *ikev2_ts_iter_next(ikev2_ts_iter_t *restrict,
-    struct sockrange_s *restrict);
+    struct sockaddr_storage *restrict, struct sockaddr_storage *restrict);
 
 boolean_t ikev2_add_sk(pkt_t *);
 
@@ -110,8 +118,35 @@ boolean_t ikev2_pkt_done(pkt_t *);
 boolean_t ikev2_pkt_signverify(pkt_t *, boolean_t);
 boolean_t ikev2_pkt_encryptdecrypt(pkt_t *, boolean_t);
 
-boolean_t ikev2_no_proposal_chosen(pkt_t *, ikev2_spi_proto_t);
-boolean_t ikev2_invalid_ke(pkt_t *, ikev2_spi_proto_t, uint64_t, ikev2_dh_t);
+ikev2_sa_proposal_t *ikev2_prop_first(pkt_payload_t *);
+ikev2_sa_proposal_t *ikev2_prop_end(pkt_payload_t *);
+ikev2_sa_proposal_t *ikev2_prop_next(ikev2_sa_proposal_t *);
+uint64_t ikev2_prop_spi(ikev2_sa_proposal_t *);
+#define	FOREACH_PROP(_prop, _pay)		\
+    for ((_prop) = ikev2_prop_first(_pay);	\
+	(_prop) < ikev2_prop_end(_pay);		\
+	(_prop) = ikev2_prop_next(_prop))
+
+ikev2_transform_t *ikev2_xf_first(ikev2_sa_proposal_t *);
+ikev2_transform_t *ikev2_xf_end(ikev2_sa_proposal_t *);
+ikev2_transform_t *ikev2_xf_next(ikev2_transform_t *);
+#define	FOREACH_XF(_xf, _prop)		\
+    for ((_xf) = ikev2_xf_first(_prop);	\
+	(_xf) < ikev2_xf_end(_prop);	\
+	(_xf) = ikev2_xf_next(_xf))
+
+
+ikev2_attribute_t *ikev2_attr_first(ikev2_transform_t *);
+ikev2_attribute_t *ikev2_attr_end(ikev2_transform_t *);
+ikev2_attribute_t *ikev2_attr_next(ikev2_attribute_t *);
+#define	FOREACH_ATTR(_attr, _xf)		\
+    for ((_attr) = ikev2_attr_first(_xf);	\
+	(_attr) < ikev2_attr_end(_xf);		\
+	(_attr) = ikev2_attr_next(_attr))
+
+#define	XF_HAS_ATTRS(xf) (ikev2_attr_first(xf) < ikev2_attr_end(xf))
+
+boolean_t ikev2_invalid_ke(pkt_t *, ikev2_dh_t);
 
 typedef boolean_t (*ikev2_prop_cb_t)(ikev2_sa_proposal_t *, uint64_t, uint8_t *,
     size_t, void *);

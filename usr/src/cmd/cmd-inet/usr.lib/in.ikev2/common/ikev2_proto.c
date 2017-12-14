@@ -53,16 +53,16 @@
 static void ikev2_dispatch_pkt(pkt_t *);
 static void ikev2_dispatch_pfkey(ikev2_sa_t *restrict, parsedmsg_t *restrict);
 
-static int select_socket(const struct sockaddr_storage *, boolean_t);
+static int select_socket(const struct sockaddr *, boolean_t);
 
 static ikev2_sa_t *ikev2_try_new_sa(pkt_t *restrict,
-    const struct sockaddr_storage *restrict,
-    const struct sockaddr_storage *restrict);
+    const struct sockaddr *restrict,
+    const struct sockaddr *restrict);
 
 static ikev2_sa_t *
 get_i2sa_inbound(uint64_t local_spi, uint64_t remote_spi,
-    const struct sockaddr_storage *src, const struct sockaddr_storage *dst,
-    const pkt_t *restrict pkt)
+    const struct sockaddr *src, const struct sockaddr *dst,
+    pkt_t *restrict pkt)
 {
 	ikev2_sa_t *i2sa = NULL;
 
@@ -94,8 +94,8 @@ get_i2sa_inbound(uint64_t local_spi, uint64_t remote_spi,
  * an IKE_SA_INIT exchange) and either process or add to the IKEv2 SA queue.
  */
 void
-ikev2_inbound(pkt_t *pkt, const struct sockaddr_storage *restrict src,
-    const struct sockaddr_storage *restrict dest)
+ikev2_inbound(pkt_t *restrict pkt, const struct sockaddr *restrict src,
+    const struct sockaddr *restrict dest)
 {
 	ikev2_sa_t *i2sa = NULL;
 	ike_header_t *hdr = pkt_header(pkt);
@@ -190,8 +190,8 @@ ikev2_inbound(pkt_t *pkt, const struct sockaddr_storage *restrict src,
  */
 static ikev2_sa_t *
 ikev2_try_new_sa(pkt_t *restrict pkt,
-    const struct sockaddr_storage *restrict l_addr,
-    const struct sockaddr_storage *restrict r_addr)
+    const struct sockaddr *restrict l_addr,
+    const struct sockaddr *restrict r_addr)
 {
 	ikev2_sa_t *i2sa = NULL;
 	ike_header_t *hdr = pkt_header(pkt);
@@ -283,7 +283,7 @@ ikev2_pfkey(parsedmsg_t *pmsg)
 
 		i2sa = ikev2_sa_getbylspi(local_spi, initiator);
 	} else {
-		i2sa = ikev2_sa_getbyaddr(laddr.sau_ss, raddr.sau_ss);
+		i2sa = ikev2_sa_getbyaddr(laddr.sau_sa, raddr.sau_sa);
 	}
 
 	if (i2sa == NULL) {
@@ -329,7 +329,7 @@ ikev2_pfkey(parsedmsg_t *pmsg)
 		}
 
 		/* On success, returns sa with i2sa_queue_lock held */
-		i2sa = ikev2_sa_alloc(NULL, laddr.sau_ss, raddr.sau_ss);
+		i2sa = ikev2_sa_alloc(NULL, laddr.sau_sa, raddr.sau_sa);
 		if (i2sa == NULL) {
 			/*
 			 * The kernel currently only cares that sadb_msg_errno
@@ -352,6 +352,8 @@ ikev2_pfkey(parsedmsg_t *pmsg)
 		i2sa->i2sa_rule = rule;
 		mutex_exit(&i2sa->i2sa_lock);
 	} else {
+		key_add_ike_spi(LOG_KEY_LSPI, I2SA_LOCAL_SPI(i2sa));
+		(void) bunyan_trace(log, "Found IKEv2 SA", BUNYAN_T_END);
 		mutex_enter(&i2sa->i2sa_queue_lock);
 	}
 
@@ -367,26 +369,26 @@ ikev2_pfkey(parsedmsg_t *pmsg)
 /*
  * Attempt to create an IKEv2 SA  and start an IKE_SA_INIT exchange
  * from the given rule.
+ *
+ * XXX: This currently only works for transport mode IKE SAs.  The main problem
+ * with being able to support tunnel mode is figuring what addresses to
+ * use to query the inner src/dst addresses.
  */
 void
 ikev2_sa_init_cfg(config_rule_t *rule)
 {
 	ikev2_sa_t *sa = NULL;
 	parsedmsg_t *pmsg = NULL;
-	struct sockaddr_storage src = { 0 };
-	struct sockaddr_storage dst = { 0 };
-	sockaddr_u_t susrc = { .sau_ss = &src };
-	sockaddr_u_t sudst = { .sau_ss = &dst };
-	sockaddr_u_t isrc = { .sau_ss = NULL };
-	sockaddr_u_t idst = { .sau_ss = NULL };
+	ts_t src = { .ts_proto = IPPROTO_IP };
+	ts_t dst = { .ts_proto = IPPROTO_IP };
 	size_t len = 0;
 
-	if (!config_addr_to_ss(&rule->rule_local_addr[0], susrc))
+	if (!config_addr_to_ss(&rule->rule_local_addr[0], &src.ts_ss))
 		goto fail;
-	if (!config_addr_to_ss(&rule->rule_remote_addr[0], sudst))
+	if (!config_addr_to_ss(&rule->rule_remote_addr[0], &dst.ts_ss))
 		goto fail;
 
-	if (!pfkey_inverse_acquire(susrc, sudst, 0, isrc, 0, idst, 0, &pmsg)) {
+	if (!pfkey_inverse_acquire(&src, &dst, NULL, NULL, &pmsg)) {
 		if (pmsg == NULL) {
 			STDERR(error, "Inverse acquire failed");
 			goto fail;
@@ -419,7 +421,7 @@ ikev2_sa_init_cfg(config_rule_t *rule)
 		goto fail;
 	}
 
-	sa = ikev2_sa_alloc(NULL, &src, &dst);
+	sa = ikev2_sa_alloc(NULL, &src.ts_sa, &dst.ts_sa);
 	if (sa == NULL) {
 		STDERR(error, "Failed to allocate larval IKE SA");
 		goto fail;
@@ -447,8 +449,8 @@ fail:
 
 static boolean_t
 ikev2_send_common(pkt_t *restrict pkt,
-    const struct sockaddr_storage *restrict laddr,
-    const struct sockaddr_storage *restrict raddr,
+    const struct sockaddr *restrict laddr,
+    const struct sockaddr *restrict raddr,
     boolean_t nat_is_known)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
@@ -473,8 +475,7 @@ ikev2_send_common(pkt_t *restrict pkt,
 	    BUNYAN_T_END);
 	custr_free(desc);
 
-	len = sendfromto(s, pkt_start(pkt), pkt_len(pkt), &sa->laddr,
-	    &sa->raddr);
+	len = sendfromto(s, pkt_start(pkt), pkt_len(pkt), laddr, raddr);
 	return ((len == -1) ? B_FALSE : B_TRUE);
 }
 
@@ -510,27 +511,24 @@ ikev2_send_req(pkt_t *restrict req, ikev2_send_cb_t cb, void *restrict arg)
 	 * Shouldn't try to start a new exchange when one is already in
 	 * progress.
 	 */
-	VERIFY3P(i2sa->last_sent, ==, NULL);
 	VERIFY3P(i2req->i2r_pkt, ==, NULL);
 
-	if (!ikev2_send_common(req, &i2sa->laddr, &i2sa->raddr,
+	if (!ikev2_send_common(req, SSTOSA(&i2sa->laddr), SSTOSA(&i2sa->raddr),
 	    I2SA_IS_NAT(i2sa))) {
 		/*
 		 * XXX: For now at least, we don't bother with attempting to
 		 * retransmit a packet if the original transmission failed.
 		 */
-		if (req != i2sa->init_i)
-			ikev2_pkt_free(req);
+		ikev2_pkt_free(req);
 		return (B_FALSE);
 	}
 
-	i2sa->last_sent = req;
 	i2req->i2r_pkt = req;
 	i2req->i2r_msgid = ntohl(pkt_header(req)->msgid);
 	i2req->i2r_cb = cb;
 	i2req->i2r_arg = arg;
 
-	if (!ikev2_sa_arm_timer(i2sa, I2SA_EVT_PKT_XMIT, retry)) {
+	if (!ikev2_sa_arm_timer(i2sa, retry, I2SA_EVT_PKT_XMIT, i2req)) {
 		/*
 		 * XXX: If this fails, we could check for timeout on our
 		 * next attempt to send a request and fail if we never
@@ -555,15 +553,14 @@ ikev2_send_resp(pkt_t *restrict resp)
 	VERIFY(MUTEX_HELD(&i2sa->i2sa_lock));
 	VERIFY(I2P_RESPONSE(resp));
 
-	if (!ikev2_send_common(resp, &i2sa->laddr, &i2sa->raddr,
-	    I2SA_IS_NAT(i2sa))) {
-		if (resp != i2sa->init_r)
-			ikev2_pkt_free(resp);
+	if (!ikev2_send_common(resp, SSTOSA(&i2sa->laddr),
+	    SSTOSA(&i2sa->raddr), I2SA_IS_NAT(i2sa))) {
+		ikev2_pkt_free(resp);
 		return (B_FALSE);
 	}
 
         /*
-	 * Normally, we save the last repsonse packet we've sent in order to
+	 * Normally, we save the last response packet we've sent in order to
 	 * re-send the last response in case the remote system retransmits
 	 * the last exchange it initiated.  However for IKE_SA_INIT exchanges,
 	 * _responses_ of the form HDR(A,0) are not saved for retransmission.
@@ -584,8 +581,8 @@ ikev2_send_resp(pkt_t *restrict resp)
 /* Used for sending responses outside of an IKEv2 SA */
 boolean_t
 ikev2_send_resp_addr(pkt_t *restrict resp,
-    const struct sockaddr_storage *restrict laddr,
-    const struct sockaddr_storage *restrict raddr)
+    const struct sockaddr *restrict laddr,
+    const struct sockaddr *restrict raddr)
 {
 	ike_header_t *hdr = pkt_header(resp);
 	custr_t *desc = NULL;
@@ -608,19 +605,24 @@ ikev2_retransmit_cb(void *data)
 {
 	VERIFY(IS_WORKER);
 
-	ikev2_sa_t *sa = data;
-	ikev2_sa_post_event(sa, I2SA_EVT_PKT_XMIT);
+	i2sa_req_t *i2req = data;
+	ikev2_sa_t *i2sa = i2req->i2r_pkt->pkt_sa;
+
+	mutex_enter(&i2sa->i2sa_queue_lock);
+	i2req->i2r_fired = B_TRUE;
+	i2req->i2r_timer = 0;
+	mutex_exit(&i2sa->i2sa_queue_lock);
+
+	ikev2_sa_post_event(i2sa, I2SA_EVT_PKT_XMIT);
 }
 
 /*
  * Resend our last request.
  */
 static void
-ikev2_retransmit(ikev2_sa_t *sa)
+ikev2_retransmit(ikev2_sa_t *restrict sa, i2sa_req_t *restrict req)
 {
-	pkt_t *pkt = sa->last_sent;
-	ike_header_t *hdr = pkt_header(pkt);
-	i2sa_req_t *req = &sa->last_req;
+	pkt_t *pkt = req->i2r_pkt;
 	hrtime_t retry = 0, retry_init = 0, retry_max = 0;
 	size_t limit = 0;
 
@@ -628,8 +630,9 @@ ikev2_retransmit(ikev2_sa_t *sa)
 	VERIFY(!MUTEX_HELD(&sa->i2sa_queue_lock));
 	VERIFY(MUTEX_HELD(&sa->i2sa_lock));
 
+	req->i2r_fired = B_FALSE;
+
 	if (pkt == NULL) {
-		VERIFY3P(req->i2r_pkt, ==, NULL);
 		/* already acknowledged */
 		return;
 	}
@@ -662,9 +665,10 @@ ikev2_retransmit(ikev2_sa_t *sa)
 	 * much that can be done if it fails, other than just wait to try
 	 * again, so we ignore the return value.
 	 */
-	(void) ikev2_send_common(pkt, &sa->laddr, &sa->raddr, I2SA_IS_NAT(sa));
+	(void) ikev2_send_common(pkt, SSTOSA(&sa->laddr), SSTOSA(&sa->raddr),
+	    I2SA_IS_NAT(sa));
 
-	if (!ikev2_sa_arm_timer(sa, I2SA_EVT_PKT_XMIT, retry)) {
+	if (!ikev2_sa_arm_timer(sa, retry, I2SA_EVT_PKT_XMIT, req)) {
 		(void) bunyan_error(log,
 		    "No memory to reschedule packet retransmit; "
 			    "deleting IKE SA", BUNYAN_T_END);
@@ -751,8 +755,6 @@ ikev2_dispatch(ikev2_sa_t *sa)
 			sa->i2sa_hardlife_timer = 0;
 		if (events & I2SA_EVT_SOFT_EXPIRE)
 			sa->i2sa_softlife_timer = 0;
-		if (events & I2SA_EVT_PKT_XMIT)
-			sa->i2sa_xmit_timer = 0;
 
 		if (!I2SA_QUEUE_EMPTY(sa)) {
 
@@ -805,7 +807,14 @@ ikev2_dispatch(ikev2_sa_t *sa)
 		}
 		if (events & I2SA_EVT_PKT_XMIT) {
 			events &= ~(I2SA_EVT_PKT_XMIT);
-			ikev2_retransmit(sa);
+
+			/*
+			 * XXX: When WINDOW_SIZE is added, scan through all
+			 * i2sa_req_t's and call ikev2_retransmit for each
+			 * where i2r_fired == B_TRUE, and remove VERIFY
+			 */
+			VERIFY(sa->last_req.i2r_fired);
+			ikev2_retransmit(sa, &sa->last_req);
 		}
 
 		if (type != I2SA_MSG_NONE) {
@@ -866,7 +875,8 @@ ikev2_handle_retransmit(pkt_t *req)
 		return (B_FALSE);
 
 	(void) bunyan_debug(log, "Resending last response", BUNYAN_T_END);
-	ikev2_send_common(resp, &i2sa->laddr, &i2sa->raddr, I2SA_IS_NAT(i2sa));
+	ikev2_send_common(resp, SSTOSA(&i2sa->laddr), SSTOSA(&i2sa->raddr),
+	    I2SA_IS_NAT(i2sa));
 	ikev2_pkt_free(req);
 	return (B_TRUE);
 }
@@ -877,9 +887,11 @@ ikev2_handle_response(pkt_t *resp)
 {
 	ikev2_sa_t *i2sa = resp->pkt_sa;
 	i2sa_req_t *i2req = &i2sa->last_req;
-	pkt_t *last = i2sa->last_sent;
+	pkt_t *last = i2req->i2r_pkt;
 	ikev2_send_cb_t cb = i2req->i2r_cb;
+	void *arg = i2req->i2r_arg;
 	uint32_t msgid = ntohl(pkt_header(resp)->msgid);
+	ikev2_exch_t exch_type;
 
 	VERIFY(!MUTEX_HELD(&i2sa->i2sa_queue_lock));
 	VERIFY(MUTEX_HELD(&i2sa->i2sa_lock));
@@ -897,7 +909,9 @@ ikev2_handle_response(pkt_t *resp)
 		goto discard;
 	}
 
-	if (pkt_header(resp)->exch_type != IKEV2_EXCH_IKE_SA_INIT &&
+	exch_type = pkt_header(resp)->exch_type;
+
+	if (exch_type != IKEV2_EXCH_IKE_SA_INIT &&
 	    !ikev2_pkt_encryptdecrypt(resp, B_FALSE))
 		goto discard;
 
@@ -912,19 +926,17 @@ ikev2_handle_response(pkt_t *resp)
 	    ikev2_pkt_check_critical(resp) != IKEV2_PAYLOAD_NONE)
 		goto discard;
 
-	(void) ikev2_sa_disarm_timer(i2sa, I2SA_EVT_PKT_XMIT);
-
-	i2sa->last_sent = NULL;
-	i2req->i2r_pkt = NULL;
-
 	/*
-	 * The IKE_SA_INIT packets need to be retained for the IKE_AUTH
-	 * exchange.
+	 * Since IKE_SA_INIT exchanges are unprotected, it's possible that
+	 * certain replies may be ignored, so we cannot dispose of our
+	 * request packet or cancel the retransmit timer here.  Instead
+	 * the callback function (it's always ikev2_sa_init_init_resp for
+	 * an IKE_SA_INIT exchange), must determine if it can do this.
 	 */
-	if (last != i2sa->init_i)
-		ikev2_pkt_free(last);
+	if (exch_type != IKEV2_EXCH_IKE_SA_INIT)
+		ikev2_sa_clear_req(i2sa, i2req);
 
-	cb(i2sa, resp, i2req->i2r_arg);
+	cb(i2sa, resp, arg);
 	return (B_TRUE);
 
 discard:
@@ -986,16 +998,35 @@ ikev2_dispatch_pkt(pkt_t *pkt)
 
 	crit_pay = ikev2_pkt_check_critical(pkt);
 	if (crit_pay != IKEV2_PAYLOAD_NONE) {
+		pkt_t *resp = NULL;
+
+		/*
+		 * Since IKE_SA_INIT exchanges are unprotected, we ignore any
+		 * errors, and let the P1 timer expire if we never receive
+		 * a valid request.
+		 */
 		if (exch_type == IKEV2_EXCH_IKE_SA_INIT)
 			goto discard;
 
-		/* TODO: send UNSUPPORTED_CRITICAL_PAYLOAD */
+		/* Any other exchange is protected, so respond with an error */
+		if ((resp = ikev2_pkt_new_response(pkt)) == NULL)
+			goto discard;
+
+		/*
+		 * The total size of these two payloads is << 1K, we should
+		 * always have room for them.
+		 */
+		VERIFY(ikev2_add_sk(resp));
+		VERIFY(ikev2_add_notify_full(resp, IKEV2_PROTO_NONE, 0,
+		    IKEV2_N_UNSUPPORTED_CRITICAL_PAYLOAD,
+		    &crit_pay, sizeof (crit_pay)));
+
+		(void) ikev2_send_resp(resp);
 		goto discard;
 	}
 
 	/* New request, no longer need previous response for retransmitting */
-	if (i2sa->last_resp_sent != i2sa->init_r)
-		ikev2_pkt_free(i2sa->last_resp_sent);
+	ikev2_pkt_free(i2sa->last_resp_sent);
 	i2sa->last_resp_sent = NULL;
 	i2sa->inmsgid++;
 
@@ -1026,19 +1057,31 @@ ikev2_dispatch_pfkey(ikev2_sa_t *restrict sa, parsedmsg_t *restrict pmsg)
 {
 	sadb_msg_t *samsg = pmsg->pmsg_samsg;
 
+	VERIFY(!MUTEX_HELD(&sa->i2sa_queue_lock));
+	VERIFY(MUTEX_HELD(&sa->i2sa_lock));
+
+	/* Is there a request already in progress? */
+	if (sa->last_req.i2r_pkt != NULL) {
+		(void) bunyan_debug(log, "Discarding sadb message",
+		    BUNYAN_T_END);
+
+		parsedmsg_free(pmsg);
+		I2SA_REFRELE(sa);
+	}
+
 	switch (samsg->sadb_msg_type) {
 	case SADB_ACQUIRE:
-		if (!(sa->flags & I2SA_AUTHENTICATED)) {
-			ikev2_sa_init_init(sa, pmsg, NULL);
-		} else {
-			sadb_log(BUNYAN_L_INFO,
-			    "CREATE_CHILD_SA not implemented yet",
-			    pmsg->pmsg_samsg);
-
-			/* TODO: Start CREATE_CHILD_SA exchange */
-			parsedmsg_free(pmsg);
-			I2SA_REFRELE(sa);
-		}
+		/*
+		 * If we've already authenticated, we need to do a
+		 * CREATE_CHILD_SA exchange, otherwise we need to start
+		 * an IKE_SA_INIT exchange.  If we've already started an
+		 * IKE_SA_INIT exchange, that request will be in progress,
+		 * and the sadb message will be discarded before getting here.
+		 */
+		if (sa->flags & I2SA_AUTHENTICATED)
+			ikev2_create_child_sa_init(sa, pmsg);
+		else
+			ikev2_sa_init_init(sa, pmsg);
 		return;
 	case SADB_EXPIRE:
 		/* TODO */
@@ -1058,9 +1101,9 @@ ikev2_dispatch_pfkey(ikev2_sa_t *restrict sa, parsedmsg_t *restrict pmsg)
 
 /* Picks the socket to use for sending based on our local address. */
 static int
-select_socket(const struct sockaddr_storage *laddr, boolean_t nat_is_known)
+select_socket(const struct sockaddr *laddr, boolean_t nat_is_known)
 {
-	if (laddr->ss_family == AF_INET6)
+	if (laddr->sa_family == AF_INET6)
 		return (ikesock6);
 
 	/*
@@ -1071,5 +1114,6 @@ select_socket(const struct sockaddr_storage *laddr, boolean_t nat_is_known)
 	 */
 	if (nat_is_known || ss_port(laddr) == IPPORT_IKE_NATT)
 		return (nattsock);
+
 	return (ikesock4);
 }

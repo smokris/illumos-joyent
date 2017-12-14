@@ -126,8 +126,8 @@ static void log_slotinfo(CK_SLOT_ID);
  * Entries with 0 for the PKCS#11 mechanism are ones that aren't supported
  * by PKCS#11, so their values aren't used beyond the stringified name.
  */
-encr_data_t encr_data[IKEV2_ENCR_MAX + 1] = {
-	/* p11, desc, mode, min, max, incr, default, blocksz, iv, icv */
+static encr_data_t encr_tbl[IKEV2_ENCR_MAX + 1] = {
+	/* p11, desc, mode, min, max, incr, default, blocksz, iv, icv, salt */
 	{ 0, "NONE", MODE_NONE, 0, 0, 0, 0, 0, 0, 0, 0 },
 	{ CKM_DES_CBC, "DES_IV64", MODE_CBC, 64, 64, 0, 64, 8, 8, 0, 0 },
 	{ CKM_DES_CBC, "DES", MODE_CBC, 64, 64, 0, 64, 64, 8, 0, 0 },
@@ -142,24 +142,28 @@ encr_data_t encr_data[IKEV2_ENCR_MAX + 1] = {
 	{ 0, "NULL", MODE_NONE, 0, 0, 0, 0, 0, 0, 0, 0 },
 	{ CKM_AES_CBC, "AES_CBC", MODE_CBC, 128, 256, 64, 0, 16, 16, 0, 0 },
 	{ CKM_AES_CTR, "AES_CTR", MODE_CTR,  128, 256, 64, 0, 16, 16, 0, 0 },
-	{ CKM_AES_CCM, "AES_CCM_8", MODE_CCM, 128, 256, 64, 0, 16, 16, 8, 3 },
-	{ CKM_AES_CCM, "AES_CCM_12", MODE_CCM, 128, 256, 64, 0, 16, 16, 12, 3 },
-	{ CKM_AES_CCM, "AES_CCM_12", MODE_CCM, 128, 256, 64, 0, 16, 16, 16, 3 },
-	{ CKM_AES_GCM, "AES_GCM_8", MODE_GCM, 128, 256, 64, 0, 16, 16, 8, 4 },
-	{ CKM_AES_GCM, "AES_GCM_12", MODE_GCM, 128, 256, 64, 0, 16, 16, 12, 4 },
-	{ CKM_AES_GCM, "AES_GCM_16", MODE_GCM, 128, 256, 64, 0, 16, 16, 16, 4 },
+	{ CKM_AES_CCM, "AES_CCM_8", MODE_CCM, 128, 256, 64, 0, 16, 16, 8, 12 },
+	{ CKM_AES_CCM, "AES_CCM_12", MODE_CCM,
+	    128, 256, 64, 0, 16, 16, 12, 12 },
+	{ CKM_AES_CCM, "AES_CCM_16", MODE_CCM,
+	    128, 256, 64, 0, 16, 16, 16, 12 },
+	{ CKM_AES_GCM, "AES_GCM_8", MODE_GCM, 128, 256, 64, 0, 16, 16, 8, 16 },
+	{ CKM_AES_GCM, "AES_GCM_12", MODE_GCM,
+	    128, 256, 64, 0, 16, 16, 12, 16 },
+	{ CKM_AES_GCM, "AES_GCM_16", MODE_GCM,
+	    128, 256, 64, 0, 16, 16, 16, 16 },
 	{ 0, "NULL_AES_GMAC", MODE_NONE, 128, 256, 64, 0, 16, 16, 16, 0 },
 	{ 0, "AES_XTS_AES", MODE_NONE, 128, 256, 64, 0, 0, 0, 0, 0 },
 	{ CKM_CAMELLIA_CBC, "CAMELLIA_CBC", MODE_CBC,
 	    128, 256, 64, 0, 16, 16, 0, 0 },
 	{ CKM_CAMELLIA_CTR, "CAMELLIA_CTR", MODE_CTR,
 	    128, 256, 64, 0, 16, 16, 0, 0 },
-	{ 0, "CAMELLIA_CCM_8", MODE_CCM, 128, 256, 64, 0, 16, 16, 8, 3 },
-	{ 0, "CAMELLIA_CCM_12", MODE_CCM, 128, 256, 64, 0, 16, 16, 12, 3 },
-	{ 0, "CAMELLIA_CCM_16", MODE_CCM, 128, 256, 64, 0, 16, 16, 16, 3 },
+	{ 0, "CAMELLIA_CCM_8", MODE_CCM, 128, 256, 64, 0, 16, 16, 8, 12 },
+	{ 0, "CAMELLIA_CCM_12", MODE_CCM, 128, 256, 64, 0, 16, 16, 12, 12 },
+	{ 0, "CAMELLIA_CCM_16", MODE_CCM, 128, 256, 64, 0, 16, 16, 16, 12 },
 };
 
-auth_data_t auth_data[IKEV2_XF_AUTH_MAX + 1] = {
+static auth_data_t auth_tbl[IKEV2_XF_AUTH_MAX + 1] = {
 	{ 0, "NONE", 0, 0, 0 },
 	{ CKM_MD5_HMAC, "HMAC_MD5_96", 16, 16, 12 },
 	{ CKM_SHA_1_HMAC, "HMAC_SHA1_96", 20, 20, 12 },
@@ -377,14 +381,15 @@ pkcs11_fini(void)
 size_t
 ikev2_auth_icv_size(ikev2_xf_encr_t encr, ikev2_xf_auth_t auth)
 {
-	VERIFY3S(encr, >=, IKEV2_ENCR_NONE);
-	VERIFY3S(encr, <=, IKEV2_ENCR_MAX);
-	VERIFY3S(auth, >=, IKEV2_XF_AUTH_NONE);
-	VERIFY3S(auth, <=, IKEV2_XF_AUTH_MAX);
+	const encr_data_t *ed = encr_data(encr);
+	const auth_data_t *ad = auth_data(auth);
 
-	if (encr_data[encr].ed_icvlen != 0)
-		return (encr_data[encr].ed_icvlen);
-	return (auth_data[auth].ad_icvlen);
+	VERIFY3P(ed, !=, NULL);
+	VERIFY3P(ad, !=, NULL);
+
+	if (ed->ed_icvlen != 0)
+		return (ed->ed_icvlen);
+	return (ad->ad_icvlen);
 }
 
 /*
@@ -488,25 +493,49 @@ pkcs11_new_session(void)
 	return (h);
 }
 
-boolean_t
-encr_keylen_req(ikev2_xf_encr_t alg)
+const encr_data_t *
+encr_data(ikev2_xf_encr_t id)
 {
-	VERIFY3S(alg, >=, 0);
-	VERIFY3S(alg, <=, IKEV2_ENCR_MAX);
+	if (id > ARRAY_SIZE(encr_tbl))
+		return (NULL);
 
-	if (encr_data[alg].ed_keydefault == 0)
-		return (B_TRUE);
-	return (B_FALSE);
+	return (&encr_tbl[id]);
+}
+
+const auth_data_t *
+auth_data(ikev2_xf_auth_t id)
+{
+	if (id > ARRAY_SIZE(auth_tbl))
+		return (NULL);
+
+	return (&auth_tbl[id]);
 }
 
 boolean_t
-encr_keylen_allowed(ikev2_xf_encr_t alg)
+encr_keylen_req(const encr_data_t *ed)
 {
-	VERIFY3S(alg, >=, 0);
-	VERIFY3S(alg, <=, IKEV2_ENCR_MAX);
+	return (encr_keylen_allowed(ed) || ed->ed_keydefault != 0);
+}
 
-	if (encr_data[alg].ed_keymin == encr_data[alg].ed_keymax)
+boolean_t
+encr_keylen_allowed(const encr_data_t *ed)
+{
+	return (ed->ed_keymin != ed->ed_keymax);
+}
+
+boolean_t
+encr_keylen_ok(const encr_data_t *ed, size_t len)
+{
+	if (len < ed->ed_keymin || len > ed->ed_keymax)
 		return (B_FALSE);
+
+	/*
+	 * If in range, value must also be a valid increment, e.g. for
+	 * AES, 192 bits is ok, but 200 bits is not.
+	 */
+	if (((len - ed->ed_keymin) % ed->ed_keyincr) != 0)
+		return (B_FALSE);
+
 	return (B_TRUE);
 }
 

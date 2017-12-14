@@ -77,8 +77,8 @@ struct ike_prop {
 	uint8_t		prop_numxform;
 } __packed;
 typedef struct ike_prop ike_prop_t;
-#define	IKE_PROP_NONE	(0)
-#define	IKE_PROP_MORE	(2)
+#define	IKE_PROP_NONE	0
+#define	IKE_PROP_MORE	2
 
 struct ike_xform {
 	uint8_t		xf_more;
@@ -89,10 +89,10 @@ struct ike_xform {
 	uint16_t	xf_id;
 } __packed;
 typedef struct ike_xform ike_xform_t;
-#define	IKE_XFORM_NONE	(0)
-#define	IKE_XFORM_MORE	(3)
+#define	IKE_XFORM_NONE	0
+#define	IKE_XFORM_MORE	3
 
-#define	IKE_ATTR_MAXTYPE	(0x7fff)
+#define	IKE_ATTR_MAXTYPE	0x7fff
 #define	IKE_ATTR_MAXLEN		(UINT16_MAX - sizeof (ike_xf_attr_t))
 #define	IKE_ATTR_MAXVAL		(UINT16_MAX)
 struct ike_xf_attr {
@@ -100,12 +100,11 @@ struct ike_xf_attr {
 	uint16_t	attr_len;
 };
 typedef struct ike_xf_attr ike_xf_attr_t;
-#define	IKE_ATTR_TV			(1)
-#define	IKE_ATTR_TLV			(0)
-#define	IKE_ATTR_GET_TYPE(type)		((type) & 0x7fff)
-#define	IKE_ATTR_GET_FORMAT(type)	((type) & 0x8000) >> 15)
-#define	IKE_ATTR_TYPE(fmt, type) \
-	(((fmt) << 15) | ((type) & 0x7fff))
+#define	IKE_ATTR_TV			0x8000
+#define	IKE_ATTR_TLV			0
+#define	IKE_ATTR_GET_TYPE(_t)		((_t) & 0x7fff)
+#define	IKE_ATTR_GET_FORMAT(_t)		((_t) & 0x8000)
+#define	IKE_ATTR_TYPE(_fmt, _t)		(IKE_ATTR_GET_FORMAT(_fmt) | (_t))
 
 struct ike_ke {
 	uint16_t	ke_group;

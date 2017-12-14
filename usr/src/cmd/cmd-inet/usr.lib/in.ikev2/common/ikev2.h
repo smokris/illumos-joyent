@@ -37,7 +37,11 @@ extern "C" {
 #define	IKEV2_NONCE_MIN		16
 #define	IKEV2_NONCE_MAX		256
 
-/* Half of the largest keysize of all the PRF functions we currently support */
+/*
+ * RFC7296 2.10 - Nonce must be at least half the key size of the PRF alg
+ * chosen.  This is half the largest keysize of all the PRF algs we currently
+ * support, so is always a valid size for any SA we negotiate.
+ */
 #define	IKEV2_NONCE_DEFAULT	32
 
 /* RFC7296 2.6 -- cookies are betwee 1 and 64 octets in length */
@@ -373,6 +377,7 @@ typedef enum ikev2_notify_type {
 	IKEV2_N_ERX_SUPPORTED			= 16427,	/* RFC6867 */
 	IKEV2_N_IFOM_CAPABILITY			= 16428		/* OA3GPP */
 } ikev2_notify_type_t;
+#define	IKEV2_NOTIFY_ERROR(n) ((n) < 16384)
 
 /*
  * DELETE payload

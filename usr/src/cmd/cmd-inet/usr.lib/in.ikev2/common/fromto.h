@@ -28,8 +28,8 @@ ssize_t recvfromto(int, void *restrict, size_t, int,
     struct sockaddr_storage *restrict, socklen_t *restrict);
 
 ssize_t sendfromto(int, const uint8_t *restrict, size_t,
-    const struct sockaddr_storage *restrict,
-    const struct sockaddr_storage *restrict);
+    const struct sockaddr *restrict,
+    const struct sockaddr *restrict);
 
 #ifdef __cplusplus
 }

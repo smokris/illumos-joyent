@@ -26,7 +26,6 @@
  * Copyright 2017 Jason King.
  * Copyright (c) 2017, Joyent, Inc.
  */
-#include <alloca.h>
 #include <arpa/inet.h>
 #include <atomic.h>
 #include <bunyan.h>
@@ -96,6 +95,11 @@
 #define	PFKEY_K_ENCR "sadb_sa_encr"
 #define	PFKEY_K_PORT "_port"
 #define	PFKEY_K_PAIR "sadb_pair_spi"
+#define	PFKEY_K_ENCR_KEY "encr_key"
+#define	PFKEY_K_ENCR_KEYLEN "encr_keylen"
+#define	PFKEY_K_AUTH_KEY "auth_key"
+#define	PFKEY_K_AUTH_KEYLEN "auth_keylen"
+#define	PFKEY_K_FLAGS "sadb_sa_flags"
 
 static const char *pfkey_keys[] = {
 	PFKEY_K_SRCADDR,
@@ -114,6 +118,11 @@ static const char *pfkey_keys[] = {
 	PFKEY_K_ENCR,
 	PFKEY_K_SPI,
 	PFKEY_K_PAIR,
+	PFKEY_K_ENCR_KEY,
+	PFKEY_K_ENCR_KEYLEN,
+	PFKEY_K_AUTH_KEY,
+	PFKEY_K_AUTH_KEYLEN,
+	PFKEY_K_FLAGS,
 };
 
 #define	PFKEY_MSG_LEN(msg, ext) \
@@ -122,6 +131,7 @@ static const char *pfkey_keys[] = {
 
 typedef struct pfreq {
 	list_node_t	pr_node;
+	pid_t		pr_pid;
 	uint32_t	pr_msgid;
 	mutex_t		pr_lock;
 	cond_t		pr_cv;
@@ -346,9 +356,19 @@ pfkey_inbound(int s)
 	 */
 
 	/*
-	 * If it might be a reply to us, handle it.
+	 * If it might be a reply to us, handle it.  Anything from the kernel
+	 * with our pid is always a reply, however we also send SADB_GETSPI,
+	 * SADB_ADD, and SADB_UPDATE messages to the kernel using the pid/seq
+	 * of an earlier kernel initiated SADB_ACQUIRE msg when those requests
+	 * are made in response to that SADB_ACQUIRE (per PF_KEY(7P)).  The
+	 * will not have our pid, but the kernel only ever sends those
+	 * messages as replies to a user, so we can safely treat them as
+	 * replies.
 	 */
-	if (samsg->sadb_msg_pid == getpid()) {
+	if (samsg->sadb_msg_pid == getpid() ||
+	    samsg->sadb_msg_type == SADB_GETSPI ||
+	    samsg->sadb_msg_type == SADB_ADD ||
+	    samsg->sadb_msg_type == SADB_UPDATE) {
 		handle_reply(samsg);
 		return;
 	}
@@ -442,6 +462,7 @@ pfkey_send_msg(sadb_msg_t *msg, parsedmsg_t **pmsg, int numexts, ...)
 
 	VERIFY0(cond_init(&req.pr_cv, USYNC_THREAD, NULL));
 	VERIFY0(mutex_init(&req.pr_lock, USYNC_THREAD|LOCK_ERRORCHECK, NULL));
+	req.pr_pid = msg->sadb_msg_pid;
 	req.pr_msgid = msg->sadb_msg_seq;
 
 	mutex_enter(&pfreq_lock);
@@ -547,6 +568,12 @@ pfkey_send_error(const sadb_msg_t *src, uint8_t reason)
 		STDERR(error, "Unable to send PFKEY error notification");
 }
 
+/*
+ * Copy an existing extension.  If type != 0, type of the destination
+ * extension is explicitly set to the given value (e.g. changing a
+ * SADB_EXT_ADDRESS_SRC to SADB_EXT_ADDRESS_DST), otherwise the source
+ * extentsion type is preserved.
+ */
 sadb_ext_t *
 pfkey_add_ext(sadb_ext_t *dest, uint16_t type, const sadb_ext_t *src)
 {
@@ -574,12 +601,10 @@ pfkey_add_ext(sadb_ext_t *dest, uint16_t type, const sadb_ext_t *src)
  */
 sadb_ext_t *
 pfkey_add_address(sadb_ext_t *restrict ext, uint16_t type,
-    const sockaddr_u_t su, uint8_t prefixlen, uint8_t proto)
+    const struct sockaddr *restrict addr, uint8_t prefixlen, uint8_t proto)
 {
-	sadb_address_t *addr = (sadb_address_t *)ext;
-	sockaddr_u_t msgaddr = {
-		.sau_ss = (struct sockaddr_storage *)(addr + 1)
-	};
+	sadb_address_t *sadb_addr = (sadb_address_t *)ext;
+	size_t addrlen = 0;
 	size_t len = 0;
 
 	switch (type) {
@@ -594,27 +619,26 @@ pfkey_add_address(sadb_ext_t *restrict ext, uint16_t type,
 		INVALID(type);
 	}
 
-	if (su.sau_ss == NULL)
+	if (addr == NULL)
 		return (ext);
 
-	switch (su.sau_ss->ss_family) {
+	switch (addr->sa_family) {
 	case AF_INET:
-		bcopy(su.sau_sin, msgaddr.sau_sin, sizeof (*su.sau_sin));
-		len = ROUND64(sizeof (struct sockaddr_in));
+		addrlen = sizeof (struct sockaddr_in);
 		break;
 	case AF_INET6:
-		bcopy(su.sau_sin6, msgaddr.sau_sin6, sizeof (*su.sau_sin6));
-		len = ROUND64(sizeof (struct sockaddr_in6));
+		addrlen = sizeof (struct sockaddr_in6);
 		break;
 	default:
 		INVALID(su.sau_ss->ss_family);
 	}
+	bcopy(addr, sadb_addr + 1, addrlen);
 
-	len += sizeof (*addr);
-	addr->sadb_address_len = SADB_8TO64(len);
-	addr->sadb_address_exttype = type;
-	addr->sadb_address_prefixlen = prefixlen;
-	addr->sadb_address_proto = proto;
+	len = sizeof (*sadb_addr) + addrlen;
+	sadb_addr->sadb_address_len = SADB_8TO64(len);
+	sadb_addr->sadb_address_exttype = type;
+	sadb_addr->sadb_address_prefixlen = prefixlen;
+	sadb_addr->sadb_address_proto = proto;
 
 	return ((sadb_ext_t *)((uint8_t *)ext + len));
 }
@@ -624,8 +648,8 @@ pfkey_add_sa(sadb_ext_t *restrict ext, uint32_t spi, ikev2_xf_encr_t i2encr,
     ikev2_xf_auth_t i2auth, uint32_t flags)
 {
 	sadb_sa_t *sa = (sadb_sa_t *)ext;
-	int auth = ikev2_auth_to_pfkey(i2encr);
-	int encr = ikev2_encr_to_pfkey(i2auth);
+	int encr = ikev2_encr_to_pfkey(i2encr);
+	int auth = ikev2_auth_to_pfkey(i2auth);
 
 	/*
 	 * We shouldn't negotiate anything we don't support nor should we
@@ -642,6 +666,8 @@ pfkey_add_sa(sadb_ext_t *restrict ext, uint32_t spi, ikev2_xf_encr_t i2encr,
 	sa->sadb_sa_auth = (uint8_t)auth;
 	sa->sadb_sa_encrypt = (uint8_t)encr;
 	sa->sadb_sa_flags = flags;
+	sa->sadb_sa_state = SADB_SASTATE_MATURE;
+
 	return ((sadb_ext_t *)(sa + 1));
 }
 
@@ -796,34 +822,34 @@ pfkey_add_kmc(sadb_ext_t *ext, uint32_t proto, uint64_t cookie)
 boolean_t
 pfkey_sadb_add_update(ikev2_sa_t *restrict sa,
     ikev2_child_sa_t *restrict csa, const uint8_t *restrict encrkey,
-    const uint8_t *restrict authkey, const sadb_msg_t *restrict srcmsg)
+    const uint8_t *restrict authkey, const parsedmsg_t *restrict srcmsg)
 {
 	parsedmsg_t *pmsg = NULL;
 	sadb_msg_t *msg = NULL;
 	sadb_ext_t *ext = NULL;
 	size_t msglen = 0, encrlen = 0, authlen = 0;
 	uint32_t pair = (csa->i2c_pair != NULL) ? csa->i2c_pair->i2c_spi : 0;
-	uint32_t flags = SADB_SASTATE_MATURE;
+	uint32_t flags = 0;
+	ts_t *ts_src = I2C_SRC(csa);
+	ts_t *ts_dst = I2C_DST(csa);
+	struct sockaddr *natt_l = NULL, *natt_r = NULL;
+	const config_id_t *id_src = I2C_SRC_ID(sa, csa);
+	const config_id_t *id_dst = I2C_DST_ID(sa, csa);
+	uint16_t srctype = SADB_X_EXT_ADDRESS_INNER_SRC;
+	uint16_t dsttype = SADB_X_EXT_ADDRESS_INNER_DST;
 	uint8_t satype = ikev2_to_satype(csa->i2c_satype);
-	sockaddr_u_t src = { 0 };
-	sockaddr_u_t dst = { 0 };
-	sockaddr_u_t isrc = { 0 };
-	sockaddr_u_t idst = { 0 };
-	sockaddr_u_t nat_l = { 0 };
-	sockaddr_u_t nat_r = { 0 };
-	const config_id_t *id_src = NULL, *id_dst = NULL;
-	uint8_t srcpfx = 0, dstpfx = 0, isrcpfx = 0, idstpfx = 0;
 	boolean_t ret = B_FALSE;
 
 	encrlen = SADB_1TO8(csa->i2c_encr_keylen);
-	authlen = auth_data[csa->i2c_auth].ad_keylen;
+	authlen = auth_data(csa->i2c_auth)->ad_keylen;
 
 	/*
 	 * Worst case msg length:
 	 *	base, SA, lifetime(HSI), address(SD), address(Is, Id),
 	 *	address(Nl, Nr), key(AE), identity(SD), pair, kmc
 	 *
-	 * The sadb_* types are already including padding for 64-bit alignment.
+	 * Note that the sadb_* types are already include padding for 64-bit
+	 * alignment, so they don't need to be rounded up.
 	 */
 
 	msglen = sizeof (*msg) + sizeof (sadb_sa_t) +
@@ -834,51 +860,21 @@ pfkey_sadb_add_update(ikev2_sa_t *restrict sa,
 	    sizeof (sadb_key_t) + ROUND64(authlen) +
 	    sizeof (sadb_ident_t) + ROUND64(config_id_strlen(sa->local_id)) +
 	    sizeof (sadb_ident_t) + ROUND64(config_id_strlen(sa->remote_id)) +
-	    (pair > 0) ? sizeof (sadb_x_pair_t) : 0 +
-	    sizeof (sadb_x_kmc_t);
+	    sizeof (sadb_x_pair_t) + sizeof (sadb_x_kmc_t);
 
 	if (csa->i2c_initiator)
 		flags |= IKEV2_SADB_INITIATOR;
 
-	if (csa->i2c_inbound) {
-		flags |= SADB_X_SAFLAGS_INBOUND;
+	flags |= csa->i2c_inbound ?
+	    SADB_X_SAFLAGS_INBOUND : SADB_X_SAFLAGS_OUTBOUND;
 
-		src.sau_ss = &csa->i2c_raddr;
-		dst.sau_ss = &csa->i2c_laddr;
-		srcpfx = csa->i2c_rprefix;
-		dstpfx = csa->i2c_lprefix;
-		if (!csa->i2c_transport) {
-			isrc.sau_ss = &csa->i2c_inner_raddr;
-			idst.sau_ss = &csa->i2c_inner_laddr;
-			isrcpfx = csa->i2c_inner_rprefix;
-			idstpfx = csa->i2c_inner_lprefix;
-		}
-		id_src = sa->remote_id;
-		id_dst = sa->local_id;
-	} else {
-		flags |= SADB_X_SAFLAGS_OUTBOUND;
-
-		src.sau_ss = &csa->i2c_laddr;
-		dst.sau_ss = &csa->i2c_raddr;
-		srcpfx = csa->i2c_lprefix;
-		dstpfx = csa->i2c_rprefix;
-		if (!csa->i2c_transport) {
-			isrc.sau_ss = &csa->i2c_inner_laddr;
-			idst.sau_ss = &csa->i2c_inner_raddr;
-			isrcpfx = csa->i2c_inner_lprefix;
-			idstpfx = csa->i2c_inner_rprefix;
-		}
-		id_src = sa->local_id;
-		id_dst = sa->remote_id;
-	}
-
-	if (sa->flags & I2SA_NAT_LOCAL) {
+	if ((sa->flags & I2SA_NAT_LOCAL) && csa->i2c_transport) {
 		flags |= SADB_X_SAFLAGS_NATT_LOC;
-		nat_l.sau_ss = &sa->lnatt;
+		natt_l= SSTOSA(&sa->lnatt);
 	}
-	if (sa->flags & I2SA_NAT_REMOTE) {
+	if ((sa->flags & I2SA_NAT_REMOTE) && csa->i2c_transport) {
 		flags |= SADB_X_SAFLAGS_NATT_REM;
-		nat_r.sau_ss = &sa->rnatt;
+		natt_r = SSTOSA(&sa->rnatt);
 	}
 
 	msg = umem_zalloc(msglen, UMEM_DEFAULT);
@@ -888,25 +884,51 @@ pfkey_sadb_add_update(ikev2_sa_t *restrict sa,
 		return (B_FALSE);
 	}
 
-	pfkey_msg_init(srcmsg, msg, csa->i2c_inbound ? SADB_ADD : SADB_UPDATE,
-	    satype);
+	/*
+	 * If the source message originated from the kernel (pid == 0),
+	 * we want to use it's pid/seq value so it can tie the SAs we're
+	 * creating/updating back to the original packets that triggered
+	 * the creation request.
+	 */
+	pfkey_msg_init(PMSG_FROM_KERNEL(srcmsg) ? srcmsg->pmsg_samsg : NULL,
+	    msg, csa->i2c_inbound ? SADB_ADD : SADB_UPDATE, satype);
 
 	ext = (sadb_ext_t *)(msg + 1);
 	ext = pfkey_add_sa(ext, csa->i2c_spi, csa->i2c_encr, csa->i2c_auth,
 	    flags);
 	ext = pfkey_add_lifetime(ext);
 
-	ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_SRC, src, srcpfx,
-	    csa->i2c_addr_proto);
-	ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_DST, dst, dstpfx,
-	    csa->i2c_addr_proto);
-
-	if (!csa->i2c_transport) {
-		ext = pfkey_add_address(ext, SADB_X_EXT_ADDRESS_INNER_SRC,
-		    isrc, isrcpfx, csa->i2c_inner_proto);
-		ext = pfkey_add_address(ext, SADB_X_EXT_ADDRESS_INNER_DST,
-		    idst, idstpfx, csa->i2c_inner_proto);
+	if (csa->i2c_transport) {
+		srctype = SADB_EXT_ADDRESS_SRC;
+		dsttype = SADB_EXT_ADDRESS_DST;
+	} else {
+		/*
+		 * For tunnel mode, reuse the SRC/DST addresses from our
+		 * ACQUIRE or INVERSE_ACQUIRE, though we need to flip
+		 * SRC/DST for the inbound SA.
+		 */
+		ext = pfkey_add_ext(ext,
+		    csa->i2c_inbound ? SADB_EXT_ADDRESS_DST : 0,
+		    srcmsg->pmsg_exts[SADB_EXT_ADDRESS_SRC]);
+		ext = pfkey_add_ext(ext,
+		    csa->i2c_inbound ? SADB_EXT_ADDRESS_SRC : 0,
+		    srcmsg->pmsg_exts[SADB_EXT_ADDRESS_DST]);
 	}
+
+	/*
+	 * But always want to use the negotiated traffic selectors add the
+	 * addresses for the actual traffic being sent.
+	 */
+	ext = pfkey_add_address(ext, srctype,
+	    &ts_src->ts_sa, TS_SADB_PREFIX(ts_src), ts_src->ts_proto);
+	ext = pfkey_add_address(ext, dsttype,
+	    &ts_dst->ts_sa, TS_SADB_PREFIX(ts_dst), ts_dst->ts_proto);
+
+	/* These are no-ops of the address argument is NULL */
+	ext = pfkey_add_address(ext, SADB_X_EXT_ADDRESS_NATT_LOC,
+	    (struct sockaddr *)natt_l, 0, 0);
+	ext = pfkey_add_address(ext, SADB_X_EXT_ADDRESS_NATT_REM,
+	    (struct sockaddr *)natt_r, 0, 0);
 
 	ext = pfkey_add_key(ext, SADB_EXT_KEY_AUTH, authkey, authlen);
 	ext = pfkey_add_key(ext, SADB_EXT_KEY_ENCRYPT, encrkey, encrlen);
@@ -916,9 +938,7 @@ pfkey_sadb_add_update(ikev2_sa_t *restrict sa,
 
 	ext = pfkey_add_pair(ext, pair);
 
-#ifdef notyet
-	ext = pfkey_add_kmc(ext, SADB_X_KMP_IKEV2, (uint64_t)sa);
-#endif
+	ext = pfkey_add_kmc(ext, SADB_X_KMP_IKEV2, I2SA_LOCAL_SPI(sa));
 
 	VERIFY(IS_P2ALIGNED(ext, sizeof (uint64_t)));
 	msg->sadb_msg_len = PFKEY_MSG_LEN(msg, ext);
@@ -940,14 +960,10 @@ pfkey_sadb_add_update(ikev2_sa_t *restrict sa,
 		    BUNYAN_T_UINT32, "diagcode",
 		    (uint32_t)m->sadb_x_msg_diagnostic);
 	} else {
-		char spistr[11] = { 0 }; /* 0x + 32bit hix + NUL */
-
-		(void) snprintf(spistr, sizeof (spistr), "0x%" PRIX32,
-		    csa->i2c_spi);
-
 		(void) bunyan_debug(log, "Added IPsec SA",
 		    BUNYAN_T_STRING, "satype", ikev2_spi_str(csa->i2c_satype),
-		    BUNYAN_T_STRING, "spi", spistr,
+		    BUNYAN_T_STRING, "spi",
+		    enum_printf("0x%" PRIX32, ntohl(csa->i2c_spi)),
 		    BUNYAN_T_END);
 
 		ret = B_TRUE;
@@ -959,13 +975,14 @@ pfkey_sadb_add_update(ikev2_sa_t *restrict sa,
 }
 
 boolean_t
-pfkey_getspi(const sadb_msg_t *restrict srcmsg, sockaddr_u_t src,
-    sockaddr_u_t dest, uint8_t satype, uint32_t *spi)
+pfkey_getspi(const parsedmsg_t *restrict srcmsg, uint8_t satype,
+    uint32_t *restrict spip)
 {
+	uint64_t buffer[128] = { 0 };
+	const sadb_msg_t *src_sadb_msg = NULL;
 	parsedmsg_t *resp = NULL;
-	uint64_t buffer[128];
+	sadb_ext_t *src = NULL, *dst = NULL, *ext = NULL;
 	sadb_msg_t *samsg = (sadb_msg_t *)buffer;
-	sadb_ext_t *ext = NULL;
 	boolean_t ret;
 
 	/*
@@ -976,9 +993,14 @@ pfkey_getspi(const sadb_msg_t *restrict srcmsg, sockaddr_u_t src,
 	    2 * (sizeof (sadb_address_t) + sizeof (struct sockaddr_storage)) +
 	    sizeof (sadb_spirange_t));
 
-	*spi = 0;
+	*spip = 0;
 
-	VERIFY3U(src.sau_ss->ss_family, ==, dest.sau_ss->ss_family);
+	if (PMSG_FROM_KERNEL(srcmsg))
+		src_sadb_msg = srcmsg->pmsg_samsg;
+
+	src = srcmsg->pmsg_exts[SADB_EXT_ADDRESS_SRC];
+	dst = srcmsg->pmsg_exts[SADB_EXT_ADDRESS_DST];
+	VERIFY3U(srcmsg->pmsg_sss->ss_family, ==, srcmsg->pmsg_dss->ss_family);
 
 	/*
 	 * The kernel randomly pics an SPI within the range we pass.  If it
@@ -992,23 +1014,22 @@ pfkey_getspi(const sadb_msg_t *restrict srcmsg, sockaddr_u_t src,
 	 * fully formed) is likely.
 	 */
 	do {
-		(void) memset(buffer, 0, sizeof (buffer));
+		bzero(buffer, sizeof (buffer));
 
-		pfkey_msg_init(srcmsg, samsg, SADB_GETSPI, satype);
+		pfkey_msg_init(src_sadb_msg, samsg, SADB_GETSPI, satype);
 		ext = (sadb_ext_t *)(samsg + 1);
 
-		ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_SRC, src, 0, 0);
-		ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_DST, dest, 0, 0);
+		ext = pfkey_add_ext(ext, 0, src);
+		ext = pfkey_add_ext(ext, 0, dst);
 		ext = pfkey_add_range(ext, 1, UINT32_MAX);
 
 		samsg->sadb_msg_len = PFKEY_MSG_LEN(samsg, ext);
 
 		errno = 0;
-		if (pfkey_send_msg(samsg, &resp, 1, SADB_EXT_SA)) {
-			if (resp == NULL || resp->pmsg_samsg == NULL) {
-				parsedmsg_free(resp);
-				return (B_FALSE);
-			}
+		(void) pfkey_send_msg(samsg, &resp, 1, SADB_EXT_SA);
+		if (resp == NULL || resp->pmsg_samsg == NULL) {
+			parsedmsg_free(resp);
+			return (B_FALSE);
 		}
 	} while (resp->pmsg_samsg->sadb_msg_errno == EEXIST);
 
@@ -1024,17 +1045,14 @@ pfkey_getspi(const sadb_msg_t *restrict srcmsg, sockaddr_u_t src,
 	} else {
 		sadb_sa_t *sa = (sadb_sa_t *)resp->pmsg_exts[SADB_EXT_SA];
 		char type[64] = { 0 };
-		char spistr[11] = { 0 }; /* 0x + 32-bit hex + NUL */
 
-		*spi = sa->sadb_sa_spi;
+		*spip = sa->sadb_sa_spi;
 		(void) sadb_type_str(satype, type, sizeof (type));
-
-		/* SPI values are usually displayed as hex */
-		(void) snprintf(spistr, sizeof (spistr), "0x%" PRIX32, *spi);
 
 		(void) bunyan_debug(log, "Allocated larval IPsec SA",
 		    BUNYAN_T_STRING, "satype", type,
-		    BUNYAN_T_STRING, "spi", spistr,
+		    BUNYAN_T_STRING, "spi",
+		    enum_printf("0x%" PRIX32, ntohl(*spip)),
 		    BUNYAN_T_END);
 	}
 
@@ -1044,34 +1062,34 @@ pfkey_getspi(const sadb_msg_t *restrict srcmsg, sockaddr_u_t src,
 }
 
 boolean_t
-pfkey_inverse_acquire(sockaddr_u_t src, sockaddr_u_t dest, uint8_t iproto,
-    sockaddr_u_t isrc, uint8_t isrcpfx,
-    sockaddr_u_t idest, uint8_t idstpfx, parsedmsg_t **resp)
+pfkey_inverse_acquire(const ts_t *src, const ts_t *dst, const ts_t *isrc,
+    const ts_t *idst, parsedmsg_t **resp)
 {
 	uint64_t buffer[128] = { 0 };
 	sadb_msg_t *msg = (sadb_msg_t *)buffer;
 	sadb_ext_t *ext = (sadb_ext_t *)(msg + 1);
 
-	/* This also guarantees src and dest aren't NULL */
-	VERIFY3U(src.sau_ss->ss_family, ==, dest.sau_ss->ss_family);
+	VERIFY3U(src->ts_ss.ss_family, ==, dst->ts_ss.ss_family);
 
 	/*
 	 * The inner addresses (if present) can be a different address family
 	 * than the outer addresses, but the inner source and inner destination
 	 * address families should agree with each other.
 	 */
-	if (isrc.sau_ss != NULL)
-		VERIFY3U(isrc.sau_ss->ss_family, ==, idest.sau_ss->ss_family);
+	if (isrc != NULL)
+		VERIFY3U(isrc->ts_ss.ss_family, ==, idst->ts_ss.ss_family);
 
 	pfkey_msg_init(NULL, msg, SADB_X_INVERSE_ACQUIRE, SADB_SATYPE_UNSPEC);
 
-	ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_SRC, src, 0, 0);
-	ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_DST, dest, 0, 0);
-	if (isrc.sau_ss != NULL) {
+	ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_SRC,
+	    &src->ts_sa, src->ts_prefix, src->ts_proto);
+	ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_DST,
+	    &dst->ts_sa, dst->ts_prefix, dst->ts_proto);
+	if (isrc != NULL) {
 		ext = pfkey_add_address(ext, SADB_X_EXT_ADDRESS_INNER_SRC,
-		    isrc, isrcpfx, iproto);
+		    &isrc->ts_sa, isrc->ts_prefix, isrc->ts_proto);
 		ext = pfkey_add_address(ext, SADB_X_EXT_ADDRESS_INNER_DST,
-		    idest, idstpfx, iproto);
+		    &idst->ts_sa, idst->ts_prefix, idst->ts_proto);
 	}
 
 	msg->sadb_msg_len = PFKEY_MSG_LEN(msg, ext);
@@ -1079,6 +1097,10 @@ pfkey_inverse_acquire(sockaddr_u_t src, sockaddr_u_t dest, uint8_t iproto,
 	return (pfkey_send_msg(msg, resp, 1, SADB_X_EXT_EPROP));
 }
 
+/*
+ * XXX: Are there any scenarios where we could do something if SADB_DELETE
+ * fails? Or should we change this to return void?
+ */
 boolean_t
 pfkey_delete(uint8_t satype, uint32_t spi, sockaddr_u_t src, sockaddr_u_t dst,
     boolean_t pair)
@@ -1091,8 +1113,11 @@ pfkey_delete(uint8_t satype, uint32_t spi, sockaddr_u_t src, sockaddr_u_t dst,
 
 	pfkey_msg_init(NULL, msg, pair ? SADB_X_DELPAIR : SADB_DELETE, satype);
 
-	ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_SRC, src, 0, 0);
-	ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_DST, dst, 0, 0);
+	ext = pfkey_add_sa(ext, spi, 0, 0, 0);
+	ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_SRC, src.sau_sa, 0, 0);
+	ext = pfkey_add_address(ext, SADB_EXT_ADDRESS_DST, dst.sau_sa, 0, 0);
+
+	msg->sadb_msg_len = PFKEY_MSG_LEN(msg, ext);
 
 	if (!pfkey_send_msg(msg, &pmsg, 1, SADB_EXT_SA) ||
 	    (pmsg->pmsg_samsg != NULL &&
@@ -1126,11 +1151,17 @@ handle_reply(sadb_msg_t *reply)
 	mutex_enter(&pfreq_lock);
 
 	req = list_head(&pfreq_list);
-	while (req != NULL && req->pr_msgid != reply->sadb_msg_seq)
+	while (req != NULL) {
+		if (req->pr_msgid == reply->sadb_msg_seq &&
+		    req->pr_pid == reply->sadb_msg_pid)
+			break;
+
 		req = list_next(&pfreq_list, req);
+	}
 
 	if (req != NULL)
 		list_remove(&pfreq_list, req);
+
 	mutex_exit(&pfreq_lock);
 
 	if (req == NULL) {
@@ -1371,11 +1402,55 @@ static void
 sadb_log_sa(sadb_ext_t *ext)
 {
 	sadb_sa_t *sa = (sadb_sa_t *)ext;
+	const char *estr = NULL, *astr = NULL, *flagstr = NULL;
 	char buf[11] = { 0 }; /* 0x + 8 hex digits + NUL */
 
-	(void) snprintf(buf, sizeof (buf), "0x%X", sa->sadb_sa_spi);
+#define	ESTR(x, s) case x: s = #x; break
+	switch (sa->sadb_sa_encrypt) {
+	ESTR(SADB_EALG_NONE, estr);
+	ESTR(SADB_EALG_DESCBC, estr);
+	ESTR(SADB_EALG_3DESCBC, estr);
+	ESTR(SADB_EALG_BLOWFISH, estr);
+	ESTR(SADB_EALG_NULL, estr);
+	ESTR(SADB_EALG_AES, estr);
+	ESTR(SADB_EALG_AES_CCM_8, estr);
+	ESTR(SADB_EALG_AES_CCM_12, estr);
+	ESTR(SADB_EALG_AES_CCM_16, estr);
+	ESTR(SADB_EALG_AES_GCM_8, estr);
+	ESTR(SADB_EALG_AES_GCM_12, estr);
+	ESTR(SADB_EALG_AES_GCM_16, estr);
+	default:
+		estr = enum_printf("%hhu", sa->sadb_sa_encrypt);
+		break;
+	}
+
+	switch (sa->sadb_sa_auth) {
+	ESTR(SADB_AALG_NONE, astr);
+	ESTR(SADB_AALG_SHA256HMAC, astr);
+	ESTR(SADB_AALG_SHA384HMAC, astr);
+	ESTR(SADB_AALG_SHA512HMAC, astr);
+	ESTR(SADB_AALG_MD5HMAC, astr);
+	ESTR(SADB_AALG_SHA1HMAC, astr);
+	default:
+		astr = enum_printf("%hhu", sa->sadb_sa_auth);
+		break;
+	}
+#undef ESTR
+
+	flagstr = enum_printf("0x%" PRIx32, sa->sadb_sa_flags);
+
+	/*
+	 * ipseckey(1M) treats SPI values in pf_key(7P) messages as being in
+	 * network byte order when printing them.  We do the same.
+	 */
+	(void) snprintf(buf, sizeof (buf), "0x%" PRIx32,
+	    ntohl(sa->sadb_sa_spi));
+
 	(void) bunyan_key_add(log,
 	    BUNYAN_T_STRING, PFKEY_K_SPI, buf,
+	    BUNYAN_T_STRING, PFKEY_K_ENCR, estr,
+	    BUNYAN_T_STRING, PFKEY_K_AUTH, astr,
+	    BUNYAN_T_STRING, PFKEY_K_FLAGS, flagstr,
 	    BUNYAN_T_END);
 }
 
@@ -1385,7 +1460,8 @@ sadb_log_pair(sadb_ext_t *ext)
 	sadb_x_pair_t *pair = (sadb_x_pair_t *)ext;
 	char buf[11] = { 0 };
 
-	(void) snprintf(buf, sizeof (buf), "0x%X", pair->sadb_x_pair_spi);
+	(void) snprintf(buf, sizeof (buf), "0x%" PRIx32,
+	    ntohl(pair->sadb_x_pair_spi));
 	(void) bunyan_key_add(log,
 	    BUNYAN_T_STRING, PFKEY_K_PAIR, buf,
 	    BUNYAN_T_END);
@@ -1461,23 +1537,60 @@ sadb_log_addr(sadb_ext_t *ext)
 		return;
 
 	struct protoent *pe = NULL;
-	char *portstr = NULL;
-	size_t portlen = 6; /* uint16_t as str + NUL */
+	const char *portstr = NULL;
+	const char *protostr = NULL;
+	uint32_t port = ss_port(su.sau_sa);
 
-	if (addr->sadb_address_proto != 0) {
-		pe = getprotobynumber(addr->sadb_address_proto);
-		portlen += strlen(pe->p_name) + 1; /* +1 for '/' */
-	} else {
-		portlen += 4; /* 'any/' */
-	}
+	if ((pe = getprotobynumber(addr->sadb_address_proto)) == NULL)
+		protostr = enum_printf("%hhu", addr->sadb_address_proto);
+	else
+		protostr = pe->p_name;
 
-	portstr = alloca(portlen);
-	(void) snprintf(portstr, portlen, "%s/%hu",
-	    (pe != NULL) ? pe->p_name : "any", ntohs(su.sau_sin->sin_port));
+	portstr = (port == 0) ? "any" : enum_printf("%u", port);
+
+	size_t plen = strlen(portstr) + strlen(protostr) + 2; /* '/' + NUL */
+	char pstr[plen];
+
+	(void) snprintf(pstr, plen, "%s/%s", protostr, portstr);
 
 	(void) bunyan_key_add(log,
-	    BUNYAN_T_STRING, portname, portstr,
+	    BUNYAN_T_STRING, portname, pstr, BUNYAN_T_END);
+}
+
+static void
+sadb_log_key(sadb_ext_t *ext)
+{
+	const char *kstr = NULL;
+	const char *klenstr = NULL;
+	sadb_key_t *key = (sadb_key_t *)ext;
+	size_t klen = SADB_64TO8(key->sadb_key_len) - sizeof (*key);
+	size_t slen = klen * 2 + 1;
+	char str[slen];
+
+	switch (ext->sadb_ext_type) {
+	case SADB_EXT_KEY_AUTH:
+		kstr = PFKEY_K_AUTH_KEY;
+		klenstr = PFKEY_K_AUTH_KEYLEN;
+		break;
+	case SADB_EXT_KEY_ENCRYPT:
+		kstr = PFKEY_K_ENCR_KEY;
+		klenstr = PFKEY_K_ENCR_KEYLEN;
+		break;
+	default:
+		INVALID(ext->sadb_ext_type);
+	}
+
+	if (show_keys)
+		writehex((uint8_t *)(key + 1), klen, "", str, slen);
+	else
+		(void) strlcpy(str, "xxx", slen);
+
+	(void) bunyan_key_add(log,
+	    BUNYAN_T_STRING, kstr, str,
+	    BUNYAN_T_UINT32, klenstr, key->sadb_key_bits,
 	    BUNYAN_T_END);
+
+	explicit_bzero(str, slen);
 }
 
 void
@@ -1496,6 +1609,10 @@ sadb_log(bunyan_level_t level, const char *restrict msg,
 		switch (ext->sadb_ext_type) {
 		case SADB_EXT_SA:
 			sadb_log_sa(ext);
+			break;
+		case SADB_EXT_KEY_AUTH:
+		case SADB_EXT_KEY_ENCRYPT:
+			sadb_log_key(ext);
 			break;
 		case SADB_EXT_ADDRESS_SRC:
 		case SADB_EXT_ADDRESS_DST:
@@ -1626,18 +1743,29 @@ ikev2_encr_to_pfkey(ikev2_xf_encr_t encr)
 	switch (encr) {
 	/* These all correspond */
 	case IKEV2_ENCR_NONE:
+		return (SADB_EALG_NONE);
 	case IKEV2_ENCR_DES:
+		return (SADB_EALG_DESCBC);
 	case IKEV2_ENCR_3DES:
+		return (SADB_EALG_3DESCBC);
 	case IKEV2_ENCR_BLOWFISH:
+		return (SADB_EALG_BLOWFISH);
 	case IKEV2_ENCR_NULL:
+		return (SADB_EALG_NULL);
 	case IKEV2_ENCR_AES_CBC:
+		return (SADB_EALG_AES);
 	case IKEV2_ENCR_AES_CCM_8:
+		return (SADB_EALG_AES_CCM_8);
 	case IKEV2_ENCR_AES_CCM_12:
+		return (SADB_EALG_AES_CCM_12);
 	case IKEV2_ENCR_AES_CCM_16:
+		return (SADB_EALG_AES_CCM_16);
 	case IKEV2_ENCR_AES_GCM_8:
+		return (SADB_EALG_AES_GCM_8);
 	case IKEV2_ENCR_AES_GCM_12:
+		return (SADB_EALG_AES_GCM_12);
 	case IKEV2_ENCR_AES_GCM_16:
-		return (encr);
+		return (SADB_EALG_AES_GCM_16);
 	case IKEV2_ENCR_AES_CTR:
 	case IKEV2_ENCR_NULL_AES_GMAC:
 	case IKEV2_ENCR_CAMELLIA_CBC:

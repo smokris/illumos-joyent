@@ -74,6 +74,7 @@ typedef struct encr_data_s {
 	size_t			ed_saltlen;	/* For combined modes */
 } encr_data_t;
 #define	IKEV2_ENCR_KEYLEN_MAX 256
+#define	IKEV2_ENCR_SALTLEN_MAX 32
 
 typedef struct auth_data_s {
 	CK_MECHANISM_TYPE	ad_p11id;
@@ -84,22 +85,17 @@ typedef struct auth_data_s {
 } auth_data_t;
 #define	IKEV2_AUTH_KEYLEN_MAX 512
 
-/*
- * These are sized off IKEV2_{ENCR,XF_AUTH}_MAX.  Entries are intended to be
- * directly indexed off the respective encryption or authentication value
- * (e.g. encr_data[IKEV2_ENCR_AES_CBC] or
- * auth_data[IKEV2_XF_AUTH_HMAC_SHA2_256_128).
- */
-extern encr_data_t encr_data[];
-extern auth_data_t auth_data[];
+const encr_data_t *encr_data(ikev2_xf_encr_t);
+const auth_data_t *auth_data(ikev2_xf_auth_t);
 
 extern CK_INFO pkcs11_info;
 
 void pkcs11_init(void);
 void pkcs11_fini(void);
 
-boolean_t encr_keylen_req(ikev2_xf_encr_t);
-boolean_t encr_keylen_allowed(ikev2_xf_encr_t);
+boolean_t encr_keylen_req(const encr_data_t *);
+boolean_t encr_keylen_allowed(const encr_data_t *);
+boolean_t encr_keylen_ok(const encr_data_t *, size_t);
 
 CK_SESSION_HANDLE p11h(void);
 CK_SESSION_HANDLE pkcs11_new_session(void);

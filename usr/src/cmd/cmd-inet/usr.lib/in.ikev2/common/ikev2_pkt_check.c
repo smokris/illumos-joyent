@@ -390,86 +390,6 @@ ikev2_checklen_notify(const uint8_t *buf, size_t buflen)
 	bcopy(buf, &ntfy, sizeof (ntfy));
 
 	min += ntfy.n_spisize;
-
-	/*
-	 * We cannot possibly check every possible notification (we'd have no
-	 * way to validate ones we don't know about).  However for the ones
-	 * we do care about (because we look for their presence), we do
-	 * make sure that the payload is well formed (i.e. if the notification
-	 * includes data, is it present).
-	 *
-	 * Failure here will cause the packet that contains it to be discarded,
-	 * and possibly generate an INVALID_SYNTAX notification in response.
-	 * While we could merely ignore such payloads (provided the payload
-	 * length itself is correct), however given the nature of these
-	 * notifications and when they appear, we likely wouldn't be able to
-	 * do much with the packet anyway.
-	 */
-	switch (ntohs(ntfy.n_type)) {
-	case IKEV2_N_UNSUPPORTED_CRITICAL_PAYLOAD:
-		/*
-		 * RFC7296 2.5 -- Notify data is a the payload value (a single
-		 * octect) in question.
-		 */
-		max = ++min;
-		break;
-	case IKEV2_N_INVALID_IKE_SPI:
-		max = min;
-		break;
-	case IKEV2_N_INVALID_MAJOR_VERSION:
-		/* RFC7296 2.5 -- Notify data is the max version supported */
-		max = ++min;
-		break;
-	case IKEV2_N_INVALID_MESSAGE_ID:
-		/* RFC7296 2.3 -- Notify data is the 4 octet message id */
-		min += 4;
-		max = min;
-		break;
-	case IKEV2_N_INVALID_SPI:
-		/* RFC7296 1.5 -- Notify data is the SPI in question */
-		min++;
-		break;
-	case IKEV2_N_NO_PROPOSAL_CHOSEN:
-		max = min;
-		break;
-	case IKEV2_N_INVALID_KE_PAYLOAD:
-		/* RFC7296  1.2 -- Notify data is the desired KE group */
-		min += sizeof (uint16_t);
-		max = min;
-		break;
-	case IKEV2_N_AUTHENTICATION_FAILED:
-		max = min;
-		break;
-	case IKEV2_N_SINGLE_PAIR_REQUIRED:
-		max = min;
-		break;
-	case IKEV2_N_NO_ADDITIONAL_SAS:
-		max = min;
-		break;
-	case IKEV2_N_COOKIE:
-	case IKEV2_N_NAT_DETECTION_SOURCE_IP:
-	case IKEV2_N_NAT_DETECTION_DESTINATION_IP:
-		/* If these have invalid data in them, we just ignore them */
-		break;
-	/* TODO */
-	case IKEV2_N_INTERNAL_ADDRESS_FAILURE:
-	case IKEV2_N_FAILED_CP_REQUIRED:
-	case IKEV2_N_TS_UNACCEPTABLE:
-	case IKEV2_N_INVALID_SELECTORS:
-	case IKEV2_N_TEMPORARY_FAILURE:
-	case IKEV2_N_CHILD_SA_NOT_FOUND:
-	case IKEV2_N_INITIAL_CONTACT:
-	case IKEV2_N_SET_WINDOW_SIZE:
-	case IKEV2_N_ADDITIONAL_TS_POSSIBLE:
-	case IKEV2_N_IPCOMP_SUPPORTED:
-	case IKEV2_N_USE_TRANSPORT_MODE:
-	case IKEV2_N_HTTP_CERT_LOOKUP_SUPPORTED:
-	case IKEV2_N_REKEY_SA:
-	case IKEV2_N_ESP_TFC_PADDING_NOT_SUPPORTED:
-	case IKEV2_N_NON_FIRST_FRAGMENTS_ALSO:
-		break;
-	}
-
 	return (check_payload_size(name, buflen, min, max));
 }
 
@@ -603,7 +523,6 @@ ikev2_count_payloads(pkt_t *restrict pkt, size_t *restrict count)
 
 		count[PAYIDX(pay->pp_type)]++;
 	}
-
 }
 
 static boolean_t
@@ -624,16 +543,41 @@ check_count(ikev2_pay_type_t type, size_t min, size_t max, size_t *count)
 	return (B_FALSE);
 }
 
+boolean_t
+ikev2_pkt_has_nerror(pkt_t *pkt)
+{
+	for (size_t i = 0; i < pkt->pkt_notify_count; i++) {
+		pkt_notify_t *n = pkt_notify(pkt, i);
+
+		if (IKEV2_NOTIFY_ERROR(n->pn_type))
+			return (B_TRUE);
+	}
+	return (B_FALSE);
+}
+
 static boolean_t
 ikev2_pkt_check_ike_sa_init(pkt_t *pkt)
 {
+	/*
+	 * While not a notification error, like notification errors, it's
+	 * presence means the expected payloads may not be present.
+	 */
 	static const ikev2_notify_type_t errors[] = {
 		IKEV2_N_COOKIE,
-		IKEV2_N_INVALID_KE_PAYLOAD,
-		IKEV2_N_NO_PROPOSAL_CHOSEN
 	};
 	size_t paycount[IKEV2_NUM_PAYLOADS] = { 0 };
+	uint32_t msgid = ntohl(pkt_header(pkt)->msgid);
 	boolean_t ok = B_TRUE;
+
+	if (msgid != 0) {
+		(void) bunyan_warn(log,
+		    "Message id is not zero on IKE_SA_INIT exchange",
+		    BUNYAN_T_END);
+		return (B_FALSE);
+	}
+
+	if (ikev2_pkt_has_nerror(pkt))
+		return (B_TRUE);
 
 	ikev2_count_payloads(pkt, paycount);
 
@@ -651,6 +595,8 @@ ikev2_pkt_check_ike_sa_init(pkt_t *pkt)
 	return (ok);
 }
 
+static boolean_t ikev2_pkt_check_create_child_sa(pkt_t *);
+
 static boolean_t
 ikev2_pkt_check_ike_auth(pkt_t *pkt)
 {
@@ -659,6 +605,12 @@ ikev2_pkt_check_ike_auth(pkt_t *pkt)
 
 	size_t paycount[IKEV2_NUM_PAYLOADS] = { 0 };
 	boolean_t ok = B_TRUE;
+
+	if (pkt_get_notify(pkt, IKEV2_N_AUTHENTICATION_FAILED, NULL) != NULL)
+		return (B_TRUE);
+
+	if (!ikev2_pkt_check_create_child_sa(pkt))
+		return (B_FALSE);
 
 	ikev2_count_payloads(pkt, paycount);
 
@@ -671,12 +623,10 @@ ikev2_pkt_check_ike_auth(pkt_t *pkt)
 
 	ok &= check_count(IKEV2_PAYLOAD_AUTH, 1, 1, paycount);
 
-	/* These may be missing if there is an error failure */
-	ok &= check_count(IKEV2_PAYLOAD_SA, 0, 1, paycount);
-	ok &= check_count(IKEV2_PAYLOAD_TSi, 0, 1, paycount);
-	ok &= check_count(IKEV2_PAYLOAD_TSr, 0, 1, paycount);
+	if (!ok)
+		return (B_FALSE);
 
-	return (ok);
+	return (ikev2_pkt_check_create_child_sa(pkt));
 }
 
 static boolean_t
@@ -687,6 +637,9 @@ ikev2_pkt_check_create_child_sa(pkt_t *pkt)
 
 	size_t paycount[IKEV2_NUM_PAYLOADS] = { 0 };
 	boolean_t ok = B_TRUE;
+
+	if (ikev2_pkt_has_nerror(pkt))
+		return (B_TRUE);
 
 	ikev2_count_payloads(pkt, paycount);
 

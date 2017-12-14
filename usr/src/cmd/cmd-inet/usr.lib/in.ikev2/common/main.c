@@ -64,6 +64,21 @@ __thread bunyan_logger_t *log = NULL;
 bunyan_logger_t *main_log = NULL;
 int main_port = -1;
 
+lockingfd_t fdlock = {
+    .lf_lock = ERRORCHECKMUTEX,
+    .lf_fd = STDOUT_FILENO
+};
+
+
+/*
+ * XXX: Both ipseckey(1M) and ikeadm(1M) have the ability to show actual key
+ * values.  in.iked(1M) also has the notion of a privilege level (not to
+ * be confused with privileges(5)) where one can prevent it from ever disclosing
+ * key material and to change the setting requires a restart.  We'll probably
+ * want similar functionality and this setting will get weaved into that.
+ */
+boolean_t show_keys = B_TRUE; /* XXX XXX Change before putback! */
+
 static void
 usage(const char *name)
 {
@@ -97,7 +112,15 @@ nofail_cb(void)
 {
 	/*
 	 * XXX Do we want to control behavior (abort vs exit) based on
-	 * debug/non-debug, or configuration or SMF parameter?
+	 * debug/non-debug, configuration or a SMF parameter?
+	 *
+	 * In general, we try to recover or just abort the specific operation
+	 * we're attempting if we cannot allocate memory and let everything else
+	 * continue as much as we can (saving the nofail allocations largely for
+	 * startup).  It may be more desirable to exit or abort and let SMF
+	 * try to recover things if we get to this point (subject to sanity
+	 * checks -- e.g. that we're not allowing a remote peer to get us
+	 * to allocate 1Tb of ram, etc.).
 	 */
 	assfail("Out of memory", __FILE__, __LINE__);
 	/*NOTREACHED*/
@@ -125,7 +148,6 @@ main(int argc, char **argv)
 {
 	FILE *f = NULL;
 	char *cfgfile = "/etc/inet/ike/config";
-	lockingfd_t logfd = { ERRORCHECKMUTEX, STDOUT_FILENO };
 	struct rlimit rlim;
 	int c, rc;
 	int fd = -1;
@@ -175,7 +197,7 @@ main(int argc, char **argv)
 
 	/* hard coded to TRACE just during development */
 	if ((rc = bunyan_stream_add(log, "stdout", BUNYAN_L_TRACE,
-	    lockingfd_log, &logfd)) < 0) {
+	    lockingfd_log, &fdlock)) < 0) {
 		errx(EXIT_FAILURE, "bunyan_stream_add() failed: %s",
 		    strerror(rc));
 	}

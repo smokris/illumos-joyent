@@ -125,7 +125,14 @@ struct pkt_s {
 	uint16_t		pkt_notify_count;
 	uint16_t		pkt_notify_alloc;
 
-	boolean_t		pkt_done;	/* Ready for transmit */
+				/*
+				 * Indicates contents of packet will not
+				 * longer be modified.  Set once a packet
+				 * is ready for transmit or after we've
+				 * decrypted/verified an inbound packet
+				 * and have index everything.
+				 */
+	boolean_t		pkt_done;
 	boolean_t		pkt_decrypted;
 };
 
