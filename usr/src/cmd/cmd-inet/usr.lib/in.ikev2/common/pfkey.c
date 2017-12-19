@@ -868,6 +868,9 @@ pfkey_sadb_add_update(ikev2_sa_t *restrict sa,
 	flags |= csa->i2c_inbound ?
 	    SADB_X_SAFLAGS_INBOUND : SADB_X_SAFLAGS_OUTBOUND;
 
+	if (!csa->i2c_transport)
+		flags |= SADB_X_SAFLAGS_TUNNEL;
+
 	if ((sa->flags & I2SA_NAT_LOCAL) && csa->i2c_transport) {
 		flags |= SADB_X_SAFLAGS_NATT_LOC;
 		natt_l= SSTOSA(&sa->lnatt);
