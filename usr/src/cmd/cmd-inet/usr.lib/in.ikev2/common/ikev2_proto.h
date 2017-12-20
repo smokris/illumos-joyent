@@ -53,6 +53,7 @@ void ikev2_sa_init_resp(struct pkt_s *);
 
 void ikev2_ike_auth_init(struct ikev2_sa_s *restrict);
 void ikev2_ike_auth_resp(struct pkt_s *);
+boolean_t ikev2_auth_failed_resp(struct pkt_s *restrict, struct pkt_s *restrict);
 
 boolean_t ikev2_create_child_sa_init_auth(struct ikev2_sa_s *restrict,
     struct pkt_s *restrict);

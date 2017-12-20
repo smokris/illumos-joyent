@@ -131,12 +131,17 @@ ikev2_sa_init_init(ikev2_sa_t *restrict i2sa, parsedmsg_t *restrict pmsg)
 	if (!ikev2_save_init_pkt(sa_args, pkt))
 		goto fail;
 
-	if (!ikev2_send_req(pkt, ikev2_sa_init_init_resp, sa_args))
+	if (!ikev2_send_req(pkt, ikev2_sa_init_init_resp, sa_args)) {
+		pkt = NULL;
 		goto fail;
+	}
 
 	return;
 
 fail:
+	(void) bunyan_error(log, "Could not send IKE_SA_INIT packet",
+	    BUNYAN_T_END);
+
 	parsedmsg_free(pmsg);
 	i2sa->flags |= I2SA_CONDEMNED;
 	ikev2_pkt_free(pkt);
@@ -169,12 +174,10 @@ ikev2_sa_init_resp(pkt_t *pkt)
 
 	sa->i2sa_rule = find_rule(laddr, raddr);
 	if (sa->i2sa_rule == NULL) {
-		if (ikev2_add_notify(resp, IKEV2_N_NO_PROPOSAL_CHOSEN)) {
-			(void) ikev2_send_resp(resp);
-			ikev2_pkt_free(pkt);
-			return;
-		}
-		goto fail;
+		/* This is the 2nd payload, it should fit */
+		VERIFY(ikev2_add_notify(resp, IKEV2_N_NO_PROPOSAL_CHOSEN));
+		(void) ikev2_send_resp(resp);
+		return;
 	}
 
 	if (RULE_IS_DEFAULT(sa->i2sa_rule)) {
@@ -188,12 +191,9 @@ ikev2_sa_init_resp(pkt_t *pkt)
 	}
 
 	if (!ikev2_sa_match_rule(sa->i2sa_rule, pkt, &sa_result, B_FALSE)) {
-		if (ikev2_add_notify(resp, IKEV2_N_NO_PROPOSAL_CHOSEN)) {
-			(void) ikev2_send_resp(resp);
-			ikev2_pkt_free(pkt);
-			return;
-		}
-		goto fail;
+		VERIFY(ikev2_add_notify(resp, IKEV2_N_NO_PROPOSAL_CHOSEN));
+		(void) ikev2_send_resp(resp);
+		return;
 	}
 
 	sa->authmethod = sa_result.ism_authmethod;
@@ -214,7 +214,6 @@ ikev2_sa_init_resp(pkt_t *pkt)
 			goto send;
 		else
 			goto fail;
-		return;
 	}
 
 	if (!check_nats(pkt))
@@ -273,9 +272,10 @@ ikev2_sa_init_resp(pkt_t *pkt)
 		goto fail;
 
 send:
-	if (!ikev2_send_resp(resp))
+	if (!ikev2_send_resp(resp)) {
+		resp = NULL;
 		goto fail;
-
+	}
 	return;
 
 fail:
@@ -285,7 +285,6 @@ fail:
 
 	/* condemning/deleting the IKEv2 SA will destroy the DH objects */
 	sa->flags |= I2SA_CONDEMNED;
-	ikev2_pkt_free(pkt);
 	ikev2_pkt_free(resp);
 }
 
@@ -337,7 +336,6 @@ ikev2_sa_init_init_resp(ikev2_sa_t *restrict sa, pkt_t *restrict pkt,
 	if (pkt_get_notify(pkt, IKEV2_N_NO_PROPOSAL_CHOSEN, NULL) != NULL) {
 		(void) bunyan_warn(log, "Received NO_PROPOSAL_CHOSEN from peer",
 		    BUNYAN_T_END);
-		ikev2_pkt_free(pkt);
 		return;
 	}
 
@@ -358,7 +356,9 @@ ikev2_sa_init_init_resp(ikev2_sa_t *restrict sa, pkt_t *restrict pkt,
 	 * transmission attempts, or we hit the P1 timeout.
 	 */
 	if (!ikev2_sa_check_prop(sa->i2sa_rule, pkt, &sa_result, B_FALSE)) {
-		ikev2_pkt_free(pkt);
+		(void) bunyan_warn(log,
+		    "Received response from peer that does not match our "
+		    "policy", BUNYAN_T_END);
 		return;
 	}
 
@@ -397,7 +397,6 @@ ikev2_sa_init_init_resp(ikev2_sa_t *restrict sa, pkt_t *restrict pkt,
 
 fail:
 	sa->flags |= I2SA_CONDEMNED;
-	ikev2_pkt_free(pkt);
 	return;
 }
 

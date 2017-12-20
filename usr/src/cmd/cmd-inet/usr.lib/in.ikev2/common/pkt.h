@@ -156,8 +156,12 @@ boolean_t pkt_done(pkt_t *);
 void pkt_init(void);
 void pkt_fini(void);
 void pkt_free(pkt_t *);
+
 pkt_payload_t *pkt_get_payload(pkt_t *, uint8_t, pkt_payload_t *);
+pkt_payload_t *pkt_payload(pkt_t *, uint16_t);
+
 pkt_notify_t *pkt_get_notify(pkt_t *, uint16_t, pkt_notify_t *);
+pkt_notify_t *pkt_notify(pkt_t *, uint16_t);
 
 #define	PKT_APPEND_STRUCT(_pkt, _struct) \
 	VERIFY(pkt_append_data(_pkt, &(_struct), sizeof (_struct)))

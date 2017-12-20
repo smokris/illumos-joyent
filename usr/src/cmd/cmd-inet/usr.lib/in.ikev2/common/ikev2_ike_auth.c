@@ -71,13 +71,17 @@ ikev2_ike_auth_init(ikev2_sa_t *restrict sa)
 	if (req == NULL)
 		goto fail;
 
-	/* First payload, this should always fit */
-	VERIFY(ikev2_add_sk(req));
-
 	if (!add_id(req, rule->rule_local_id, B_TRUE))
 		goto fail;
 
-	/* XXX: Add any CERT or CERTREQ payloads */
+	/* XXX: CERT */
+
+	if (!ikev2_add_notify(req, IKEV2_N_INITIAL_CONTACT))
+		goto fail;
+
+	/* XXX: HTTP_CERT_LOOKUP_SUPPORTED */
+
+	/* XXX: CERTREQ */
 
 	/*
 	 * XXX: We can optionally add _1_ IDr payload to indicate a preferred
@@ -92,12 +96,16 @@ ikev2_ike_auth_init(ikev2_sa_t *restrict sa)
 	if (!ikev2_create_child_sa_init_auth(sa, req))
 		goto fail;
 
-	if (!ikev2_send_req(req, ikev2_ike_auth_init_resp, sa_args))
+	if (!ikev2_send_req(req, ikev2_ike_auth_init_resp, sa_args)) {
+		req = NULL;
 		goto fail;
+	}
 
 	return;
 
 fail:
+	(void) bunyan_error(log, "Cound not send IKE_AUTH request",
+	    BUNYAN_T_END);
 	sa->flags |= I2SA_CONDEMNED;
 	ikev2_pkt_free(req);
 }
@@ -127,9 +135,6 @@ ikev2_ike_auth_resp(pkt_t *req)
 	if (resp == NULL)
 		goto fail;
 
-	/* This is the first payload, so it better fit */
-	VERIFY(ikev2_add_sk(resp));
-
 	/*
 	 * This is possible, but strange -- we've authenticated
 	 * (IKE_AUTH messages always start with msgid 1, but could go higher
@@ -146,12 +151,9 @@ ikev2_ike_auth_resp(pkt_t *req)
 		    "Received an IKE_AUTH request to an already authenticated "
 		    "IKE SA;", BUNYAN_T_END);
 
-		if (ikev2_add_notify(resp, IKEV2_N_INVALID_SYNTAX))
-			ikev2_send_resp(resp);
-		else
-			ikev2_pkt_free(resp);
-
-		ikev2_pkt_free(req);
+		/* This is the 2nd payload (after SK) -- it should always fit */
+		VERIFY(ikev2_add_notify(resp, IKEV2_N_INVALID_SYNTAX));
+		(void) ikev2_send_resp(resp);
 		return;
 	}
 
@@ -193,6 +195,11 @@ ikev2_ike_auth_resp(pkt_t *req)
 	    BUNYAN_T_STRING, "authmethod", mstr,
 	    BUNYAN_T_END);
 
+	/*
+	 * XXX: Check for INITIAL_CONTACT, if there delete any existing
+	 * IPsec SAs between the two hosts.
+	 */
+
 	/* The initiator may optionally request we send a specific ID */
 	if ((id_r = pkt_get_payload(req, IKEV2_PAYLOAD_IDr, NULL)) != NULL) {
 		/*
@@ -230,33 +237,33 @@ ikev2_ike_auth_resp(pkt_t *req)
 	if (!ikev2_create_child_sa_resp_auth(req, resp))
 		goto fail;
 
-	if (!ikev2_send_resp(resp))
+	if (!ikev2_send_resp(resp)) {
+		resp = NULL;
 		goto fail;
+	}
 
 	ikev2_sa_args_free(sa->sa_init_args);
 	sa->sa_init_args = NULL;
 	return;
 
 fail:
+	(void) bunyan_error(log, "Cound not send IKE_AUTH response",
+	    BUNYAN_T_END);
+
 	ikev2_sa_args_free(sa->sa_init_args);
 	sa->sa_init_args = NULL;
 	sa->flags |= I2SA_CONDEMNED;
 	ikev2_pkt_free(resp);
-	ikev2_pkt_free(req);
 	return;
 
 authfail:
 	config_id_free(cid_i);
-	ikev2_pkt_free(resp);
 	ikev2_sa_args_free(sa->sa_init_args);
 	sa->sa_init_args = NULL;
 	sa->flags |= I2SA_CONDEMNED;
 
-	if (ikev2_add_notify(resp, IKEV2_N_AUTHENTICATION_FAILED)) {
-		(void) ikev2_send_resp(resp);
-	} else {
-		ikev2_pkt_free(resp);
-	}
+	VERIFY(ikev2_add_notify(resp, IKEV2_N_AUTHENTICATION_FAILED));
+	(void) ikev2_send_resp(resp);
 }
 
 /*
@@ -278,7 +285,7 @@ ikev2_ike_auth_init_resp(ikev2_sa_t *restrict sa, pkt_t *restrict resp,
 
 	/* ikev2_retransmit() will condemn the IKE SA if we timeout */
 	if (resp == NULL) {
-		/* Let the piggy-backed child SA creation cleanup */
+		/* Let the piggy-backed child SA cleanup */
 		ikev2_create_child_sa_init_resp_auth(sa, NULL, arg);
 		return;
 	}
@@ -300,7 +307,6 @@ ikev2_ike_auth_init_resp(ikev2_sa_t *restrict sa, pkt_t *restrict resp,
 
 		ikev2_create_child_sa_init_resp_auth(sa, NULL, arg);
 		sa->flags |= I2SA_CONDEMNED;
-		ikev2_pkt_free(resp);
 		return;
 	}
 
@@ -327,7 +333,6 @@ ikev2_ike_auth_init_resp(ikev2_sa_t *restrict sa, pkt_t *restrict resp,
 	(void) ikev2_sa_disarm_timer(sa, I2SA_EVT_P1_EXPIRE);
 
 	ikev2_create_child_sa_init_resp_auth(sa, resp, arg);
-	ikev2_pkt_free(resp);
 	ikev2_sa_args_free(sa->sa_init_args);
 	sa->sa_init_args = NULL;
 	return;
@@ -336,7 +341,6 @@ fail:
 	ikev2_create_child_sa_init_resp_auth(sa, NULL, arg);
 	ikev2_sa_args_free(sa->sa_init_args);
 	sa->sa_init_args = NULL;
-	ikev2_pkt_free(resp);
 	ikev2_auth_failed(sa);
 }
 
@@ -813,27 +817,50 @@ i2id_to_cid(pkt_payload_t *i2id)
  * must immediately start a new INFORMATIONAL exchange with the
  * AUTHENTICATION_FAILED notification as it's contents (RFC7296 2.21.2).
  */
+
+/* Nothing to process with the acknowledgement */
 static void
-ikev2_auth_failed_resp(ikev2_sa_t *restrict i2sa, pkt_t *restrict resp,
-    void *arg)
+ikev2_auth_failed_reply(ikev2_sa_t *restrict i2sa __unused,
+    pkt_t *restrict resp __unused, void *arg __unused)
 {
-	i2sa->flags |= I2SA_CONDEMNED;
-	ikev2_pkt_free(resp);
 }
 
+/* Kick off the INFORMATINOAL exchange */
 static boolean_t
-ikev2_auth_failed(ikev2_sa_t *sa)
+ikev2_auth_failed(ikev2_sa_t *i2sa)
 {
-	pkt_t *msg = ikev2_pkt_new_exchange(sa, IKEV2_EXCH_INFORMATIONAL);
-	if (msg == NULL)
-		return (B_FALSE);
+	pkt_t *msg = ikev2_pkt_new_exchange(i2sa, IKEV2_EXCH_INFORMATIONAL);
 
-	if (!ikev2_add_notify(msg, IKEV2_N_AUTHENTICATION_FAILED)) {
-		ikev2_pkt_free(msg);
+	i2sa->flags |= I2SA_CONDEMNED;
+
+	if (msg == NULL) {
+		(void) bunyan_error(log,
+		    "No memory to send AUTHENTICATION_FAILED notification",
+		    BUNYAN_T_END);
 		return (B_FALSE);
 	}
 
-	return (ikev2_send_req(msg, ikev2_auth_failed_resp, NULL));
+	VERIFY(ikev2_add_notify(msg, IKEV2_N_AUTHENTICATION_FAILED));
+	return (ikev2_send_req(msg, ikev2_auth_failed_reply, NULL));
+}
+
+/*
+ * We've received an AUTHENTICATION_FAILED notification in an INFORMATIONAL
+ * exchange
+ */
+boolean_t
+ikev2_auth_failed_resp(pkt_t *restrict req, pkt_t *restrict resp)
+{
+	ikev2_sa_t *i2sa = req->pkt_sa;
+
+	(void) bunyan_warn(log,
+	    "Peer rejected our authentication attempt", BUNYAN_T_END);
+
+	ikev2_sa_delete_children(i2sa);
+	req->pkt_sa->flags |= I2SA_CONDEMNED;
+
+	/* Send an empty response to acknowledge we received the message */
+	return (B_TRUE);
 }
 
 static size_t

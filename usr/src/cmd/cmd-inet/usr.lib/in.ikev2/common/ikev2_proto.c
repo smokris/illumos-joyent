@@ -52,6 +52,7 @@
 
 static void ikev2_dispatch_pkt(pkt_t *);
 static void ikev2_dispatch_pfkey(ikev2_sa_t *restrict, parsedmsg_t *restrict);
+static void ikev2_informational(pkt_t *);
 
 static int select_socket(const struct sockaddr *, boolean_t);
 
@@ -511,6 +512,12 @@ ikev2_send_req(pkt_t *restrict req, ikev2_send_cb_t cb, void *restrict arg)
 		/*
 		 * XXX: For now at least, we don't bother with attempting to
 		 * retransmit a packet if the original transmission failed.
+		 *
+		 * We might want to instead still return 'success' and
+		 * let the retransmit timer attempt to send + only 'fail'
+		 * if it times out, or not return any status (i.e. change
+		 * return to 'void') and condemn the IKEv2 SA if we
+		 * can't arm the PKT_XMIT timer.
 		 */
 		ikev2_pkt_free(req);
 		return (B_FALSE);
@@ -522,12 +529,8 @@ ikev2_send_req(pkt_t *restrict req, ikev2_send_cb_t cb, void *restrict arg)
 	i2req->i2r_arg = arg;
 
 	if (!ikev2_sa_arm_timer(i2sa, retry, I2SA_EVT_PKT_XMIT, i2req)) {
-		/*
-		 * XXX: If this fails, we could check for timeout on our
-		 * next attempt to send a request and fail if we never
-		 * received a response.
-		 */
 		STDERR(error, "Could not arm packet retransmit timer");
+		ikev2_pkt_free(req);
 		return (B_FALSE);
 	}
 
@@ -943,7 +946,7 @@ ikev2_handle_response(pkt_t *resp)
 		ikev2_sa_clear_req(i2sa, i2req);
 
 	cb(i2sa, resp, arg);
-	/* TODO: move disposal of response packet here */
+	ikev2_pkt_free(resp);
 	return (B_TRUE);
 
 discard:
@@ -1023,11 +1026,7 @@ ikev2_dispatch_pkt(pkt_t *pkt)
 		if ((resp = ikev2_pkt_new_response(pkt)) == NULL)
 			goto discard;
 
-		/*
-		 * The total size of these two payloads is << 1K, we should
-		 * always have room for them.
-		 */
-		VERIFY(ikev2_add_sk(resp));
+		/* This is the 2nd payload, it should fit */
 		VERIFY(ikev2_add_notify_full(resp, IKEV2_PROTO_NONE, 0,
 		    IKEV2_N_UNSUPPORTED_CRITICAL_PAYLOAD,
 		    &crit_pay, sizeof (crit_pay)));
@@ -1052,12 +1051,9 @@ ikev2_dispatch_pkt(pkt_t *pkt)
 		ikev2_create_child_sa_resp(pkt);
 		break;
 	case IKEV2_EXCH_INFORMATIONAL:
-		/* TODO */
-		ikev2_pkt_log(pkt, BUNYAN_L_INFO,
-		    "Exchange not implemented yet");
-		goto discard;
+		ikev2_informational(pkt);
+		break;
 	}
-	return;
 
 discard:
 	ikev2_pkt_free(pkt);
@@ -1107,6 +1103,70 @@ ikev2_dispatch_pfkey(ikev2_sa_t *restrict sa, parsedmsg_t *restrict pmsg)
 		    "Unexpected SADB request from kernel", samsg);
 		parsedmsg_free(pmsg);
 	}
+}
+
+/*
+ * XXX:The handling of INFORMATIONAL exchanges is still in it's infancy, so this
+ * is just an initial stab at it, and it's form may change as support for
+ * more features are added.
+ */
+
+/* Since n is reachable from req, we can't mark them as restricted */
+static boolean_t
+ikev2_handle_notification(pkt_notify_t *n, pkt_t *req, pkt_t *restrict resp)
+{
+	switch (n->pn_type) {
+	case IKEV2_N_AUTHENTICATION_FAILED:
+		/*
+		 * XXX: We may want to track the last inbound IKE_AUTH msgid
+		 * (normally would be 1, but could be higher if EAP is used)
+		 * and only act on this if the inbound msgid is
+		 * last_auth_msgid + 1 (i.e. the next exchange after the
+		 * IKE_AUTH exchange).
+		 */
+		return (ikev2_auth_failed_resp(req, resp));
+	break;
+	/* XXX: Any other notifications? */
+	}
+
+	return (B_TRUE);
+}
+
+static void
+ikev2_informational(pkt_t *req)
+{
+	pkt_t *resp = ikev2_pkt_new_response(req);
+	pkt_payload_t *pay = NULL;
+	pkt_notify_t *n = NULL;
+	size_t payidx = 0, nidx = 0;
+
+	if (resp == NULL) {
+		(void) bunyan_error(log,
+		    "No memory to respond to an INFORMATIONL request",
+		    BUNYAN_T_END);
+		return;
+	}
+
+	for (payidx = 0; payidx < req->pkt_payload_count; payidx++) {
+		n = NULL;
+		pay = pkt_payload(req, payidx);
+
+		if (pay->pp_type == IKEV2_PAYLOAD_NOTIFY) {
+			VERIFY3U(nidx, <=, req->pkt_notify_count);
+			n = pkt_notify(req, nidx++);
+			if (!ikev2_handle_notification(n, req, resp))
+				goto fail;
+			continue;
+		}
+
+		/* TODO: Handle other payloads (DELETE, etc.) */
+	}
+
+	ikev2_send_resp(resp);
+	return;
+
+fail:
+	ikev2_pkt_free(resp);
 }
 
 /* Picks the socket to use for sending based on our local address. */

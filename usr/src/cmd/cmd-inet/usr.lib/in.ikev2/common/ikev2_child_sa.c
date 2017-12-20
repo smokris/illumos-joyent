@@ -142,11 +142,11 @@ ikev2_create_child_sa_init(ikev2_sa_t *restrict sa, parsedmsg_t *restrict pmsg)
 	req = ikev2_pkt_new_exchange(sa, IKEV2_EXCH_CREATE_CHILD_SA);
 	if (req == NULL)
 		goto fail;
-	/* This is the first payload, there should always be space for it */
-	VERIFY(ikev2_add_sk(req));
 
-	if (!ikev2_create_child_sa_init_common(sa, req, csa))
+	if (!ikev2_create_child_sa_init_common(sa, req, csa)) {
+		ikev2_pkt_free(req);
 		goto fail;
+	}
 
 	if (!ikev2_send_req(req, ikev2_create_child_sa_init_resp, csa))
 		goto fail;
@@ -257,16 +257,15 @@ ikev2_create_child_sa_resp(pkt_t *restrict req)
 		(void) bunyan_info(log,
 		    "Received CREATE_CHILD_SA request on unauthenciated IKE SA;"
 		    " discarding", BUNYAN_T_END);
-		ikev2_pkt_free(req);
 		return;
 	}
 
 	if ((resp = ikev2_pkt_new_response(req)) == NULL) {
-		ikev2_pkt_free(req);
+		(void) bunyan_error(log,
+		    "No memory to respond to CREATE_CHILD_SA request",
+		    BUNYAN_T_END);
 		return;
 	}
-	/* It's the first payload, it should fit */
-	VERIFY(ikev2_add_sk(resp));
 
 	if ((csa = ikev2_sa_args_new(B_TRUE, 0)) == NULL) {
 		/*
@@ -278,13 +277,8 @@ ikev2_create_child_sa_resp(pkt_t *restrict req)
 		    "No memory to perform CREATE_CHILD_SA exchange; "
 		    "sending NO_PROPOSAL_CHOSEN", BUNYAN_T_END);
 
-		if (ikev2_add_notify(resp, IKEV2_N_NO_PROPOSAL_CHOSEN)) {
-			(void) ikev2_send_resp(resp);
-		} else {
-			ikev2_pkt_free(resp);
-		}
-
-		ikev2_pkt_free(req);
+		VERIFY(ikev2_add_notify(resp, IKEV2_N_NO_PROPOSAL_CHOSEN));
+		(void) ikev2_send_resp(resp);
 		return;
 	}
 
@@ -294,7 +288,6 @@ ikev2_create_child_sa_resp(pkt_t *restrict req)
 		ikev2_pkt_free(resp);
 
 	ikev2_sa_args_free(csa);
-	ikev2_pkt_free(req);
 }
 
 /*
@@ -440,7 +433,6 @@ ikev2_create_child_sa_init_resp(ikev2_sa_t *restrict i2sa, pkt_t *restrict resp,
     void *restrict arg)
 {
 	ikev2_create_child_sa_init_resp_common(i2sa, resp, arg);
-	ikev2_pkt_free(resp);
 	ikev2_sa_args_free(arg);
 }
 
@@ -480,7 +472,10 @@ ikev2_create_child_sa_init_resp_common(ikev2_sa_t *restrict i2sa,
 		goto remote_fail;
 	}
 
-	/* XXX: INVALID_KE */
+	/*
+	 * XXX: INVALID_KE -- create new CREATE_CHILD_SA exchange if group
+	 * value in notification data is in our policy.
+	 */
 
 	if (!ikev2_sa_check_acquire(pmsg, csa->i2a_dh, resp, &match)) {
 		(void) bunyan_warn(log,
@@ -534,7 +529,16 @@ ikev2_create_child_sa_init_resp_common(ikev2_sa_t *restrict i2sa,
 	return;
 
 fail:
-	/* TODO: Information exchange to delete child SAs */
+	/*
+	 * TODO: If the creation of our child SAs fails for some reason, we
+	 * probably want to do an INFORMATIONAL exchange for the peer to delete
+	 * the ones they just created.  While we normally decouple the IPsec
+	 * SAs (so that if in.ikev2d exits, the IPsec SAs can persist through
+	 * the end of their lifetime, or until in.ikev2d is restarted and it
+	 * receives an INITIAL_CONTACT notification), in this situation we
+	 * already know that we will not be able to send traffic, so there
+	 * is no point in the peer keeping their IPsec SAs to us around.
+	 */
 	;
 
 remote_fail:

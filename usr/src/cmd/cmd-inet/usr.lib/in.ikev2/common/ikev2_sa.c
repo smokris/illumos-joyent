@@ -985,6 +985,44 @@ ikev2_sa_add_child(ikev2_sa_t *restrict i2sa, ikev2_child_sa_t *restrict i2c)
 }
 
 void
+ikev2_sa_delete_children(ikev2_sa_t *restrict i2sa)
+{
+	ikev2_child_sa_t *csa = NULL;
+	struct sockaddr_storage src = { 0 };
+	struct sockaddr_storage dst = { 0 };
+	sockaddr_u_t srcu = { .sau_ss = &src };
+	sockaddr_u_t dstu = { .sau_ss = &dst };
+
+	/*
+	 * XXX: This is assuming we don't want to include the protocol or
+	 * port values in the src/dst addresses passed along in the
+	 * SADB_{DELETE,DELPAIR} message.  Need to verify this.
+	 */
+	sockaddr_copy(SSTOSA(&i2sa->laddr), &src, B_FALSE);
+	sockaddr_copy(SSTOSA(&i2sa->raddr), &dst, B_FALSE);
+
+	csa = refhash_first(i2sa->i2sa_child_sas);
+	while (csa != NULL) {
+		ikev2_child_sa_t *next;
+		uint8_t satype = ikev2_to_satype(csa->i2c_satype);
+
+		(void) pfkey_delete(satype, csa->i2c_spi,
+		    csa->i2c_inbound ? dstu : srcu,
+		    csa->i2c_inbound ? srcu : dstu,
+		    (csa->i2c_pair != NULL) ? B_TRUE : B_FALSE);
+
+		if (csa->i2c_pair != NULL) {
+			refhash_remove(i2sa->i2sa_child_sas, csa->i2c_pair);
+			csa->i2c_pair = NULL;
+		}
+
+		next = refhash_next(i2sa->i2sa_child_sas, csa);
+		refhash_remove(i2sa->i2sa_child_sas, csa);
+		csa = next;
+	}
+}
+
+void
 ikev2_sa_clear_req(ikev2_sa_t *restrict i2sa, i2sa_req_t *restrict i2req)
 {
 	pkt_t *pkt = i2req->i2r_pkt;
