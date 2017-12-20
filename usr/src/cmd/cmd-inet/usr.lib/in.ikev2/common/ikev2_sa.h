@@ -74,11 +74,11 @@ typedef struct i2sa_msg {
 /* Outbound requests */
 typedef struct i2sa_req {
 	struct pkt_s	*i2r_pkt;
-	void		*i2r_cb;
-	void		*i2r_arg;
-	periodic_id_t	i2r_timer;
-	uint32_t	i2r_msgid;
-	boolean_t	i2r_fired;
+	void		*i2r_cb;	/* Handler for reply */
+	void		*i2r_arg;	/* Cookie for handler */
+	periodic_id_t	i2r_timer;	/* Retransmit timer */
+	uint32_t	i2r_msgid;	/* Request msgid in local byte order */
+	boolean_t	i2r_fired;	/* B_TRUE if i2r_timer has fired */
 } i2sa_req_t;
 #define	I2REQ_ACTIVE(i2r) ((i2r)->i2r_pkt != NULL)
 
@@ -208,10 +208,6 @@ struct ikev2_sa_s {
 	(((i2sa)->flags & I2SA_INITIATOR) ? (i2sa)->r_spi : \
 	    (i2sa)->i_spi)
 
-#define	I2SA_REMOTE_INIT(i2sa) \
-	(((i2sa)->flags & I2SA_INITIATOR) ? (i2sa)->init_r : \
-	    (i2sa)->init_i)
-
 #define	I2SA_IS_NAT(i2sa) \
 	(!!((i2sa)->flags & (I2SA_NAT_LOCAL|I2SA_NAT_REMOTE)))
 
@@ -233,13 +229,14 @@ struct ikev2_child_sa_s {
 	refhash_link_t		i2c_link;
 	ikev2_child_sa_t	*i2c_pair;
 	hrtime_t		i2c_birth;
+
+	/* A subset of the child SAs state duplicated for observability */
 	ikev2_spi_proto_t	i2c_satype;
 	uint32_t		i2c_spi;
 	boolean_t		i2c_initiator;
 	boolean_t		i2c_inbound;
 	boolean_t		i2c_transport;
 
-	/* A subset of the child SAs state duplicated for observability */
 	ikev2_xf_encr_t		i2c_encr;
 	uint16_t		i2c_encr_keylen; /* in bits */
 	uint16_t		i2c_encr_saltlen; /* in bits */
@@ -281,13 +278,14 @@ void	ikev2_sa_condemn(ikev2_sa_t *);
 
 void	ikev2_sa_flush(void);
 
+boolean_t ikev2_sa_has_requests(const ikev2_sa_t *restrict);
 struct pkt_s *ikev2_sa_get_response(ikev2_sa_t *restrict,
     const struct pkt_s *restrict);
 
 void ikev2_sa_post_event(ikev2_sa_t *, i2sa_evt_t);
 boolean_t ikev2_sa_arm_timer(ikev2_sa_t *, hrtime_t, i2sa_evt_t, ...);
-boolean_t ikev2_sa_disarm_timer(ikev2_sa_t *, i2sa_evt_t, ...);
-boolean_t ikev2_sa_queuemsg(ikev2_sa_t *, i2sa_msg_type_t, void *);
+void ikev2_sa_disarm_timer(ikev2_sa_t *, i2sa_evt_t, ...);
+void ikev2_sa_queuemsg(ikev2_sa_t *, i2sa_msg_type_t, void *);
 const char *i2sa_msgtype_str(i2sa_msg_type_t);
 
 ikev2_child_sa_t *ikev2_child_sa_alloc(boolean_t);

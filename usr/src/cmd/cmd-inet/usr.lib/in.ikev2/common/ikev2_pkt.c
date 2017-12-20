@@ -75,6 +75,10 @@ ikev2_pkt_new_exchange(ikev2_sa_t *i2sa, ikev2_exch_t exch_type)
 		return (NULL);
 	}
 
+	/*
+	 * XXX: Perhaps for !IKE_SA_INIT exchanges to always add the SK
+	 * payload since it should be the first one anyway?
+	 */
 	(void) bunyan_key_add(log,
 	    BUNYAN_T_POINTER, LOG_KEY_REQ, pkt,
 	    BUNYAN_T_UINT32, LOG_KEY_MSGID, msgid,
@@ -82,7 +86,6 @@ ikev2_pkt_new_exchange(ikev2_sa_t *i2sa, ikev2_exch_t exch_type)
 	(void) bunyan_key_remove(log, LOG_KEY_RESP);
 
 	pkt->pkt_sa = i2sa;
-	I2SA_REFHOLD(i2sa);
 	return (pkt);
 }
 
@@ -113,6 +116,11 @@ ikev2_pkt_new_response(const pkt_t *init)
 	}
 
 	/*
+	 * XXX: Perhaps for !IKE_SA_INIT exchanges to always add the SK
+	 * payload since it should be the first one anyway?
+	 */
+
+	/*
 	 * The other packet keys should already be set from the initiating
 	 * packet.
 	 */
@@ -121,7 +129,6 @@ ikev2_pkt_new_response(const pkt_t *init)
 	    BUNYAN_T_END);
 
 	pkt->pkt_sa = init->pkt_sa;
-	I2SA_REFHOLD(pkt->pkt_sa);
 	return (pkt);
 }
 
@@ -198,9 +205,6 @@ ikev2_pkt_free(pkt_t *pkt)
 {
 	if (pkt == NULL)
 		return;
-
-	if (pkt->pkt_sa != NULL)
-		I2SA_REFRELE(pkt->pkt_sa);
 
 	pkt_free(pkt);
 }

@@ -142,7 +142,7 @@ struct config_s {
 	size_t			cfg_p2_nonce_len;
 };
 typedef struct config_s config_t;
-#define	CONFIG_REFHOLD(cp) (void)atomic_inc_32(&(cp)->cfg_refcnt)
+#define	CONFIG_REFHOLD(cp) atomic_inc_32(&(cp)->cfg_refcnt)
 #define	CONFIG_REFRELE(cp) \
 	(void) ((atomic_dec_32_nv(&(cp)->cfg_refcnt) != 0) || \
 	    (cfg_free(cp), 0))

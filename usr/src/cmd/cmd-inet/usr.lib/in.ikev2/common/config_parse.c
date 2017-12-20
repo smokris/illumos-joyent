@@ -1769,6 +1769,8 @@ add_rule(config_t *restrict cfg, config_rule_t *restrict rule)
 {
 	/* TODO: validate label value is unique */
 
+	rule->rule_config = cfg;
+
 	if (cfg->cfg_rules == NULL) {
 		cfg->cfg_rules = umem_calloc(2, sizeof (config_rule_t *),
 		    UMEM_NOFAIL);
@@ -1783,6 +1785,7 @@ add_rule(config_t *restrict cfg, config_rule_t *restrict rule)
 
 	cfg->cfg_rules = umem_reallocarray(cfg->cfg_rules, nrules + 1,
 	    nrules + 2, sizeof (config_rule_t *), UMEM_NOFAIL);
+
 	cfg->cfg_rules[nrules] = rule;
 }
 

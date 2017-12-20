@@ -155,7 +155,6 @@ ikev2_create_child_sa_init(ikev2_sa_t *restrict sa, parsedmsg_t *restrict pmsg)
 
 fail:
 	pfkey_send_error(pmsg->pmsg_samsg, ENOMEM);
-	parsedmsg_free(pmsg);
 	ikev2_sa_args_free(csa);
 }
 

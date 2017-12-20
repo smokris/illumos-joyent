@@ -1695,6 +1695,7 @@ parsedmsg_free(parsedmsg_t *pmsg)
 {
 	if (pmsg == NULL)
 		return;
+
 	free(pmsg->pmsg_samsg);
 	free(pmsg);
 }

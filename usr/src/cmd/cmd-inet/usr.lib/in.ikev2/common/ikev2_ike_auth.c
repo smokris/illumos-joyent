@@ -98,8 +98,8 @@ ikev2_ike_auth_init(ikev2_sa_t *restrict sa)
 	return;
 
 fail:
+	sa->flags |= I2SA_CONDEMNED;
 	ikev2_pkt_free(req);
-	ikev2_sa_condemn(sa);
 }
 
 /* We are the responder */
@@ -187,8 +187,7 @@ ikev2_ike_auth_resp(pkt_t *req)
 
 	sa->remote_id = cid_i;
 	sa->flags |= I2SA_AUTHENTICATED;
-	if (ikev2_sa_disarm_timer(sa, I2SA_EVT_P1_EXPIRE))
-		I2SA_REFRELE(sa);
+	(void) ikev2_sa_disarm_timer(sa, I2SA_EVT_P1_EXPIRE);
 
 	(void) bunyan_info(log, "Authentication successful",
 	    BUNYAN_T_STRING, "authmethod", mstr,
@@ -241,7 +240,7 @@ ikev2_ike_auth_resp(pkt_t *req)
 fail:
 	ikev2_sa_args_free(sa->sa_init_args);
 	sa->sa_init_args = NULL;
-	ikev2_sa_condemn(sa);
+	sa->flags |= I2SA_CONDEMNED;
 	ikev2_pkt_free(resp);
 	ikev2_pkt_free(req);
 	return;
@@ -251,14 +250,13 @@ authfail:
 	ikev2_pkt_free(resp);
 	ikev2_sa_args_free(sa->sa_init_args);
 	sa->sa_init_args = NULL;
+	sa->flags |= I2SA_CONDEMNED;
 
 	if (ikev2_add_notify(resp, IKEV2_N_AUTHENTICATION_FAILED)) {
 		(void) ikev2_send_resp(resp);
 	} else {
 		ikev2_pkt_free(resp);
 	}
-
-	ikev2_sa_condemn(sa);
 }
 
 /*
@@ -301,8 +299,8 @@ ikev2_ike_auth_init_resp(ikev2_sa_t *restrict sa, pkt_t *restrict resp,
 		    BUNYAN_T_END);
 
 		ikev2_create_child_sa_init_resp_auth(sa, NULL, arg);
+		sa->flags |= I2SA_CONDEMNED;
 		ikev2_pkt_free(resp);
-		ikev2_sa_condemn(sa);
 		return;
 	}
 
@@ -326,8 +324,7 @@ ikev2_ike_auth_init_resp(ikev2_sa_t *restrict sa, pkt_t *restrict resp,
 
 	sa->remote_id = cid_r;
 	sa->flags |= I2SA_AUTHENTICATED;
-	if (ikev2_sa_disarm_timer(sa, I2SA_EVT_P1_EXPIRE))
-		I2SA_REFRELE(sa);
+	(void) ikev2_sa_disarm_timer(sa, I2SA_EVT_P1_EXPIRE);
 
 	ikev2_create_child_sa_init_resp_auth(sa, resp, arg);
 	ikev2_pkt_free(resp);
@@ -820,8 +817,8 @@ static void
 ikev2_auth_failed_resp(ikev2_sa_t *restrict i2sa, pkt_t *restrict resp,
     void *arg)
 {
+	i2sa->flags |= I2SA_CONDEMNED;
 	ikev2_pkt_free(resp);
-	ikev2_sa_condemn(i2sa);
 }
 
 static boolean_t

@@ -81,6 +81,16 @@ ikev2_sa_init_init(ikev2_sa_t *restrict i2sa, parsedmsg_t *restrict pmsg)
 			goto fail;
 	}
 
+	if (RULE_IS_DEFAULT(i2sa->i2sa_rule)) {
+		(void) bunyan_debug(log, "Using default rule",
+		    BUNYAN_T_END);
+	} else {
+		(void) bunyan_debug(log, "Found rule",
+		    BUNYAN_T_POINTER, "rule", i2sa->i2sa_rule,
+		    BUNYAN_T_STRING, "label", i2sa->i2sa_rule->rule_label,
+		    BUNYAN_T_END);
+	}
+
 	if (!add_cookie(pkt, sa_args->i2a_cookie, sa_args->i2a_cookielen))
 		goto fail;
 
@@ -124,14 +134,12 @@ ikev2_sa_init_init(ikev2_sa_t *restrict i2sa, parsedmsg_t *restrict pmsg)
 	if (!ikev2_send_req(pkt, ikev2_sa_init_init_resp, sa_args))
 		goto fail;
 
-	I2SA_REFRELE(i2sa);
 	return;
 
 fail:
 	parsedmsg_free(pmsg);
-	ikev2_sa_condemn(i2sa);
+	i2sa->flags |= I2SA_CONDEMNED;
 	ikev2_pkt_free(pkt);
-	I2SA_REFRELE(i2sa);
 }
 
 /* We are responder */
@@ -167,6 +175,16 @@ ikev2_sa_init_resp(pkt_t *pkt)
 			return;
 		}
 		goto fail;
+	}
+
+	if (RULE_IS_DEFAULT(sa->i2sa_rule)) {
+		(void) bunyan_debug(log, "Using default rule",
+		    BUNYAN_T_END);
+	} else {
+		(void) bunyan_debug(log, "Found rule",
+		    BUNYAN_T_POINTER, "rule", sa->i2sa_rule,
+		    BUNYAN_T_STRING, "label", sa->i2sa_rule->rule_label,
+		    BUNYAN_T_END);
 	}
 
 	if (!ikev2_sa_match_rule(sa->i2sa_rule, pkt, &sa_result, B_FALSE)) {
@@ -266,7 +284,7 @@ fail:
 	    BUNYAN_T_END);
 
 	/* condemning/deleting the IKEv2 SA will destroy the DH objects */
-	ikev2_sa_condemn(sa);
+	sa->flags |= I2SA_CONDEMNED;
 	ikev2_pkt_free(pkt);
 	ikev2_pkt_free(resp);
 }
@@ -378,7 +396,7 @@ ikev2_sa_init_init_resp(ikev2_sa_t *restrict sa, pkt_t *restrict pkt,
 	return;
 
 fail:
-	ikev2_sa_condemn(sa);
+	sa->flags |= I2SA_CONDEMNED;
 	ikev2_pkt_free(pkt);
 	return;
 }
@@ -523,25 +541,20 @@ find_rule(sockaddr_u_t laddr, sockaddr_u_t raddr)
 {
 	config_rule_t *rule = config_get_rule(laddr, raddr);
 
-	if (rule == NULL)
+	if (rule == NULL) {
+		(void) bunyan_warn(log, "No rules found for address",
+		    BUNYAN_T_END);
 		return (NULL);
-
-	if (RULE_IS_DEFAULT(rule)) {
-		(void) bunyan_debug(log, "Using default rule",
-		    BUNYAN_T_END);
-	} else {
-		(void) bunyan_debug(log, "Found rule",
-		    BUNYAN_T_STRING, "label", rule->rule_label,
-		    BUNYAN_T_END);
 	}
 
 	if (rule->rule_xf == NULL || rule->rule_xf[0] == NULL) {
-		(void) bunyan_debug(log, "No transforms found",
+		(void) bunyan_debug(log, "No transforms found in rue",
 		    BUNYAN_T_END);
 		CONFIG_REFRELE(rule->rule_config);
 		return (NULL);
 	}
 
+	VERIFY3P(rule->rule_config, !=, NULL);
 	return (rule);
 }
 

@@ -57,6 +57,8 @@ typedef union sockaddr_u_s {
 } sockaddr_u_t;
 #endif /* SOCKADDR_U_T */
 
+struct ikev2_sa_s;
+
 /* Parsed-out PF_KEY message. */
 typedef struct parsedmsg_s {
 	list_node_t pmsg_node;
