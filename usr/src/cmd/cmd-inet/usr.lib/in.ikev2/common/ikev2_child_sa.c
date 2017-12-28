@@ -97,6 +97,7 @@ ikev2_create_child_sa_init_auth(ikev2_sa_t *restrict sa, pkt_t *restrict req)
 	VERIFY(sa->flags & I2SA_INITIATOR);
 
 	csa->i2a_is_auth = B_TRUE;
+	csa->i2a_dh = IKEV2_DH_NONE;
 
 	return (ikev2_create_child_sa_init_common(sa, req, csa));
 }
@@ -138,6 +139,7 @@ ikev2_create_child_sa_init(ikev2_sa_t *restrict sa, parsedmsg_t *restrict pmsg)
 	csa->i2a_i2sa = sa;
 	csa->i2a_pmsg = pmsg;
 	csa->i2a_sadb_msg = pmsg->pmsg_samsg;
+	csa->i2a_dh = sa->i2sa_rule->rule_p2_dh;
 
 	req = ikev2_pkt_new_exchange(sa, IKEV2_EXCH_CREATE_CHILD_SA);
 	if (req == NULL)
@@ -164,7 +166,7 @@ ikev2_create_child_sa_init_common(ikev2_sa_t *restrict sa, pkt_t *restrict req,
     ikev2_sa_args_t *restrict csa)
 {
 	parsedmsg_t *pmsg = csa->i2a_pmsg;
-	ikev2_dh_t dh = IKEV2_DH_NONE;
+	ikev2_dh_t dh = csa->i2a_dh;
 	ikev2_spi_proto_t proto;
 	uint32_t spi = 0;
 	uint8_t satype = csa->i2a_sadb_msg->sadb_msg_satype;
@@ -281,6 +283,8 @@ ikev2_create_child_sa_resp(pkt_t *restrict req)
 		(void) ikev2_send_resp(resp);
 		return;
 	}
+
+	csa->i2a_dh = i2sa->i2sa_rule->rule_p2_dh;
 
 	if (ikev2_create_child_sa_resp_common(req, resp, csa))
 		(void) ikev2_send_resp(resp);
@@ -442,6 +446,7 @@ ikev2_create_child_sa_init_resp_common(ikev2_sa_t *restrict i2sa,
 {
 	ikev2_sa_args_t *csa = arg;
 	parsedmsg_t *pmsg = csa->i2a_pmsg;
+	pkt_notify_t *invalid_ke = NULL;
 	ikev2_sa_match_t match = { 0 };
 	ts_t ts_i = { 0 };
 	ts_t ts_r = { 0 };
@@ -472,10 +477,32 @@ ikev2_create_child_sa_init_resp_common(ikev2_sa_t *restrict i2sa,
 		goto remote_fail;
 	}
 
-	/*
-	 * XXX: INVALID_KE -- create new CREATE_CHILD_SA exchange if group
-	 * value in notification data is in our policy.
-	 */
+	if ((invalid_ke = pkt_get_notify(resp, IKEV2_N_INVALID_KE_PAYLOAD,
+	    NULL)) != NULL) {
+		if (invalid_ke->pn_len < sizeof (uint16_t)) {
+			(void) bunyan_warn(log,
+			    "Received INVALID_KE_PAYLOAD notification with an "
+			    "invalid dhgrp payload", BUNYAN_T_END);
+			goto remote_fail;
+		}
+
+		/*
+		 * Currently, we only support specifying a single DH group
+		 * for additional non-IKE child SAs.  If we allow specifing
+		 * multiple P2 DH groups in a rule, we could optionally
+		 * elect to perform a new CREATE_CHILD_SA exchange on this
+		 * failure if the requested group still complies with our
+		 * policy.
+		 */
+		uint16_t grp = BE_IN16(invalid_ke->pn_ptr);
+
+		(void) bunyan_warn(log,
+		    "Policy mismatch: peer sent INVALID_KE_PAYLOAD "
+		    "notification",
+		    BUNYAN_T_STRING, "dhgrp", ikev2_dh_str(grp),
+		    BUNYAN_T_END);
+		goto remote_fail;
+	}
 
 	if (!ikev2_sa_check_acquire(pmsg, csa->i2a_dh, resp, &match)) {
 		(void) bunyan_warn(log,
