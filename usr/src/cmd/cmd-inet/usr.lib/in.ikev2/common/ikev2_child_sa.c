@@ -866,8 +866,10 @@ ikev2_sa_select_prop(sadb_x_ecomb_t *restrict ecomb, ikev2_dh_t dh,
 				continue;
 
 			switch ((ikev2_xf_type_t)xf->xf_type) {
-			case IKEV2_XF_ENCR:
-				if (encr_data(xfid) == NULL)
+			case IKEV2_XF_ENCR: {
+				const encr_data_t *ed = NULL;
+
+				if ((ed = encr_data(xfid)) == NULL)
 					return (B_FALSE);
 				if (!ikev2_sa_select_encr_attr(alg, xf, m))
 					return (B_FALSE);
@@ -875,8 +877,12 @@ ikev2_sa_select_prop(sadb_x_ecomb_t *restrict ecomb, ikev2_dh_t dh,
 				m->ism_encr = xfid;
 				m->ism_encr_saltlen =
 				    alg->sadb_x_algdesc_reserved;
+				if (m->ism_encr_keylen == 0)
+					m->ism_encr_keylen = ed->ed_keydefault;
+
 				m->ism_match |= SEEN(xf->xf_type);
 				break;
+			}
 			case IKEV2_XF_PRF:
 				/*
 				 * Our local policy should NEVER allow us to
@@ -1151,8 +1157,19 @@ ikev2_sa_check_acquire(parsedmsg_t *restrict pmsg, ikev2_dh_t dh,
 #ifdef notyet
 			m->ism_encr_saltlen = comb->sadb_comb_saltlen;
 #else
-			/* Should use whatever size the kernel is expecting */
-			/* This is until OS-6525 is fixed */
+			/*
+			 * Typically, the same mechanisms for use in ESP/AH
+			 * are also defined for IKEv2, and are used in a
+			 * similar manner, so using the IKEv2 defined salt
+			 * length for mechanisms works.  However, the definition
+			 * of a mechanism for IKEv2 use tends to lag that of
+			 * AH/ESP, and it is also possible in the future that
+			 * the use in IKEv2 might differ, so using our value
+			 * is not a good long term solution.  Once OS-6525
+			 * is fixed, the kernel will include the salt length
+			 * for the mechanism in an SADB_ACQUIRE message, so
+			 * we will use that instead.
+			 */
 			m->ism_encr_saltlen = ed->ed_saltlen;
 #endif
 
@@ -1205,6 +1222,10 @@ ikev2_sa_check_acquire(parsedmsg_t *restrict pmsg, ikev2_dh_t dh,
 
 				return (B_FALSE);
 			}
+
+			if (m->ism_encr_keylen == 0)
+				m->ism_encr_keylen = ed->ed_keydefault;
+
 			break;
 		}
 		m->ism_match |= SEEN(i2xf->xf_type);
@@ -1524,7 +1545,22 @@ generate_keys(ikev2_sa_t *restrict i2sa, ikev2_sa_args_t *restrict csa)
 	VERIFY3U(init->csa_child->i2c_encr_keylen, ==,
 	    resp->csa_child->i2c_encr_keylen);
 
-	encrlen = SADB_1TO8(init->csa_child->i2c_encr_keylen);
+	/*
+	 * For all currently defined combined mode mechanisms, the salt
+	 * generation works similar to how IKEv2 generates salt values --
+	 * the appropriate size salt is created immediately after the
+	 * encryption key.  Since in.ikev2d doesn't need to do anything
+	 * with the child SA salt value, and since the kernel expects the
+	 * salt value (when needed) to be appended to the encryption key
+	 * in the pf_key(7P) extension when adding an IPsec SA, we just
+	 * create a single 'key' that's the sum of both sizes so we don't
+	 * need to do any appending of the two ourselves.  For non-combined
+	 * mode ciphers, i2c_encr_saltlen will be 0, so things will work
+	 * as expected.
+	 */
+	encrlen = init->csa_child->i2c_encr_keylen +
+	    init->csa_child->i2c_encr_saltlen;
+	encrlen = SADB_1TO8(encrlen);
 	authlen = auth_data(init->csa_child->i2c_auth)->ad_keylen;
 
 	VERIFY3U(encrlen, <=, ENCR_MAX);

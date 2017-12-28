@@ -91,8 +91,8 @@ enum {
 };
 
 /* Key length maxes in bytes for array sizing */
-#define	ENCR_MAX	SADB_1TO8(IKEV2_ENCR_KEYLEN_MAX)
-#define	AUTH_MAX	SADB_1TO8(IKEV2_AUTH_KEYLEN_MAX)
+#define	ENCR_MAX SADB_1TO8(IKEV2_ENCR_KEYLEN_MAX + IKEV2_ENCR_SALTLEN_MAX)
+#define	AUTH_MAX SADB_1TO8(IKEV2_AUTH_KEYLEN_MAX)
 
 /* XXX: Needs a better name */
 typedef struct ikev2_child_sa_state_s {
