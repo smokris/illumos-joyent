@@ -894,7 +894,7 @@ pfkey_sadb_add_update(ikev2_sa_t *restrict sa,
 	 * the creation request.
 	 */
 	pfkey_msg_init(PMSG_FROM_KERNEL(srcmsg) ? srcmsg->pmsg_samsg : NULL,
-	    msg, csa->i2c_inbound ? SADB_ADD : SADB_UPDATE, satype);
+	    msg, csa->i2c_inbound ? SADB_UPDATE : SADB_ADD, satype);
 
 	ext = (sadb_ext_t *)(msg + 1);
 	ext = pfkey_add_sa(ext, csa->i2c_spi, csa->i2c_encr, csa->i2c_auth,
@@ -1001,8 +1001,12 @@ pfkey_getspi(const parsedmsg_t *restrict srcmsg, uint8_t satype,
 	if (PMSG_FROM_KERNEL(srcmsg))
 		src_sadb_msg = srcmsg->pmsg_samsg;
 
-	src = srcmsg->pmsg_exts[SADB_EXT_ADDRESS_SRC];
-	dst = srcmsg->pmsg_exts[SADB_EXT_ADDRESS_DST];
+	/*
+	 * The address extensions in srcmsg are based on outbound traffic,
+	 * however we are reserving the inbound SPI, so src/dst are reversed.
+	 */
+	src = srcmsg->pmsg_exts[SADB_EXT_ADDRESS_DST];
+	dst = srcmsg->pmsg_exts[SADB_EXT_ADDRESS_SRC];
 	VERIFY3U(srcmsg->pmsg_sss->ss_family, ==, srcmsg->pmsg_dss->ss_family);
 
 	/*
@@ -1022,8 +1026,8 @@ pfkey_getspi(const parsedmsg_t *restrict srcmsg, uint8_t satype,
 		pfkey_msg_init(src_sadb_msg, samsg, SADB_GETSPI, satype);
 		ext = (sadb_ext_t *)(samsg + 1);
 
-		ext = pfkey_add_ext(ext, 0, src);
-		ext = pfkey_add_ext(ext, 0, dst);
+		ext = pfkey_add_ext(ext, SADB_EXT_ADDRESS_SRC, src);
+		ext = pfkey_add_ext(ext, SADB_EXT_ADDRESS_DST, dst);
 		ext = pfkey_add_range(ext, 1, UINT32_MAX);
 
 		samsg->sadb_msg_len = PFKEY_MSG_LEN(samsg, ext);

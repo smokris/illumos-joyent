@@ -183,7 +183,7 @@ ikev2_create_child_sa_init_common(ikev2_sa_t *restrict sa, pkt_t *restrict req,
 
 	/* Stash until we get our reply */
 	csa->i2a_spi = spi;
-	csa->i2a_child[CSA_OUT].csa_child->i2c_spi = spi;
+	csa->i2a_child[CSA_IN].csa_child->i2c_spi = spi;
 
 	/* XXX: IPcomp (when we add support) */
 
@@ -363,7 +363,7 @@ ikev2_create_child_sa_resp_common(pkt_t *restrict req, pkt_t *restrict resp,
 	if (!pfkey_getspi(pmsg, satype, &spi))
 		goto reply_with_fail;
 
-	csa->i2a_child[CSA_OUT].csa_child->i2c_spi = spi;
+	csa->i2a_child[CSA_IN].csa_child->i2c_spi = spi;
 	ikev2_set_child_type(csa->i2a_child, B_FALSE, satype);
 	ikev2_save_child_results(csa->i2a_child, &match);
 	ikev2_save_child_ts(csa->i2a_child, &ts_i, &ts_r);
@@ -1442,7 +1442,7 @@ static void
 ikev2_save_child_results(ikev2_child_sa_state_t *restrict kids,
     const ikev2_sa_match_t *restrict results)
 {
-	kids[CSA_IN].csa_child->i2c_spi = results->ism_spi;
+	kids[CSA_OUT].csa_child->i2c_spi = results->ism_spi;
 
 	for (size_t i = 0; i < 2; i++) {
 		ikev2_child_sa_t *child = kids[i].csa_child;
