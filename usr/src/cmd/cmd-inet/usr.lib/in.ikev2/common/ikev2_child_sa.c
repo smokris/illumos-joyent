@@ -70,7 +70,7 @@ static boolean_t create_keymat(ikev2_sa_t *restrict, boolean_t,
 static boolean_t ikev2_create_child_sas(ikev2_sa_t *restrict,
     ikev2_sa_args_t *restrict);
 static void ikev2_save_child_results(ikev2_child_sa_state_t *restrict,
-    const ikev2_sa_match_t *restrict, uint32_t);
+    const ikev2_sa_match_t *restrict);
 static void ikev2_save_child_ts(ikev2_child_sa_state_t *restrict,
     const ts_t *restrict, const ts_t *restrict);
 static void ikev2_set_child_type(ikev2_child_sa_state_t *restrict, boolean_t,
@@ -183,6 +183,7 @@ ikev2_create_child_sa_init_common(ikev2_sa_t *restrict sa, pkt_t *restrict req,
 
 	/* Stash until we get our reply */
 	csa->i2a_spi = spi;
+	csa->i2a_child[CSA_OUT].csa_child->i2c_spi = spi;
 
 	/* XXX: IPcomp (when we add support) */
 
@@ -205,11 +206,14 @@ ikev2_create_child_sa_init_common(ikev2_sa_t *restrict sa, pkt_t *restrict req,
 	 * generating new ones.
 	 */
 	if (!IS_AUTH(csa)) {
-		if (!ikev2_add_nonce(req, NULL, IKEV2_NONCE_DEFAULT))
+		if (!ikev2_create_nonce(csa, B_TRUE, IKEV2_NONCE_DEFAULT))
 			goto fail;
-		ikev2_save_nonce(csa, req);
+		if (!ikev2_add_nonce(req, csa->i2a_nonce_i,
+		    csa->i2a_nonce_i_len))
+			goto fail;
 
-		if (!ikev2_add_dh(csa, req))
+		if (csa->i2a_dh != IKEV2_DH_NONE &&
+		    !ikev2_add_ke(req, csa->i2a_dh, csa->i2a_pubkey))
 			goto fail;
 	}
 
@@ -337,9 +341,7 @@ ikev2_create_child_sa_resp_common(pkt_t *restrict req, pkt_t *restrict resp,
 		    "No proposals matched from initiator",
 		    BUNYAN_T_END);
 
-		if (!ikev2_add_notify(resp, IKEV2_N_NO_PROPOSAL_CHOSEN))
-			goto fail;
-		return (B_TRUE);
+		goto reply_with_fail;
 	}
 	satype = match.ism_satype;
 
@@ -359,16 +361,30 @@ ikev2_create_child_sa_resp_common(pkt_t *restrict req, pkt_t *restrict resp,
 	}
 
 	if (!pfkey_getspi(pmsg, satype, &spi))
-		goto fail;
+		goto reply_with_fail;
 
+	csa->i2a_child[CSA_OUT].csa_child->i2c_spi = spi;
 	ikev2_set_child_type(csa->i2a_child, B_FALSE, satype);
-	ikev2_save_child_results(csa->i2a_child, &match, spi);
+	ikev2_save_child_results(csa->i2a_child, &match);
 	ikev2_save_child_ts(csa->i2a_child, &ts_i, &ts_r);
 
-	/*
-	 * TODO: Move nonce creation & child SA creation here so we can send
-	 * failure notification if problems vs. internal error
-	 */
+	if (!IS_AUTH(csa)) {
+		if (!ikev2_create_nonce(csa, B_FALSE, IKEV2_NONCE_DEFAULT))
+			goto reply_with_fail;
+		ikev2_save_nonce(csa, req);
+
+		if (!dh_genpair(csa->i2a_dh, &csa->i2a_pubkey,
+		    &csa->i2a_privkey))
+			goto reply_with_fail;
+		if (!ikev2_ke(csa, req))
+			goto reply_with_fail;
+	}
+
+	if (!generate_keys(sa, csa))
+		goto reply_with_fail;
+
+	if (!ikev2_create_child_sas(sa, csa))
+		goto reply_with_fail;
 
 	if (transport_mode &&
 	    !ikev2_add_notify(resp, IKEV2_N_USE_TRANSPORT_MODE))
@@ -391,12 +407,12 @@ ikev2_create_child_sa_resp_common(pkt_t *restrict req, pkt_t *restrict resp,
 	 * generating new ones.
 	 */
 	if (!IS_AUTH(csa)) {
-		if (!ikev2_add_nonce(resp, NULL, IKEV2_NONCE_DEFAULT))
+		if (!ikev2_add_nonce(resp, csa->i2a_nonce_r,
+		    csa->i2a_nonce_r_len))
 			goto fail;
-		ikev2_save_nonce(csa, resp);
-		ikev2_save_nonce(csa, req);
 
-		if (!ikev2_add_dh(csa, resp) || !ikev2_ke(csa, req))
+		if (csa->i2a_dh != IKEV2_DH_NONE &&
+		    !ikev2_add_ke(resp, csa->i2a_dh, csa->i2a_pubkey))
 			goto fail;
 	}
 
@@ -406,15 +422,20 @@ ikev2_create_child_sa_resp_common(pkt_t *restrict req, pkt_t *restrict resp,
 	if (narrowed && !ikev2_add_notify(resp, IKEV2_N_ADDITIONAL_TS_POSSIBLE))
 		goto fail;
 
-	if (!generate_keys(sa, csa))
-		goto fail;
-
-	if (!ikev2_create_child_sas(sa, csa))
-		goto fail;
-
 	/* XXX: Other notifications? */
 
 	return (B_TRUE);
+
+reply_with_fail:
+	(void) bunyan_info(log,
+	    "Sending NO_PROPOSAL_CHOSEN due to error during processing",
+	    BUNYAN_T_END);
+	if (ikev2_add_notify(resp, IKEV2_N_NO_PROPOSAL_CHOSEN))
+		return (B_TRUE);
+
+	(void) bunyan_error(log,
+	    "Could not add NO_PROPOSAL_CHOSEN notification to reply",
+	    BUNYAN_T_END);
 
 fail:
 	(void) pfkey_delete(satype, spi, pmsg->pmsg_sau, pmsg->pmsg_dau,
@@ -537,7 +558,7 @@ ikev2_create_child_sa_init_resp_common(ikev2_sa_t *restrict i2sa,
 	}
 
 	ikev2_set_child_type(csa->i2a_child, B_TRUE, match.ism_satype);
-	ikev2_save_child_results(csa->i2a_child, &match, csa->i2a_spi);
+	ikev2_save_child_results(csa->i2a_child, &match);
 	ikev2_save_child_ts(csa->i2a_child, &ts_i, &ts_r);
 
 	if (!IS_AUTH(csa)) {
@@ -1419,10 +1440,9 @@ ikev2_set_child_type(ikev2_child_sa_state_t *restrict kids, boolean_t initiator,
 
 static void
 ikev2_save_child_results(ikev2_child_sa_state_t *restrict kids,
-    const ikev2_sa_match_t *restrict results, uint32_t out_spi)
+    const ikev2_sa_match_t *restrict results)
 {
 	kids[CSA_IN].csa_child->i2c_spi = results->ism_spi;
-	kids[CSA_OUT].csa_child->i2c_spi = out_spi;
 
 	for (size_t i = 0; i < 2; i++) {
 		ikev2_child_sa_t *child = kids[i].csa_child;

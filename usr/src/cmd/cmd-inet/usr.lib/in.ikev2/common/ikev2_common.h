@@ -153,8 +153,8 @@ boolean_t ikev2_sa_check_prop(struct config_rule_s *restrict,
 
 char *ikev2_id_str(struct pkt_payload *restrict, char *restrict, size_t);
 
-boolean_t ikev2_add_dh(ikev2_sa_args_t *restrict, struct pkt_s *restrict);
 boolean_t ikev2_ke(ikev2_sa_args_t *restrict, struct pkt_s *restrict);
+boolean_t ikev2_create_nonce(ikev2_sa_args_t *restrict, boolean_t, size_t);
 void ikev2_save_nonce(ikev2_sa_args_t *restrict, struct pkt_s *restrict);
 
 void ikev2_save_i2sa_results(struct ikev2_sa_s *restrict,

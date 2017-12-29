@@ -15,6 +15,7 @@
 #include <alloca.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <errno.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/debug.h>
@@ -694,18 +695,39 @@ ikev2_id_str(pkt_payload_t *restrict id, char *restrict buf, size_t buflen)
 }
 
 boolean_t
-ikev2_add_dh(ikev2_sa_args_t *restrict i2a, pkt_t *restrict pkt)
+ikev2_create_nonce(ikev2_sa_args_t *restrict i2a, boolean_t initiator,
+    size_t noncelen)
 {
-	if (i2a->i2a_dh == IKEV2_DH_NONE)
+	uint8_t *restrict buf = initiator ? i2a->i2a_nonce_i : i2a->i2a_nonce_r;
+	size_t *restrict lenp = initiator ?
+	    &i2a->i2a_nonce_i_len : &i2a->i2a_nonce_r_len;
+
+	/*
+	 * A single getentropy(3C) call is limited to 256 bytes in a single
+	 * call.  If further updates to IKEv2 allow for larger nonce sizes,
+	 * we want to catch it at compile time so this can be updated
+	 * appropriately.
+	 */
+	CTASSERT(IKEV2_NONCE_MAX <= 256);
+
+	VERIFY3U(noncelen, >=, IKEV2_NONCE_MIN);
+	VERIFY3U(noncelen, <=, IKEV2_NONCE_MAX);
+
+	/*
+	 * Once set, we don't recreate the nonce for a given exchange, this
+	 * simplifies instances such as encountering an INVALID_KE_PAYLOAD
+	 * where we need to retry and use the same nonce (i.e. during an
+	 * IKE_SA_INIT exchange).
+	 */
+	if (*lenp != 0)
 		return (B_TRUE);
 
-	if (i2a->i2a_pubkey == CK_INVALID_HANDLE &&
-	    !dh_genpair(i2a->i2a_dh, &i2a->i2a_pubkey, &i2a->i2a_privkey))
+	if (getentropy(buf, noncelen) != 0) {
+		STDERR(error, "getentropy(3C) failed while generating nonce");
 		return (B_FALSE);
+	}
 
-	if (!ikev2_add_ke(pkt, i2a->i2a_dh, i2a->i2a_pubkey))
-		return (B_FALSE);
-
+	*lenp = noncelen;
 	return (B_TRUE);
 }
 

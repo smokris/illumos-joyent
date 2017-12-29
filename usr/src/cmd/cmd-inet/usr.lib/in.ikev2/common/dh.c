@@ -352,6 +352,20 @@ dh_genpair(ikev2_dh_t group, CK_OBJECT_HANDLE_PTR restrict pub,
 	};
 	CK_RV rc;
 
+	if (group == IKEV2_DH_NONE) {
+		(void) bunyan_debug(log,
+		    "Skipping creation of DH pair due to no DH group specified",
+		    BUNYAN_T_END);
+		return (B_TRUE);
+	}
+
+	if (*pub != CK_INVALID_HANDLE && *priv != CK_INVALID_HANDLE) {
+		(void) bunyan_debug(log,
+		    "Skipping creation of DH pair due to pair already created",
+		    BUNYAN_T_END);
+		return (B_TRUE);
+	}
+
 	dh = dh_get_group(group);
 	if (dh == NULL) {
 		(void) bunyan_error(log, "Invalid DH group",

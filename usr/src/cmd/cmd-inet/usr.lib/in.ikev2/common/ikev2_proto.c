@@ -278,6 +278,11 @@ ikev2_pfkey(parsedmsg_t *pmsg)
 
 		i2sa = ikev2_sa_getbylspi(local_spi, initiator);
 	} else {
+		/*
+		 * XXX: Since we set the KMC on every IPsec SA we create,
+		 * can this situation ever be anything other than an
+		 * SADB_ACQUIRE from the kernel?
+		 */
 		i2sa = ikev2_sa_getbyaddr(laddr.sau_sa, raddr.sau_sa);
 	}
 
@@ -564,10 +569,21 @@ ikev2_send_resp(pkt_t *restrict resp)
 	 * group, or a failed exchange (no proposal chosen), and we will
 	 * want to process the resulting reply (which, if it happens, should
 	 * be a restart of the IKE_SA_INIT exchange with the updated
-	 * parameters).
+	 * parameters).  The msgid in these instances will also still be 0,
+	 * so we don't want to bump the expected next inbound msgid.
+	 *
+	 * We also want to wait to update i2sa->last_resp_sent and
+	 * i2sa->inmsgid until after we've successfully sent a reply to a
+	 * request.  If we bump it immediately upon receiving a new request,
+	 * if we fail to generate a reply for some reason, the peer
+	 * retransmitting the response will trigger an out of sequence message
+	 * and we'll never attempt to respond again, all of which would lead
+	 * to confusion.
          */
 	if (hdr->exch_type != IKEV2_EXCH_IKE_SA_INIT ||
 	    hdr->responder_spi != 0) {
+		ikev2_pkt_free(i2sa->last_resp_sent);
+		i2sa->inmsgid++;
 		i2sa->last_resp_sent = resp;
 	}
 
@@ -1034,11 +1050,6 @@ ikev2_dispatch_pkt(pkt_t *pkt)
 		(void) ikev2_send_resp(resp);
 		goto discard;
 	}
-
-	/* New request, no longer need previous response for retransmitting */
-	ikev2_pkt_free(i2sa->last_resp_sent);
-	i2sa->last_resp_sent = NULL;
-	i2sa->inmsgid++;
 
 	switch (pkt_header(pkt)->exch_type) {
 	case IKEV2_EXCH_IKE_SA_INIT:

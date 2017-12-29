@@ -55,8 +55,6 @@ ikev2_sa_init_init(ikev2_sa_t *restrict i2sa, parsedmsg_t *restrict pmsg)
 {
 	pkt_t *pkt = NULL;
 	ikev2_sa_args_t *sa_args = i2sa->sa_init_args;
-	uint8_t *nonce = NULL;
-	size_t noncelen = IKEV2_NONCE_DEFAULT;
 	sockaddr_u_t laddr = { .sau_ss = &i2sa->laddr };
 	sockaddr_u_t raddr = { .sau_ss = &i2sa->raddr };
 
@@ -104,21 +102,21 @@ ikev2_sa_init_init(ikev2_sa_t *restrict i2sa, parsedmsg_t *restrict pmsg)
 	if (sa_args->i2a_dh == IKEV2_DH_NONE)
 		sa_args->i2a_dh = i2sa->i2sa_rule->rule_xf[0]->xf_dh;
 
-	if (!ikev2_add_dh(sa_args, pkt))
+	if (!dh_genpair(sa_args->i2a_dh, &sa_args->i2a_pubkey,
+	    &sa_args->i2a_privkey))
+		goto fail;
+
+	if (!ikev2_add_ke(pkt, sa_args->i2a_dh, sa_args->i2a_pubkey))
 		goto fail;
 
 	/*
-	 * If we've retried the IKE_SA_INIT exchange due to a COOKIE or
-	 * INVALID_KE_PAYLOAD, we reuse the nonce we saved from the
-	 * initial attempt.
+	 * ikev2_create_nonce() will only create a nonce once and will be a
+	 * no-op if the nonce already exists.
 	 */
-	if (sa_args->i2a_nonce_i_len > 0) {
-		nonce = sa_args->i2a_nonce_i;
-		noncelen = sa_args->i2a_nonce_i_len;
-	}
-	if (!ikev2_add_nonce(pkt, nonce, noncelen))
+	if (!ikev2_create_nonce(sa_args, B_TRUE, IKEV2_NONCE_DEFAULT) ||
+	    !ikev2_add_nonce(pkt, sa_args->i2a_nonce_i,
+	    sa_args->i2a_nonce_i_len))
 		goto fail;
-	ikev2_save_nonce(sa_args, pkt);
 
 	if (!add_nat(pkt))
 		goto fail;
@@ -142,7 +140,6 @@ fail:
 	(void) bunyan_error(log, "Could not send IKE_SA_INIT packet",
 	    BUNYAN_T_END);
 
-	parsedmsg_free(pmsg);
 	i2sa->flags |= I2SA_CONDEMNED;
 	ikev2_pkt_free(pkt);
 }
@@ -224,6 +221,9 @@ ikev2_sa_init_resp(pkt_t *pkt)
 	/* Save the initiator's nonce */
 	ikev2_save_nonce(sa_args, pkt);
 
+	if (!ikev2_create_nonce(sa_args, B_FALSE, IKEV2_NONCE_DEFAULT))
+		goto fail;
+
 	/*
 	 * The packet response functions take their SPI values from the
 	 * initating packet, so for this one instance we must set it
@@ -243,17 +243,19 @@ ikev2_sa_init_resp(pkt_t *pkt)
 	 * generating them is a potentially an expensive operation, we wait
 	 * until necessary to create them.
 	 */
-	if (!ikev2_add_dh(sa_args, resp))
+	if (!dh_genpair(sa_args->i2a_dh, &sa_args->i2a_pubkey,
+	    &sa_args->i2a_privkey))
 		goto fail;
 
 	if (!ikev2_ke(sa_args, pkt))
 		goto fail;
 
-	if (!ikev2_add_nonce(resp, NULL, IKEV2_NONCE_DEFAULT))
+	if (!ikev2_add_ke(resp, sa_args->i2a_dh, sa_args->i2a_pubkey))
 		goto fail;
 
-	/* Save our nonce */
-	ikev2_save_nonce(sa_args, resp);
+	if (!ikev2_add_nonce(resp, sa_args->i2a_nonce_r,
+	    sa_args->i2a_nonce_r_len))
+		goto fail;
 
 	if (!add_nat(resp))
 		goto fail;
