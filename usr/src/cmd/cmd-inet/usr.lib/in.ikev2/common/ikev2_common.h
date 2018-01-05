@@ -113,6 +113,7 @@ typedef struct ikev2_sa_args_s {
 	struct ikev2_sa_s	*i2a_i2sa; /* The new IKE SA being created */
 	struct parsedmsg_s	*i2a_pmsg;
 	sadb_msg_t		*i2a_sadb_msg;
+	struct ikev2_child_sa_s *i2a_old_csa; /* Orig Child SA during rekey */
 
 	ikev2_dh_t		i2a_dh;
 
@@ -162,7 +163,7 @@ void ikev2_save_i2sa_results(struct ikev2_sa_s *restrict,
 boolean_t ikev2_create_i2sa_keys(struct ikev2_sa_s *restrict, CK_OBJECT_HANDLE,
     uint8_t *restrict, size_t, uint8_t *restrict, size_t);
 
-ikev2_sa_args_t *ikev2_sa_args_new(boolean_t, uint8_t);
+ikev2_sa_args_t *ikev2_sa_args_new(boolean_t);
 void ikev2_sa_args_free(ikev2_sa_args_t *);
 
 #ifdef __cplusplus

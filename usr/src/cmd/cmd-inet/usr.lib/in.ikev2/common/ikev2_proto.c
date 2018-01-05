@@ -1102,13 +1102,37 @@ ikev2_dispatch_pfkey(ikev2_sa_t *restrict sa, parsedmsg_t *restrict pmsg)
 		else
 			ikev2_sa_init_init(sa, pmsg);
 		return;
-	case SADB_EXPIRE:
-		/* TODO */
-		sadb_log(BUNYAN_L_INFO,
-		    "SADB_EXPIRE support not implemented yet; discarding msg",
-		    samsg);
+	case SADB_EXPIRE: {
+		const char *exptype = NULL;
+		char msg[128] = { 0 };
+
+		if (pmsg->pmsg_exts[SADB_EXT_LIFETIME_HARD] != NULL) {
+			exptype = "HARD";
+		} else if (pmsg->pmsg_exts[SADB_EXT_LIFETIME_SOFT] != NULL) {
+			exptype = "SOFT";
+		} else if (pmsg->pmsg_exts[SADB_X_EXT_LIFETIME_IDLE] != NULL) {
+			exptype = "IDLE";
+		} else {
+			(void) bunyan_error(log, "Unknown SADB_EXPIRE message",
+			    BUNYAN_T_END);
+			parsedmsg_free(pmsg);
+			return;
+		}
+
+		if (pmsg->pmsg_exts[SADB_EXT_LIFETIME_HARD] != NULL) {
+			ikev2_hard_expire(sa, pmsg);
+			return;
+		}
+
+		/* TODO: Soft expire (rekey), idle (?) */
+		(void) snprintf(msg, sizeof (msg),
+		    "%s SADB_EXPIRE support not implemented yet; discarding",
+		    exptype);
+
+		sadb_log(BUNYAN_L_INFO, msg, samsg);
 		parsedmsg_free(pmsg);
 		return;
+	}
 	default:
 		sadb_log(BUNYAN_L_ERROR,
 		    "Unexpected SADB request from kernel", samsg);
@@ -1170,7 +1194,10 @@ ikev2_informational(pkt_t *req)
 			continue;
 		}
 
-		/* TODO: Handle other payloads (DELETE, etc.) */
+		if (pay->pp_type == IKEV2_PAYLOAD_DELETE)
+			ikev2_handle_delete(req->pkt_sa, pay, resp);
+
+		/* TODO: Handle other payloads */
 	}
 
 	ikev2_send_resp(resp);

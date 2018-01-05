@@ -875,7 +875,7 @@ done:
 }
 
 ikev2_sa_args_t *
-ikev2_sa_args_new(boolean_t create_children, uint8_t satype)
+ikev2_sa_args_new(boolean_t create_children)
 {
 	ikev2_sa_args_t *args = NULL;
 	ikev2_child_sa_t *in = NULL, *out = NULL;

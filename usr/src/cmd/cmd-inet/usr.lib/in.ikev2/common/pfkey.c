@@ -100,6 +100,8 @@
 #define	PFKEY_K_AUTH_KEY "auth_key"
 #define	PFKEY_K_AUTH_KEYLEN "auth_keylen"
 #define	PFKEY_K_FLAGS "sadb_sa_flags"
+#define	PFKEY_K_KMC_PROTO "kmc_proto"
+#define	PFKEY_K_KMC_COOKIE "kmc_cookie"
 
 static const char *pfkey_keys[] = {
 	PFKEY_K_SRCADDR,
@@ -123,6 +125,8 @@ static const char *pfkey_keys[] = {
 	PFKEY_K_AUTH_KEY,
 	PFKEY_K_AUTH_KEYLEN,
 	PFKEY_K_FLAGS,
+	PFKEY_K_KMC_PROTO,
+	PFKEY_K_KMC_COOKIE,
 };
 
 #define	PFKEY_MSG_LEN(msg, ext) \
@@ -862,7 +866,7 @@ pfkey_sadb_add_update(ikev2_sa_t *restrict sa,
 	    sizeof (sadb_ident_t) + ROUND64(config_id_strlen(sa->remote_id)) +
 	    sizeof (sadb_x_pair_t) + sizeof (sadb_x_kmc_t);
 
-	if (csa->i2c_initiator)
+	if (sa->flags & I2SA_INITIATOR)
 		flags |= IKEV2_SADB_INITIATOR;
 
 	flags |= csa->i2c_inbound ?
@@ -1222,53 +1226,43 @@ handle_idle_timeout(sadb_msg_t *samsg)
 	free(samsg);
 }
 
+/*
+ * XXX: We can probably simplify a lot of the handle_* functions here and
+ * just do some basic validations and call worker_send_cmd() to queue.
+ */
 static void
 handle_expire(sadb_msg_t *samsg)
 {
-	parsedmsg_t pmsg;
+	parsedmsg_t *pmsg;
+
+	pmsg = calloc(1, sizeof (*pmsg));
+	if (pmsg == NULL) {
+		(void) bunyan_error(log, "No memory to handle SADB message",
+		    BUNYAN_T_END);
+		free(samsg);
+		return;
+	}
 
 	/*
 	 * If SOFT expire, see if the SADB_X_SAFLAGS_KM1 (initiator) is set,
-	 * if so, consider treating this expire as an ACQUIRE message.
+	 * if so, consider treating this expire as an ACQUIRE message if
+	 * no IKE SA is found.
 	 *
 	 * If HARD expire, treat this message like a DELETE.
 	 *
 	 * If IDLE expire, see if we need to do a little DPD or not.
 	 */
 
-	if (extract_exts(samsg, &pmsg, 1, SADB_EXT_LIFETIME_HARD)) {
-		(void) bunyan_debug(log, "Handling SADB hard expire message",
+	if (!extract_exts(samsg, pmsg, 1, SADB_EXT_SA)) {
+		(void) bunyan_error(log,
+		    "SADB_EXPIRE message is missing an SA extension",
 		    BUNYAN_T_END);
-		handle_delete(samsg);
+		parsedmsg_free(pmsg);
 		return;
 	}
 
-	if (pmsg.pmsg_exts[SADB_X_EXT_LIFETIME_IDLE] != NULL) {
-		handle_idle_timeout(samsg);
-		return;
-	}
-
-	/*
-	 * extract_exts() has already filled in pmsg with data from
-	 * samsg. pmsg.pmsg_exts[foo] will be NULL if this was
-	 * not set in samsg. Bail out if the message appears to be
-	 * poorly formed. If everything looks good, create a new
-	 * "ACQUIRE like" message and pass off to handle_acquire().
-	 */
-
-	if (pmsg.pmsg_exts[SADB_EXT_LIFETIME_SOFT] == NULL) {
-		/* XXX: more fields */
-		(void) bunyan_info(log, "SADB EXPIRE message is missing both "
-		    "hard and soft lifetimes", BUNYAN_T_END);
-		/* XXX: ignore? */
-	}
-
-	(void) bunyan_debug(log, "Handling SADB soft expire message",
-	    BUNYAN_T_END);
-
-	/* XXX KEBE SAYS FILL ME IN! */
-
-	free(samsg);
+	if (!worker_send_cmd(WC_PFKEY, pmsg))
+		parsedmsg_free(pmsg);
 }
 
 static void
@@ -1319,10 +1313,8 @@ handle_acquire(sadb_msg_t *samsg, boolean_t create_child_sa)
 		return;
 	}
 
-	if (!worker_send_cmd(WC_PFKEY, pmsg)) {
-		free(samsg);
-		free(pmsg);
-	}
+	if (!worker_send_cmd(WC_PFKEY, pmsg))
+		parsedmsg_free(pmsg);
 }
 
 static void *
@@ -1600,6 +1592,40 @@ sadb_log_key(sadb_ext_t *ext)
 	explicit_bzero(str, slen);
 }
 
+static void
+sadb_log_kmc(sadb_ext_t *ext)
+{
+	sadb_x_kmc_t *kmc = (sadb_x_kmc_t *)ext;
+	const char *proto = NULL;
+	char kmcstr[19] = { 0 }; /* 0x + 64 bit hex + NUL */
+
+	switch (kmc->sadb_x_kmc_proto) {
+	case SADB_X_KMP_MANUAL:
+		proto = "MANUAL";
+		break;
+	case SADB_X_KMP_IKE:
+		proto = "IKEv1";
+		break;
+	case SADB_X_KMP_KINK:
+		proto = "KINK";
+		break;
+	case SADB_X_KMP_IKEV2:
+		proto = "IKEv2";
+		break;
+	default:
+		proto = enum_printf("0x%" PRIu32, kmc->sadb_x_kmc_proto);
+		break;
+	}
+
+	(void) snprintf(kmcstr, sizeof (kmcstr), "0x%" PRIx64,
+	    kmc->sadb_x_kmc_cookie64);
+
+	(void) bunyan_key_add(log,
+	    BUNYAN_T_STRING, PFKEY_K_KMC_PROTO, proto,
+	    BUNYAN_T_STRING, PFKEY_K_KMC_COOKIE, kmcstr,
+	    BUNYAN_T_END);
+}
+
 void
 sadb_log(bunyan_level_t level, const char *restrict msg,
     sadb_msg_t *restrict samsg)
@@ -1631,6 +1657,9 @@ sadb_log(bunyan_level_t level, const char *restrict msg,
 			break;
 		case SADB_X_EXT_PAIR:
 			sadb_log_pair(ext);
+			break;
+		case SADB_X_EXT_KM_COOKIE:
+			sadb_log_kmc(ext);
 			break;
 		}
 

@@ -232,7 +232,7 @@ ikev2_sa_alloc(pkt_t *restrict init_pkt,
 		return (NULL);
 	}
 
-	if ((i2sa->sa_init_args = ikev2_sa_args_new(B_TRUE, 0)) == NULL) {
+	if ((i2sa->sa_init_args = ikev2_sa_args_new(B_TRUE)) == NULL) {
 		STDERR(error, "No memory to create IKEv2 SA");
 		umem_cache_free(i2sa_cache, i2sa);
 		return (NULL);
@@ -982,6 +982,15 @@ void
 ikev2_sa_add_child(ikev2_sa_t *restrict i2sa, ikev2_child_sa_t *restrict i2c)
 {
 	refhash_insert(i2sa->i2sa_child_sas, i2c);
+}
+
+void
+ikev2_sa_delete_child(ikev2_sa_t *restrict i2sa, ikev2_child_sa_t *restrict csa)
+{
+	if (csa->i2c_pair != NULL)
+		csa->i2c_pair->i2c_pair = NULL;
+	csa->i2c_pair = NULL;
+	refhash_remove(i2sa->i2sa_child_sas, csa);
 }
 
 void

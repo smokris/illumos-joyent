@@ -236,6 +236,7 @@ struct ikev2_child_sa_s {
 	boolean_t		i2c_initiator;
 	boolean_t		i2c_inbound;
 	boolean_t		i2c_transport;
+	boolean_t		i2c_moribund;	/* deleted in kernel */
 
 	ikev2_xf_encr_t		i2c_encr;
 	uint16_t		i2c_encr_keylen; /* in bits */
@@ -293,6 +294,7 @@ void ikev2_child_sa_free(ikev2_sa_t *restrict, ikev2_child_sa_t *restrict);
 ikev2_child_sa_t *ikev2_sa_get_child(ikev2_sa_t *, uint32_t, boolean_t);
 void ikev2_sa_add_child(ikev2_sa_t *restrict, ikev2_child_sa_t *restrict);
 void ikev2_sa_delete_children(ikev2_sa_t *);
+void ikev2_sa_delete_child(ikev2_sa_t *restrict, ikev2_child_sa_t *);
 
 void ikev2_sa_clear_req(ikev2_sa_t *restrict, i2sa_req_t *restrict);
 void ikev2_sa_init(void);

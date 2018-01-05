@@ -522,9 +522,11 @@ ikev2_add_delete(pkt_t *restrict pkt, ikev2_spi_proto_t proto,
 	size_t len = sizeof (del);
 
 	VERIFY(proto != IKEV2_PROTO_IKE || nspi == 0);
+	VERIFY3U(nspi, <=, UINT16_MAX);
 
 	del.del_protoid = (uint8_t)proto;
 	del.del_spisize = (proto == IKEV2_PROTO_IKE) ? 0 : ikev2_spilen(proto);
+	del.del_nspi = htons(nspi);
 
 	len += del.del_spisize * nspi;
 	if (!ikev2_add_payload(pkt, IKEV2_PAYLOAD_DELETE, B_FALSE, len))

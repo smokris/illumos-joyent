@@ -25,6 +25,7 @@ extern "C" {
 
 
 struct pkt_s;
+struct pkt_payload;
 struct ikev2_sa_s;
 struct sockaddr_storage;
 struct config_rule_s;
@@ -65,6 +66,11 @@ void ikev2_create_child_sa_init_resp_auth(struct ikev2_sa_s *restrict,
 void ikev2_create_child_sa_init(struct ikev2_sa_s *restrict,
     struct parsedmsg_s *restrict);
 void ikev2_create_child_sa_resp(struct pkt_s *restrict);
+
+void ikev2_hard_expire(struct ikev2_sa_s *restrict,
+    struct parsedmsg_s *restrict);
+void ikev2_handle_delete(struct ikev2_sa_s *restrict,
+    struct pkt_payload *restrict, struct pkt_s *restrict);
 
 #ifdef __cplusplus
 }

@@ -329,6 +329,10 @@ static boolean_t issep(char c, boolean_t);
  *
  * TODO: We should probably support the ability to add and remove individual
  * rules.
+ *
+ * TODO: Currently the lifetimes can only be specified globally, the current
+ * ike.config suggests this can be overwritten per-rule, so we should add
+ * support for that.
  */
 void
 process_config(FILE *f, boolean_t check_only)

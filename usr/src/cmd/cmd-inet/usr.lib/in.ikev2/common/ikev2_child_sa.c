@@ -41,6 +41,8 @@ static boolean_t ikev2_create_child_sa_resp_common(pkt_t *restrict,
 
 static void ikev2_create_child_sa_init_resp(ikev2_sa_t *restrict,
     pkt_t *restrict, void *restrict);
+static void ikev2_rekey_child_sa_init_resp(ikev2_sa_t *restrict,
+    pkt_t *restrict, void *restrict);
 static void ikev2_create_child_sa_init_resp_common(ikev2_sa_t *restrict,
     pkt_t *restrict, void *restrict);
 
@@ -77,8 +79,9 @@ static void ikev2_set_child_type(ikev2_child_sa_state_t *restrict, boolean_t,
     ikev2_spi_proto_t);
 
 static void check_natt_addrs(pkt_t *restrict, boolean_t);
-
 static sadb_address_t *get_sadb_addr(parsedmsg_t *, boolean_t);
+static void ikev2_rekey_delete_old_kids(ikev2_sa_t *restrict,
+    ikev2_sa_args_t *restrict);
 
 /*
  * We are the initiator for an IKE_AUTH exchange, and are performing the
@@ -108,7 +111,6 @@ ikev2_create_child_sa_init(ikev2_sa_t *restrict sa, parsedmsg_t *restrict pmsg)
 {
 	ikev2_sa_args_t *csa = NULL;
 	pkt_t *req = NULL;
-	uint8_t satype = pmsg->pmsg_samsg->sadb_msg_satype;
 
 	VERIFY(IS_WORKER);
 	VERIFY(!MUTEX_HELD(&sa->i2sa_queue_lock));
@@ -129,7 +131,7 @@ ikev2_create_child_sa_init(ikev2_sa_t *restrict sa, parsedmsg_t *restrict pmsg)
 	(void) bunyan_debug(log, "Starting CREATE_CHILD_SA exchange",
 	    BUNYAN_T_END);
 
-	if ((csa = ikev2_sa_args_new(B_TRUE, satype)) == NULL) {
+	if ((csa = ikev2_sa_args_new(B_TRUE)) == NULL) {
 		(void) bunyan_error(log,
 		    "No memory to perform CREATE_CHILD_SA exchange",
 		    BUNYAN_T_END);
@@ -159,6 +161,101 @@ fail:
 	pfkey_send_error(pmsg->pmsg_samsg, ENOMEM);
 	ikev2_sa_args_free(csa);
 }
+
+#ifdef notyet
+/* We are the initiator in a CREATE_CHILD_SA exchange to rekey an AH/ESP SA */
+void
+ikev2_rekey_child_sa_init(ikev2_sa_t *restrict sa, parsedmsg_t *restrict pmsg)
+{
+	sadb_msg_t *samsg = pmsg->pmsg_samsg;
+	sadb_sa_t *saext = (sadb_sa_t *)pmsg->pmsg_exts[SADB_EXT_SA];
+	ikev2_sa_args_t *args = NULL;
+	pkt_t *req = NULL;
+	ikev2_child_sa_t *csa = NULL;
+	ikev2_spi_proto_t satype = satype_to_ikev2(samsg->sadb_msg_satype);
+	uint32_t spi = saext->sadb_sa_spi;
+	boolean_t inbound = !!(saext->sadb_sa_flags & SADB_X_SAFLAGS_INBOUND);
+
+	VERIFY(IS_WORKER);
+	VERIFY(!MUTEX_HELD(&sa->i2sa_queue_lock));
+	VERIFY(MUTEX_HELD(&sa->i2sa_lock));
+
+	/*
+	 * We should only initiate a child SA rekey in response to a kernel
+	 * message.
+	 */
+	VERIFY(PMSG_FROM_KERNEL(pmsg));
+
+	/*
+	 * We shouldn't try to initiate any other exchanges until we've
+	 * authenticated.
+	 */
+	VERIFY(sa->flags & I2SA_AUTHENTICATED);
+
+	/* We must use the inbound SPI for the REKEY_SA notification */
+	if ((csa = ikev2_sa_get_child(sa, spi, inbound)) != NULL) {
+		if (!inbound) {
+			if (csa->i2c_pair == NULL) {
+				/* XXX: Log */
+				parsedmsg_free(pmsg);
+				return;
+			}
+			csa = csa->i2c_pair;
+			spi = csa->i2c_spi;
+		}
+	} else {
+		(void) bunyan_info(log,
+		    "Received SADB_EXPIRE message for non-existent child SA; "
+		    "ignoring",
+		    BUNYAN_T_STRING, "satype", ikev2_spi_str(satype),
+		    BUNYAN_T_STRING, "spi", enum_printf("%" PRIx32, spi),
+		    BUNYAN_T_END);
+		parsedmsg_free(pmsg);
+		return;
+	}
+	args->i2a_old_csa = csa;
+
+	(void) bunyan_debug(log, "Starting rekey CREATE_CHILD_SA exchange",
+	    BUNYAN_T_STRING, "satype", ikev2_spi_str(satype),
+	    BUNYAN_T_STRING, "spi", enum_printf("%" PRIx32, spi),
+	    BUNYAN_T_END);
+
+	if ((args = ikev2_sa_args_new(B_TRUE)) == NULL) {
+		(void) bunyan_error(log,
+		    "No memory to perform CREATE_CHILD_SA exchange",
+		    BUNYAN_T_END);
+		goto fail;
+	}
+
+	args->i2a_i2sa = sa;
+	args->i2a_pmsg = pmsg;
+	args->i2a_sadb_msg = pmsg->pmsg_samsg;
+	args->i2a_dh = sa->i2sa_rule->rule_p2_dh;
+	args->i2a_old_csa = csa;
+
+	req = ikev2_pkt_new_exchange(sa, IKEV2_EXCH_CREATE_CHILD_SA);
+	if (req == NULL)
+		goto fail;
+
+	VERIFY(ikev2_add_notify_full(req, satype, spi, IKEV2_N_REKEY_SA,
+	    NULL, 0));
+
+	if (!ikev2_create_child_sa_init_common(sa, req, args)) {
+		ikev2_pkt_free(req);
+		goto fail;
+	}
+
+	if (!ikev2_send_req(req, ikev2_rekey_child_sa_init_resp, args))
+		goto fail;
+
+	return;
+
+fail:
+	/* XXX: Do we need to reply to SADB_EXPIRE messages if we failed? */
+	pfkey_send_error(pmsg->pmsg_samsg, ENOMEM);
+	ikev2_sa_args_free(args);
+}
+#endif
 
 /* We are the initiator, shared bits for IKE_AUTH and CREATE_CHILD_SA */
 static boolean_t
@@ -273,7 +370,7 @@ ikev2_create_child_sa_resp(pkt_t *restrict req)
 		return;
 	}
 
-	if ((csa = ikev2_sa_args_new(B_TRUE, 0)) == NULL) {
+	if ((csa = ikev2_sa_args_new(B_TRUE)) == NULL) {
 		/*
 		 * There's no specific error notification for this situation,
 		 * however NO_PROPOSAL_CHOSEN is despite it's name a general
@@ -288,6 +385,14 @@ ikev2_create_child_sa_resp(pkt_t *restrict req)
 		return;
 	}
 
+	/*
+	 * TODO: Check if REKEY_SA notification is present, if so, delete old
+	 * SAs after we send our response back (we get no acknowledgement of
+	 * our reply, so we just have to do it.
+	 *
+	 * Also, check if we have have initiated a rekey request, and do the
+	 * 'lowest nonce wins' bit form RFC7296 2.8.1
+	 */
 	csa->i2a_dh = i2sa->i2sa_rule->rule_p2_dh;
 
 	if (ikev2_create_child_sa_resp_common(req, resp, csa))
@@ -461,6 +566,23 @@ ikev2_create_child_sa_init_resp(ikev2_sa_t *restrict i2sa, pkt_t *restrict resp,
 	ikev2_sa_args_free(arg);
 }
 
+#ifdef notyet
+static void
+ikev2_rekey_child_sa_init_resp(ikev2_sa_t *restrict i2sa, pkt_t *restrict resp,
+    void *restrict arg)
+{
+	ikev2_sa_args_t *sa_arg = arg;
+
+	/*
+	 * TODO: Check if peer initiated a rekey on the same pair of SAs,
+	 * check nonce values and if our nonce values were larger, delete
+	 * the pair we created (RFC7296 2.8.1)
+	 */
+	ikev2_create_child_sa_init_resp_common(i2sa, resp, arg);
+	ikev2_sa_args_free(arg);
+}
+#endif
+
 static void
 ikev2_create_child_sa_init_resp_common(ikev2_sa_t *restrict i2sa,
     pkt_t *restrict resp, void *restrict arg)
@@ -592,6 +714,203 @@ fail:
 remote_fail:
 	if (PMSG_FROM_KERNEL(pmsg))
 		pfkey_send_error(pmsg->pmsg_samsg, EINVAL);
+}
+
+static void ikev2_hard_expire_reply(ikev2_sa_t *restrict, pkt_t *restrict,
+    void *restrict);
+
+void
+ikev2_hard_expire(ikev2_sa_t *restrict i2sa, parsedmsg_t *pmsg)
+{
+	sadb_sa_t *saext = (sadb_sa_t *)pmsg->pmsg_exts[SADB_EXT_SA];
+	ikev2_child_sa_t *csa = NULL;
+	pkt_t *req = NULL;
+	uint64_t spi = 0;
+	ikev2_spi_proto_t satype;
+
+	if (saext == NULL) {
+		(void) bunyan_info(log,
+		    "Received an SADB_EXPIRE message without an SA extension",
+		    BUNYAN_T_END);
+		goto fail;
+	}
+
+	/*
+	 * Since we control the lifetimes on our end, we always set both
+	 * SAs in a pair to the same lifetime, so they should expire at
+	 * effectively the same time (since each SA is created in a separate
+	 * pf_key(7P) message, there is possibly a small delay that we can
+	 * ignore).  We must only send the outbound (to us) SPIs in a delete
+	 * request, so we ignore hard expires of inbound SAs
+	 */
+	if (saext->sadb_sa_flags & SADB_X_SAFLAGS_INBOUND) {
+		parsedmsg_free(pmsg);
+		return;
+	}
+
+	satype = satype_to_ikev2(pmsg->pmsg_samsg->sadb_msg_satype);
+	spi = saext->sadb_sa_spi;
+
+	csa = ikev2_sa_get_child(i2sa, spi, B_FALSE);
+	if (csa == NULL) {
+		/*
+		 * It (for now at least) appears possible there could be a small
+		 * race where the peer causes us to delete an SA, but a hard
+		 * expire message still ends up being queued.  There's no harm
+		 * if it's already deleted, so we just log it.
+		 */
+		(void) bunyan_info(log,
+		    "Received an SADB_EXPIRE message for a non-existent SA",
+		    BUNYAN_T_STRING, "satype", ikev2_spi_str(satype),
+		    BUNYAN_T_STRING, "spi", enum_printf("%" PRIx64, spi),
+		    BUNYAN_T_END);
+
+		goto fail;
+	}
+	csa->i2c_moribund = B_TRUE;
+
+	req = ikev2_pkt_new_exchange(i2sa, IKEV2_EXCH_INFORMATIONAL);
+	if (req == NULL)
+		goto fail;
+
+	/* This is the second payload, it should fit */
+	VERIFY(ikev2_add_delete(req, satype, &spi, 1));
+
+	parsedmsg_free(pmsg);
+	pmsg = NULL;
+
+	if (!ikev2_send_req(req, ikev2_hard_expire_reply, csa))
+		goto fail;
+
+	return;
+
+fail:
+	ikev2_pkt_free(req);
+	parsedmsg_free(pmsg);
+}
+
+void
+ikev2_handle_delete(ikev2_sa_t *restrict i2sa, pkt_payload_t *restrict delpay,
+    pkt_t *restrict resp)
+{
+	VERIFY3U(delpay->pp_type, ==, IKEV2_PAYLOAD_DELETE);
+	ikev2_delete_t *del = (ikev2_delete_t *)delpay->pp_ptr;
+	uint32_t *spiptr = (uint32_t *)(del + 1);
+	uint64_t *spiresp = NULL;
+	struct sockaddr_storage src = { 0 };
+	struct sockaddr_storage dst = { 0 };
+	sockaddr_u_t srcu = { .sau_ss = &src };
+	sockaddr_u_t dstu = { .sau_ss = &dst };
+	ikev2_spi_proto_t i2satype = del->del_protoid;
+	uint16_t nspi = BE_IN16(&del->del_nspi);
+	uint16_t nspiresp = 0;
+	uint8_t satype = 0;
+	uint8_t spilen = del->del_spisize;
+
+	switch (i2satype) {
+	case IKEV2_PROTO_NONE:
+	case IKEV2_PROTO_FC_ESP_HEADER:
+	case IKEV2_PROTO_FC_CT_AUTH:
+	case IKEV2_PROTO_IKE:
+		(void) bunyan_info(log,
+		    "Unsupported SA type in DELETE payload",
+		    BUNYAN_T_STRING, "satype", ikev2_spi_str(i2satype),
+		    BUNYAN_T_END);
+		return;
+	case IKEV2_PROTO_AH:
+	case IKEV2_PROTO_ESP:
+		if (spilen != sizeof (uint32_t)) {
+			(void) bunyan_error(log,
+			    "Unexpected SPI size in DELETE payload",
+			    BUNYAN_T_UINT32, "spisize", (uint32_t)spilen,
+			    BUNYAN_T_UINT32, "expected",
+			    (uint32_t)sizeof (uint32_t), BUNYAN_T_END);
+			return;
+		}
+		satype = ikev2_to_satype(del->del_protoid);
+		break;
+	}
+
+	spiresp = umem_calloc(nspi, sizeof (uint64_t), UMEM_DEFAULT);
+	if (spiresp == NULL) {
+		(void) bunyan_error(log, "No memory for DELETE response",
+		    BUNYAN_T_END);
+		(void) ikev2_add_notify(resp, IKEV2_N_TEMPORARY_FAILURE);
+		return;
+	}
+
+	/* The SPIs in DELETE payloads are always inbound */
+	sockaddr_copy(SSTOSA(&i2sa->raddr), &src, B_FALSE);
+	sockaddr_copy(SSTOSA(&i2sa->laddr), &dst, B_FALSE);
+
+	for (uint16_t i = 0; i < nspi; i++, spiptr++) {
+		ikev2_child_sa_t *csa = NULL;
+		uint32_t spi = BE_IN32(spiptr);
+
+		csa = ikev2_sa_get_child(i2sa, spi, B_TRUE);
+		if (csa == NULL) {
+			(void) ikev2_add_notify_full(resp, i2satype, spi,
+			    IKEV2_N_CHILD_SA_NOT_FOUND, NULL, 0);
+			(void) bunyan_info(log,
+			    "SPI not found in DELETE payload",
+			    BUNYAN_T_STRING, "spi",
+			    enum_printf("%" PRIx32, spi), BUNYAN_T_END);
+			continue;
+		}
+
+		/*
+		 * RFC7296 1.4.1 If we've already sent a DELETE request
+		 * (which from our perspective be the outbound aka paired
+		 * SPI), we don't send the SPI back in a delete payload
+		 */
+		if (csa->i2c_pair != NULL && !csa->i2c_moribund) {
+			ikev2_child_sa_t *pair = csa->i2c_pair;
+
+			spiresp[nspiresp++] = pair->i2c_spi;
+			ikev2_sa_delete_child(i2sa, pair);
+		}
+
+		ikev2_sa_delete_child(i2sa, csa);
+		(void) pfkey_delete(satype, spi, srcu, dstu, B_TRUE);
+	}
+
+	(void) ikev2_add_delete(resp, i2satype, spiresp, nspiresp);
+	umem_cfree(spiresp, nspiresp, sizeof (uint64_t));
+}
+
+static void
+ikev2_hard_expire_reply(ikev2_sa_t *restrict i2sa, pkt_t *restrict reply,
+    void *restrict arg)
+{
+	ikev2_child_sa_t *csa = arg;
+
+	/*
+	 * The reply should at best only send back the SPI of the pairs we
+	 * sent.  Since we already link our SPIs via the pair extension
+	 * we really don't care about the SPIs sent back.
+	 */
+	if (csa->i2c_pair != NULL)
+		ikev2_sa_delete_child(i2sa, csa->i2c_pair);
+	ikev2_sa_delete_child(i2sa, csa);
+
+	if (reply == NULL)
+		return;
+
+	/* There's no action we can do on an error, just log it */
+	for (size_t i = 0; i < reply->pkt_notify_count; i++) {
+		pkt_notify_t *n = pkt_notify(reply, i);
+
+		if (IKEV2_NOTIFY_ERROR(n->pn_type)) {
+			char msg[128] = { 0 };
+
+			(void) snprintf(msg, sizeof (msg),
+			    "Received %s error from a DELETE request",
+			    ikev2_notify_str(n->pn_type));
+
+			(void) bunyan_info(log, msg, BUNYAN_T_END);
+		}
+	}
+
 }
 
 /*
@@ -1474,15 +1793,16 @@ ikev2_create_child_sas(ikev2_sa_t *restrict sa, ikev2_sa_args_t *restrict args)
 	ikev2_child_sa_state_t *kid = args->i2a_child;
 
 	/* We always create IPsec SAs in pairs, so there's _always_ 2 */
-	for (size_t i = 0; i < 2; i++, kid++) {
-		ikev2_child_sa_t *csa = kid->csa_child;
+	for (size_t i = 0; i < 2; i++, kid) {
+		ikev2_child_sa_t *csa = kid[i].csa_child;
 
-		if (!pfkey_sadb_add_update(sa, csa, kid->csa_child_encr,
-		    kid->csa_child_auth, args->i2a_pmsg))
+
+		if (!pfkey_sadb_add_update(sa, csa, kid[i].csa_child_encr,
+		    kid[i].csa_child_auth, args->i2a_pmsg))
 			return (B_FALSE);
 
 		ikev2_sa_add_child(sa, csa);
-		kid->csa_child_added = B_TRUE;
+		kid[i].csa_child_added = B_TRUE;
 		csa->i2c_birth = gethrtime();
 
 		/*
@@ -1495,6 +1815,7 @@ ikev2_create_child_sas(ikev2_sa_t *restrict sa, ikev2_sa_args_t *restrict args)
 
 		/* TODO: Log more keys */
 		(void) bunyan_debug(log, "Created IPsec SA",
+		    BUNYAN_T_POINTER, "csa", csa,
 		    BUNYAN_T_STRING, "spi", enum_printf("0x%" PRIx32,
 		    ntohl(csa->i2c_spi)),
 		    BUNYAN_T_BOOLEAN, "inbound", csa->i2c_inbound,
@@ -1638,3 +1959,17 @@ get_sadb_addr(parsedmsg_t *pmsg, boolean_t src)
 
 	return ((sadb_address_t *)ext);
 }
+
+#ifdef notyet
+static void
+ikev2_rekey_delete_old_kids(ikev2_sa_t *restrict i2sa,
+    ikev2_sa_args_t *restrict args)
+{
+	ikev2_child_sa_t *csa = args->i2a_old_csa;
+	uint8_t satype = ikev2_to_satype(csa->i2c_satype);
+
+	(void) pfkey_delete(satype, csa->i2c_spi, src, dst, B_TRUE);
+	ikev2_sa_delete_child(i2sa, csa->i2c_pair);
+	ikev2_sa_delete_child(i2sa,csa);
+}
+#endif
