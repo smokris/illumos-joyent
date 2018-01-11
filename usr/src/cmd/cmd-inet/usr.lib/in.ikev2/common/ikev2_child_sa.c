@@ -1489,13 +1489,15 @@ ikev2_sa_check_acquire(parsedmsg_t *restrict pmsg, ikev2_dh_t dh,
 			m->ism_dh = id;
 			break;
 		case IKEV2_XF_ENCR:
-			if (id != comb->sadb_comb_encrypt)
+			if (id != ikev2_pfkey_to_encr(comb->sadb_comb_encrypt))
 				goto invalid_xf;
 
 			m->ism_encr = id;
 			ed = encr_data(id);
 #ifdef notyet
-			m->ism_encr_saltlen = comb->sadb_comb_saltlen;
+			m->ism_encr_saltlen = comb->sadb_x_comb_encrypt_saltlen;
+			VERIFY3U(comb->sadb_x_comb_encrypt_saltlen, ==,
+			    ed->ed_saltlen);
 #else
 			/*
 			 * Typically, the same mechanisms for use in ESP/AH
@@ -1770,6 +1772,7 @@ ikev2_save_child_results(ikev2_child_sa_state_t *restrict kids,
 		child->i2c_encr = results->ism_encr;
 		child->i2c_auth = results->ism_auth;
 		child->i2c_encr_keylen = results->ism_encr_keylen;
+		child->i2c_encr_saltlen = results->ism_encr_saltlen;
 		child->i2c_dh = results->ism_dh;
 	}
 }
@@ -1899,9 +1902,8 @@ generate_keys(ikev2_sa_t *restrict i2sa, ikev2_sa_args_t *restrict csa)
 	 * mode ciphers, i2c_encr_saltlen will be 0, so things will work
 	 * as expected.
 	 */
-	encrlen = init->csa_child->i2c_encr_keylen +
-	    init->csa_child->i2c_encr_saltlen;
-	encrlen = SADB_1TO8(encrlen);
+	encrlen = SADB_1TO8(init->csa_child->i2c_encr_keylen +
+	    init->csa_child->i2c_encr_saltlen);
 	authlen = auth_data(init->csa_child->i2c_auth)->ad_keylen;
 
 	VERIFY3U(encrlen, <=, ENCR_MAX);

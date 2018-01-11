@@ -844,7 +844,7 @@ pfkey_sadb_add_update(ikev2_sa_t *restrict sa,
 	uint8_t satype = ikev2_to_satype(csa->i2c_satype);
 	boolean_t ret = B_FALSE;
 
-	encrlen = SADB_1TO8(csa->i2c_encr_keylen);
+	encrlen = SADB_1TO8(csa->i2c_encr_keylen + csa->i2c_encr_saltlen);
 	authlen = auth_data(csa->i2c_auth)->ad_keylen;
 
 	/*

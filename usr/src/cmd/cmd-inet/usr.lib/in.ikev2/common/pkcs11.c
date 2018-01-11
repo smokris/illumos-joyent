@@ -126,41 +126,56 @@ static void log_slotinfo(CK_SLOT_ID);
  * Entries with 0 for the PKCS#11 mechanism are ones that aren't supported
  * by PKCS#11, so their values aren't used beyond the stringified name.
  */
+#define	EALG(_name, _p11, _mode, _min, _max, _incr, _def, _bsz, _iv, _icv, _s) \
+    { \
+	.ed_i2id = IKEV2_ENCR_ ## _name, \
+	.ed_p11id = _p11, \
+	.ed_mode = _mode, \
+	.ed_name = # _name, \
+	.ed_keymin = _min, \
+	.ed_keymax = _max, \
+	.ed_keyincr = _incr, \
+	.ed_keydefault = _def, \
+	.ed_blocklen = _bsz, \
+	.ed_ivlen = _iv, \
+	.ed_icvlen = _icv, \
+	.ed_saltlen = _s \
+    }
 static encr_data_t encr_tbl[IKEV2_ENCR_MAX + 1] = {
 	/* p11, desc, mode, min, max, incr, default, blocksz, iv, icv, salt */
-	{ 0, "NONE", MODE_NONE, 0, 0, 0, 0, 0, 0, 0, 0 },
-	{ CKM_DES_CBC, "DES_IV64", MODE_CBC, 64, 64, 0, 64, 8, 8, 0, 0 },
-	{ CKM_DES_CBC, "DES", MODE_CBC, 64, 64, 0, 64, 64, 8, 0, 0 },
-	{ CKM_DES3_CBC, "3DES", MODE_CBC, 192, 192, 0, 192, 8, 8, 0, 0 },
-	{ CKM_RC5_CBC, "RC5", MODE_CBC, 40, 2040, 1, 128, 8, 8, 0, 0 },
-	{ CKM_IDEA_CBC, "IDEA", MODE_CBC, 128, 128, 0, 128, 8, 8, 0, 0 },
-	{ CKM_CAST5_CBC, "CAST", MODE_CBC, 40, 128, 1, 128, 8, 8, 0, 0 },
-	{ CKM_BLOWFISH_CBC, "BLOWFISH", MODE_CBC, 40, 448, 1, 128, 8, 8, 0, 0 },
-	{ 0, "3IDEA", MODE_CBC, 128, 128, 0, 16, 8, 8, 0, 0 },
-	{ CKM_DES_CBC, "DES_IV32", MODE_CBC, 64, 64, 0, 64, 8, 4, 0, 0 },
-	{ CKM_RC4, "RC4", MODE_CBC, 0, 0, 0, 0, 0, 0, 0, 0 },
-	{ 0, "NULL", MODE_NONE, 0, 0, 0, 0, 0, 0, 0, 0 },
-	{ CKM_AES_CBC, "AES_CBC", MODE_CBC, 128, 256, 64, 0, 16, 16, 0, 0 },
-	{ CKM_AES_CTR, "AES_CTR", MODE_CTR,  128, 256, 64, 0, 16, 16, 0, 0 },
-	{ CKM_AES_CCM, "AES_CCM_8", MODE_CCM, 128, 256, 64, 0, 16, 16, 8, 12 },
-	{ CKM_AES_CCM, "AES_CCM_12", MODE_CCM,
-	    128, 256, 64, 0, 16, 16, 12, 12 },
-	{ CKM_AES_CCM, "AES_CCM_16", MODE_CCM,
-	    128, 256, 64, 0, 16, 16, 16, 12 },
-	{ CKM_AES_GCM, "AES_GCM_8", MODE_GCM, 128, 256, 64, 0, 16, 16, 8, 16 },
-	{ CKM_AES_GCM, "AES_GCM_12", MODE_GCM,
-	    128, 256, 64, 0, 16, 16, 12, 16 },
-	{ CKM_AES_GCM, "AES_GCM_16", MODE_GCM,
-	    128, 256, 64, 0, 16, 16, 16, 16 },
-	{ 0, "NULL_AES_GMAC", MODE_NONE, 128, 256, 64, 0, 16, 16, 16, 0 },
-	{ 0, "AES_XTS_AES", MODE_NONE, 128, 256, 64, 0, 0, 0, 0, 0 },
-	{ CKM_CAMELLIA_CBC, "CAMELLIA_CBC", MODE_CBC,
-	    128, 256, 64, 0, 16, 16, 0, 0 },
-	{ CKM_CAMELLIA_CTR, "CAMELLIA_CTR", MODE_CTR,
-	    128, 256, 64, 0, 16, 16, 0, 0 },
-	{ 0, "CAMELLIA_CCM_8", MODE_CCM, 128, 256, 64, 0, 16, 16, 8, 12 },
-	{ 0, "CAMELLIA_CCM_12", MODE_CCM, 128, 256, 64, 0, 16, 16, 12, 12 },
-	{ 0, "CAMELLIA_CCM_16", MODE_CCM, 128, 256, 64, 0, 16, 16, 16, 12 },
+	EALG(NONE, 0, MODE_NONE, 0, 0, 0, 0, 0, 0, 0, 0),
+	EALG(DES_IV64, CKM_DES_CBC, MODE_CBC, 64, 64, 0, 64, 8, 8, 0, 0),
+	EALG(DES, CKM_DES_CBC, MODE_CBC, 64, 64, 0, 64, 64, 8, 0, 0),
+	EALG(3DES, CKM_DES3_CBC, MODE_CBC, 192, 192, 0, 192, 8, 8, 0, 0),
+	EALG(RC5, CKM_RC5_CBC, MODE_CBC, 40, 2040, 1, 128, 8, 8, 0, 0),
+	EALG(IDEA, CKM_IDEA_CBC, MODE_CBC, 128, 128, 0, 128, 8, 8, 0, 0),
+	EALG(CAST, CKM_CAST5_CBC, MODE_CBC, 40, 128, 1, 128, 8, 8, 0, 0),
+	EALG(BLOWFISH, CKM_BLOWFISH_CBC, MODE_CBC, 40, 448, 1, 128, 8, 8, 0, 0),
+	EALG(3IDEA, 0, MODE_CBC, 128, 128, 0, 16, 8, 8, 0, 0),
+	EALG(DES_IV32, CKM_DES_CBC, MODE_CBC, 64, 64, 0, 64, 8, 4, 0, 0),
+	EALG(RC4, CKM_RC4, MODE_CBC, 0, 0, 0, 0, 0, 0, 0, 0),
+	{ IKEV2_ENCR_NULL, 0, "NULL", MODE_NONE, 0, 0, 0, 0, 0, 0, 0 },
+	EALG(AES_CBC, CKM_AES_CBC, MODE_CBC, 128, 256, 64, 0, 16, 16, 0, 0),
+	EALG(AES_CTR, CKM_AES_CTR, MODE_CTR,  128, 256, 64, 0, 16, 16, 0, 0),
+	EALG(AES_CCM_8, CKM_AES_CCM, MODE_CCM, 128, 256, 64, 0, 16, 8, 8, 24),
+	EALG(AES_CCM_12, CKM_AES_CCM, MODE_CCM,
+	    128, 256, 64, 0, 16, 8, 12, 24),
+	EALG(AES_CCM_16, CKM_AES_CCM, MODE_CCM,
+	    128, 256, 64, 0, 16, 8, 16, 24),
+	EALG(AES_GCM_8, CKM_AES_GCM, MODE_GCM, 128, 256, 64, 0, 16, 8, 8, 32),
+	EALG(AES_GCM_12, CKM_AES_GCM, MODE_GCM,
+	    128, 256, 64, 0, 16, 8, 12, 32),
+	EALG(AES_GCM_16, CKM_AES_GCM, MODE_GCM,
+	    128, 256, 64, 0, 16, 8, 16, 32),
+	EALG(NULL_AES_GMAC, 0, MODE_NONE, 128, 256, 64, 0, 16, 16, 16, 0),
+	EALG(XTS_AES, 0, MODE_NONE, 128, 256, 64, 0, 0, 0, 0, 0),
+	EALG(CAMELLIA_CBC, CKM_CAMELLIA_CBC, MODE_CBC,
+	    128, 256, 64, 0, 16, 16, 0, 0),
+	EALG(CAMELLIA_CTR, CKM_CAMELLIA_CTR, MODE_CTR,
+	    128, 256, 64, 0, 16, 16, 0, 0),
+	EALG(CAMELLIA_CCM_8, 0, MODE_CCM, 128, 256, 64, 0, 16, 16, 8, 12),
+	EALG(CAMELLIA_CCM_12, 0, MODE_CCM, 128, 256, 64, 0, 16, 16, 12, 12),
+	EALG(CAMELLIA_CCM_16, 0, MODE_CCM, 128, 256, 64, 0, 16, 16, 16, 12),
 };
 
 static auth_data_t auth_tbl[IKEV2_XF_AUTH_MAX + 1] = {
@@ -496,10 +511,12 @@ pkcs11_new_session(void)
 const encr_data_t *
 encr_data(ikev2_xf_encr_t id)
 {
-	if (id > ARRAY_SIZE(encr_tbl))
-		return (NULL);
+	for (size_t i = 0; i < ARRAY_SIZE(encr_tbl); i++) {
+		if (id == encr_tbl[i].ed_i2id)
+			return (&encr_tbl[i]);
+	}
 
-	return (&encr_tbl[id]);
+	return (NULL);
 }
 
 const auth_data_t *

@@ -61,6 +61,7 @@ typedef enum encr_mode_e {
 #define	MODE_IS_COMBINED(m) ((m) == MODE_CCM || (m) == MODE_GCM)
 
 typedef struct encr_data_s {
+	ikev2_xf_encr_t		ed_i2id;
 	CK_MECHANISM_TYPE	ed_p11id;
 	const char		*ed_name;
 	encr_modes_t		ed_mode;
