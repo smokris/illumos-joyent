@@ -322,8 +322,10 @@ config_id_copy(const config_id_t *src)
 int
 config_id_cmp(const config_id_t *l, const config_id_t *r)
 {
-	if (l->cid_type != r->cid_type)
-		return (l->cid_type - r->cid_type);
+	if (l->cid_type < r->cid_type)
+		return (-1);
+	if (l->cid_type > r->cid_type)
+		return (1);
 	return (memcmp(l->cid_data, r->cid_data, MIN(l->cid_len, r->cid_len)));
 }
 
@@ -348,8 +350,6 @@ cfg_rule_free(config_rule_t *rule)
 
 	if (rule->rule_xf != NULL) {
 		for (i = 0; rule->rule_xf[i] != NULL; i++) {
-			char *s = rule->rule_xf[i]->xf_str;
-
 			ustrfree(rule->rule_xf[i]->xf_str);
 			umem_free(rule->rule_xf[i], sizeof (config_xf_t));
 		}

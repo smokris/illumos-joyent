@@ -11,6 +11,7 @@
 
 /*
  * Copyright 2014 Jason King.
+ * Copyright (c) 2018, Joyent, Inc.
  */
 #include <bunyan.h>
 #include <limits.h>
@@ -36,7 +37,7 @@
  * generate a seed value.   The prfp+ function starts with this seed value
  * and iteratively uses the previous values to generate new blocks of keying
  * material.  For child SAs (either AH, ESP, or an IKE SA rekey), some
- * additional inputs are mixed in.  RFC7206 secions 2.13 and 2.17 go into
+ * additional inputs are mixed in.  RFC7296 secions 2.13 and 2.17 go into
  * the complete details of what inputs are used when.
  *
  * As both the PRF and prfp+ functions use multiple disparate inputs that

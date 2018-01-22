@@ -653,8 +653,7 @@ parse_xform(input_cursor_t *restrict ic, config_xf_t **restrict xfp)
 
 	start = start_t->t_linep + start_t->t_col;
 
-	/*CONSTCOND*/
-	while (1) {
+	for (;;) {
 		t = input_token(ic, B_FALSE);
 		if (t == NULL) {
 			(void) bunyan_error(log,

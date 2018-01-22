@@ -30,9 +30,15 @@
 #include "ts.h"
 #include "worker.h"
 
-#define	IS_AUTH(args) ((args)->i2a_is_auth)
-#define	INITIATOR(args) ((args)->i2a_child[0].csa_child->i2c_initiator)
-#define	TRANSPORT_MODE(args) ((args)->i2a_child[0].csa_child->i2c_transport)
+/*
+ * Is the ikev2_sa_args_t being used during an IKE_AUTH exchange for the
+ * piggybacked child SA
+ */
+#define	IS_AUTH(csa) ((csa)->i2a_is_auth)
+/* Are we initiating the creation of this child SA */
+#define	INITIATOR(csa) ((csa)->i2a_child[0].csa_child->i2c_initiator)
+/* Is the child SA we're creating transport mode? */
+#define	TRANSPORT_MODE(csa) ((csa)->i2a_child[0].csa_child->i2c_transport)
 
 static boolean_t ikev2_create_child_sa_init_common(ikev2_sa_t *restrict,
     pkt_t *restrict req, ikev2_sa_args_t *restrict);
@@ -251,8 +257,6 @@ ikev2_rekey_child_sa_init(ikev2_sa_t *restrict sa, parsedmsg_t *restrict pmsg)
 	return;
 
 fail:
-	/* XXX: Do we need to reply to SADB_EXPIRE messages if we failed? */
-	pfkey_send_error(pmsg->pmsg_samsg, ENOMEM);
 	ikev2_sa_args_free(args);
 }
 #endif
@@ -381,7 +385,7 @@ ikev2_create_child_sa_resp(pkt_t *restrict req)
 		    "sending NO_PROPOSAL_CHOSEN", BUNYAN_T_END);
 
 		VERIFY(ikev2_add_notify(resp, IKEV2_N_NO_PROPOSAL_CHOSEN));
-		(void) ikev2_send_resp(resp);
+		ikev2_send_resp(resp);
 		return;
 	}
 
@@ -396,7 +400,7 @@ ikev2_create_child_sa_resp(pkt_t *restrict req)
 	csa->i2a_dh = i2sa->i2sa_rule->rule_p2_dh;
 
 	if (ikev2_create_child_sa_resp_common(req, resp, csa))
-		(void) ikev2_send_resp(resp);
+		ikev2_send_resp(resp);
 	else
 		ikev2_pkt_free(resp);
 
@@ -654,18 +658,6 @@ ikev2_create_child_sa_init_resp_common(ikev2_sa_t *restrict i2sa,
 		goto fail;
 	}
 
-	/*
-	 * This is not fatal -- the traffic we wanted to send can be sent,
-	 * but the responder has chosen a subset of our policy, so we want
-	 * to log this.
-	 */
-	if (pkt_get_notify(resp,
-	    IKEV2_N_ADDITIONAL_TS_POSSIBLE, NULL) != NULL) {
-		(void) bunyan_warn(log,
-		    "Policy mismatch with peer", BUNYAN_T_END);
-		/* XXX: Log more details */
-	}
-
 	if (csa->i2a_is_auth)
 		check_natt_addrs(resp, TRANSPORT_MODE(csa));
 
@@ -677,6 +669,18 @@ ikev2_create_child_sa_init_resp_common(ikev2_sa_t *restrict i2sa,
 		    "Responder sent traffic selectors not in our policy",
 		    BUNYAN_T_END);
 		goto fail;
+	}
+
+	/*
+	 * This is not fatal -- the traffic we wanted to send can be sent,
+	 * but the responder has chosen a subset of our policy, so we want
+	 * to log this.
+	 */
+	if (narrowed || pkt_get_notify(resp,
+	    IKEV2_N_ADDITIONAL_TS_POSSIBLE, NULL) != NULL) {
+		(void) bunyan_warn(log,
+		    "Policy mismatch with peer", BUNYAN_T_END);
+		/* XXX: Log more details */
 	}
 
 	ikev2_set_child_type(csa->i2a_child, B_TRUE, match.ism_satype);
@@ -1216,7 +1220,7 @@ ikev2_sa_select_prop(sadb_x_ecomb_t *restrict ecomb, ikev2_dh_t dh,
 
 				m->ism_encr = xfid;
 				m->ism_encr_saltlen =
-				    alg->sadb_x_algdesc_reserved;
+				    alg->sadb_x_algdesc_saltbits;
 				if (m->ism_encr_keylen == 0)
 					m->ism_encr_keylen = ed->ed_keydefault;
 

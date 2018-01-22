@@ -323,6 +323,14 @@ pkt_add_index(pkt_t *pkt, uint8_t type, uint8_t *buf, uint16_t buflen)
 	return (B_TRUE);
 }
 
+/*
+ * Add a notify index to pkt.  spi, doi, proto, type, buf/buflen are the
+ * values from the notification payload.  Note: for IKEV2, doi is always
+ * 0 (as the field doesn't exist in IKEv2).
+ *
+ * Returns B_TRUE if the index was added, B_FALSE if it could not be added
+ * (i.e. no memory).
+ */
 boolean_t
 pkt_add_nindex(pkt_t *pkt, uint64_t spi, uint32_t doi, uint8_t proto,
     uint16_t type, uint8_t *buf, size_t buflen)
@@ -783,14 +791,14 @@ pay_to_idx(pkt_t *pkt, pkt_payload_t *pay)
 pkt_payload_t *
 pkt_get_payload(pkt_t *pkt, uint8_t type, pkt_payload_t *start)
 {
-	size_t idx = (start == NULL) ? 0 : pay_to_idx(pkt, start);
+	size_t idx = 0;
 
 	/*
 	 * If we're searching for the next payload of 'type', we want to
-	 * being searching after 'start'.
+	 * begin searching with the first payload after 'start'.
 	 */
 	if (start != NULL)
-		idx++;
+		idx = pay_to_idx(pkt, start) + 1;
 
 	for (size_t i = idx; i < pkt->pkt_payload_count; i++) {
 		pkt_payload_t *pay = pkt_payload(pkt, i);
@@ -829,28 +837,28 @@ notify_to_idx(pkt_t *pkt, pkt_notify_t *n)
  * NULL, return the first notify payload of type 'type'.  This allows one
  * to iterate through multiple instances of a given notify type using something
  * such as:
- * 	pkt_notify_t *n;
- * 	...
- * 	for (n = pkt_get_notify(pkt, IKEV2_N_NAT_DETECTION_SOURCE_IP, NULL);
- * 	    n != NULL;
- * 	    n = pkt_get_notify(pkt, IKEV2_N_NAT_DETECTION_SOURCE_IP, n)) {
- * 		....
- * 	}
+ *	pkt_notify_t *n;
+ *	...
+ *	for (n = pkt_get_notify(pkt, IKEV2_N_NAT_DETECTION_SOURCE_IP, NULL);
+ *	    n != NULL;
+ *	    n = pkt_get_notify(pkt, IKEV2_N_NAT_DETECTION_SOURCE_IP, n)) {
+ *		....
+ *	}
  *
- * It is a fatal error to pass in a notify in 'start' that does not exist
- * in pkt.
+ * It is a bug to pass in a non-NULL notify pointer in 'start' that does not
+ * exist in pkt.
  */
 pkt_notify_t *
 pkt_get_notify(pkt_t *pkt, uint16_t type, pkt_notify_t *start)
 {
-	size_t idx = notify_to_idx(pkt, start);
+	size_t idx = 0;
 
 	/*
-	 * If we're looking for the next instance of 'type', we need to
-	 * begin our search after the previous value returned (start).
+	 * If we're searching for the next notification of 'type', begin with
+	 * the first notify payload after start.
 	 */
 	if (start != NULL)
-		idx++;
+		idx = notify_to_idx(pkt, start) + 1;
 
 	for (uint16_t i = idx; i < pkt->pkt_notify_count; i++) {
 		pkt_notify_t *n = pkt_notify(pkt, i);

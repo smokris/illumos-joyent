@@ -355,7 +355,7 @@ pfkey_inbound(int s)
 	sadb_log(BUNYAN_L_DEBUG, "SADB message received", samsg);
 
 	/*
-	 * XXX KEBE SAYS for now don't print the full inbound message.  An
+	 * For now don't print the full inbound message.  An
 	 * "ipseckey monitor" instance is useful here.
 	 */
 

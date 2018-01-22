@@ -22,12 +22,13 @@
  * Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
  *
- * Copyright (c) 2017, Joyent, Inc.
+ * Copyright (c) 2018, Joyent, Inc.
  */
 
 #include <sys/types.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <strings.h>
 #include <errno.h>
 #include <ctype.h>
@@ -698,12 +699,7 @@ parsekey(char *input, uint_t *keybuflen, uint_t *lbits, char **errp)
 static boolean_t
 check_if_v6(char *abuf)
 {
-	char *cp;
-	for (cp = abuf; *cp != CHR_NULL; cp++) {
-		if (*cp == CHR_COLON)
-			return (B_TRUE);
-	}
-	return (B_FALSE);
+	return (strchr(abuf, CHR_COLON) != NULL ? B_TRUE : B_FALSE);
 }
 
 static boolean_t

@@ -270,8 +270,7 @@ ikev2_sa_alloc(pkt_t *restrict init_pkt,
 	 * we generate a duplicate (or even far, far, rarer chance 0 is
 	 * returned), just retry until we pick a value that's not in use.
 	 */
-	NOTE(CONSTCOND)
-	while (1) {
+	for (;;) {
 		uint64_t spi = 0;
 
 		arc4random_buf(&spi, sizeof (spi));

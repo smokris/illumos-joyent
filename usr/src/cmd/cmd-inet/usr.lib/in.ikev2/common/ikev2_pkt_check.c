@@ -657,7 +657,11 @@ ikev2_pkt_check_informational(pkt_t *pkt)
 	if (!pkt->pkt_decrypted)
 		return (ikev2_pkt_check_predecrypt(pkt));
 
-	/* Can have a bunch of things, so don't worry about it */
+	/*
+	 * There's no well defined list of things that can appear in an
+	 * informational exchange, so we rely on the processing there to
+	 * handle them properly.
+	 */
 	return (B_TRUE);
 }
 #undef	PAYIDX
@@ -688,6 +692,7 @@ ikev2_pkt_check_payloads(pkt_t *pkt)
 		break;
 	}
 
+	abort();
 	/*NOTREACHED*/
 	return (B_FALSE);
 }

@@ -571,10 +571,7 @@ range_contains(const range_t *restrict r1, const range_t *restrict r2)
 	if ((r1->ra_proto != 0) && (r1->ra_proto != r2->ra_proto))
 		return (B_FALSE);
 
-	if (!range_contains_addr(r1, r2))
-		return (B_FALSE);
-
-	return (range_contains_port(r1, r2));
+	return (range_contains_addr(r1, r2) && range_contains_port(r1, r2));
 }
 
 static int

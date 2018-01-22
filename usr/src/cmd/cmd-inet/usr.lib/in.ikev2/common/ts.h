@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2017 Joyent, Inc.
+ * Copyright (c) 2018, Joyent, Inc.
  */
 
 #ifndef _TS_H
@@ -38,7 +38,7 @@ enum bunyan_level;
  * sadb_address_t except that the total size of this structure is fixed.
  */
 typedef struct ts_s {
-	uint8_t ts_proto;
+	uint8_t ts_proto;		/* TCP, UDP, etc. */
 	uint8_t	ts_prefix;
 	union {
 		struct sockaddr_in	tsu_sin;

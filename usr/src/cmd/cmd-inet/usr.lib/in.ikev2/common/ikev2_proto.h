@@ -40,7 +40,7 @@ typedef void (*ikev2_send_cb_t)(struct ikev2_sa_s *restrict,
     struct pkt_s *restrict, void *restrict);
 boolean_t ikev2_send_req(struct pkt_s *restrict, ikev2_send_cb_t,
     void *restrict);
-boolean_t ikev2_send_resp(struct pkt_s *restrict);
+void ikev2_send_resp(struct pkt_s *restrict);
 boolean_t ikev2_send_resp_addr(struct pkt_s *restrict,
     const struct sockaddr *restrict,
     const struct sockaddr *restrict);

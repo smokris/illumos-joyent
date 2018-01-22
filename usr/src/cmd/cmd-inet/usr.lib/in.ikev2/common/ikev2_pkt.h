@@ -35,11 +35,11 @@ struct sockaddr;
 #define	I2P_INITIATOR(p) (pkt_header(p)->flags & IKEV2_FLAG_INITIATOR)
 
 #define	INBOUND_LOCAL_SPI(hdr) \
-	(((hdr)->flags == IKEV2_FLAG_INITIATOR) ? \
+	((((hdr)->flags & IKEV2_FLAG_INITIATOR) != 0) ? \
 	    (hdr)->responder_spi : (hdr)->initiator_spi)
 
 #define	INBOUND_REMOTE_SPI(hdr) \
-	(((hdr)->flags == IKEV2_FLAG_INITIATOR) ? \
+	((((hdr)->flags & IKEV2_FLAG_INITIATOR) != 0) ? \
 	    (hdr)->initiator_spi : (hdr)->responder_spi)
 
 typedef struct ikev2_pkt_ts_state {
@@ -92,7 +92,7 @@ boolean_t ikev2_add_vendor(pkt_t *restrict, const void *restrict,
 
 /*
  * The usage of 'struct sockaddr *' vs 'struct sockaddr_storage *'
- * reflects the assumptions about the side of the struct pointed to --
+ * reflects the assumptions about the size of the struct pointed to --
  * functions that take 'struct sockaddr' are assumed to be sized according
  * to the value of sa_family (i.e. AF_INET implies 'struct sockaddr_in'
  * while AF_INET6 implies 'struct sockaddr_in6'), while 'sockaddr_storage'

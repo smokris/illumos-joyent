@@ -279,7 +279,7 @@ ikev2_sa_match_prop(config_xf_t *restrict rxf,
 	m->ism_lifetime_secs = rxf->xf_lifetime_secs;
 
 	if (m->ism_spi != 0) {
-		(void) snprintf(spibuf, sizeof (spibuf), "0x" PRIx64,
+		(void) snprintf(spibuf, sizeof (spibuf), "0x%016" PRIx64,
 		    m->ism_spi);
 	} else {
 		(void) strlcpy(spibuf, "0x0", sizeof (spibuf));
@@ -301,7 +301,7 @@ ikev2_sa_match_prop(config_xf_t *restrict rxf,
 
 	/*
 	 * For non-combined mode encryption mechanisms, we must also have
-	 * an integrity mechism selected.
+	 * an integrity mechanism selected.
 	 */
 	if (rxf->xf_auth != IKEV2_XF_AUTH_NONE)
 		m->ism_have |= SEEN(IKEV2_XF_AUTH);
@@ -886,13 +886,13 @@ ikev2_sa_args_new(boolean_t create_children)
 	if (create_children) {
 		in = ikev2_child_sa_alloc(B_TRUE);
 		out = ikev2_child_sa_alloc(B_FALSE);
-	}
 
-	if (create_children && (in == NULL || out == NULL)) {
-		ikev2_child_sa_free(NULL, in);
-		ikev2_child_sa_free(NULL, out);
-		umem_free(args, sizeof (*args));
-		return (NULL);
+		if (in == NULL || out == NULL) {
+			ikev2_child_sa_free(NULL, in);
+			ikev2_child_sa_free(NULL, out);
+			umem_free(args, sizeof (*args));
+			return (NULL);
+		}
 	}
 
 	args->i2a_child[CSA_IN].csa_child = in;

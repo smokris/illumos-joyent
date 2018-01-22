@@ -92,6 +92,16 @@ uint_t ikev2_cookie_secret_grace = COOKIE_GRACE;
  * complex, and we MUST support responding to a responder who sends us
  * cookies -- so it's not really doing much harm.
  */
+static periodic_id_t cookie_timer_id;
+static hrtime_t grace_ns;	/* Only set at startup */
+
+/*
+ * i2c_lock protectes i2c_enabled as well as the secret (current and previous),
+ * as well as i2c_version.
+ */
+static rwlock_t i2c_lock = DEFAULTRWLOCK;
+static uint8_t i2c_version;
+static boolean_t i2c_enabled;
 static struct secret_s {
 	uint8_t s_val[COOKIE_SECRET_LEN];
 	hrtime_t s_birth;
@@ -99,13 +109,6 @@ static struct secret_s {
 #define	SECRET(v) i2c_secret[(v) & 0x1].s_val
 #define	SECRET_BIRTH(v) i2c_secret[(v) & 0x1].s_birth
 #define	SECRET_AGE(v) (gethrtime() - SECRET_BIRTH(v))
-
-static hrtime_t grace_ns;	/* Only set at startup */
-
-static rwlock_t i2c_lock = DEFAULTRWLOCK;
-static volatile uint8_t i2c_version;
-static boolean_t i2c_enabled;
-static periodic_id_t cookie_timer_id;
 
 static void cookie_update_secret(void *);
 

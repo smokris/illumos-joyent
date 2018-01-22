@@ -100,7 +100,8 @@ typedef enum i2sa_evt {
  * ikev2_pkt.h for the _SPI() macros.)  It should be allocated with a umem
  * cache.
  *
- * Because of the distinct sets of lookup keys, it requires two linkages.
+ * Because of the distinct sets of lookup keys (local SPI, remote SPI,
+ * address), it requires three linkages.
  */
 struct ikev2_sa_s {
 	/*

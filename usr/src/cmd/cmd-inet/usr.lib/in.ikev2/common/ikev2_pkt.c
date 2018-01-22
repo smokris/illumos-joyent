@@ -141,7 +141,7 @@ ikev2_pkt_new_response(const pkt_t *init)
 	return (pkt);
 }
 
-/* Allocate a ikev2_pkt_t for an inbound datagram in raw */
+/* Allocate a ikev2_pkt_t for an inbound datagram in buf */
 pkt_t *
 ikev2_pkt_new_inbound(void *restrict buf, size_t buflen)
 {
@@ -795,9 +795,9 @@ add_iv(pkt_t *restrict pkt)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
 	const encr_data_t *ed = encr_data(sa->encr);
-	size_t len = ed->ed_blocklen;
+	size_t ivlen = ed->ed_ivlen;
 
-	if (pkt_write_left(pkt) < len)
+	if (pkt_write_left(pkt) < ivlen)
 		return (B_FALSE);
 
 	switch (ed->ed_mode) {
@@ -810,7 +810,7 @@ add_iv(pkt_t *restrict pkt)
 		 * requirements.
 		 */
 		VERIFY(put32(pkt, msgid));
-		pkt->pkt_ptr += (len - sizeof (msgid));
+		pkt->pkt_ptr += (ivlen - sizeof (msgid));
 		return (B_TRUE);
 	}
 	case MODE_CTR:
@@ -834,6 +834,13 @@ add_iv(pkt_t *restrict pkt)
 	CK_ULONG blocklen = ed->ed_blocklen;
 	CK_RV rc = CKR_OK;
 	uint32_t msgid = ntohl(pkt_header(pkt)->msgid);
+
+	/*
+	 * The IV length should always <= the block size of the related
+	 * mechanism.  This also means we only ever need to compute a single
+	 * block when generating the IV value.
+	 */
+	VERIFY3U(ivlen, <=, blocklen);
 
 	if (sa->flags & I2SA_INITIATOR)
 		key = sa->sk_ei;
@@ -873,9 +880,9 @@ add_iv(pkt_t *restrict pkt)
 		return (B_FALSE);
 	}
 
-	bcopy(buf, pkt->pkt_ptr, MIN(len, blocklen));
+	bcopy(buf, pkt->pkt_ptr, ivlen);
 	explicit_bzero(buf, blocklen);
-	pkt->pkt_ptr += MIN(len, blocklen);
+	pkt->pkt_ptr += ivlen;
 	return (B_TRUE);
 }
 
@@ -1181,7 +1188,7 @@ ikev2_pkt_done(pkt_t *pkt)
 	if (pkt_write_left(pkt) < padlen + 1 + icvlen) {
 		(void) bunyan_info(log, "Not enough space for packet",
 		    BUNYAN_T_END);
-		goto done;
+		return (B_FALSE);
 	}
 
 	/*
@@ -1207,8 +1214,6 @@ ikev2_pkt_done(pkt_t *pkt)
 	ok = pkt_done(pkt);
 	ok &= ikev2_pkt_encryptdecrypt(pkt, B_TRUE);
 	ok &= ikev2_pkt_signverify(pkt, B_TRUE);
-
-done:
 	return (ok);
 }
 

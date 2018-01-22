@@ -247,9 +247,9 @@ fail:
 }
 
 /*
- * Take a parsed pfkey message, and either locate an existing IKE SA and
- * add to it's queue, or create a larval IKE SA and kickoff the
- * IKE_SA_INIT exchange.
+ * Take a parsed pfkey message (either an SADB_ACQUIRE or SADB_EXPIRE message),
+ * and either locate an existing IKE SA and add to it's queue, or create a
+ * larval IKE SA and kickoff the IKE_SA_INIT exchange.
  */
 void
 ikev2_pfkey(parsedmsg_t *pmsg)
@@ -528,6 +528,15 @@ ikev2_send_req(pkt_t *restrict req, ikev2_send_cb_t cb, void *restrict arg)
 		return (B_FALSE);
 	}
 
+	/*
+	 * If we receive a valid response to this request,
+	 * ikev2_handle_response() will consume req and invoke the given
+	 * callback (w/ both arg and the response packet as arguments).
+	 * Success will also cancel the retransmit counter.  If this request
+	 * times out, ikev2_timeout() will consume req and invoke the given
+	 * callback w/ arg and a NULL response packet (to indicate the request
+	 * was a failure and allow the callback to do any necessary cleanup).
+	 */
 	i2req->i2r_pkt = req;
 	i2req->i2r_msgid = ntohl(pkt_header(req)->msgid);
 	i2req->i2r_cb = cb;
@@ -543,7 +552,7 @@ ikev2_send_req(pkt_t *restrict req, ikev2_send_cb_t cb, void *restrict arg)
 }
 
 /* Send a response */
-boolean_t
+void
 ikev2_send_resp(pkt_t *restrict resp)
 {
 	ikev2_sa_t *i2sa = resp->pkt_sa;
@@ -553,12 +562,6 @@ ikev2_send_resp(pkt_t *restrict resp)
 	VERIFY(!MUTEX_HELD(&i2sa->i2sa_queue_lock));
 	VERIFY(MUTEX_HELD(&i2sa->i2sa_lock));
 	VERIFY(I2P_RESPONSE(resp));
-
-	if (!ikev2_send_common(resp, SSTOSA(&i2sa->laddr),
-	    SSTOSA(&i2sa->raddr), I2SA_IS_NAT(i2sa))) {
-		ikev2_pkt_free(resp);
-		return (B_FALSE);
-	}
 
         /*
 	 * Normally, we save the last response packet we've sent in order to
@@ -587,7 +590,13 @@ ikev2_send_resp(pkt_t *restrict resp)
 		i2sa->last_resp_sent = resp;
 	}
 
-	return (B_TRUE);
+	/*
+	 * Ignore if we fail.  In the hope that it might be a transitory
+	 * problem, let the retransmit or P1 timer (if appropriate)
+	 * determine if the repsonse fails or not.
+	 */
+	(void) ikev2_send_common(resp, SSTOSA(&i2sa->laddr),
+	    SSTOSA(&i2sa->raddr), I2SA_IS_NAT(i2sa));
 }
 
 /* Used for sending responses outside of an IKEv2 SA */

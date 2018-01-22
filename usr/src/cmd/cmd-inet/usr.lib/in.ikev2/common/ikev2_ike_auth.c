@@ -76,6 +76,13 @@ ikev2_ike_auth_init(ikev2_sa_t *restrict sa)
 
 	/* XXX: CERT */
 
+	/*
+	 * Since we should be the only IKE instance running on this host/zone,
+	 * if we are initiating a new IKE SA, it means we have no existing
+	 * IKE SA for this peer.  Inform the peer of this in case we restarted
+	 * due to a crash or such.  This allows the peer to clear out any
+	 * leftover IKE SA it might have for us.
+	 */
 	if (!ikev2_add_notify(req, IKEV2_N_INITIAL_CONTACT))
 		goto fail;
 
@@ -153,7 +160,7 @@ ikev2_ike_auth_resp(pkt_t *req)
 
 		/* This is the 2nd payload (after SK) -- it should always fit */
 		VERIFY(ikev2_add_notify(resp, IKEV2_N_INVALID_SYNTAX));
-		(void) ikev2_send_resp(resp);
+		ikev2_send_resp(resp);
 		return;
 	}
 
@@ -196,8 +203,8 @@ ikev2_ike_auth_resp(pkt_t *req)
 	    BUNYAN_T_END);
 
 	/*
-	 * XXX: Check for INITIAL_CONTACT, if there delete any existing
-	 * IPsec SAs between the two hosts.
+	 * XXX: Check for INITIAL_CONTACT, if there are, delete any existing
+	 * IPsec SAs between the two hosts based on the authenticated ID.
 	 */
 
 	/* The initiator may optionally request we send a specific ID */
@@ -237,11 +244,7 @@ ikev2_ike_auth_resp(pkt_t *req)
 	if (!ikev2_create_child_sa_resp_auth(req, resp))
 		goto fail;
 
-	if (!ikev2_send_resp(resp)) {
-		resp = NULL;
-		goto fail;
-	}
-
+	ikev2_send_resp(resp);
 	ikev2_sa_args_free(sa->sa_init_args);
 	sa->sa_init_args = NULL;
 	return;
@@ -263,7 +266,7 @@ authfail:
 	sa->flags |= I2SA_CONDEMNED;
 
 	VERIFY(ikev2_add_notify(resp, IKEV2_N_AUTHENTICATION_FAILED));
-	(void) ikev2_send_resp(resp);
+	ikev2_send_resp(resp);
 }
 
 /*
@@ -298,7 +301,8 @@ ikev2_ike_auth_init_resp(ikev2_sa_t *restrict sa, pkt_t *restrict resp,
 	 * delete the IKE SA, or if we (the initiator) reject the IKE SA
 	 * (as opposed to the responder), it all must be done in a separate
 	 * exchange.  All of that is to say, that this is the only notification
-	 * we check for doing the authentication portion of the processing.
+	 * we check for before doing the authentication portion of the
+	 * processing.
 	 */
 	if (pkt_get_notify(resp, IKEV2_N_AUTHENTICATION_FAILED, NULL) != NULL) {
 		(void) bunyan_warn(log,
@@ -520,6 +524,7 @@ calc_auth(ikev2_sa_t *restrict sa, boolean_t initiator,
 	case IKEV2_AUTH_ECDSA_384:
 	case IKEV2_AUTH_ECDSA_512:
 	case IKEV2_AUTH_GSPM:
+		/* TODO: Hook in certificate authentication support */
 		(void) bunyan_info(log,
 		    "IKE SA Authentication method not yet implemented",
 		    BUNYAN_T_END);
@@ -608,7 +613,8 @@ add_id(pkt_t *pkt, const config_id_t *id, boolean_t initiator)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
 	config_auth_id_t cid_type = 0;
-	ikev2_id_type_t id_type = IKEV2_ID_FQDN; /* set default to quiet GCC */
+	/* arbitrary default value to quiet GCC */
+	ikev2_id_type_t id_type = IKEV2_ID_FQDN;
 	const void *ptr = NULL;
 	size_t idlen = 0;
 

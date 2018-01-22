@@ -173,7 +173,7 @@ ikev2_sa_init_resp(pkt_t *pkt)
 	if (sa->i2sa_rule == NULL) {
 		/* This is the 2nd payload, it should fit */
 		VERIFY(ikev2_add_notify(resp, IKEV2_N_NO_PROPOSAL_CHOSEN));
-		(void) ikev2_send_resp(resp);
+		ikev2_send_resp(resp);
 		return;
 	}
 
@@ -189,7 +189,7 @@ ikev2_sa_init_resp(pkt_t *pkt)
 
 	if (!ikev2_sa_match_rule(sa->i2sa_rule, pkt, &sa_result, B_FALSE)) {
 		VERIFY(ikev2_add_notify(resp, IKEV2_N_NO_PROPOSAL_CHOSEN));
-		(void) ikev2_send_resp(resp);
+		ikev2_send_resp(resp);
 		return;
 	}
 
@@ -207,10 +207,11 @@ ikev2_sa_init_resp(pkt_t *pkt)
 	 */
 	sa_args->i2a_dh = sa_result.ism_dh;
 	if (ikev2_get_dhgrp(pkt) != sa_args->i2a_dh) {
-		if (ikev2_invalid_ke(resp, sa_args->i2a_dh))
-			goto send;
-		else
+		if (!ikev2_invalid_ke(resp, sa_args->i2a_dh))
 			goto fail;
+
+		ikev2_send_resp(resp);
+		return;
 	}
 
 	if (!check_nats(pkt))
@@ -239,7 +240,7 @@ ikev2_sa_init_resp(pkt_t *pkt)
 		goto fail;
 
 	/*
-	 * While premissible, we do not currently reuse DH exponentials.  Since
+	 * While permissible, we do not currently reuse DH exponentials.  Since
 	 * generating them is a potentially an expensive operation, we wait
 	 * until necessary to create them.
 	 */
@@ -273,11 +274,7 @@ ikev2_sa_init_resp(pkt_t *pkt)
 	    !ikev2_save_init_pkt(sa_args, resp))
 		goto fail;
 
-send:
-	if (!ikev2_send_resp(resp)) {
-		resp = NULL;
-		goto fail;
-	}
+	ikev2_send_resp(resp);
 	return;
 
 fail:
