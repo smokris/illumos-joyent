@@ -364,43 +364,66 @@ dump_sockaddr(struct sockaddr *sa, uint8_t prefixlen, boolean_t addr_only,
 	return (0);
 }
 
-char *
-sadb_op_str(uint8_t op, char *buf, size_t buflen)
+const char *
+sadb_op_str(uint8_t op)
 {
-	static const char *pfkey_opcodes[] = {
-	    "RESERVED", "GETSPI", "UPDATE", "ADD", "DELETE", "GET",
-	    "ACQUIRE", "REGISTER", "EXPIRE", "FLUSH", "DUMP", "X_PROMISC",
-	    "X_INVERSE_ACQUIRE", "X_UPDATEPAIR", "X_DELPAIR"
-	};
-
-	if (op < A_CNT(pfkey_opcodes)) {
-		(void) strlcpy(buf, pfkey_opcodes[op], buflen);
-	} else {
-		(void) snprintf(buf, buflen, dgettext(TEXT_DOMAIN,
-		    "Unknown (%hhu)"), op);
+	switch (op) {
+	case SADB_RESERVED:
+		return ("RESERVED");
+	case SADB_GETSPI:
+		return ("GETSPI");
+	case SADB_UPDATE:
+		return ("UPDATE");
+	case SADB_ADD:
+		return ("ADD");
+	case SADB_DELETE:
+		return ("DELETE");
+	case SADB_GET:
+		return ("GET");
+	case SADB_ACQUIRE:
+		return ("ACQUIRE");
+	case SADB_REGISTER:
+		return ("REGISTER");
+	case SADB_EXPIRE:
+		return ("EXPIRE");
+	case SADB_FLUSH:
+		return ("FLUSH");
+	case SADB_DUMP:
+		return ("DUMP");
+	case SADB_X_PROMISC:
+		return ("X_PROMISC");
+	case SADB_X_INVERSE_ACQUIRE:
+		return ("X_INVERSE_ACQUIRE");
+	case SADB_X_UPDATEPAIR:
+		return ("X_UPDATEPAIR");
+	case SADB_X_DELPAIR:
+		return ("X_DELPAIR");
+	case SADB_X_DELPAIR_STATE:
+		return ("X_DELPAIR_STATE");
 	}
-	return (buf);
+	return (NULL);
 }
 
-char *
-sadb_type_str(uint8_t type, char *buf, size_t buflen)
+const char *
+sadb_satype_str(uint8_t satype)
 {
-	static const char *pfkey_satypes[] = {
-	    "UNSPEC", NULL, "AH", "ESP", NULL, "RSVP", "OSPFV2",
-	    "RIPV2", "MIP"
-	};
-	const char *str = NULL;
-
-	if (type < A_CNT(pfkey_satypes))
-		str = pfkey_satypes[type];
-
-	if (str != NULL) {
-		(void) strlcpy(buf, str, buflen);
-	} else {
-		(void) snprintf(buf, buflen,
-		    dgettext(TEXT_DOMAIN, "<unknown %hhu>"), type);
+	switch (satype) {
+	case SADB_SATYPE_UNSPEC:
+		return ("UNSPEC");
+	case SADB_SATYPE_AH:
+		return ("AH");
+	case SADB_SATYPE_ESP:
+		return ("ESP");
+	case SADB_SATYPE_RSVP:
+		return ("RSVP");
+	case SADB_SATYPE_OSPFV2:
+		return ("OSPFV2");
+	case SADB_SATYPE_RIPV2:
+		return ("RIPV2");
+	case SADB_SATYPE_MIP:
+		return (dgettext(TEXT_DOMAIN, "Mobile IP"));
 	}
-	return (buf);
+	return (NULL);
 }
 
 /*
@@ -1691,98 +1714,33 @@ void
 print_sadb_msg(FILE *file, struct sadb_msg *samsg, time_t wallclock,
     boolean_t vflag)
 {
+	const char *opstr = sadb_op_str(samsg->sadb_msg_type);
+	const char *satypestr = sadb_satype_str(samsg->sadb_msg_satype);
+	char unkbuf[2][32] = { 0 };
+
 	if (wallclock != 0)
 		printsatime(file, wallclock, dgettext(TEXT_DOMAIN,
 		    "%sTimestamp: %s\n"), "", NULL,
 		    vflag);
 
+	if (opstr == NULL) {
+		(void) snprintf(unkbuf[0], sizeof (unkbuf[0]),
+		    "Unknown (%hhu)", samsg->sadb_msg_type);
+		opstr = unkbuf[0];
+	} else if (samsg->sadb_msg_type == SADB_RESERVED) {
+		opstr = dgettext(TEXT_DOMAIN, "RESERVED (warning: set to 0)");
+	}
+
+	if (satypestr == NULL) {
+		(void) snprintf(unkbuf[1], sizeof (unkbuf[1]),
+		    dgettext(TEXT_DOMAIN, "<unknown %hhu>"),
+		    samsg->sadb_msg_satype);
+		satypestr = unkbuf[1];
+	}
+
 	(void) fprintf(file, dgettext(TEXT_DOMAIN,
-	    "Base message (version %u) type "),
-	    samsg->sadb_msg_version);
-	switch (samsg->sadb_msg_type) {
-	case SADB_RESERVED:
-		(void) fprintf(file, dgettext(TEXT_DOMAIN,
-		    "RESERVED (warning: set to 0)"));
-		break;
-	case SADB_GETSPI:
-		(void) fprintf(file, "GETSPI");
-		break;
-	case SADB_UPDATE:
-		(void) fprintf(file, "UPDATE");
-		break;
-	case SADB_X_UPDATEPAIR:
-		(void) fprintf(file, "UPDATE PAIR");
-		break;
-	case SADB_ADD:
-		(void) fprintf(file, "ADD");
-		break;
-	case SADB_DELETE:
-		(void) fprintf(file, "DELETE");
-		break;
-	case SADB_X_DELPAIR:
-		(void) fprintf(file, "DELETE PAIR");
-		break;
-	case SADB_GET:
-		(void) fprintf(file, "GET");
-		break;
-	case SADB_ACQUIRE:
-		(void) fprintf(file, "ACQUIRE");
-		break;
-	case SADB_REGISTER:
-		(void) fprintf(file, "REGISTER");
-		break;
-	case SADB_EXPIRE:
-		(void) fprintf(file, "EXPIRE");
-		break;
-	case SADB_FLUSH:
-		(void) fprintf(file, "FLUSH");
-		break;
-	case SADB_DUMP:
-		(void) fprintf(file, "DUMP");
-		break;
-	case SADB_X_PROMISC:
-		(void) fprintf(file, "X_PROMISC");
-		break;
-	case SADB_X_INVERSE_ACQUIRE:
-		(void) fprintf(file, "X_INVERSE_ACQUIRE");
-		break;
-	default:
-		(void) fprintf(file, dgettext(TEXT_DOMAIN,
-		    "Unknown (%u)"), samsg->sadb_msg_type);
-		break;
-	}
-	(void) fprintf(file, dgettext(TEXT_DOMAIN, ", SA type "));
-
-	switch (samsg->sadb_msg_satype) {
-	case SADB_SATYPE_UNSPEC:
-		(void) fprintf(file, dgettext(TEXT_DOMAIN,
-		    "<unspecified/all>"));
-		break;
-	case SADB_SATYPE_AH:
-		(void) fprintf(file, "AH");
-		break;
-	case SADB_SATYPE_ESP:
-		(void) fprintf(file, "ESP");
-		break;
-	case SADB_SATYPE_RSVP:
-		(void) fprintf(file, "RSVP");
-		break;
-	case SADB_SATYPE_OSPFV2:
-		(void) fprintf(file, "OSPFv2");
-		break;
-	case SADB_SATYPE_RIPV2:
-		(void) fprintf(file, "RIPv2");
-		break;
-	case SADB_SATYPE_MIP:
-		(void) fprintf(file, dgettext(TEXT_DOMAIN, "Mobile IP"));
-		break;
-	default:
-		(void) fprintf(file, dgettext(TEXT_DOMAIN,
-		    "<unknown %u>"), samsg->sadb_msg_satype);
-		break;
-	}
-
-	(void) fprintf(file, ".\n");
+	    "Base message (version %hhu) type %s, SA type %s\n."),
+	    samsg->sadb_msg_version, opstr, satypestr);
 
 	if (samsg->sadb_msg_errno != 0) {
 		(void) fprintf(file, dgettext(TEXT_DOMAIN,

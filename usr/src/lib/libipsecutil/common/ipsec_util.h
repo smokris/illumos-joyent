@@ -167,14 +167,11 @@ extern void bail(char *);
  */
 extern void bail_msg(char *, ...);
 
-/*
- * XXX_str functions return symbolic names for a given SADB value.
- * The XXX_str functions all take an output buffer and length as arguments
- * and fill in the buffer (upto len - 1 characters) with the symbolic name
- * or a string with 'UNKNOWN' and the numeric value.
- */
-extern char *sadb_op_str(uint8_t, char *, size_t);
-extern char *sadb_type_str(uint8_t, char *, size_t);
+/* Translate pf_key(7P) msg type (SADB_) to string, or NULL if unknown */
+extern const char *sadb_op_str(uint8_t);
+
+/* Translate pf_key(7P) SA type (SADB_SATYPE_) to string, or NULL if unknown */
+extern const char *sadb_satype_str(uint8_t);
 
 /*
  * dump_XXX functions produce ASCII output from the passed in data.
