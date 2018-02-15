@@ -219,6 +219,8 @@ const char *afstr(sa_family_t);
 const char *event_str(event_t);
 const char *port_source_str(ushort_t);
 const char *symstr(void *, char *, size_t);
+const char *pfkey_op_str(uint8_t);
+const char *pfkey_satype_str(uint8_t);
 
 void log_reset_keys(void);
 void key_add_ike_version(const char *, uint8_t);

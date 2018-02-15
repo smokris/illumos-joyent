@@ -1055,13 +1055,11 @@ pfkey_getspi(const parsedmsg_t *restrict srcmsg, uint8_t satype,
 		    (uint32_t)m->sadb_x_msg_diagnostic);
 	} else {
 		sadb_sa_t *sa = (sadb_sa_t *)resp->pmsg_exts[SADB_EXT_SA];
-		char type[64] = { 0 };
 
 		*spip = sa->sadb_sa_spi;
-		(void) sadb_type_str(satype, type, sizeof (type));
 
 		(void) bunyan_debug(log, "Allocated larval IPsec SA",
-		    BUNYAN_T_STRING, "satype", type,
+		    BUNYAN_T_STRING, "satype", pfkey_satype_str(satype),
 		    BUNYAN_T_STRING, "spi",
 		    enum_printf("0x%" PRIX32, ntohl(*spip)),
 		    BUNYAN_T_END);
@@ -1353,7 +1351,6 @@ static void
 pfkey_register(uint8_t satype)
 {
 	uint64_t buffer[128] = { 0 };
-	char str[64];
 	sadb_msg_t *samsg = (sadb_msg_t *)buffer;
 	ssize_t n;
 	uint32_t msgid = atomic_inc_32_nv(&msgid);
@@ -1385,13 +1382,12 @@ pfkey_register(uint8_t satype)
 			    samsg->sadb_msg_errno);
 		(void) bunyan_error(log, "Protocol not supported",
 		    BUNYAN_T_STRING, "satype",
-		    sadb_type_str(samsg->sadb_msg_satype, str, sizeof (str)),
+		    pfkey_satype_str(samsg->sadb_msg_satype),
 		    BUNYAN_T_END);
 	}
 
 	(void) bunyan_debug(log, "Initial REGISTER with SADB",
-	    BUNYAN_T_STRING, "satype",
-	    sadb_type_str(samsg->sadb_msg_satype, str, sizeof (str)),
+	    BUNYAN_T_STRING, "satype", pfkey_satype_str(samsg->sadb_msg_satype),
 	    BUNYAN_T_END);
 
 	handle_register(samsg);
@@ -1632,8 +1628,6 @@ sadb_log(bunyan_level_t level, const char *restrict msg,
 {
 	bunyan_logfn_t logf = getlog(level);
 	sadb_ext_t *ext, *end;
-	char op[64];
-	char type[64];
 
 	end = (sadb_ext_t *)((uint64_t *)samsg + samsg->sadb_msg_len);
 	ext = (sadb_ext_t *)(samsg + 1);
@@ -1668,9 +1662,9 @@ sadb_log(bunyan_level_t level, const char *restrict msg,
 
 	logf(log, msg,
 	    BUNYAN_T_STRING, "msg_type",
-	    sadb_op_str(samsg->sadb_msg_type, op, sizeof (op)),
+	    pfkey_op_str(samsg->sadb_msg_type),
 	    BUNYAN_T_STRING, "sa_type",
-	    sadb_type_str(samsg->sadb_msg_satype, type, sizeof (type)),
+	    pfkey_satype_str(samsg->sadb_msg_satype),
 	    BUNYAN_T_UINT32, "msg_pid", samsg->sadb_msg_pid,
 	    BUNYAN_T_UINT32, "msg_seq", samsg->sadb_msg_seq,
 	    BUNYAN_T_UINT32, "msg_errno_val", (uint32_t)samsg->sadb_msg_errno,

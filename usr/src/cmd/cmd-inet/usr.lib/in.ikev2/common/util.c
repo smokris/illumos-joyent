@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2017 Joyent, Inc.
+ * Copyright 2018, Joyent, Inc.
  */
 
 #include <arpa/inet.h>
@@ -18,6 +18,7 @@
 #include <inet/ip.h>	/* for IP[V6]_ABITS */
 #include <inttypes.h>
 #include <libinetutil.h>
+#include <ipsec_util.h>
 #include <netinet/in.h>
 #include <port.h>
 #include <stdarg.h>
@@ -132,6 +133,20 @@ port_source_str(ushort_t src)
 	return (enum_printf("%hhu", src));
 }
 #undef STR
+
+const char *
+pfkey_op_str(uint8_t op)
+{
+	const char *str = sadb_op_str(op);
+	return ((str != NULL) ? str : enum_printf("%hhu", op));
+}
+
+const char *
+pfkey_satype_str(uint8_t satype)
+{
+	const char *str = sadb_satype_str(satype);
+	return ((str != NULL) ? str : enum_printf("%hhu", satype));
+}
 
 int
 ss_bunyan(const struct sockaddr *sa)
