@@ -19,6 +19,7 @@
 #include <fcntl.h>
 #include <locale.h>
 #include <libgen.h>
+#include <libscf.h>
 #include <netinet/in.h>
 #include <paths.h>
 #include <port.h>
@@ -57,8 +58,14 @@ static int ikev2_daemonize(void);
 
 static void do_immediate(void);
 
-static boolean_t done;
+/*
+ * The location of the configuration file, dynamically allocated to simplify
+ * interfacing with smf(5)
+ */
+static char *configfile;
+
 static thread_t signal_tid;
+static boolean_t done;
 
 __thread bunyan_logger_t *log = NULL;
 bunyan_logger_t *main_log = NULL;
@@ -69,6 +76,14 @@ lockingfd_t fdlock = {
     .lf_fd = STDOUT_FILENO
 };
 
+static struct scf_cfg {
+	const char	*sc_name;
+	scf_type_t	sc_type;
+	void		*sc_val;
+} scf_cfg[] = {
+	{ "configfile", SCF_TYPE_ASTRING, &configfile },
+	{ "workers", SCF_TYPE_COUNT, &wk_initial_nworkers },
+};
 
 /*
  * XXX: Both ipseckey(1M) and ikeadm(1M) have the ability to show actual key
@@ -147,12 +162,12 @@ int
 main(int argc, char **argv)
 {
 	FILE *f = NULL;
-	char *cfgfile = "/etc/inet/ike/config";
 	struct rlimit rlim;
 	int c, rc;
 	int fd = -1;
 	boolean_t debug_mode = B_FALSE;
 	boolean_t check_cfg = B_FALSE;
+	boolean_t parse_ok = B_FALSE;
 
 	(void) setlocale(LC_ALL, "");
 #if !defined(TEXT_DOMAIN)
@@ -162,9 +177,13 @@ main(int argc, char **argv)
 
 	umem_nofail_callback(nofail_cb);
 
+	configfile = ustrdup(CONFIG_FILE, UMEM_NOFAIL);
+
 	rlim.rlim_cur = RLIM_INFINITY;
 	rlim.rlim_max = RLIM_INFINITY;
 	(void) setrlimit(RLIMIT_CORE, &rlim);
+
+	my_fmri = getenv("SMF_FMRI");
 
 	while ((c = getopt(argc, argv, "cdf:")) != -1) {
 		switch (c) {
@@ -175,7 +194,8 @@ main(int argc, char **argv)
 			check_cfg = B_TRUE;
 			break;
 		case 'f':
-			cfgfile = optarg;
+			ustrfree(configfile);
+			configfile = ustrdup(optarg, UMEM_NOFAIL);
 			break;
 		case '?':
 			(void) fprintf(stderr,
@@ -203,19 +223,11 @@ main(int argc, char **argv)
 	}
 	main_log = log;
 
-	if ((f = fopen(cfgfile, "rF")) == NULL) {
-		STDERR(fatal, "cannot open config file",
-		    BUNYAN_T_STRING, "filename", cfgfile);
+	if ((config = config_read(configfile)) == NULL)
 		exit(EXIT_FAILURE);
-	}
-
-	process_config(f, check_cfg);
-
-	if (fclose(f) == EOF)
-		err(EXIT_FAILURE, "fclose(\"%s\") failed", cfgfile);
 
 	if (check_cfg)
-		return (EXIT_SUCCESS);
+		exit(EXIT_SUCCESS);
 
 	preshared_init(B_FALSE);
 
@@ -232,35 +244,31 @@ main(int argc, char **argv)
 	pkt_init();
 	ikev2_sa_init();
 
-	/* XXX: make these configurable */
-	worker_init(8);
+	worker_init(wk_initial_nworkers);
 	pfkey_init();
 	ikev2_cookie_init();
 	inbound_init();
+
 	main_loop(fd);
 
 	pkt_fini();
 	pkcs11_fini();
-	return (0);
+	return (EXIT_SUCCESS);
 }
 
 /* Temp function to fire off IKE_SA_INIT exchanges */
 static void
 do_immediate(void)
 {
-	config_t *cfg = config_get();
-
-	for (size_t i = 0; cfg->cfg_rules[i] != NULL; i++) {
-		config_rule_t *rule = cfg->cfg_rules[i];
+	for (size_t i = 0; config->cfg_rules[i] != NULL; i++) {
+		config_rule_t *rule = config->cfg_rules[i];
 
 		if (!rule->rule_immediate)
 			continue;
 
-		CONFIG_REFHOLD(cfg);	/* for worker */
+		RULE_REFHOLD(rule);
 		VERIFY(worker_send_cmd(WC_START, rule));
 	}
-
-	CONFIG_REFRELE(cfg);
 }
 
 static void
@@ -329,6 +337,26 @@ event(event_t evt, void *arg)
 void
 reload(void)
 {
+	config_t *new_config = NULL;
+	config_t *old_config = NULL;
+
+	VERIFY(!IS_WORKER);
+
+	(void) bunyan_info(log, "reloading configuration", BUNYAN_T_END);
+
+	if ((new_config = config_read(configfile)) == NULL)
+		return;
+
+	worker_suspend();
+
+	VERIFY0(rw_wrlock(&config_rule_lock));
+	old_config = config;
+	config = new_config;
+	VERIFY0(rw_unlock(&config_rule_lock));
+
+	worker_resume();
+
+	config_free(old_config);
 }
 
 static int
@@ -425,7 +453,7 @@ signal_thread(void *arg)
 
 	log = arg;
 
-	(void) bunyan_trace(log, "signal thread awaiting signals",
+	(void) bunyan_trace(log, "Signal thread awaiting signals",
 	    BUNYAN_T_END);
 
 	if (sigfillset(&sigset) != 0)
@@ -480,11 +508,126 @@ signal_init(void)
 
 	VERIFY0(thr_sigsetmask(SIG_SETMASK, &nset, NULL));
 
-	rc = thr_create(NULL, 0, signal_thread, child, THR_DETACHED,
-	    &signal_tid);
-	if (rc != 0) {
+	if ((rc = thr_create(NULL, 0, signal_thread, child, THR_DETACHED,
+	    &signal_tid)) != 0) {
 		TSTDERR(rc, fatal,
 		    "Signal handling thread creation failed");
 		exit(EXIT_FAILURE);
 	}
+}
+
+#define	SCFERR(level, msg, ...)					\
+    (void) bunyan_##level(log, msg,				\
+    BUNYAN_T_INT32, "scf_error", (int32_t)scf_error(),		\
+    BUNYAN_T_STRING, "scf_errormsg", scf_strerror(scf_error()),	\
+    ## __VA_ARGS__, BUNYAN_T_END)
+
+static void
+load_smf_config(void)
+{
+	scf_handle_t *handle = NULL;
+	scf_scope_t *sc = NULL;
+	scf_service_t *svc = NULL;
+	scf_propertygroup_t *pg = NULL;
+	scf_property_t *prop = NULL;
+	scf_value_t *value = NULL;
+	scf_iter_t *value_iter = NULL;
+	char *str = NULL;
+	uint64_t val = 0;
+
+	if (my_fmri == NULL)
+		return;
+
+	handle = scf_handle_create(SCF_VERSION);
+	sc = scf_scope_create(handle);
+	svc = scf_service_create(handle);
+	pg = scf_pg_create(handle);
+	prop = scf_property_create(handle);
+	value = scf_value_create(handle);
+	value_iter = scf_iter_create(handle);
+
+	if (handle == NULL || sc == NULL || svc == NULL || pg == NULL ||
+	    prop == NULL || value == NULL || value_iter == NULL) {
+		SCFERR(error, "unable to contact svc.configd");
+		goto done;
+	}
+
+	if (scf_handle_bind(handle) != 0) {
+		SCFERR(error, "unable to bind smf(5) handle");
+		goto done;
+	}
+
+	if (scf_handle_decode_fmri(handle, my_fmri, sc, svc, NULL, NULL, NULL,
+	    0) != 0) {
+		SCFERR(error, "Unable to decode fmri",
+		    BUNYAN_T_STRING, "fmri", my_fmri);
+		goto done;
+	}
+
+	for (size_t i = 0; i < ARRAY_SIZE(scf_cfg); i++) {
+		struct scf_cfg *c = &scf_cfg[i];
+		size_t len = 0;
+
+		/* XXX: Do we want to let these value be optional? */
+		if (scf_pg_get_property(pg, c->sc_name, prop) != 0) {
+			SCFERR(error, "Error getting property",
+			    BUNYAN_T_STRING, "property", c->sc_name);
+			goto done;
+		}
+
+		if (scf_property_is_type(prop, c->sc_type) != 0) {
+			/* XXX: Add types */
+			SCFERR(error, "SMF property is the incorrect type",
+			    BUNYAN_T_STRING, "property", c->sc_name);
+			goto done;
+		}
+
+		if (scf_property_get_value(prop, value) != 0) {
+			SCFERR(error, "Error reading SMF property value",
+			    BUNYAN_T_STRING, "property", c->sc_name);
+			goto done;
+		}
+
+		switch (c->sc_type) {
+		case SCF_TYPE_COUNT:
+			if (scf_value_get_count(value, &val) != 0) {
+				SCFERR(error,
+				    "Error reading SMF property as a number",
+				    BUNYAN_T_STRING, "property", c->sc_name);
+				continue;
+			}
+			*(uint64_t *)c->sc_val = (uint64_t)val;
+			break;
+		case SCF_TYPE_ASTRING:
+			len = scf_value_get_astring(value, NULL, 0);
+			str = umem_alloc(len + 1, UMEM_DEFAULT);
+			if (str == NULL) {
+				(void) bunyan_error(log,
+				    "No memory to read SMF configuration",
+				    BUNYAN_T_END);
+				goto done;
+			}
+			if (scf_value_get_astring(value, str, len + 1) != 0) {
+				SCFERR(error,
+				    "Error reading SMF property as string",
+				    BUNYAN_T_STRING, "property", c->sc_name);
+				umem_free(str, len + 1);
+				str = NULL;
+				goto done;
+			}
+			*(char **)c->sc_val = str;
+			break;
+		default:
+			INVALID(c->sc_type);
+		}
+	}
+
+done:
+	scf_iter_destroy(value_iter);
+	scf_value_destroy(value);
+	scf_property_destroy(prop);
+	scf_pg_destroy(pg);
+	scf_service_destroy(svc);
+	scf_scope_destroy(sc);
+	scf_handle_destroy(handle);
 }

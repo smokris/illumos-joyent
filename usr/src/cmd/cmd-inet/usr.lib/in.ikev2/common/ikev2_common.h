@@ -27,7 +27,7 @@ extern "C" {
 #endif
 
 struct pkt_s;
-struct config_rule_s;
+struct config_rule;
 struct parsedmsg_s;
 struct ikev2_sa_s;
 struct ikev2_child_sa_s;
@@ -76,7 +76,6 @@ typedef struct ikev2_sa_match_s {
 	boolean_t		ism_esn;
 	uint8_t			ism_propnum;
 	ikev2_auth_type_t	ism_authmethod;	/* auth method for IKE_AUTH */
-	size_t			ism_lifetime_secs;	/* IKE SA lifetime */
 } ikev2_sa_match_t;
 #define	SEEN(which) ((uint32_t)1 << (which))
 #define	SA_MATCH_HAS(m, which) ((m)->ism_have & SEEN(which))
@@ -145,11 +144,11 @@ ikev2_xf_encr_t ikev2_pfkey_to_encr(int);
 boolean_t ikev2_sa_add_result(struct pkt_s *restrict,
     const ikev2_sa_match_t *restrict, uint64_t);
 boolean_t ikev2_sa_from_rule(struct pkt_s *restrict,
-    const struct config_rule_s *restrict, uint64_t);
+    const struct config_rule *restrict, uint64_t);
 
-boolean_t ikev2_sa_match_rule(struct config_rule_s *restrict,
+boolean_t ikev2_sa_match_rule(struct config_rule *restrict,
     struct pkt_s *restrict, ikev2_sa_match_t *restrict, boolean_t);
-boolean_t ikev2_sa_check_prop(struct config_rule_s *restrict,
+boolean_t ikev2_sa_check_prop(struct config_rule *restrict,
     struct pkt_s *restrict, ikev2_sa_match_t *restrict, boolean_t);
 
 char *ikev2_id_str(struct pkt_payload *restrict, char *restrict, size_t);

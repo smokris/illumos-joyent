@@ -10,35 +10,39 @@
  */
 
 /*
- * Copyright (c) 2017, Joyent, Inc.
+ * Copyright 2018, Joyent, Inc.
  */
-#include <sys/time.h>
-#include <sys/debug.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <sys/sysmacros.h>
-#include <sys/stat.h>
 #include <arpa/inet.h>
+#include <bunyan.h>
+#include <ctype.h>
+#include <err.h>
+#include <errno.h>
 #include <fcntl.h>
+#include <netinet/in.h>
+#include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <stdarg.h>
+#include <sys/debug.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
+#include <sys/time.h>
+#include <sys/types.h>
+
 #include <umem.h>
-#include <netinet/in.h>
-#include <errno.h>
-#include <bunyan.h>
-#include <ctype.h>
-#include <stdio.h>
-#include <err.h>
 #include "defs.h"
 #include "config.h"
+#include "config_impl.h"
 #include "ikev2.h"
 #include "ikev2_enum.h"
 
 #ifndef ARRAY_SIZE
 #define	ARRAY_SIZE(x)	(sizeof (x) / sizeof (x[0]))
 #endif
+
+#define	K_CONFIGFILE	"configfile"
 
 #define	CONFIG_MAX	((size_t)(1024*1024))
 #define	CONFIG_CHUNK	((size_t)1024)
@@ -127,7 +131,7 @@ static struct {
 	{ "remote_addr",	KWF_ARG|KWF_MINUS|KWF_MULTI },
 	{ "p2_pfs",		KWF_ARG },
 	/*
-	 * XXX: The manpage implies local_id can appear multiple times, but
+	 * XXX: The man page implies local_id can appear multiple times, but
 	 * only the first one is used.  This may just be poor phrasing.
 	 */
 	{ "local_id",		KWF_ARG },
@@ -251,11 +255,13 @@ typedef struct input_cursor {
 	token_t		*ic_peek;
 } input_cursor_t;
 
+static boolean_t config_post_checks(const config_t *);
+
 static void add_str(char ***restrict, size_t *restrict, const char *restrict);
 static void add_addr(config_addr_t **restrict, size_t *restrict,
     const config_addr_t *restrict);
-static void add_xf(config_rule_t *restrict, config_xf_t *restrict);
-static void add_rule(config_t *restrict, config_rule_t *restrict);
+static boolean_t add_xf(config_xf_t ***restrict, config_xf_t *restrict);
+static boolean_t add_rule(config_t *restrict, config_rule_t *restrict);
 static void add_remid(config_rule_t *restrict, config_id_t *restrict);
 
 static token_t *tok_new(const char *, const char *, const char *, size_t,
@@ -334,10 +340,11 @@ static boolean_t issep(char c, boolean_t);
  * ike.config suggests this can be overwritten per-rule, so we should add
  * support for that.
  */
-void
-process_config(FILE *f, boolean_t check_only)
+config_t *
+config_read(const char *filename)
 {
-	input_t *in = input_new(f);
+	FILE *f = NULL;
+	input_t *in = NULL;
 	token_t *t = NULL, *targ = NULL;
 	config_t *cfg = NULL;
 	config_xf_t *xf = NULL;
@@ -349,25 +356,24 @@ process_config(FILE *f, boolean_t check_only)
 	size_t rule_count = 0;
 
 	(void) bunyan_trace(log, "process_config() enter", BUNYAN_T_END);
+	(void) bunyan_key_add(log, BUNYAN_T_STRING, K_CONFIGFILE, filename);
 
-	if (in == NULL) {
-		STDERR(error, "failure reading input");
-		(void) bunyan_trace(log, "process_config() exit", BUNYAN_T_END);
-		return;
+	if ((f = fopen(filename, "rF")) == NULL) {
+		STDERR(fatal, "cannot open config file");
+		goto fail;
 	}
 
-	cfg = umem_zalloc(sizeof (*cfg), UMEM_NOFAIL);
+	if ((in = input_new(f)) == NULL) {
+		STDERR(error, "failure reading input");
+		(void) bunyan_trace(log, "process_config() exit", BUNYAN_T_END);
+		goto fail;
+	}
 
-	/* Set defaults */
-	cfg->cfg_local_id_type = CFG_AUTH_ID_IPV4;
-	cfg->cfg_expire_timer = SEC2NSEC(300);
-	cfg->cfg_retry_init = MSEC2NSEC(500);
-	cfg->cfg_retry_max = SEC2NSEC(30);
-	cfg->cfg_retry_limit = 5;
-	cfg->cfg_p2_lifetime_secs = CONFIG_P2_LIFETIME_SECS;
-	cfg->cfg_p2_softlife_secs = CONFIG_P2_SOFTLIFE_SECS;
-	cfg->cfg_p2_lifetime_kb = CONFIG_P2_LIFETIME_KB;
-	cfg->cfg_p2_softlife_kb = CONFIG_P2_SOFTLIFE_KB;
+	if ((cfg = config_new()) == NULL ) {
+		(void) bunyan_fatal(log, "No memory for new configuration",
+		    BUNYAN_T_END);
+		goto fail;
+	}
 
 	input_cursor_init(&ic, in);
 	while ((t = input_token(&ic, B_TRUE)) != NULL) {
@@ -379,7 +385,9 @@ process_config(FILE *f, boolean_t check_only)
 			if (!parse_rule(&ic, t, &rule))
 				goto fail;
 
-			add_rule(cfg, rule);
+			if (!add_rule(cfg, rule))
+				goto fail;
+
 			tok_free(t);
 			rule_count++;
 			continue;
@@ -467,6 +475,24 @@ process_config(FILE *f, boolean_t check_only)
 				goto fail;
 			}
 			break;
+		case KW_P1_NONCE_LEN:
+			if (!parse_int(targ->t_str, &val.ui)) {
+				tok_invalid(targ, kw);
+				goto fail;
+			}
+			tok_log(t, BUNYAN_L_INFO,
+			    "Ignoring deprecated configuration parameter",
+			    "parameter");
+			break;
+		case KW_P2_NONCE_LEN:
+			if (!parse_int(targ->t_str, &val.ui)) {
+				tok_invalid(targ, kw);
+				goto fail;
+			}
+			tok_log(t, BUNYAN_L_INFO,
+			    "Ignoring deprecated configuration parameter",
+			    "parameter");
+			break;
 		case KW_P1_SOFTLIFE_SECS:
 			if (!parse_int(targ->t_str, &val.ui)) {
 				tok_invalid(targ, kw);
@@ -481,14 +507,6 @@ process_config(FILE *f, boolean_t check_only)
 				goto fail;
 			}
 			cfg->cfg_p1_hardlife_secs = val.ui;
-			break;
-		case KW_P1_NONCE_LEN:
-			if (!parse_int(targ->t_str, &val.ui)) {
-				tok_invalid(targ, kw);
-				goto fail;
-			}
-			/* XXX: check size */
-			cfg->cfg_p1_nonce_len = val.ui;
 			break;
 		case KW_P2_LIFETIME_SECS:
 			if (!parse_int(targ->t_str, &val.ui)) {
@@ -530,14 +548,6 @@ process_config(FILE *f, boolean_t check_only)
 			/* XXX: check size */
 			cfg->cfg_p2_softlife_kb = val.ui;
 			break;
-		case KW_P2_NONCE_LEN:
-			if (!parse_int(targ->t_str, &val.ui)) {
-				tok_invalid(targ, kw);
-				goto fail;
-			}
-			/* XXX: check size */
-			cfg->cfg_p2_nonce_len = val.ui;
-			break;
 		case KW_LOCAL_ID_TYPE:
 			if (!parse_p1_id_type(targ->t_str,
 			    &cfg->cfg_local_id_type)) {
@@ -550,7 +560,7 @@ process_config(FILE *f, boolean_t check_only)
 			break;
 		case KW_P2_PFS:
 			if (!parse_dh(targ->t_str,
-			    &cfg->cfg_default.rule_p2_dh)) {
+			    &cfg->cfg_p2_dh)) {
 				tok_error(targ, "Invalid p2_pfs value",
 				    "value");
 				goto fail;
@@ -559,7 +569,8 @@ process_config(FILE *f, boolean_t check_only)
 		case KW_P1_XFORM:
 			if (!parse_xform(&ic, &xf))
 				goto fail;
-			add_xf(&cfg->cfg_default, xf);
+			if (!add_xf(&cfg->cfg_default_xf, xf))
+				goto fail;
 			xf = NULL;
 			break;
 		case KW_AUTH_METHOD:
@@ -587,6 +598,9 @@ process_config(FILE *f, boolean_t check_only)
 		targ = NULL;
 	}
 
+	if (!config_post_checks(cfg))
+		goto fail;
+
 	tok_free(t);
 	tok_free(targ);
 	input_cursor_fini(&ic);
@@ -596,33 +610,48 @@ process_config(FILE *f, boolean_t check_only)
 	    BUNYAN_T_UINT32, "numrules", (uint32_t)rule_count,
 	    BUNYAN_T_END);
 
-	if (check_only) {
-		cfg_free(cfg);
-	} else {
-		config_t *old = NULL;
-
-		cfg->cfg_refcnt = 1;
-
-		VERIFY0(pthread_rwlock_wrlock(&cfg_lock));
-		old = config;
-		config = cfg;
-		VERIFY0(pthread_rwlock_unlock(&cfg_lock));
-		if (old != NULL)
-			CONFIG_REFRELE(old);
-	}
 	(void) bunyan_trace(log, "process_config() exit", BUNYAN_T_END);
-	return;
+	return (cfg);
 
 fail:
 	tok_free(t);
 	tok_free(targ);
 	input_cursor_fini(&ic);
 	input_free(in);
-	cfg_free(cfg);
-	cfg = NULL;
+	if (f != NULL && fclose(f) == EOF)
+		STDERR(error, "Error calling fclose()");
+	config_free(cfg);
 
-	if (!check_only)
-		exit(1);
+	(void) bunyan_trace(log, "process_config() exit", BUNYAN_T_END);
+	return (NULL);
+}
+
+static boolean_t
+config_post_checks(const config_t *cfg)
+{
+	config_rule_t **rule = cfg->cfg_rules;
+
+	(void) bunyan_trace(log, "Doing config post checks", BUNYAN_T_END);
+
+	if (rule == NULL) {
+		(void) bunyan_error(log, "No rules defined", BUNYAN_T_END);
+		return (B_FALSE);
+	}
+
+	for (size_t i = 0; rule[i] != NULL; i++) {
+		config_xf_t **xf = rule[i]->rule_xf;
+
+		if (xf == NULL && cfg->cfg_default_xf == NULL) {
+			(void) bunyan_error(log,
+			    "Rule does not contain any transforms and no "
+			    "default transforms defined",
+			    BUNYAN_T_STRING, "rule", rule[i]->rule_label,
+			    BUNYAN_T_END);
+			return (B_FALSE);
+		}
+	}
+
+	return (B_TRUE);
 }
 
 static boolean_t
@@ -635,7 +664,11 @@ parse_xform(input_cursor_t *restrict ic, config_xf_t **restrict xfp)
 	size_t kwcount[KW_MAX] = { 0 };
 	boolean_t ok = B_TRUE;
 
-	xf = umem_zalloc(sizeof (*xf), UMEM_NOFAIL);
+	if ((xf = config_xf_new()) == NULL) {
+		(void) bunyan_error(log, "No memory for transform",
+		    BUNYAN_T_END);
+		goto fail;
+	}
 
 	if ((start_t = input_token(ic, B_FALSE)) == NULL) {
 		(void) bunyan_error(log,
@@ -728,15 +761,18 @@ parse_xform(input_cursor_t *restrict ic, config_xf_t **restrict xfp)
 				tok_error(targ, "Invalid value", "value");
 				goto fail;
 			}
-			xf->xf_lifetime_secs = (uint32_t)val;
+			tok_log(t, BUNYAN_L_INFO,
+			    "Ignoring deprecated configuration parameter",
+			    "parameter");
 			break;
 		case KW_P1_NONCE_LEN:
 			if (!parse_int(targ->t_str, &val)) {
 				tok_error(targ, "Invalid value", "value");
 				goto fail;
 			}
-			/* XXX: validate length */
-			xf->xf_nonce_len = (uint32_t)val;
+			tok_log(t, BUNYAN_L_INFO,
+			    "Ignoring deprecated configuration parameter",
+			    "parameter");
 			break;
 		default:
 			(void) bunyan_error(log, "Parameter keyword not "
@@ -788,7 +824,7 @@ fail:
 	tok_free(start_t);
 	tok_free(t);
 	tok_free(targ);
-	umem_free(xf, sizeof (*xf));
+	config_xf_free(xf);
 	*xfp = NULL;
 	return (B_FALSE);
 }
@@ -905,12 +941,20 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 	config_id_t *remid = NULL;
 	config_addr_t addr = { 0 };
 	size_t kwcount[KW_MAX] = { 0 };
+	union {
+		uint64_t	ui;
+		double		d;
+	} val;
 	config_auth_id_t local_id_type = CFG_AUTH_ID_IPV4;
 	boolean_t ok = B_TRUE;
 
 	*rulep = NULL;
 
-	rule = umem_zalloc(sizeof (*rule), UMEM_NOFAIL);
+	if ((rule = config_rule_new()) == NULL) {
+		(void) bunyan_error(log, "No memory to create rule",
+		    BUNYAN_T_END);
+		goto fail;
+	}
 
 	while ((t = input_token(ic, B_FALSE)) != NULL) {
 		keyword_t kw = KW_NONE;
@@ -955,7 +999,8 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 			if (!parse_xform(ic, &xf))
 				goto fail;
 
-			add_xf(rule, xf);
+			if (!add_xf(&rule->rule_xf, xf))
+				goto fail;
 			xf = NULL;
 			break;
 		case KW_LOCAL_ADDR:
@@ -992,6 +1037,61 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 			break;
 		case KW_IMMEDIATE:
 			rule->rule_immediate = B_TRUE;
+			break;
+		case KW_P1_SOFTLIFE_SECS:
+			if (!parse_int(targ->t_str, &val.ui)) {
+				tok_invalid(targ, kw);
+				goto fail;
+			}
+			rule->rule_p1_softlife_secs = val.ui;
+			break;
+		case KW_P1_HARDLIFE_SECS:
+		case KW_P1_LIFETIME_SECS:
+			if (!parse_int(targ->t_str, &val.ui)) {
+				tok_invalid(targ, kw);
+				goto fail;
+			}
+			rule->rule_p1_hardlife_secs = val.ui;
+			break;
+		case KW_P2_LIFETIME_SECS:
+			if (!parse_int(targ->t_str, &val.ui)) {
+				tok_invalid(targ, kw);
+				goto fail;
+			}
+			/* XXX: check size */
+			rule->rule_p2_lifetime_secs = val.ui;
+			break;
+		case KW_P2_SOFTLIFE_SECS:
+			if (!parse_int(targ->t_str, &val.ui)) {
+				tok_invalid(targ, kw);
+				goto fail;
+			}
+			/* XXX: check size */
+			rule->rule_p2_softlife_secs = val.ui;
+			break;
+		case KW_P2_IDLETIME_SECS:
+			if (!parse_int(targ->t_str, &val.ui)) {
+				tok_invalid(targ, kw);
+				goto fail;
+			}
+			/* XXX: check size */
+			rule->rule_p2_idletime_secs = val.ui;
+			break;
+		case KW_P2_LIFETIME_KB:
+			if (!parse_int(targ->t_str, &val.ui)) {
+				tok_invalid(targ, kw);
+				goto fail;
+			}
+			/* XXX: check size */
+			rule->rule_p2_lifetime_kb = val.ui;
+			break;
+		case KW_P2_SOFTLIFE_KB:
+			if (!parse_int(targ->t_str, &val.ui)) {
+				tok_invalid(targ, kw);
+				goto fail;
+			}
+			/* XXX: check size */
+			rule->rule_p2_softlife_kb = val.ui;
 			break;
 		default:
 			tok_log(t, BUNYAN_L_ERROR, "Configuration "
@@ -1746,50 +1846,63 @@ add_str(char ***restrict ppp, size_t *restrict allocp, const char *restrict str)
 	array[nelems] = NULL;
 }
 
-static void
-add_xf(config_rule_t *restrict rule, config_xf_t *restrict xf)
+static boolean_t
+add_xf(config_xf_t ***restrict xf_arp, config_xf_t *restrict xf)
 {
-	if (rule->rule_xf == NULL) {
-		rule->rule_xf = umem_calloc(2, sizeof (config_xf_t *),
-		    UMEM_NOFAIL);
-		rule->rule_xf[0] = xf;
-		return;
+	config_xf_t **xf_ar = *xf_arp;
+	size_t n = 0;
+
+	if (xf_ar == NULL) {
+		xf_ar = umem_calloc(2, sizeof (config_xf_t *), UMEM_DEFAULT);
+		goto done;
 	}
 
-	size_t nxf = 0;
+	while (xf_ar[n] != NULL)
+		n++;
 
-	while (rule->rule_xf[nxf] != NULL)
-		nxf++;
+	/*
+	 * We include a terminating NULL entry, so include in old and new
+	 * element count.
+	 */
+	xf_ar = umem_reallocarray(xf_ar, n + 1, n + 2, sizeof (config_xf_t *),
+	    UMEM_DEFAULT);
 
-	/* We include space for a trailing NULL entry */
-	rule->rule_xf = umem_reallocarray(rule->rule_xf, nxf + 1, nxf + 2,
-	    sizeof (config_xf_t *), UMEM_NOFAIL);
-	rule->rule_xf[nxf] = xf;
+done:
+	if (xf_ar == NULL)
+		return (B_FALSE);
+
+	xf_ar[n] = xf;
+	*xf_arp = xf_ar;
+	return (B_TRUE);
 }
 
-static void
+static boolean_t
 add_rule(config_t *restrict cfg, config_rule_t *restrict rule)
 {
-	/* TODO: validate label value is unique */
-
-	rule->rule_config = cfg;
-
 	if (cfg->cfg_rules == NULL) {
 		cfg->cfg_rules = umem_calloc(2, sizeof (config_rule_t *),
 		    UMEM_NOFAIL);
 		cfg->cfg_rules[0] = rule;
-		return;
+		return (B_TRUE);
 	}
 
-	size_t nrules = 0;
+	size_t n;
 
-	while (cfg->cfg_rules[nrules] != NULL)
-		nrules++;
+	for (n = 0; cfg->cfg_rules[n] != NULL; n++) {
+		if (strcmp(cfg->cfg_rules[n]->rule_label,
+		    rule->rule_label) == 0) {
+			(void) bunyan_error(log, "Duplicate rule label",
+			    BUNYAN_T_STRING, "label", rule->rule_label,
+			    BUNYAN_T_END);
+			return (B_FALSE);
+		}
+	}
 
-	cfg->cfg_rules = umem_reallocarray(cfg->cfg_rules, nrules + 1,
-	    nrules + 2, sizeof (config_rule_t *), UMEM_NOFAIL);
+	cfg->cfg_rules = umem_reallocarray(cfg->cfg_rules, n + 1, n + 2,
+	    sizeof (config_rule_t *), UMEM_NOFAIL);
 
-	cfg->cfg_rules[nrules] = rule;
+	cfg->cfg_rules[n] = rule;
+	return (B_TRUE);
 }
 
 static void

@@ -62,6 +62,7 @@ typedef enum worker_alert {
 /* Our per-worker thread items */
 __thread worker_t *worker = NULL;
 
+uint64_t wk_initial_nworkers = DEFAULT_NUM_WORKERS;
 int wk_evport = -1;
 size_t wk_nworkers = 0;
 periodic_handle_t *wk_periodic = NULL;

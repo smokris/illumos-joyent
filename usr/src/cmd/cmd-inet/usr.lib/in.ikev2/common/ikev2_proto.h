@@ -28,13 +28,13 @@ struct pkt_s;
 struct pkt_payload;
 struct ikev2_sa_s;
 struct sockaddr_storage;
-struct config_rule_s;
+struct config_rule;
 struct parsedmsg_s;
 
 void ikev2_inbound(struct pkt_s *restrict, const struct sockaddr *restrict,
     const struct sockaddr *restrict);
 void ikev2_pfkey(struct parsedmsg_s *);
-void ikev2_sa_init_cfg(struct config_rule_s *);
+void ikev2_sa_init_cfg(struct config_rule *);
 
 typedef void (*ikev2_send_cb_t)(struct ikev2_sa_s *restrict,
     struct pkt_s *restrict, void *restrict);

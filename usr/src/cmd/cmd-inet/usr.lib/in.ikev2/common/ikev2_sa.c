@@ -213,7 +213,6 @@ ikev2_sa_alloc(pkt_t *restrict init_pkt,
     const struct sockaddr *restrict raddr)
 {
 	ikev2_sa_t	*i2sa = NULL;
-	config_t	*cfg = NULL;
 	hrtime_t	expire = 0;
 	boolean_t	initiator = (init_pkt == NULL) ? B_TRUE : B_FALSE;
 
@@ -223,9 +222,7 @@ ikev2_sa_alloc(pkt_t *restrict init_pkt,
 	    ss_bunyan(raddr), LOG_KEY_RADDR, ss_addr(raddr),
 	    BUNYAN_T_END);
 
-	cfg = config_get();
-	expire = cfg->cfg_expire_timer;
-	CONFIG_REFRELE(cfg);
+	expire = config->cfg_expire_timer;
 
 	if ((i2sa = umem_cache_alloc(i2sa_cache, UMEM_DEFAULT)) == NULL) {
 		STDERR(error, "No memory to create IKEv2 SA");
@@ -745,7 +742,7 @@ ikev2_sa_free(ikev2_sa_t *i2sa)
 	VERIFY3P(i2sa->last_recvd, ==, NULL);
 
 	if (i2sa->i2sa_rule != NULL)
-		CONFIG_REFRELE(i2sa->i2sa_rule->rule_config);
+		RULE_REFRELE(i2sa->i2sa_rule);
 
 	config_id_free(i2sa->local_id);
 	config_id_free(i2sa->remote_id);

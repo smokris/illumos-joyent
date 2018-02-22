@@ -108,8 +108,12 @@ boolean_t
 ikev2_sa_from_rule(pkt_t *restrict pkt, const config_rule_t *restrict rule,
     uint64_t spi)
 {
+	config_xf_t **xf = rule->rule_xf;
 	boolean_t ok = B_TRUE;
 	pkt_sa_state_t pss;
+
+	if (rule->rule_xf == NULL)
+		xf = config->cfg_default_xf;
 
 	if (!ikev2_add_sa(pkt, &pss))
 		return (B_FALSE);
@@ -119,6 +123,7 @@ ikev2_sa_from_rule(pkt_t *restrict pkt, const config_rule_t *restrict rule,
 		ok &= ikev2_add_prop(&pss, i + 1, IKEV2_PROTO_IKE, spi);
 		ok &= add_rule_xform(&pss, rule->rule_xf[i]);
 	}
+
 	return (ok);
 }
 
@@ -276,7 +281,6 @@ ikev2_sa_match_prop(config_xf_t *restrict rxf,
 	m->ism_propnum = prop->proto_proposalnr;
 	m->ism_satype = prop->proto_protoid;
 	m->ism_authmethod = rxf->xf_authtype;
-	m->ism_lifetime_secs = rxf->xf_lifetime_secs;
 
 	if (m->ism_spi != 0) {
 		(void) snprintf(spibuf, sizeof (spibuf), "0x%016" PRIx64,

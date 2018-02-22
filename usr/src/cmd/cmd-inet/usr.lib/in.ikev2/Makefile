@@ -23,10 +23,16 @@
 # Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
 # Use is subject to license terms.
 #
+# Copyright 2018, Joyent, Inc.
+#
 
 PROG= in.ikev2d
+MANIFEST=$(PROG).xml
 
-include ../../../Makefile.cmd
+include $(SRC)/cmd/Makefile.cmd
+
+ROOTMANIFESTDIR = $(ROOTSVCNETWORKIPSEC)
+ROOTMANIFEST = $(ROOTMANIFESTDIR)/$(PROG).xml
 
 SUBDIRS=
 $(INTEL_BLD)SUBDIRS += $(MACH)
@@ -46,13 +52,15 @@ clean clobber lint:	$(SUBDIRS)
 
 include ../Makefile.lib
 
-install:	$(SUBDIRS)
+install:	$(SUBDIRS) $(ROOTMANIFEST)
 	-$(RM) $(ROOTLIBINETPROG)
 	-$(LN) $(ISAEXEC) $(ROOTLIBINETPROG)
+
+check:	$(CHKMANIFEST)
 
 $(SUBDIRS):	FRC
 	@cd $@; pwd; $(MAKE) $(TARGET)
 
 FRC:
 
-include ../../../Makefile.targ
+include $(SRC)/cmd/Makefile.targ

@@ -10,38 +10,28 @@
  */
 
 /*
- * Copyright (c) 2017, Joyent, Inc.
+ * Copyright 2018, Joyent, Inc.
  */
+
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/debug.h>
-#include <pthread.h>
 #include <string.h>
 #include <strings.h>
+#include <synch.h>
 #include <umem.h>
 #include "defs.h"
 #include "config.h"
+#include "config_impl.h"
 #include "ikev2_enum.h"
 
-pthread_rwlock_t cfg_lock = PTHREAD_RWLOCK_INITIALIZER;
 config_t *config;
+rwlock_t config_rule_lock = DEFAULTRWLOCK;
 
 static boolean_t cfg_addr_match(const sockaddr_u_t,
     const config_addr_t *restrict);
-
-config_t *
-config_get(void)
-{
-	config_t *cfg = NULL;
-
-	VERIFY0(pthread_rwlock_rdlock(&cfg_lock));
-	cfg = config;
-	CONFIG_REFHOLD(cfg);
-	VERIFY0(pthread_rwlock_unlock(&cfg_lock));
-	return (cfg);
-}
 
 void
 config_xf_log(bunyan_logger_t *b, bunyan_level_t level, const char *msg,
@@ -66,10 +56,11 @@ config_xf_log(bunyan_logger_t *b, bunyan_level_t level, const char *msg,
 config_rule_t *
 config_get_rule(sockaddr_u_t local, sockaddr_u_t remote)
 {
-	config_t *cfg = config_get();
 
-	for (size_t i = 0; cfg->cfg_rules[i] != NULL; i++) {
-		config_rule_t *rule = cfg->cfg_rules[i];
+	VERIFY0(rw_rdlock(&config_rule_lock));
+
+	for (size_t i = 0; config->cfg_rules[i] != NULL; i++) {
+		config_rule_t *rule = config->cfg_rules[i];
 		boolean_t local_match = B_FALSE;
 		boolean_t remote_match = B_FALSE;
 
@@ -86,11 +77,15 @@ config_get_rule(sockaddr_u_t local, sockaddr_u_t remote)
 				break;
 			}
 		}
-		if (local_match && remote_match)
+		if (local_match && remote_match) {
+			RULE_REFHOLD(rule);
+			rw_unlock(&config_rule_lock);
 			return (rule);
+		}
 	}
+	rw_unlock(&config_rule_lock);
 
-	return (&cfg->cfg_default);
+	return (NULL);
 }
 
 boolean_t
@@ -334,27 +329,52 @@ config_id_free(config_id_t *id)
 {
 	if (id == NULL)
 		return;
+	umem_free(id, id->cid_len + sizeof (config_id_t));
+}
 
-	size_t len = id->cid_len + sizeof (config_id_t);
-
-	umem_free(id, len);
+config_xf_t *
+config_xf_new(void)
+{
+	return (umem_zalloc(sizeof (config_xf_t), UMEM_DEFAULT));
 }
 
 void
-cfg_rule_free(config_rule_t *rule)
+config_xf_free(config_xf_t *xf)
+{
+	if (xf == NULL)
+		return;
+	ustrfree(xf->xf_str);
+	umem_free(xf, sizeof (*xf));
+}
+
+void
+config_xfs_free(config_xf_t **xfs)
+{
+	size_t i;
+
+	if (xfs == NULL)
+		return;
+
+	for (i = 0; xfs[i] != NULL; i++)
+		config_xf_free(xfs[i]);
+	umem_cfree(xfs, i + 1, sizeof (config_xf_t *));
+}
+
+config_rule_t *
+config_rule_new(void)
+{
+	return (umem_zalloc(sizeof (config_rule_t), UMEM_DEFAULT));
+}
+
+void
+config_rule_free(config_rule_t *rule)
 {
 	size_t i;
 
 	if (rule == NULL)
 		return;
 
-	if (rule->rule_xf != NULL) {
-		for (i = 0; rule->rule_xf[i] != NULL; i++) {
-			ustrfree(rule->rule_xf[i]->xf_str);
-			umem_free(rule->rule_xf[i], sizeof (config_xf_t));
-		}
-		umem_cfree(rule->rule_xf, i + 1, sizeof (config_xf_t *));
-	}
+	VERIFY3U(rule->rule_refcnt, ==, 0);
 
 	if (rule->rule_remote_id != NULL) {
 		for (i = 0; rule->rule_remote_id[i] != NULL; i++)
@@ -363,56 +383,57 @@ cfg_rule_free(config_rule_t *rule)
 		umem_cfree(rule->rule_remote_id, i + 1, sizeof (config_id_t *));
 	}
 
-	free(rule->rule_local_addr);
-	free(rule->rule_remote_addr);
+	config_xfs_free(rule->rule_xf);
 	ustrfree(rule->rule_label);
+	umem_cfree(rule->rule_local_addr, rule->rule_nlocal_addr,
+	    sizeof (config_addr_t));
+	umem_cfree(rule->rule_remote_addr, rule->rule_nremote_addr,
+	    sizeof (config_addr_t));
 	umem_free(rule, sizeof (*rule));
 }
 
+config_t *
+config_new(void)
+{
+	config_t *cfg = umem_zalloc(sizeof (*cfg), UMEM_DEFAULT);
+
+	if (cfg == NULL)
+		return (NULL);
+
+	/* Setup defaults */
+	cfg->cfg_local_id_type = CONFIG_LOCAL_ID_TYPE;
+	cfg->cfg_expire_timer = CONFIG_EXPIRE_TIMER;
+	cfg->cfg_retry_init = CONFIG_RETRY_INIT;
+	cfg->cfg_retry_max = CONFIG_RETRY_MAX;
+	cfg->cfg_retry_limit = CONFIG_RETRY_LIMIT;
+	cfg->cfg_p2_lifetime_secs = CONFIG_P2_LIFETIME_SECS;
+	cfg->cfg_p2_softlife_secs = CONFIG_P2_SOFTLIFE_SECS;
+	cfg->cfg_p2_lifetime_kb = CONFIG_P2_LIFETIME_KB;
+	cfg->cfg_p2_softlife_kb = CONFIG_P2_SOFTLIFE_KB;
+
+	return (cfg);
+}
+
 void
-cfg_free(config_t *cfg)
+config_free(config_t *cfg)
 {
 	if (cfg == NULL)
 		return;
 
-	size_t i;
-
-	VERIFY3U(cfg->cfg_refcnt, ==, 0);
-
-	for (i = 0;
-	    cfg->cfg_cert_root != NULL && cfg->cfg_cert_root[i] != NULL;
-	    i++)
-		free(cfg->cfg_cert_root[i]);
-	free(cfg->cfg_cert_root);
-
-	if (cfg->cfg_cert_trust != NULL) {
-		for (i = 0; cfg->cfg_cert_trust[i] != NULL; i++)
-			free(cfg->cfg_cert_trust[i]);
-		free(cfg->cfg_cert_trust);
-	}
-
-	if (cfg->cfg_default.rule_xf != NULL) {
-		size_t nxf = 0;
-
-		for (i = 0; cfg->cfg_default.rule_xf[i] != NULL; i++, nxf++) {
-			umem_free(cfg->cfg_default.rule_xf[i],
-			    sizeof (config_xf_t));
-		}
-
-		umem_cfree(cfg->cfg_default.rule_xf, nxf,
-		    sizeof (config_xf_t *));
-	}
-
-	if (cfg->cfg_rules != NULL) {
-		size_t amt = 0;
-
-		for (i = 0; cfg->cfg_rules[i] != NULL; i++, amt++)
-			cfg_rule_free(cfg->cfg_rules[i]);
-
-		umem_cfree(cfg->cfg_rules, amt + 1, sizeof (config_rule_t *));
-	}
-
+	strarray_free(cfg->cfg_cert_root);
+	strarray_free(cfg->cfg_cert_trust);
 	ustrfree(cfg->cfg_proxy);
 	ustrfree(cfg->cfg_socks);
+	config_xfs_free(cfg->cfg_default_xf);
+
+	if (cfg->cfg_rules != NULL) {
+		size_t i;
+
+		for (i = 0; cfg->cfg_rules[i] != NULL; i++)
+			RULE_REFRELE(cfg->cfg_rules[i]);
+
+		umem_cfree(cfg->cfg_rules, i + 1, sizeof (config_rule_t *));
+	}
+
 	umem_free(cfg, sizeof (*cfg));
 }

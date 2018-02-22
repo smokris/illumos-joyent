@@ -192,7 +192,7 @@ uint8_t ss_addrbits(const struct sockaddr *);
 
 typedef enum event {
 	EVENT_NONE,
-	EVENT_SIGNAL
+	EVENT_SIGNAL,
 } event_t;
 
 /* Required for libipsecutils */
@@ -226,8 +226,8 @@ void log_reset_keys(void);
 void key_add_ike_version(const char *, uint8_t);
 void key_add_ike_spi(const char *, uint64_t);
 void key_add_addr(const char *, const struct sockaddr *);
-struct config_id_s;
-void key_add_id(const char *, const char *, struct config_id_s *);
+struct config_id;
+void key_add_id(const char *, const char *, struct config_id *);
 char *writehex(uint8_t *, size_t, char *, char *, size_t);
 
 void sockaddr_copy(const struct sockaddr *, struct sockaddr_storage *,
@@ -237,6 +237,7 @@ boolean_t addr_is_zero(const struct sockaddr *);
 
 char *ustrdup(const char *, int);
 void ustrfree(char *);
+void strarray_free(char **);
 
 #ifdef  __cplusplus
 }

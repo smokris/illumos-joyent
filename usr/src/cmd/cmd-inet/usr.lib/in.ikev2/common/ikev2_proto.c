@@ -344,11 +344,13 @@ ikev2_pfkey(parsedmsg_t *pmsg)
 			    "Failed to create larval IKE SA: out of memory",
 			    pmsg->pmsg_samsg);
 			parsedmsg_free(pmsg);
+			RULE_REFRELE(rule);
 			return;
 		}
 
 		mutex_enter(&i2sa->i2sa_lock);
 		key_add_ike_spi(LOG_KEY_LSPI, I2SA_LOCAL_SPI(i2sa));
+		/* Pass ref from config_get_rule() to i2sa */
 		i2sa->i2sa_rule = rule;
 		mutex_exit(&i2sa->i2sa_lock);
 	} else {
@@ -395,9 +397,6 @@ ikev2_sa_init_cfg(config_rule_t *rule)
 		if (errval == ENOENT) {
 			char *label = rule->rule_label;
 
-			if (RULE_IS_DEFAULT(rule))
-				label = "<default rule>";
-
 			/* XXX: Add addresses to message? */
 			(void) bunyan_error(log,
 			    "Cannot create IKEV2 SA for host: No IPsec "
@@ -443,7 +442,7 @@ fail:
 	}
 
 	parsedmsg_free(pmsg);
-	CONFIG_REFRELE(rule->rule_config);
+	RULE_REFRELE(rule);
 }
 
 static boolean_t
@@ -494,8 +493,7 @@ ikev2_send_req(pkt_t *restrict req, ikev2_send_cb_t cb, void *restrict arg)
 {
 	ikev2_sa_t *i2sa = req->pkt_sa;
 	i2sa_req_t *i2req = &i2sa->last_req;
-	config_t *cfg = config_get();
-	hrtime_t retry = cfg->cfg_retry_init;
+	hrtime_t retry = config->cfg_retry_init;
 	int s = -1;
 
 	VERIFY(IS_WORKER);
@@ -503,8 +501,6 @@ ikev2_send_req(pkt_t *restrict req, ikev2_send_cb_t cb, void *restrict arg)
 	VERIFY(MUTEX_HELD(&i2sa->i2sa_lock));
 	VERIFY(!I2P_RESPONSE(req));
 	VERIFY3P(cb, !=, NULL);
-
-	CONFIG_REFRELE(cfg);
 
 	/*
 	 * Shouldn't try to start a new exchange when one is already in
@@ -662,12 +658,9 @@ ikev2_retransmit(ikev2_sa_t *restrict sa, i2sa_req_t *restrict req)
 		return;
 	}
 
-	config_t *cfg = config_get();
-	retry_init = cfg->cfg_retry_init;
-	retry_max = cfg->cfg_retry_max;
-	limit = cfg->cfg_retry_limit;
-	CONFIG_REFRELE(cfg);
-	cfg = NULL;
+	retry_init = config->cfg_retry_init;
+	retry_max = config->cfg_retry_max;
+	limit = config->cfg_retry_limit;
 
 	retry = retry_init * (1ULL << ++pkt->pkt_xmit);
 	if (retry > retry_max)

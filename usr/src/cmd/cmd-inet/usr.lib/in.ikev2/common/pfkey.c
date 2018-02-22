@@ -776,37 +776,42 @@ pfkey_add_pair(sadb_ext_t *ext, uint32_t spi)
 }
 
 sadb_ext_t *
-pfkey_add_lifetime(sadb_ext_t *restrict ext)
+pfkey_add_lifetime(const config_rule_t *restrict rule, sadb_ext_t *restrict ext)
 {
-	config_t *cfg = config_get();
+#define	VAL(c, r, v) (((r)->rule_##v != 0) ? (r)->rule_##v : (c)->cfg_##v)
 	sadb_lifetime_t *life = (sadb_lifetime_t *)ext;
+	uint64_t softlife_secs = VAL(config, rule, p2_softlife_secs);
+	uint64_t softlife_kb = VAL(config, rule, p2_softlife_kb);
+	uint64_t hardlife_secs = VAL(config, rule, p2_lifetime_secs);
+	uint64_t hardlife_kb = VAL(config, rule, p2_lifetime_kb);
+	uint64_t idletime_secs = VAL(config, rule, p2_idletime_secs);
+#undef VAL
 
-	if (cfg->cfg_p2_lifetime_secs > 0 ||
-	    cfg->cfg_p2_lifetime_kb > 0) {
+	VERIFY(IS_WORKER);
+
+	if (hardlife_secs > 0 || hardlife_kb > 0) {
 		life->sadb_lifetime_len = SADB_8TO64(sizeof (*life));
 		life->sadb_lifetime_exttype = SADB_EXT_LIFETIME_HARD;
-		life->sadb_lifetime_addtime = cfg->cfg_p2_lifetime_secs;
-		life->sadb_lifetime_bytes = cfg->cfg_p2_lifetime_kb * 1024;
+		life->sadb_lifetime_addtime = hardlife_secs;
+		life->sadb_lifetime_bytes = hardlife_kb * 1024;
 		life++;
 	}
 
-	if (cfg->cfg_p2_softlife_secs > 0 ||
-	    cfg->cfg_p2_softlife_kb > 0) {
+	if (softlife_secs > 0 || softlife_kb > 0) {
 		life->sadb_lifetime_len = SADB_8TO64(sizeof (*life));
 		life->sadb_lifetime_exttype = SADB_EXT_LIFETIME_SOFT;
-		life->sadb_lifetime_addtime = cfg->cfg_p2_softlife_secs;
-		life->sadb_lifetime_bytes = cfg->cfg_p2_softlife_kb * 1024;
+		life->sadb_lifetime_addtime = softlife_secs;
+		life->sadb_lifetime_bytes = softlife_kb * 1024;
 		life++;
 	}
 
-	if (cfg->cfg_p2_idletime_secs > 0) {
+	if (idletime_secs > 0) {
 		life->sadb_lifetime_len = SADB_8TO64(sizeof (*life));
 		life->sadb_lifetime_exttype = SADB_X_EXT_LIFETIME_IDLE;
-		life->sadb_lifetime_addtime = cfg->cfg_p2_idletime_secs;
+		life->sadb_lifetime_addtime = idletime_secs;
 		life++;
 	}
 
-	CONFIG_REFRELE(cfg);
 	return ((sadb_ext_t *)life);
 }
 
@@ -903,7 +908,7 @@ pfkey_sadb_add_update(ikev2_sa_t *restrict sa,
 	ext = (sadb_ext_t *)(msg + 1);
 	ext = pfkey_add_sa(ext, csa->i2c_spi, csa->i2c_encr, csa->i2c_auth,
 	    flags);
-	ext = pfkey_add_lifetime(ext);
+	ext = pfkey_add_lifetime(sa->i2sa_rule, ext);
 
 	if (csa->i2c_transport) {
 		srctype = SADB_EXT_ADDRESS_SRC;

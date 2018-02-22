@@ -39,7 +39,6 @@ static void ikev2_sa_init_init_resp(ikev2_sa_t *restrict, pkt_t *restrict,
     void *restrict);
 static boolean_t redo_sa_init(pkt_t *restrict, ikev2_sa_args_t *restrict);
 
-static config_rule_t *find_rule(sockaddr_u_t, sockaddr_u_t);
 static boolean_t add_nat(pkt_t *);
 static boolean_t check_nats(pkt_t *);
 static void check_vendor(pkt_t *);
@@ -74,15 +73,13 @@ ikev2_sa_init_init(ikev2_sa_t *restrict i2sa, parsedmsg_t *restrict pmsg)
 	}
 
 	if (i2sa->i2sa_rule == NULL) {
-		i2sa->i2sa_rule = find_rule(laddr, raddr);
-		if (i2sa->i2sa_rule == NULL)
+		i2sa->i2sa_rule = config_get_rule(laddr, raddr);
+		if (i2sa->i2sa_rule == NULL) {
+			(void) bunyan_debug(log, "No rule found for address",
+			    BUNYAN_T_END);
 			goto fail;
-	}
+		}
 
-	if (RULE_IS_DEFAULT(i2sa->i2sa_rule)) {
-		(void) bunyan_debug(log, "Using default rule",
-		    BUNYAN_T_END);
-	} else {
 		(void) bunyan_debug(log, "Found rule",
 		    BUNYAN_T_POINTER, "rule", i2sa->i2sa_rule,
 		    BUNYAN_T_STRING, "label", i2sa->i2sa_rule->rule_label,
@@ -169,23 +166,21 @@ ikev2_sa_init_resp(pkt_t *pkt)
 	if (resp == NULL)
 		goto fail;
 
-	sa->i2sa_rule = find_rule(laddr, raddr);
+	sa->i2sa_rule = config_get_rule(laddr, raddr);
 	if (sa->i2sa_rule == NULL) {
+		(void) bunyan_debug(log, "No rule found for address",
+		    BUNYAN_T_END);
+
 		/* This is the 2nd payload, it should fit */
 		VERIFY(ikev2_add_notify(resp, IKEV2_N_NO_PROPOSAL_CHOSEN));
 		ikev2_send_resp(resp);
 		return;
 	}
 
-	if (RULE_IS_DEFAULT(sa->i2sa_rule)) {
-		(void) bunyan_debug(log, "Using default rule",
-		    BUNYAN_T_END);
-	} else {
-		(void) bunyan_debug(log, "Found rule",
-		    BUNYAN_T_POINTER, "rule", sa->i2sa_rule,
-		    BUNYAN_T_STRING, "label", sa->i2sa_rule->rule_label,
-		    BUNYAN_T_END);
-	}
+	(void) bunyan_debug(log, "Found rule",
+	    BUNYAN_T_POINTER, "rule", sa->i2sa_rule,
+	    BUNYAN_T_STRING, "label", sa->i2sa_rule->rule_label,
+	    BUNYAN_T_END);
 
 	if (!ikev2_sa_match_rule(sa->i2sa_rule, pkt, &sa_result, B_FALSE)) {
 		VERIFY(ikev2_add_notify(resp, IKEV2_N_NO_PROPOSAL_CHOSEN));
@@ -532,28 +527,6 @@ redo_sa_init(pkt_t *restrict pkt, ikev2_sa_args_t *restrict sa_args)
 	ikev2_sa_init_init(sa, sa_args->i2a_pmsg);
 	ikev2_pkt_free(pkt);
 	return (B_TRUE);
-}
-
-static config_rule_t *
-find_rule(sockaddr_u_t laddr, sockaddr_u_t raddr)
-{
-	config_rule_t *rule = config_get_rule(laddr, raddr);
-
-	if (rule == NULL) {
-		(void) bunyan_warn(log, "No rules found for address",
-		    BUNYAN_T_END);
-		return (NULL);
-	}
-
-	if (rule->rule_xf == NULL || rule->rule_xf[0] == NULL) {
-		(void) bunyan_debug(log, "No transforms found in rue",
-		    BUNYAN_T_END);
-		CONFIG_REFRELE(rule->rule_config);
-		return (NULL);
-	}
-
-	VERIFY3P(rule->rule_config, !=, NULL);
-	return (rule);
 }
 
 /* Compute a NAT detection payload and place result into buf */

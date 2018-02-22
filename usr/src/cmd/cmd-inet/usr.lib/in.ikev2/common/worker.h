@@ -26,6 +26,8 @@
 extern "C" {
 #endif
 
+#define	DEFAULT_NUM_WORKERS	4U
+
 struct bunyan_logger;
 struct periodic_handle;
 
@@ -58,6 +60,7 @@ extern __thread worker_t *worker;
 #define	IS_WORKER	(worker != NULL)
 
 extern struct periodic_handle *wk_periodic;
+extern uint64_t wk_initial_nworkers;
 extern size_t wk_nworkers;
 extern int wk_evport;
 

@@ -52,7 +52,8 @@ struct ikev2_sa_s;
 struct ikev2_child_sa;
 struct ikev2_sa_args_s;
 struct pkt_s;
-struct config_rule_s;
+struct config_rule;
+struct config_id;
 
 typedef struct ikev2_sa_s ikev2_sa_t;
 typedef struct ikev2_child_sa_s ikev2_child_sa_t;
@@ -128,7 +129,7 @@ struct ikev2_sa_s {
 	refhash_link_t	i2sa_rspi_link;
 	refhash_link_t	i2sa_addr_link;
 
-	struct config_rule_s	*i2sa_rule;
+	struct config_rule	*i2sa_rule;
 
 	uint64_t		i_spi;	  /* Initiator SPI. */
 	uint64_t		r_spi;	  /* Responder SPI. */
@@ -151,8 +152,8 @@ struct ikev2_sa_s {
 			 */
 	vendor_t	vendor;
 
-	struct config_id_s *local_id;
-	struct config_id_s *remote_id;
+	struct config_id *local_id;
+	struct config_id *remote_id;
 
 	ikev2_auth_type_t authmethod;	/* How the IKEV2 SA is authenticated */
 	ikev2_xf_encr_t	encr;		/* Encryption algorithm */

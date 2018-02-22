@@ -455,6 +455,18 @@ ustrfree(char *str)
 		return;
 
 	size_t len = strlen(str) + 1;
-
 	umem_free(str, len);
+}
+
+void
+strarray_free(char **strs)
+{
+	size_t n;
+
+	if (strs == NULL)
+		return;
+
+	for (n = 0; strs[n] != NULL; n++)
+		ustrfree(strs[n]);
+	umem_cfree(strs, n + 1, sizeof (char *));
 }

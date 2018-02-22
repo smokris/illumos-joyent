@@ -79,11 +79,23 @@ fromto.o := CPPFLAGS += -D_XOPEN_SOURCE=600
 LINTFLAGS += -erroff=E_INCONS_ARG_DECL2 -erroff=E_INCONS_VAL_TYPE_DECL2
 LINTFLAGS64 += -erroff=E_INCONS_ARG_DECL2 -erroff=E_INCONS_VAL_TYPE_DECL2
 
-CSTD = $(CSTD_GNU99)
-CFLAGS += $(CCVERBOSE) -D_REENTRANT
-CFLAGS64 += $(CCVERBOSE) -D_REENTRANT
-LDLIBS += -lnsl -lsecdb -lumem -lxnet -lipsecutil -lpkcs11 -lcryptoutil
-LDLIBS += -lnvpair -lbunyan -lperiodic -linetutil -lrefhash -lcmdutils
+CSTD =		$(CSTD_GNU99)
+CFLAGS +=	$(CCVERBOSE) -D_REENTRANT
+CFLAGS64 +=	$(CCVERBOSE) -D_REENTRANT
+LDLIBS += \
+	-lbunyan \
+	-lcmdutils \
+	-lcryptoutil \
+	-linetutil \
+	-lipsecutil \
+	-lnsl \
+	-lnvpair \
+	-lpkcs11 \
+	-lperiodic \
+	-lrefhash \
+	-lscf \
+	-lumem \
+	-lxnet
 
 FILEMODE = 0555
 GROUP = bin
