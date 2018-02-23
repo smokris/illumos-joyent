@@ -24,7 +24,7 @@
  * Use is subject to license terms.
  *
  * Copyright 2017 Jason King.
- * Copyright (c) 2017, Joyent, Inc.
+ * Copyright 2018, Joyent, Inc.
  */
 
 #include <errno.h>
@@ -116,7 +116,6 @@ static size_t			pkcs11_handlesz;
 #define	PKCS11_RC		"errnum"
 #define	PKCS11_ERRMSG		"err"
 
-static void pkcs11_free(void *);
 static void fmtstr(char *, size_t, CK_UTF8CHAR *, size_t);
 static CK_RV pkcs11_callback_handler(CK_SESSION_HANDLE, CK_NOTIFICATION,
     void *);
@@ -458,7 +457,6 @@ pkcs11_session_free(CK_SESSION_HANDLE h)
 	 */
 	mutex_enter(&pkcs11_handle_lock);
 	if (pkcs11_nhandles + 1 > pkcs11_handlesz) {
-		CK_SESSION_HANDLE *nh = NULL;
 		size_t newamt = pkcs11_handlesz + CHUNK_SZ;
 
 		pkcs11_handles = umem_reallocarray(pkcs11_handles,

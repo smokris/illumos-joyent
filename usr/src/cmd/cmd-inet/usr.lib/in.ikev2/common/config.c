@@ -33,6 +33,7 @@ rwlock_t config_rule_lock = DEFAULTRWLOCK;
 static boolean_t cfg_addr_match(const sockaddr_u_t,
     const config_addr_t *restrict);
 
+#ifdef notyet
 void
 config_xf_log(bunyan_logger_t *b, bunyan_level_t level, const char *msg,
     const config_xf_t *xf)
@@ -47,6 +48,7 @@ config_xf_log(bunyan_logger_t *b, bunyan_level_t level, const char *msg,
 	    BUNYAN_T_STRING, "xf_dh", ikev2_dh_str(xf->xf_dh),
 	    BUNYAN_T_END);
 }
+#endif
 
 /*
  * Return the first rule that matches the given local and remote addresses.
@@ -79,11 +81,11 @@ config_get_rule(sockaddr_u_t local, sockaddr_u_t remote)
 		}
 		if (local_match && remote_match) {
 			RULE_REFHOLD(rule);
-			rw_unlock(&config_rule_lock);
+			VERIFY0(rw_unlock(&config_rule_lock));
 			return (rule);
 		}
 	}
-	rw_unlock(&config_rule_lock);
+	VERIFY0(rw_unlock(&config_rule_lock));
 
 	return (NULL);
 }
@@ -153,6 +155,7 @@ cfg_addr_match(const sockaddr_u_t l, const config_addr_t *restrict r)
 	case CFG_ADDR_IPV6_PREFIX:
 		if (l.sau_ss->ss_family != AF_INET6)
 			return (B_FALSE);
+		/* LINTED E_SUSPICIOUS_COMPARISON */
 		if (IN6_ARE_PREFIXEDADDR_EQUAL(&l.sau_sin6->sin6_addr,
 		    &r->cfa_start6, r->cfa_endu.cfa_num))
 			return (B_TRUE);
@@ -266,33 +269,6 @@ config_id_strlen(const config_id_t *id)
 	/*NOTREACHED*/
 	return (0);
 }
-config_auth_id_t
-ikev2_id_to_cfg(ikev2_id_type_t i2id)
-{
-	switch (i2id) {
-	case IKEV2_ID_IPV4_ADDR:
-		return (CFG_AUTH_ID_IPV4);
-	case IKEV2_ID_FQDN:
-		return (CFG_AUTH_ID_DNS);
-	case IKEV2_ID_RFC822_ADDR:
-		return (CFG_AUTH_ID_EMAIL);
-	case IKEV2_ID_IPV6_ADDR:
-		return (CFG_AUTH_ID_IPV6);
-	case IKEV2_ID_DER_ASN1_DN:
-		return (CFG_AUTH_ID_DN);
-	case IKEV2_ID_DER_ASN1_GN:
-		return (CFG_AUTH_ID_GN);
-	case IKEV2_ID_KEY_ID:
-		INVALID(i2id);
-		/*NOTREACHED*/
-		return (0);
-	case IKEV2_ID_FC_NAME:
-		INVALID(i2id);
-		/*NOTREACHED*/
-		return (0);
-	}
-	return (0);
-}
 
 config_id_t *
 config_id_new(config_auth_id_t type, const void *data, size_t len)
@@ -306,12 +282,6 @@ config_id_new(config_auth_id_t type, const void *data, size_t len)
 	cid->cid_len = len;
 	bcopy(data, cid->cid_data, len);
 	return (cid);
-}
-
-config_id_t *
-config_id_copy(const config_id_t *src)
-{
-	return (config_id_new(src->cid_type, src->cid_data, src->cid_len));
 }
 
 int

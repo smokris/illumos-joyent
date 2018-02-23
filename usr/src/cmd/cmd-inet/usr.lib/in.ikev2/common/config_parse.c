@@ -277,8 +277,7 @@ static boolean_t parse_rule(input_cursor_t *restrict, const token_t *restrict,
     config_rule_t **restrict);
 static boolean_t parse_address(input_cursor_t *restrict, token_t *restrict,
     config_addr_t *restrict);
-static boolean_t parse_p1_id(input_cursor_t *restrict, token_t *restrict,
-    config_id_t **restrict);
+static boolean_t parse_p1_id(token_t *restrict, config_id_t **restrict);
 static boolean_t parse_xform(input_cursor_t *restrict, config_xf_t **restrict);
 static boolean_t parse_encrbits(input_cursor_t *restrict,
     config_xf_t *restrict);
@@ -925,7 +924,7 @@ toobig:
 
 truncated:
 	tok_free(t);
-	bunyan_error(log, "Truncated input while reading transform",
+	(void) bunyan_error(log, "Truncated input while reading transform",
 	    BUNYAN_T_END);
 	return (B_FALSE);
 }
@@ -1024,7 +1023,7 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 			targ = NULL;
 			break;
 		case KW_REMOTE_ID:
-			if (!parse_p1_id(ic, targ, &remid))
+			if (!parse_p1_id(targ, &remid))
 				goto fail;
 			add_remid(rule, remid);
 			break;
@@ -1127,7 +1126,7 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 			goto fail;
 		}
 	} else if (kwcount[KW_LOCAL_ID_TYPE] > 0 && kwcount[KW_LOCAL_ID] > 0) {
-		if (!parse_p1_id(ic, local_id, &rule->rule_local_id)) {
+		if (!parse_p1_id(local_id, &rule->rule_local_id)) {
 			if (errno == EINVAL)
 				tok_error(local_id,
 				    "Unable to parse local id type", "str");
@@ -1140,7 +1139,7 @@ parse_rule(input_cursor_t *restrict ic, const token_t *start,
 			goto fail;
 		}
 	} else if (kwcount[KW_LOCAL_ID_TYPE] == 0 && kwcount[KW_LOCAL_ID] > 0) {
-		if (!parse_p1_id(ic, local_id, &rule->rule_local_id))
+		if (!parse_p1_id(local_id, &rule->rule_local_id))
 			goto fail;
 	}
 
@@ -1427,8 +1426,7 @@ parse_p1_id_type(const char *restrict str, config_auth_id_t *restrict p1p)
 }
 
 static boolean_t
-parse_p1_id(input_cursor_t *restrict ic, token_t *restrict t,
-    config_id_t **restrict idp)
+parse_p1_id(token_t *restrict t, config_id_t **restrict idp)
 {
 	config_id_t *id = NULL;
 	void *ptr = NULL;
@@ -1522,26 +1520,6 @@ tok_free(token_t *t)
 	ustrfree(t->t_str);
 	umem_free(t, sizeof (*t));
 }
-
-#define	STR(x) case x: return (#x)
-static const char *
-cfg_auth_id_str(config_auth_id_t id)
-{
-	switch (id) {
-	STR(CFG_AUTH_ID_DN);
-	STR(CFG_AUTH_ID_DNS);
-	STR(CFG_AUTH_ID_GN);
-	STR(CFG_AUTH_ID_IPV4);
-	STR(CFG_AUTH_ID_IPV4_PREFIX);
-	STR(CFG_AUTH_ID_IPV4_RANGE);
-	STR(CFG_AUTH_ID_IPV6);
-	STR(CFG_AUTH_ID_IPV6_PREFIX);
-	STR(CFG_AUTH_ID_IPV6_RANGE);
-	STR(CFG_AUTH_ID_EMAIL);
-	}
-	return ("UNKNOWN");
-}
-#undef	STR
 
 static void
 tok_log(const token_t *restrict t, bunyan_level_t level, const char *msg,

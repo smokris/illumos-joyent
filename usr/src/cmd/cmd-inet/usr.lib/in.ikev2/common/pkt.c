@@ -11,7 +11,7 @@
 
 /*
  * Copyright 2017 Jason King.
- * Copyright 2017 Joyent, Inc.
+ * Copyright 2018 Joyent, Inc.
  */
 #include <stddef.h>
 #include <assert.h>
@@ -41,8 +41,6 @@
 #include "worker.h"
 
 static umem_cache_t	*pkt_cache;
-
-static int pkt_reset(void *);
 
 pkt_t *
 pkt_out_alloc(uint64_t i_spi, uint64_t r_spi, uint8_t version,
@@ -579,6 +577,7 @@ pkt_add_xform_attr_tv(pkt_sa_state_t *pss, uint16_t type, uint16_t val)
 	return (B_TRUE);
 }
 
+#ifdef notyet
 boolean_t
 pkt_add_xform_attr_tlv(pkt_sa_state_t *pss, uint16_t type, const uint8_t *attrp,
     size_t attrlen)
@@ -620,6 +619,7 @@ pkt_add_xform_attr_tlv(pkt_sa_state_t *pss, uint16_t type, const uint8_t *attrp,
 
 	return (B_TRUE);
 }
+#endif
 
 boolean_t
 pkt_add_notify(pkt_t *restrict pkt, uint32_t doi, uint8_t proto,
@@ -663,11 +663,12 @@ pkt_add_notify(pkt_t *restrict pkt, uint32_t doi, uint8_t proto,
 
 	VERIFY(pkt_add_spi(pkt, spilen, spi));
 	ptr = pkt->pkt_ptr;
-	pkt_append_data(pkt, data, datalen);
+	VERIFY(pkt_append_data(pkt, data, datalen));
 
 	return (pkt_add_nindex(pkt, spi, doi, proto, type, ptr, datalen));
 }
 
+#ifdef notyet
 boolean_t
 pkt_add_cert(pkt_t *restrict pkt, uint8_t paytype, uint8_t encoding,
     const void *data, size_t datalen)
@@ -680,6 +681,7 @@ pkt_add_cert(pkt_t *restrict pkt, uint8_t paytype, uint8_t encoding,
 	VERIFY(pkt_append_data(pkt, data, datalen));
 	return (B_TRUE);
 }
+#endif
 
 /* pops off all the callbacks in preparation for sending */
 boolean_t
@@ -949,7 +951,7 @@ pkt_free(pkt_t *pkt)
 		umem_free(pkt->pkt_notify_extra, len);
 	}
 
-	pkt_ctor(pkt, NULL, 0);
+	(void) pkt_ctor(pkt, NULL, 0);
 	umem_cache_free(pkt_cache, pkt);
 }
 

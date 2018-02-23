@@ -40,14 +40,12 @@
 /* Is the child SA we're creating transport mode? */
 #define	TRANSPORT_MODE(csa) ((csa)->i2a_child[0].csa_child->i2c_transport)
 
-static boolean_t ikev2_create_child_sa_init_common(ikev2_sa_t *restrict,
-    pkt_t *restrict req, ikev2_sa_args_t *restrict);
+static boolean_t ikev2_create_child_sa_init_common(pkt_t *restrict req,
+    ikev2_sa_args_t *restrict);
 static boolean_t ikev2_create_child_sa_resp_common(pkt_t *restrict,
     pkt_t *restrict, ikev2_sa_args_t *restrict);
 
 static void ikev2_create_child_sa_init_resp(ikev2_sa_t *restrict,
-    pkt_t *restrict, void *restrict);
-static void ikev2_rekey_child_sa_init_resp(ikev2_sa_t *restrict,
     pkt_t *restrict, void *restrict);
 static void ikev2_create_child_sa_init_resp_common(ikev2_sa_t *restrict,
     pkt_t *restrict, void *restrict);
@@ -64,17 +62,8 @@ static boolean_t ikev2_sa_check_acquire(parsedmsg_t *restrict, ikev2_dh_t,
 static boolean_t add_ts_init(pkt_t *restrict, parsedmsg_t *restrict);
 static boolean_t add_ts_resp(pkt_t *restrict, const ts_t *restrict,
     const ts_t *restrict);
-static void resp_set_child_addr(ikev2_child_sa_t *restrict,
-    ikev2_child_sa_t *restrict, struct sockaddr_storage *restrict, uint8_t,
-    boolean_t);
-static boolean_t add_ts_resp_one(pkt_payload_t *restrict,
-    sadb_address_t *restrict, pkt_t *restrict,
-    struct sockaddr_storage *restrict, uint8_t *restrict);
 
 static boolean_t generate_keys(ikev2_sa_t *restrict, ikev2_sa_args_t *);
-static boolean_t create_keymat(ikev2_sa_t *restrict, boolean_t,
-    uint8_t *restrict, size_t,
-    uint8_t *restrict, size_t, prfp_t *restrict);
 static boolean_t ikev2_create_child_sas(ikev2_sa_t *restrict,
     ikev2_sa_args_t *restrict);
 static void ikev2_save_child_results(ikev2_child_sa_state_t *restrict,
@@ -86,8 +75,6 @@ static void ikev2_set_child_type(ikev2_child_sa_state_t *restrict, boolean_t,
 
 static void check_natt_addrs(pkt_t *restrict, boolean_t);
 static sadb_address_t *get_sadb_addr(parsedmsg_t *, boolean_t);
-static void ikev2_rekey_delete_old_kids(ikev2_sa_t *restrict,
-    ikev2_sa_args_t *restrict);
 
 /*
  * We are the initiator for an IKE_AUTH exchange, and are performing the
@@ -108,7 +95,7 @@ ikev2_create_child_sa_init_auth(ikev2_sa_t *restrict sa, pkt_t *restrict req)
 	csa->i2a_is_auth = B_TRUE;
 	csa->i2a_dh = IKEV2_DH_NONE;
 
-	return (ikev2_create_child_sa_init_common(sa, req, csa));
+	return (ikev2_create_child_sa_init_common(req, csa));
 }
 
 /* We are the initiator in a CREATE_CHILD_SA exchange */
@@ -153,7 +140,7 @@ ikev2_create_child_sa_init(ikev2_sa_t *restrict sa, parsedmsg_t *restrict pmsg)
 	if (req == NULL)
 		goto fail;
 
-	if (!ikev2_create_child_sa_init_common(sa, req, csa)) {
+	if (!ikev2_create_child_sa_init_common(req, csa)) {
 		ikev2_pkt_free(req);
 		goto fail;
 	}
@@ -246,7 +233,7 @@ ikev2_rekey_child_sa_init(ikev2_sa_t *restrict sa, parsedmsg_t *restrict pmsg)
 	VERIFY(ikev2_add_notify_full(req, satype, spi, IKEV2_N_REKEY_SA,
 	    NULL, 0));
 
-	if (!ikev2_create_child_sa_init_common(sa, req, args)) {
+	if (!ikev2_create_child_sa_init_common(req, args)) {
 		ikev2_pkt_free(req);
 		goto fail;
 	}
@@ -263,20 +250,17 @@ fail:
 
 /* We are the initiator, shared bits for IKE_AUTH and CREATE_CHILD_SA */
 static boolean_t
-ikev2_create_child_sa_init_common(ikev2_sa_t *restrict sa, pkt_t *restrict req,
+ikev2_create_child_sa_init_common(pkt_t *restrict req,
     ikev2_sa_args_t *restrict csa)
 {
 	parsedmsg_t *pmsg = csa->i2a_pmsg;
 	ikev2_dh_t dh = csa->i2a_dh;
-	ikev2_spi_proto_t proto;
 	uint32_t spi = 0;
 	uint8_t satype = csa->i2a_sadb_msg->sadb_msg_satype;
 	boolean_t transport_mode = PMSG_IS_TRANSPORT(pmsg);
 
 	csa->i2a_child[CSA_IN].csa_child->i2c_transport = transport_mode;
 	csa->i2a_child[CSA_OUT].csa_child->i2c_transport = transport_mode;
-
-	proto = satype_to_ikev2(satype);
 
 	if (!pfkey_getspi(pmsg, satype, &spi)) {
 		goto fail;
@@ -460,8 +444,8 @@ ikev2_create_child_sa_resp_common(pkt_t *restrict req, pkt_t *restrict resp,
 		return (B_TRUE);
 	}
 
-	sadb_to_ts(get_sadb_addr(pmsg, B_FALSE), &ts_i);
-	sadb_to_ts(get_sadb_addr(pmsg, B_TRUE), &ts_r);
+	(void) sadb_to_ts(get_sadb_addr(pmsg, B_FALSE), &ts_i);
+	(void) sadb_to_ts(get_sadb_addr(pmsg, B_TRUE), &ts_r);
 
 	if (!ts_negotiate(req, &ts_i, &ts_r, &narrowed)) {
 		if (!ikev2_add_notify(resp, IKEV2_N_TS_UNACCEPTABLE))
@@ -661,8 +645,8 @@ ikev2_create_child_sa_init_resp_common(ikev2_sa_t *restrict i2sa,
 	if (csa->i2a_is_auth)
 		check_natt_addrs(resp, TRANSPORT_MODE(csa));
 
-	sadb_to_ts(get_sadb_addr(pmsg, B_TRUE), &ts_i);
-	sadb_to_ts(get_sadb_addr(pmsg, B_FALSE), &ts_r);
+	(void) sadb_to_ts(get_sadb_addr(pmsg, B_TRUE), &ts_i);
+	(void) sadb_to_ts(get_sadb_addr(pmsg, B_FALSE), &ts_r);
 
 	if (!ts_negotiate(resp, &ts_i, &ts_r, &narrowed)) {
 		(void) bunyan_warn(log,
@@ -799,6 +783,7 @@ ikev2_handle_delete(ikev2_sa_t *restrict i2sa, pkt_payload_t *restrict delpay,
 {
 	VERIFY3U(delpay->pp_type, ==, IKEV2_PAYLOAD_DELETE);
 	ikev2_delete_t *del = (ikev2_delete_t *)delpay->pp_ptr;
+	/* LINTED E_BAD_PTR_CAST_ALIGN */
 	uint32_t *spiptr = (uint32_t *)(del + 1);
 	uint64_t *spiresp = NULL;
 	struct sockaddr_storage src = { 0 };
@@ -1077,7 +1062,6 @@ static boolean_t
 ikev2_sa_select_ecomb(sadb_x_ecomb_t *restrict ecomb, ikev2_dh_t dh,
     pkt_payload_t *restrict sa, uint_t satype, ikev2_sa_match_t *restrict m)
 {
-	sadb_x_algdesc_t *alg = NULL;
 	ikev2_sa_proposal_t *i2prop = NULL;
 
 	(void) bunyan_debug(log, "Checking proposals for satype",
@@ -1370,6 +1354,10 @@ ikev2_sa_select_encr_attr(sadb_x_algdesc_t *restrict alg,
 
 		if (IKE_ATTR_GET_TYPE(attr_type) == IKE_ATTR_TV)
 			tv = B_TRUE;
+
+		/* Any potential TLV attributes are unsupported */
+		if (!tv)
+			return (B_FALSE);
 
 		attr_type = IKE_ATTR_GET_TYPE(attr_type);
 
@@ -1744,6 +1732,13 @@ get_resp_policy(pkt_t *restrict pkt, boolean_t transport_mode,
 static void
 check_natt_addrs(pkt_t *restrict pkt, boolean_t transport_mode)
 {
+#ifdef lint
+	/* Temporary dummy code */
+	if (pkt != NULL)
+		return;
+	if (transport_mode)
+		return;
+#endif
 	/*
 	 * TODO: Check TSi[0] and TSr[0] in pkt.  If #TS > 1 (i.e.
 	 * TS{i,r}[0] is the OPS/OPD), compare with ikev2_sa_t->{l,r}addr
@@ -1800,7 +1795,7 @@ ikev2_create_child_sas(ikev2_sa_t *restrict sa, ikev2_sa_args_t *restrict args)
 	ikev2_child_sa_state_t *kid = args->i2a_child;
 
 	/* We always create IPsec SAs in pairs, so there's _always_ 2 */
-	for (size_t i = 0; i < 2; i++, kid) {
+	for (size_t i = 0; i < 2; i++) {
 		ikev2_child_sa_t *csa = kid[i].csa_child;
 
 

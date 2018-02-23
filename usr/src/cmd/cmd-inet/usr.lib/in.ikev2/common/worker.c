@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright (c) 2017 Joyent, Inc.
+ * Copyright 2018, Joyent, Inc.
  */
 
 #include <bunyan.h>
@@ -82,7 +82,6 @@ static list_t workers;
 static worker_state_t worker_state;
 static volatile uint_t wk_nsuspended;
 
-static worker_t *worker_new(void);
 static void worker_free(worker_t *);
 static void *worker_main(void *);
 static const char *worker_cmd_str(worker_cmd_t);
@@ -115,6 +114,13 @@ worker_init(size_t n)
 	(void) bunyan_trace(log, "Worker threads created",
 	    BUNYAN_T_UINT32, "numworkers", (uint32_t)wk_nworkers,
 	    BUNYAN_T_END);
+}
+
+void
+worker_fini(void)
+{
+	periodic_fini(wk_periodic);
+	(void) close(wk_evport);
 }
 
 boolean_t
@@ -221,7 +227,7 @@ again:
 		return;
 	/* If we're resuming, wait until it's finished and retry */
 	case WS_RESUMING:
-		cond_wait(&worker_cv, &worker_lock);
+		VERIFY0(cond_wait(&worker_cv, &worker_lock));
 		goto again;
 	}
 
@@ -259,7 +265,7 @@ again:
 }
 
 static void
-worker_do_suspend(worker_t *w)
+worker_do_suspend(void)
 {
 	VERIFY(IS_WORKER);
 
@@ -377,7 +383,7 @@ worker_main(void *arg)
 			    "Dispatching fd event to handler",
 			    BUNYAN_T_INT32, "fd", (int32_t)fd,
 			    BUNYAN_T_STRING, "handler",
-			    symstr(fn, buf, sizeof (buf)),
+			    symstr((void *)fn, buf, sizeof (buf)),
 			    BUNYAN_T_END);
 
 			fn(fd);
@@ -414,7 +420,7 @@ do_alert(int events, void *user)
 	case WA_NONE:
 		return;
 	case WA_SUSPEND:
-		worker_do_suspend(worker);
+		worker_do_suspend();
 		return;
 	}
 }
@@ -423,8 +429,6 @@ static void
 do_user(int events, void *user)
 {
 	VERIFY(IS_WORKER);
-
-	ikev2_sa_t *sa = user;
 
 	(void) bunyan_trace(log, "Received user event",
 	    BUNYAN_T_STRING, "event", worker_cmd_str(events),

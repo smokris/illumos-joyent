@@ -206,6 +206,8 @@ extern int delete_ps(preshared_entry_t *);
  */
 extern int write_preshared(int, char **);
 
+extern void preshared_reload(void);
+
 #ifdef	__cplusplus
 }
 #endif

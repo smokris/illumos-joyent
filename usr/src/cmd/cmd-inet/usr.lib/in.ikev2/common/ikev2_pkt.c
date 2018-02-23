@@ -50,7 +50,6 @@ ikev2_pkt_new_exchange(ikev2_sa_t *i2sa, ikev2_exch_t exch_type)
 	pkt_t *pkt = NULL;
 	uint32_t msgid = 0;
 	uint8_t flags = 0;
-	const char *exchstr = NULL;
 
 	VERIFY(MUTEX_HELD(&i2sa->i2sa_lock));
 
@@ -148,7 +147,6 @@ ikev2_pkt_new_inbound(void *restrict buf, size_t buflen)
 	const char		*pktkey = NULL;
 	const ike_header_t	*hdr = NULL;
 	pkt_t			*pkt = NULL;
-	size_t			i = 0;
 
 	VERIFY(IS_WORKER);
 
@@ -226,7 +224,6 @@ static boolean_t
 ikev2_add_payload(pkt_t *pkt, ikev2_pay_type_t ptype, boolean_t critical,
     size_t len)
 {
-	uint8_t *payptr;
 	uint8_t resv = 0;
 
 	ASSERT(IKEV2_VALID_PAYLOAD(ptype));
@@ -280,7 +277,6 @@ ikev2_add_xf_encr(pkt_sa_state_t *pss, ikev2_xf_encr_t encr, uint16_t minbits,
     uint16_t maxbits)
 {
 	const encr_data_t *ed = encr_data(encr);
-	uint16_t incr = 0;
 	boolean_t ok = B_TRUE;
 
 	if (encr == IKEV2_ENCR_NONE || encr == IKEV2_ENCR_NULL) {
@@ -428,30 +424,7 @@ ikev2_add_id(pkt_t *restrict pkt, boolean_t initiator, ikev2_id_type_t idtype,
 	return (ret);
 }
 
-boolean_t
-ikev2_add_id_i(pkt_t *restrict pkt, ikev2_id_type_t idtype, ...)
-{
-	va_list ap;
-	boolean_t ret;
-
-	va_start(ap, idtype);
-	ret = ikev2_add_id_common(pkt, B_TRUE, idtype, ap);
-	va_end(ap);
-	return (ret);
-}
-
-boolean_t
-ikev2_add_id_r(pkt_t *restrict pkt, ikev2_id_type_t idtype, ...)
-{
-	va_list ap;
-	boolean_t ret;
-
-	va_start(ap, idtype);
-	ret = ikev2_add_id_common(pkt, B_FALSE, idtype, ap);
-	va_end(ap);
-	return (ret);
-}
-
+#ifdef notyet
 boolean_t
 ikev2_add_cert(pkt_t *restrict pkt, ikev2_cert_t cert_type, const uint8_t *cert,
     size_t len)
@@ -465,6 +438,7 @@ ikev2_add_certreq(pkt_t *restrict pkt, ikev2_cert_t cert_type,
 {
 	return (pkt_add_cert(pkt, IKEV2_PAYLOAD_CERTREQ, cert_type, cert, len));
 }
+#endif
 
 boolean_t
 ikev2_add_auth(pkt_t *restrict pkt, ikev2_auth_type_t auth_method,
@@ -510,9 +484,6 @@ ikev2_add_notify(pkt_t *restrict pkt, ikev2_notify_type_t type)
 {
 	return (ikev2_add_notify_full(pkt, IKEV2_PROTO_NONE, 0, type, NULL, 0));
 }
-
-static boolean_t delete_finish(pkt_t *restrict, uint8_t *restrict, uintptr_t,
-    size_t);
 
 boolean_t
 ikev2_add_delete(pkt_t *restrict pkt, ikev2_spi_proto_t proto,
@@ -775,9 +746,6 @@ static boolean_t add_iv(pkt_t *restrict pkt);
 boolean_t
 ikev2_add_sk(pkt_t *restrict pkt)
 {
-	ikev2_sa_t *sa = pkt->pkt_sa;
-	ikev2_payload_t *payp = (ikev2_payload_t *)pkt->pkt_ptr;
-
 	if (!ikev2_add_payload(pkt, IKEV2_PAYLOAD_SK, B_FALSE, 0))
 		return (B_FALSE);
 
@@ -886,6 +854,7 @@ add_iv(pkt_t *restrict pkt)
 	return (B_TRUE);
 }
 
+#ifdef notyet
 boolean_t
 ikev2_add_config(pkt_t *pkt, ikev2_cfg_type_t cfg_type)
 {
@@ -900,6 +869,7 @@ ikev2_add_config_attr(pkt_t *restrict pkt,
 	/* TODO */
 	return (B_FALSE);
 }
+#endif
 
 boolean_t
 ikev2_pkt_encryptdecrypt(pkt_t *pkt, boolean_t encrypt)
@@ -920,7 +890,6 @@ ikev2_pkt_encryptdecrypt(pkt_t *pkt, boolean_t encrypt)
 	CK_BYTE_PTR salt = NULL, iv = NULL, data = NULL, icv = NULL;
 	CK_ULONG ivlen = ed->ed_blocklen;
 	CK_ULONG icvlen = ikev2_auth_icv_size(sa->encr, sa->auth);
-	CK_ULONG blocklen = ed->ed_blocklen;
 	CK_ULONG noncelen = ivlen + SADB_1TO8(sa->saltlen);
 	CK_ULONG datalen = 0, outlen = 0;
 	CK_BYTE nonce[noncelen];
@@ -1090,8 +1059,6 @@ ikev2_pkt_signverify(pkt_t *pkt, boolean_t sign)
 	if (MODE_IS_COMBINED(ed->ed_mode))
 		return (B_TRUE);
 
-	const char *fn = NULL;
-	pkt_payload_t *sk = pkt_get_payload(pkt, IKEV2_PAYLOAD_SK, NULL);
 	CK_SESSION_HANDLE h = p11h();
 	CK_OBJECT_HANDLE key;
 	CK_MECHANISM mech = {
@@ -1402,12 +1369,11 @@ ikev2_dh_t
 ikev2_get_dhgrp(pkt_t *pkt)
 {
 	pkt_payload_t *ke = pkt_get_payload(pkt, IKEV2_PAYLOAD_KE, NULL);
-	uint16_t val = 0;
 
 	if (ke == NULL)
 		return (IKEV2_DH_NONE);
 
-	VERIFY3U(ke->pp_len, >, sizeof (val));
+	VERIFY3U(ke->pp_len, >, sizeof (uint16_t));
 	return (BE_IN16(ke->pp_ptr));
 }
 

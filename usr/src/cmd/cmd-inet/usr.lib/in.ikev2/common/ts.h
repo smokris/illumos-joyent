@@ -30,7 +30,6 @@ struct ikev2_pkt_ts_state;
 struct sadb_address;
 struct sockaddr_storage;
 struct bunyan_logger;
-enum bunyan_level;
 
 /*
  * A representation of traffic selectors that better matches what the kernel

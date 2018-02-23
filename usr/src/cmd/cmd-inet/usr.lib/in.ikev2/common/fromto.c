@@ -54,16 +54,6 @@
 #include "fromto.h"
 #include "ike.h"
 
-#ifdef lint
-/*
- * Since this file uses XTI sockets, it also defines boolean_t with values
- * _B_FALSE and _B_TRUE instead of the typical B_FALSE/B_TRUE.  This keeps
- * lint from complaining about conflicting definitions.
- */
-#define	_B_FALSE B_FALSE
-#define	_B_TRUE B_TRUE
-#endif
-
 /*
  * Receive packet, with src/dst information.  It is assumed that necessary
  * setsockopt()s (e.g. IP_SEC_OPT(NEVER)) have already performed on socket.
@@ -249,13 +239,14 @@ sendfromto(int s, const uint8_t *restrict buf, size_t buflen,
 		/* v6 setup */
 		struct sockaddr_in6 *src6;
 
+		/* LINTED E_BAD_PTR_CAST_ALIGN */
 		src6 = (struct sockaddr_in6 *)src;
 		m.msg_namelen = sizeof (*src6);
 		m.msg_controllen = CMSG_SPACE(sizeof (*pi6));
 		cm->cmsg_len = CMSG_LEN(sizeof (*pi6));
 		cm->cmsg_level = IPPROTO_IPV6;
 		cm->cmsg_type = IPV6_PKTINFO;
-		/* LINTED */
+		/* LINTED E_BAD_PTR_CAST_ALIGN */
 		pi6 = (struct in6_pktinfo *)CMSG_DATA(cm);
 		pi6->ipi6_addr = src6->sin6_addr;
 		if (IN6_IS_ADDR_LINKLOCAL(&src6->sin6_addr)) {
@@ -267,13 +258,14 @@ sendfromto(int s, const uint8_t *restrict buf, size_t buflen,
 		/* v4 setup */
 		struct sockaddr_in *src4;
 
+		/* LINTED E_BAD_PTR_CAST_ALIGN */
 		src4 = (struct sockaddr_in *)src;
 		m.msg_namelen = sizeof (*src4);
 		m.msg_controllen = CMSG_SPACE(sizeof (*pi));
 		cm->cmsg_len = CMSG_LEN(sizeof (*pi));
 		cm->cmsg_level = IPPROTO_IP;
 		cm->cmsg_type = IP_PKTINFO;
-		/* LINTED */
+		/* LINTED E_BAD_PTR_CAST_ALIGN */
 		pi = (struct in_pktinfo *)CMSG_DATA(cm);
 		pi->ipi_addr = src4->sin_addr;
 		/* Zero out the other fields for IPv4. */

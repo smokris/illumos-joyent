@@ -239,7 +239,7 @@ prfplus_update(prfp_t *prfp)
 	VERIFY3U(prfp->prfp_n, >, 0);
 
 	if (prfp->prfp_n == PRFP_ITER_MAX) {
-		bunyan_error(log,
+		(void) bunyan_error(log,
 		    "prf+ iteration count reached max (0xff)", BUNYAN_T_END);
 		return (B_FALSE);
 	}

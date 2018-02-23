@@ -1,4 +1,3 @@
-
 /*
  * CDDL HEADER START
  *
@@ -173,6 +172,22 @@ uint8_t ss_addrbits(const struct sockaddr *);
 #define	LOG_KEY_MSGID	"msgid"
 #define	LOG_KEY_EXCHTYPE "exch_type"
 
+#ifdef lint
+/*
+ * Currently, we cannot have both __EXTENSIONS__ and XTI sockets enabled
+ * (sigh...).  We need XTI sockets for fromto.c, but it also means we
+ * have to use _B_{TRUE,FALSE} which is confusing (as everyone expects
+ * B_{TRUE,FALSE}.
+ *
+ * We fix this during build by only defining XOPEN_SOURCE=600
+ * when building fromto.c, however that makes our old friend lint quite irate.
+ * So we pull the wool over lints eyes to make it happy.  We do this here
+ * since everything pulls this file in.
+ */
+#define	B_TRUE _B_TRUE
+#define	B_FALSE _B_FALSE
+#endif
+
 /* cstyle cannot handle ## __VA_ARGS */
 /* BEGIN CSTYLED */
 #define	TSTDERR(_e, _lvl, _msg, ...)			\
@@ -194,9 +209,6 @@ typedef enum event {
 	EVENT_NONE,
 	EVENT_SIGNAL,
 } event_t;
-
-/* Required for libipsecutils */
-extern char *my_fmri;
 
 extern int main_port;
 extern boolean_t show_keys;

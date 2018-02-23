@@ -10,11 +10,12 @@
  */
 
 /*
- * Copyright (c) 2017 Joyent, Inc.
+ * Copyright 2018, Joyent, Inc.
  */
 
 #include <bunyan.h>
 #include <errno.h>
+#include <note.h>
 #include <strings.h>
 #include <synch.h>
 #include <sys/debug.h>
@@ -35,7 +36,7 @@
 
 static void ikev2_ike_auth_init_resp(ikev2_sa_t *restrict, pkt_t *restrict,
     void *restrict);
-static boolean_t ikev2_auth_failed(ikev2_sa_t *);
+static void ikev2_auth_failed(ikev2_sa_t *);
 static boolean_t create_psk(ikev2_sa_t *);
 static boolean_t calc_auth(ikev2_sa_t *restrict, boolean_t,
     pkt_payload_t *restrict, uint8_t *restrict, size_t);
@@ -276,7 +277,6 @@ static void
 ikev2_ike_auth_init_resp(ikev2_sa_t *restrict sa, pkt_t *restrict resp,
     void *restrict arg)
 {
-	ikev2_sa_args_t *sa_args = arg;
 	config_id_t *cid_r = NULL;
 	const char *mstr = NULL;
 
@@ -353,7 +353,6 @@ add_auth(pkt_t *pkt)
 {
 	ikev2_sa_t *sa = pkt->pkt_sa;
 	pkt_payload_t *payid = NULL;
-	config_id_t *cid = NULL;
 	size_t authlen = get_authlen(sa);
 	boolean_t initiator = I2P_INITIATOR(pkt);
 	boolean_t ret = B_FALSE;
@@ -473,7 +472,6 @@ calc_auth(ikev2_sa_t *restrict sa, boolean_t initiator,
 	size_t noncelen = 0, initlen = 0;
 	size_t maclen = ikev2_prf_outlen(sa->prf);
 	CK_OBJECT_HANDLE mackey;
-	CK_RV rc;
 	boolean_t ret = B_FALSE;
 	/* This is at most 64 bytes */
 	uint8_t mac[maclen];
@@ -829,10 +827,13 @@ static void
 ikev2_auth_failed_reply(ikev2_sa_t *restrict i2sa __unused,
     pkt_t *restrict resp __unused, void *arg __unused)
 {
+	NOTE(ARGUNUSED(i2sa))
+	NOTE(ARGUNUSED(resp))
+	NOTE(ARGUNUSED(arg))
 }
 
 /* Kick off the INFORMATINOAL exchange */
-static boolean_t
+static void
 ikev2_auth_failed(ikev2_sa_t *i2sa)
 {
 	pkt_t *msg = ikev2_pkt_new_exchange(i2sa, IKEV2_EXCH_INFORMATIONAL);
@@ -843,11 +844,11 @@ ikev2_auth_failed(ikev2_sa_t *i2sa)
 		(void) bunyan_error(log,
 		    "No memory to send AUTHENTICATION_FAILED notification",
 		    BUNYAN_T_END);
-		return (B_FALSE);
+		return;
 	}
 
 	VERIFY(ikev2_add_notify(msg, IKEV2_N_AUTHENTICATION_FAILED));
-	return (ikev2_send_req(msg, ikev2_auth_failed_reply, NULL));
+	(void) ikev2_send_req(msg, ikev2_auth_failed_reply, NULL);
 }
 
 /*
@@ -855,8 +856,9 @@ ikev2_auth_failed(ikev2_sa_t *i2sa)
  * exchange
  */
 boolean_t
-ikev2_auth_failed_resp(pkt_t *restrict req, pkt_t *restrict resp)
+ikev2_auth_failed_resp(pkt_t *restrict req, pkt_t *restrict resp __unused)
 {
+	NOTE(ARGUNUSED(resp))
 	ikev2_sa_t *i2sa = req->pkt_sa;
 
 	(void) bunyan_warn(log,

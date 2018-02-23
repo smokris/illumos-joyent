@@ -1972,7 +1972,7 @@ preshared_init(boolean_t ignore_errors)
 	const char *filename = PRESHARED_KEY_FILE;
 	char *errorstr;
 
-	bunyan_info(log, "Loading preshared keys", BUNYAN_T_END);
+	(void) bunyan_info(log, "Loading preshared keys", BUNYAN_T_END);
 	errorstr = preshared_load(filename, -1, B_TRUE);
 
 	if (errorstr != NULL) {
@@ -1983,7 +1983,7 @@ preshared_init(boolean_t ignore_errors)
 		 * Debug logging already taken care of by other functions.
 		 * Don't exit because we want to load other policy.
 		 */
-		bunyan_error(log, "Error reading preshared file",
+		(void) bunyan_error(log, "Error reading preshared file",
 		    BUNYAN_T_STRING, "filename", filename,
 		    BUNYAN_T_STRING, "errmsg", errorstr);
 		if (!ignore_errors)

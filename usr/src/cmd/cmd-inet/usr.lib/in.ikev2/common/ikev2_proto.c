@@ -378,7 +378,6 @@ ikev2_sa_init_cfg(config_rule_t *rule)
 	parsedmsg_t *pmsg = NULL;
 	ts_t src = { .ts_proto = IPPROTO_IP };
 	ts_t dst = { .ts_proto = IPPROTO_IP };
-	size_t len = 0;
 
 	if (!config_addr_to_ss(&rule->rule_local_addr[0], &src.ts_ss))
 		goto fail;
@@ -451,7 +450,6 @@ ikev2_send_common(pkt_t *restrict pkt,
     const struct sockaddr *restrict raddr,
     boolean_t nat_is_known)
 {
-	ikev2_sa_t *sa = pkt->pkt_sa;
 	ike_header_t *hdr = pkt_header(pkt);
 	custr_t *desc = NULL;
 	ssize_t len = 0;
@@ -494,7 +492,6 @@ ikev2_send_req(pkt_t *restrict req, ikev2_send_cb_t cb, void *restrict arg)
 	ikev2_sa_t *i2sa = req->pkt_sa;
 	i2sa_req_t *i2req = &i2sa->last_req;
 	hrtime_t retry = config->cfg_retry_init;
-	int s = -1;
 
 	VERIFY(IS_WORKER);
 	VERIFY(!MUTEX_HELD(&i2sa->i2sa_queue_lock));
@@ -535,7 +532,7 @@ ikev2_send_req(pkt_t *restrict req, ikev2_send_cb_t cb, void *restrict arg)
 	 */
 	i2req->i2r_pkt = req;
 	i2req->i2r_msgid = ntohl(pkt_header(req)->msgid);
-	i2req->i2r_cb = cb;
+	i2req->i2r_cb = (void *)cb;
 	i2req->i2r_arg = arg;
 
 	if (!ikev2_sa_arm_timer(i2sa, retry, I2SA_EVT_PKT_XMIT, i2req)) {
@@ -601,11 +598,6 @@ ikev2_send_resp_addr(pkt_t *restrict resp,
     const struct sockaddr *restrict laddr,
     const struct sockaddr *restrict raddr)
 {
-	ike_header_t *hdr = pkt_header(resp);
-	custr_t *desc = NULL;
-	ssize_t len = 0;
-	int s = -1;
-
 	VERIFY(IS_WORKER);
 	VERIFY(I2P_RESPONSE(resp));
 	VERIFY3P(resp->pkt_sa, ==, NULL);
@@ -667,7 +659,7 @@ ikev2_retransmit(ikev2_sa_t *restrict sa, i2sa_req_t *restrict req)
 		retry = retry_max;
 
 	if (pkt->pkt_xmit > limit) {
-		ikev2_send_cb_t cb = req->i2r_cb;
+		ikev2_send_cb_t cb = (ikev2_send_cb_t)req->i2r_cb;
 
 		cb(sa, NULL, req->i2r_arg);
 
@@ -888,7 +880,6 @@ ikev2_handle_retransmit(pkt_t *req)
 {
 	ikev2_sa_t *i2sa = req->pkt_sa;
 	pkt_t *resp = NULL;
-	uint32_t msgid = ntohl(pkt_header(req)->msgid);
 
 	VERIFY(!MUTEX_HELD(&i2sa->i2sa_queue_lock));
 	VERIFY(MUTEX_HELD(&i2sa->i2sa_lock));
@@ -900,8 +891,8 @@ ikev2_handle_retransmit(pkt_t *req)
 		return (B_FALSE);
 
 	(void) bunyan_debug(log, "Resending last response", BUNYAN_T_END);
-	ikev2_send_common(resp, SSTOSA(&i2sa->laddr), SSTOSA(&i2sa->raddr),
-	    I2SA_IS_NAT(i2sa));
+	(void) ikev2_send_common(resp, SSTOSA(&i2sa->laddr),
+	    SSTOSA(&i2sa->raddr), I2SA_IS_NAT(i2sa));
 	ikev2_pkt_free(req);
 	return (B_TRUE);
 }
@@ -912,8 +903,7 @@ ikev2_handle_response(pkt_t *resp)
 {
 	ikev2_sa_t *i2sa = resp->pkt_sa;
 	i2sa_req_t *i2req = &i2sa->last_req;
-	pkt_t *last = i2req->i2r_pkt;
-	ikev2_send_cb_t cb = i2req->i2r_cb;
+	ikev2_send_cb_t cb = (ikev2_send_cb_t)i2req->i2r_cb;
 	void *arg = i2req->i2r_arg;
 	uint32_t msgid = ntohl(pkt_header(resp)->msgid);
 	ikev2_exch_t exch_type;

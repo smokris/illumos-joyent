@@ -51,8 +51,6 @@ static ikev2_prf_t prf_supported[] = {
 	IKEV2_PRF_HMAC_MD5
 };
 
-static void log_acq_match(ikev2_sa_match_t *);
-
 ikev2_xf_auth_t
 ikev2_pfkey_to_auth(int alg)
 {
@@ -118,10 +116,10 @@ ikev2_sa_from_rule(pkt_t *restrict pkt, const config_rule_t *restrict rule,
 	if (!ikev2_add_sa(pkt, &pss))
 		return (B_FALSE);
 
-	for (uint8_t i = 0; rule->rule_xf[i] != NULL; i++) {
+	for (uint8_t i = 0; xf[i] != NULL; i++) {
 		/* RFC 7296 3.3.1 - Proposal numbers start with 1 */
 		ok &= ikev2_add_prop(&pss, i + 1, IKEV2_PROTO_IKE, spi);
-		ok &= add_rule_xform(&pss, rule->rule_xf[i]);
+		ok &= add_rule_xform(&pss, xf[i]);
 	}
 
 	return (ok);
@@ -182,8 +180,7 @@ static boolean_t ikev2_sa_match_prop(config_xf_t *restrict,
     ikev2_sa_proposal_t *restrict, ikev2_sa_match_t *restrict, boolean_t);
 static boolean_t ikev2_sa_match_encr_attr(config_xf_t *restrict,
     ikev2_transform_t *restrict, ikev2_sa_match_t *restrict);
-static boolean_t ikev2_sa_match_attr(config_xf_t *restrict,
-    ikev2_transform_t *restrict, ikev2_sa_match_t *restrict);
+static boolean_t ikev2_sa_match_attr(ikev2_transform_t *restrict);
 
 /*
  * Try to match a config_xf_t from a config_rule_t to an SA proposal
@@ -331,7 +328,7 @@ ikev2_sa_match_prop(config_xf_t *restrict rxf,
 			if (BE_IN16(&xf->xf_id) != prf_supported[i])
 				continue;
 
-			if (!ikev2_sa_match_attr(rxf, xf, m))
+			if (!ikev2_sa_match_attr(xf))
 				continue;
 
 			(void) bunyan_debug(log, "Transform match",
@@ -438,7 +435,7 @@ ikev2_sa_match_prop(config_xf_t *restrict rxf,
 			if (rxf->xf_auth != val)
 				continue;
 
-			if (!ikev2_sa_match_attr(rxf, xf, m))
+			if (!ikev2_sa_match_attr(xf))
 				continue;
 
 			m->ism_auth = val;
@@ -448,7 +445,7 @@ ikev2_sa_match_prop(config_xf_t *restrict rxf,
 			if (rxf->xf_dh != val)
 				continue;
 
-			if (!ikev2_sa_match_attr(rxf, xf, m))
+			if (!ikev2_sa_match_attr(xf))
 				continue;
 
 			m->ism_dh = val;
@@ -468,7 +465,6 @@ ikev2_sa_match_prop(config_xf_t *restrict rxf,
 
 	if (SA_MATCH(m)) {
 		const encr_data_t *ed = encr_data(m->ism_encr);
-		const auth_data_t *ad = auth_data(m->ism_auth);
 
 		/*
 		 * Keylengths can be mandatory, optional, or prohibited
@@ -598,6 +594,18 @@ ikev2_sa_match_encr_attr(config_xf_t *restrict rxf,
 		if (!encr_keylen_ok(ed, len))
 			return (B_FALSE);
 
+		if (rxf->xf_minbits > len || rxf->xf_maxbits < len) {
+			(void) bunyan_debug(log,
+			    "Encryption keylength does not match",
+			    BUNYAN_T_UINT32, "keylen", (uint32_t)len,
+			    BUNYAN_T_UINT32, "keymin",
+			    (uint32_t)rxf->xf_minbits,
+			    BUNYAN_T_UINT32, "keymax",
+			    (uint32_t)rxf->xf_maxbits,
+			    BUNYAN_T_END);
+			return (B_FALSE);
+		}
+
 		m->ism_encr_keylen = len;
 		(void) bunyan_debug(log,
 		    "Encryption keylength matches",
@@ -616,8 +624,7 @@ ikev2_sa_match_encr_attr(config_xf_t *restrict rxf,
  * present, B_TRUE if no attributes are present.
  */
 static boolean_t
-ikev2_sa_match_attr(config_xf_t *restrict rxf,
-    ikev2_transform_t *restrict i2xf, ikev2_sa_match_t *restrict m)
+ikev2_sa_match_attr(ikev2_transform_t *restrict i2xf)
 {
 	if (!XF_HAS_ATTRS(i2xf))
 		return (B_TRUE);
@@ -769,7 +776,7 @@ ikev2_ke(ikev2_sa_args_t *restrict i2a, pkt_t *restrict pkt)
 		hexlen = gir_len * 2 + 1;
 		if (rc == CKR_OK && ((hex = malloc(hexlen)) != NULL)) {
 			bzero(hex, hexlen);
-			writehex(gir, gir_len, "", hex, hexlen);
+			(void) writehex(gir, gir_len, "", hex, hexlen);
 		}
 		explicit_bzero(gir, gir_len);
 		free(gir);

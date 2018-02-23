@@ -88,8 +88,6 @@ static int i2sa_addr_cmp(const void *, const void *);
 static void i2sa_unlink(ikev2_sa_t *);
 static void i2sa_p1_expire(void *);
 
-static boolean_t i2sa_key_add_addr(ikev2_sa_t *, const char *, const char *,
-    const struct sockaddr_storage *);
 static int i2sa_ctor(void *, void *, int);
 static void i2sa_dtor(void *, void *);
 
@@ -365,7 +363,6 @@ static void
 i2sa_p1_expire(void *data)
 {
 	ikev2_sa_t *i2sa = data;
-	int rc;
 
 	I2SA_REFHOLD(i2sa);
 
@@ -467,8 +464,8 @@ ikev2_sa_disarm_timer(ikev2_sa_t *i2sa, i2sa_evt_t event, ...)
 	i2sa_req_t *i2r = NULL;
 	periodic_id_t id = 0;
 	i2sa_evt_t pkt_events = 0;
-	int rc = 0;
 	va_list ap;
+	int rc;
 
 	va_start(ap, event);
 
@@ -518,8 +515,11 @@ ikev2_sa_disarm_timer(ikev2_sa_t *i2sa, i2sa_evt_t event, ...)
 	id = *idp;
 	mutex_exit(&i2sa->i2sa_queue_lock);
 
-	if (id != 0 && (rc = periodic_cancel(wk_periodic, id)) != 0)
-		VERIFY3S(errno, ==, ENOENT);
+	if (id != 0) {
+		rc = periodic_cancel(wk_periodic, id);
+		if (rc != 0)
+			VERIFY3S(errno, ==, ENOENT);
+	}
 
 	mutex_enter(&i2sa->i2sa_queue_lock);
 
@@ -1126,35 +1126,6 @@ i2c_ctor(void *buf, void *dummy __unused, int flags __unused)
 	return (0);
 }
 
-static boolean_t
-i2sa_key_add_addr(ikev2_sa_t *i2sa, const char *addr_key, const char *port_key,
-    const struct sockaddr_storage *addr)
-{
-	sockaddr_u_t sau;
-	sau.sau_ss = (struct sockaddr_storage *)addr;
-	int rc = 0;
-
-	switch (addr->ss_family) {
-	case AF_INET:
-		rc = bunyan_key_add(log,
-		    BUNYAN_T_IP, addr_key, &sau.sau_sin->sin_addr,
-		    BUNYAN_T_UINT32, port_key, (uint32_t)sau.sau_sin->sin_port,
-		    BUNYAN_T_END);
-		break;
-	case AF_INET6:
-		rc = bunyan_key_add(log,
-		    BUNYAN_T_IP6, addr_key, &sau.sau_sin6->sin6_addr,
-		    BUNYAN_T_UINT32, port_key,
-		    (uint32_t)sau.sau_sin6->sin6_port,
-		    BUNYAN_T_END);
-		break;
-	default:
-		INVALID("addr->ss_family");
-	}
-
-	return ((rc == 0) ? B_TRUE : B_FALSE);
-}
-
 const char *
 i2sa_msgtype_str(i2sa_msg_type_t type)
 {
@@ -1336,6 +1307,7 @@ i2sa_addr_cmp(const void *larg, const void *rarg)
 static void
 dummy_dtor(void *arg __unused)
 {
+	NOTE(ARGUNUSED(arg))
 }
 
 void

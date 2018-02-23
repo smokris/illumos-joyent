@@ -408,7 +408,6 @@ sockaddr_cmp(const struct sockaddr *l, const struct sockaddr *r)
 	const uint8_t *lp = ss_addr(l);
 	const uint8_t *rp = ss_addr(r);
 	size_t addrlen = ss_addrlen(l);
-	int cmp = 0;
 
 	if (l->sa_family < r->sa_family)
 		return (-1);

@@ -51,6 +51,7 @@ ikev2_exch_str(ikev2_exch_t id)
 	return (enum_printf("%hhu", (uint8_t)id));
 }
 
+#ifdef notyet
 const char *
 ikev2_pay_str(ikev2_pay_type_t id)
 {
@@ -82,6 +83,7 @@ ikev2_pay_str(ikev2_pay_type_t id)
 
 	return (enum_printf("%hhu", (uint8_t)id));
 }
+#endif
 
 const char *
 ikev2_pay_short_str(ikev2_pay_type_t id)

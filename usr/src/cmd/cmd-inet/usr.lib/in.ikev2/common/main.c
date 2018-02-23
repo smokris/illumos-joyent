@@ -50,6 +50,7 @@ typedef struct lockingfd {
 extern void pkt_init(void);
 extern void pkt_fini(void);
 extern void pfkey_init(void);
+
 static void signal_init(void);
 static void event(event_t, void *);
 static void do_signal(int);
@@ -57,6 +58,7 @@ static void main_loop(int);
 static int ikev2_daemonize(void);
 
 static void do_immediate(void);
+static void load_smf_config(void);
 
 /*
  * The location of the configuration file, dynamically allocated to simplify
@@ -66,6 +68,9 @@ static char *configfile;
 
 static thread_t signal_tid;
 static boolean_t done;
+
+/* Required for libipsecutils */
+extern char *my_fmri;
 
 __thread bunyan_logger_t *log = NULL;
 bunyan_logger_t *main_log = NULL;
@@ -102,6 +107,7 @@ usage(const char *name)
 	exit(1);
 }
 
+#ifndef lint
 #ifdef	DEBUG
 const char *
 _umem_debug_init(void)
@@ -121,6 +127,7 @@ _umem_debug_init(void)
 	return ("guards");
 }
 #endif
+#endif /* lint */
 
 static int
 nofail_cb(void)
@@ -161,13 +168,11 @@ lockingfd_log(nvlist_t *nvl, const char *js, void *arg)
 int
 main(int argc, char **argv)
 {
-	FILE *f = NULL;
 	struct rlimit rlim;
 	int c, rc;
 	int fd = -1;
 	boolean_t debug_mode = B_FALSE;
 	boolean_t check_cfg = B_FALSE;
-	boolean_t parse_ok = B_FALSE;
 
 	(void) setlocale(LC_ALL, "");
 #if !defined(TEXT_DOMAIN)
@@ -184,6 +189,7 @@ main(int argc, char **argv)
 	(void) setrlimit(RLIMIT_CORE, &rlim);
 
 	my_fmri = getenv("SMF_FMRI");
+	load_smf_config();
 
 	while ((c = getopt(argc, argv, "cdf:")) != -1) {
 		switch (c) {
@@ -251,8 +257,12 @@ main(int argc, char **argv)
 
 	main_loop(fd);
 
+	worker_fini();
+	ikev2_sa_fini();
 	pkt_fini();
 	pkcs11_fini();
+
+	(void) bunyan_stream_remove(log, "stdout");
 	return (EXIT_SUCCESS);
 }
 
@@ -353,6 +363,8 @@ reload(void)
 	old_config = config;
 	config = new_config;
 	VERIFY0(rw_unlock(&config_rule_lock));
+
+	preshared_reload();
 
 	worker_resume();
 
@@ -470,7 +482,7 @@ signal_thread(void *arg)
 
 		(void) memset(sigbuf, 0, sizeof (sigbuf));
 		(void) strlcat(sigbuf, "SIG", sizeof (sigbuf));
-		sig2str(signo, sigbuf + 3);
+		(void) sig2str(signo, sigbuf + 3);
 
 		(void) bunyan_info(log, "signal received",
 		    BUNYAN_T_STRING, "signal", sigbuf,

@@ -170,6 +170,7 @@ int ikev2_encr_to_pfkey(ikev2_xf_encr_t);
 
 /* Deal with algorithm name lookups */
 
+#ifdef notyet
 static const char *
 alg_to_string(int doi_number, const algindex_t *algindex)
 {
@@ -197,6 +198,7 @@ kef_alg_to_string(int algnum, int protonum, char *algname)
 	(void) freeipsecalgent(testentry);
 	return (algname);
 }
+#endif
 
 /*
  * The passed in parsedmsg_t looks like this (see defs.h):
@@ -509,7 +511,7 @@ pfkey_send_msg(sadb_msg_t *msg, parsedmsg_t **pmsg, int numexts, ...)
 		case ETIME:
 			free(*pmsg);
 			*pmsg = NULL;
-			bunyan_error(log, "pf_key timeout",
+			(void) bunyan_error(log, "pf_key timeout",
 			    BUNYAN_T_UINT32, "msgid", req.pr_msgid,
 			    BUNYAN_T_END);
 
@@ -528,8 +530,8 @@ pfkey_send_msg(sadb_msg_t *msg, parsedmsg_t **pmsg, int numexts, ...)
 	va_end(ap);
 
 done:
-	mutex_destroy(&req.pr_lock);
-	cond_destroy(&req.pr_cv);
+	VERIFY0(mutex_destroy(&req.pr_lock));
+	VERIFY0(cond_destroy(&req.pr_cv));
 	return (ret);
 }
 
@@ -590,6 +592,7 @@ pfkey_add_ext(sadb_ext_t *dest, uint16_t type, const sadb_ext_t *src)
 	if (type != SADB_EXT_RESERVED)
 		dest->sadb_ext_type = type;
 
+	/* LINTED E_BAD_PTR_CAST_ALIGN */
 	return ((sadb_ext_t *)((uint8_t *)dest + len));
 }
 
@@ -644,6 +647,7 @@ pfkey_add_address(sadb_ext_t *restrict ext, uint16_t type,
 	sadb_addr->sadb_address_prefixlen = prefixlen;
 	sadb_addr->sadb_address_proto = proto;
 
+	/* LINTED E_BAD_PTR_CAST_ALIGN */
 	return ((sadb_ext_t *)((uint8_t *)ext + len));
 }
 
@@ -733,6 +737,7 @@ pfkey_add_identity(sadb_ext_t *restrict ext, uint16_t type,
 	id->sadb_ident_len = SADB_8TO64(len);
 	(void) config_id_str(cid, (char *)(id + 1), len);
 
+	/* LINTED E_BAD_PTR_CAST_ALIGN */
 	return ((sadb_ext_t *)((uint8_t *)ext + len));
 }
 
@@ -758,6 +763,8 @@ pfkey_add_key(sadb_ext_t *restrict ext, uint16_t type, const uint8_t *key,
 	skey->sadb_key_exttype = type;
 	skey->sadb_key_bits = SADB_8TO1(keylen);
 	bcopy(key, skey + 1, keylen);
+
+	/* LINTED E_BAD_PTR_CAST_ALIGN */
 	return ((sadb_ext_t *)((uint8_t *)ext + len));
 }
 
@@ -1213,6 +1220,7 @@ handle_flush(sadb_msg_t *samsg)
 	free(samsg);
 }
 
+#ifdef notyet
 /*
  * Handle the PF_KEY SADB_EXPIRE message for idle timeout.
  *
@@ -1228,6 +1236,7 @@ handle_idle_timeout(sadb_msg_t *samsg)
 	/* XXX KEBE SAYS FILL ME IN! */
 	free(samsg);
 }
+#endif
 
 /*
  * XXX: We can probably simplify a lot of the handle_* functions here and
@@ -1581,7 +1590,7 @@ sadb_log_key(sadb_ext_t *ext)
 	}
 
 	if (show_keys)
-		writehex((uint8_t *)(key + 1), klen, "", str, slen);
+		(void) writehex((uint8_t *)(key + 1), klen, "", str, slen);
 	else
 		(void) strlcpy(str, "xxx", slen);
 

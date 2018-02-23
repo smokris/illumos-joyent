@@ -52,13 +52,10 @@ CMD_OBJS =	config.o		\
 		util.o			\
 		worker.o
 
-COM_OBJS = list.o
-COMDIR = $(SRC)/common/list
 SRCDIR = ../common
 
-OBJS = $(CMD_OBJS) $(COM_OBJS)
-SRCS =	$(CMD_OBJS:%.o=$(SRCDIR)/%.c) \
-	$(COM_OBJS:%.o=$(COMDIR)/%.c)
+OBJS = $(CMD_OBJS)
+SRCS =	$(CMD_OBJS:%.o=$(SRCDIR)/%.c)
 
 include $(SRC)/cmd/Makefile.cmd
 include $(SRC)/cmd/Makefile.ctf
@@ -66,10 +63,13 @@ include $(SRC)/cmd/Makefile.ctf
 CPPFLAGS += -D__EXTENSIONS__
 CPPFLAGS += -D_POSIX_PTHREAD_SEMANTICS
 
-LINTFLAGS += $(C99LMODE) -erroff=E_STATIC_UNUSED
-LINTFLAGS64 += $(C99LMODE) -erroff=E_STATIC_UNUSED
+# Lint doesn't grok GNU ## __VA_ARGS __
+LINTFLAGS += $(C99LMODE) -erroff=E_ARGUEMENT_MISMATCH
+LINTFLAGS64 += $(C99LMODE) -erroff=E_ARGUEMENT_MISMATCH
 
 LINTFLAGS += -errfmt=macro
+LINTFLAGS += -D_XOPEN_SOURCE=600
+LINTFLAGS64 += -D_XOPEN_SOURCE=600
 
 # Use X/Open sockets for fromto.c so we can use control messages for
 # source address selection
@@ -118,10 +118,6 @@ clean:
 lint: lint_SRCS
 
 %.o: ../common/%.c
-	$(COMPILE.c) $<
-	$(POST_PROCESS_O)
-
-%.o: $(COMDIR)/%.c
 	$(COMPILE.c) $<
 	$(POST_PROCESS_O)
 

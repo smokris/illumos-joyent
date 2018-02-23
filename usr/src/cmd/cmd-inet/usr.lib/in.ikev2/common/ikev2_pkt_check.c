@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright (c) 2017, Joyent, Inc.
+ * Copyright 2018, Joyent, Inc.
  */
 
 #include <inttypes.h>
@@ -213,6 +213,7 @@ ikev2_checklen_sa(const uint8_t *buf, size_t buflen)
 static boolean_t
 ikev2_checklen_ke(const uint8_t *buf __unused, size_t buflen)
 {
+	NOTE(ARGUNUSED(buf))
 	return (check_payload_size("KE", buflen, IKEV2_KE_MIN, 0));
 }
 
@@ -268,24 +269,28 @@ ikev2_checklen_idr(const uint8_t *buf, size_t buflen)
 static boolean_t
 ikev2_checklen_cert(const uint8_t *buf __unused, size_t buflen)
 {
+	NOTE(ARGUNUSED(buf))
 	return (check_payload_size("CERT", buflen, IKEV2_CERT_MIN, 0));
 }
 
 static boolean_t
 ikev2_checklen_certreq(const uint8_t *buf __unused, size_t buflen)
 {
+	NOTE(ARGUNUSED(buf))
 	return (check_payload_size("CERTREQ", buflen, IKEV2_CERT_MIN, 0));
 }
 
 static boolean_t
-ikev2_checklen_auth(const uint8_t *buf, size_t buflen)
+ikev2_checklen_auth(const uint8_t *buf __unused, size_t buflen)
 {
+	NOTE(ARGUNUSED(buf))
 	return (check_payload_size("AUTH", buflen, sizeof (ikev2_auth_t), 0));
 }
 
 static boolean_t
 ikev2_checklen_nonce(const uint8_t *buf __unused, size_t buflen)
 {
+	NOTE(ARGUNUSED(buf))
 	return (check_payload_size("NONCE", buflen, IKEV2_NONCE_MIN,
 	    IKEV2_NONCE_MAX));
 }
@@ -298,15 +303,14 @@ ikev2_checklen_ts(const char *name, const uint8_t *buf, size_t buflen)
 	const uint8_t *end = buf + buflen;
 	const uint8_t *ts_ptr = (const uint8_t *)(tsp + 1);
 	uint32_t len = sizeof (ikev2_tsp_t);
-	size_t count = 0;
 
 	if (!check_payload_size(name, buflen, sizeof (ikev2_tsp_t), 0))
 		return (B_FALSE);
 
 	for (size_t i = 0; i < tsp->tsp_count; i++) {
+		/* LINTED E_PAD_PTR_CAST_ALIGN */
 		const ikev2_ts_hdr_t *tsh = (const ikev2_ts_hdr_t *)ts_ptr;
 		uint32_t ts_len;
-		uint8_t ts_type;
 
 		if (ts_ptr + sizeof (ikev2_ts_hdr_t) > end)
 			goto overrun;

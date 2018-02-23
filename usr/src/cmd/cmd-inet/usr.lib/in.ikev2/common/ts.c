@@ -596,7 +596,7 @@ range_cmp_size_addr(const range_t *restrict r1, const range_t *restrict r2)
 		uint32_t s2 = ntohl(r2start[i]);
 		uint32_t e1 = ntohl(r1end[i]);
 		uint32_t e2 = ntohl(r2end[i]);
-		uint32_t d1 = e1 - s1;
+		uint32_t d1 = s2 - s1;
 		uint32_t d2 = e2 - e1;
 
 		/* Can't hurt to verify our expected invariants */

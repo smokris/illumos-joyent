@@ -65,6 +65,8 @@ extern size_t wk_nworkers;
 extern int wk_evport;
 
 void worker_init(size_t);
+void worker_fini(void);
+
 void worker_suspend(void);
 void worker_resume(void);
 boolean_t worker_add(void);

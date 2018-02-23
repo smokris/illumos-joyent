@@ -151,7 +151,6 @@ ikev2_sa_init_resp(pkt_t *pkt)
 	sockaddr_u_t laddr = { .sau_ss = &sa->laddr };
 	sockaddr_u_t raddr = { .sau_ss = &sa->raddr };
 	pkt_payload_t *ke_i = pkt_get_payload(pkt, IKEV2_PAYLOAD_KE, NULL);
-	ikev2_auth_type_t authmethod;
 	ikev2_sa_match_t sa_result = { 0 };
 
 	/* Verify inbound sanity checks */
@@ -290,8 +289,6 @@ ikev2_sa_init_init_resp(ikev2_sa_t *restrict sa, pkt_t *restrict pkt,
     void *restrict arg)
 {
 	ikev2_sa_args_t *sa_args = arg;
-	parsedmsg_t *pmsg = sa_args->i2a_pmsg;
-	ikev2_auth_type_t authmethod;
 	ikev2_sa_match_t sa_result = { 0 };
 
 	VERIFY(!MUTEX_HELD(&sa->i2sa_queue_lock));
@@ -735,11 +732,11 @@ add_nat(pkt_t *pkt)
 		 */
 		{
 			IKEV2_N_NAT_DETECTION_SOURCE_IP,
-			SSTOSA(&pkt->pkt_sa->laddr),
+			SSTOSA(&sa->laddr),
 		},
 		{
 			IKEV2_N_NAT_DETECTION_DESTINATION_IP,
-			SSTOSA(&pkt->pkt_sa->raddr),
+			SSTOSA(&sa->raddr),
 		}
 	};
 
@@ -844,7 +841,7 @@ create_nonceobj(ikev2_prf_t prf, ikev2_sa_args_t *restrict sa_args,
 		char hex[hexlen];
 
 		bzero(hex, hexlen);
-		writehex(nonce, noncelen, "", hex, hexlen);
+		(void) writehex(nonce, noncelen, "", hex, hexlen);
 
 		/*
 		 * This really isn't a key and is already sent in plaintext,
@@ -913,8 +910,10 @@ create_skeyseed(ikev2_sa_t *restrict sa, CK_OBJECT_HANDLE nonce,
 		char hex[hexlen];
 
 		bzero(hex, hexlen);
-		if (show_keys)
-			writehex(skeyseed, skeyseed_len, "", hex, hexlen);
+		if (show_keys) {
+			(void) writehex(skeyseed, skeyseed_len, "", hex,
+			    hexlen);
+		}
 
 		(void) bunyan_debug(log, "Created SKEYSEED",
 		    show_keys ? BUNYAN_T_STRING : BUNYAN_T_END, "key", hex,
