@@ -86,7 +86,7 @@ MANIFEST_SUBDIRS=			\
 	cmd-inet/usr.lib/in.daytimed	\
 	cmd-inet/usr.lib/in.discardd	\
 	cmd-inet/usr.lib/in.echod	\
-	cmd-iet/usr/lib/in.ikev2d	\
+	cmd-inet/usr.lib/in.ikev2d	\
 	cmd-inet/usr.lib/in.ndpd	\
 	cmd-inet/usr.lib/in.ripngd	\
 	cmd-inet/usr.lib/in.timed	\
