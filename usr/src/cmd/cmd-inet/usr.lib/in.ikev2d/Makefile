@@ -103,7 +103,8 @@ all:	$(PROG)
 clean:
 	-$(RM) $(CLEANFILES)
 
-lint: lint_SRCS
+# XXX: Disable lint for the moment
+lint: #lint_SRCS
 
 $(PROG): $(OBJS)
 	$(LINK.c) -o $@ $(OBJS) $(LDLIBS)
