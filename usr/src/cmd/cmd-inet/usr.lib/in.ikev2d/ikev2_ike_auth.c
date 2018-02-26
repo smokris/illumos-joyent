@@ -20,6 +20,7 @@
 #include <synch.h>
 #include <sys/debug.h>
 #include <sys/sha2.h>	/* For digest sizes */
+
 #include "config.h"
 #include "defs.h"
 #include "ikev2.h"
@@ -32,6 +33,7 @@
 #include "pkt.h"
 #include "preshared.h"
 #include "prf.h"
+#include "util.h"
 #include "worker.h"
 
 static void ikev2_ike_auth_init_resp(ikev2_sa_t *restrict, pkt_t *restrict,

@@ -31,6 +31,7 @@
 #include "pkcs11.h"
 #include "pkt.h"
 #include "worker.h"
+#include "util.h"
 
 /*
  * Virtually all work in in.ikev2d is done via a pool of worker threads.

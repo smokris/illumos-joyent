@@ -14,9 +14,11 @@
  */
 #include <stdio.h>
 #include <string.h>
+
 #include "defs.h"
 #include "ikev2_enum.h"
 #include "ikev2.h"
+#include "util.h"
 
 #define	STR(x) case x: return (#x)
 

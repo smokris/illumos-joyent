@@ -43,6 +43,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <thread.h>
+
 #include "inbound.h"
 #include "defs.h"
 #include "fromto.h"
@@ -50,6 +51,7 @@
 #include "ikev2.h"
 #include "ikev2_pkt.h"
 #include "ikev2_proto.h"
+#include "util.h"
 #include "worker.h"
 
 int ikesock4 = -1;

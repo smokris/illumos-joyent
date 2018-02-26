@@ -56,6 +56,7 @@
 #include "inbound.h"
 #include "pfkey.h"
 #include "pkcs11.h"
+#include "util.h"
 #include "worker.h"
 
 /*

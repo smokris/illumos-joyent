@@ -46,6 +46,7 @@
 #include <sys/sysmacros.h>
 #include <sys/types.h>
 #include <umem.h>
+
 #include "config.h"
 #include "defs.h"
 #include "ike.h"
@@ -57,6 +58,7 @@
 #include "pfkey.h"
 #include "pkcs11.h"
 #include "pkt.h"
+#include "util.h"
 #include "worker.h"
 
 /*

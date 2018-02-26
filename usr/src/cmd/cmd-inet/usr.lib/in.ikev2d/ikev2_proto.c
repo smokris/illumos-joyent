@@ -36,6 +36,7 @@
 #include <sys/debug.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+
 #include "config.h"
 #include "defs.h"
 #include "fromto.h"
@@ -48,6 +49,7 @@
 #include "ikev2_sa.h"
 #include "pfkey.h"
 #include "pkt.h"
+#include "util.h"
 #include "worker.h"
 
 static void ikev2_dispatch_pkt(pkt_t *);

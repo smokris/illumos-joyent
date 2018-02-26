@@ -32,6 +32,7 @@
 #include <sys/types.h>
 #include <note.h>
 #include <stdarg.h>
+
 #include "defs.h"
 #include "pkt_impl.h"
 #include "ikev2.h"
@@ -41,6 +42,7 @@
 #include "ikev2_proto.h"
 #include "ikev2_enum.h"
 #include "pkcs11.h"
+#include "util.h"
 #include "worker.h"
 
 /* Allocate an outbound IKEv2 pkt for a new exchange */

@@ -32,6 +32,7 @@
 #include <sys/types.h>
 #include <thread.h>
 #include <unistd.h>
+
 #include "config.h"
 #include "defs.h"
 #include "defs.h"
@@ -40,6 +41,7 @@
 #include "inbound.h"
 #include "pkcs11.h"
 #include "preshared.h"
+#include "util.h"
 #include "worker.h"
 
 typedef struct lockingfd {

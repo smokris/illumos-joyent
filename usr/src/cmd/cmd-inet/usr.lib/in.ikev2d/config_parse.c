@@ -30,17 +30,14 @@
 #include <sys/sysmacros.h>
 #include <sys/time.h>
 #include <sys/types.h>
-
 #include <umem.h>
+
 #include "defs.h"
 #include "config.h"
 #include "config_impl.h"
 #include "ikev2.h"
 #include "ikev2_enum.h"
-
-#ifndef ARRAY_SIZE
-#define	ARRAY_SIZE(x)	(sizeof (x) / sizeof (x[0]))
-#endif
+#include "util.h"
 
 #define	K_CONFIGFILE	"configfile"
 

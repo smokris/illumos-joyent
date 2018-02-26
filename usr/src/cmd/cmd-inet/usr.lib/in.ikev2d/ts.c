@@ -25,6 +25,7 @@
 #include "ikev2_enum.h"
 #include "ikev2_pkt.h"
 #include "ts.h"
+#include "util.h"
 
 /*
  * Much like ts_t are fixed-sized versions of the kernel's traffic selectors,

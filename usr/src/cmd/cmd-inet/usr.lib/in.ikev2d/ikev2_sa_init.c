@@ -21,6 +21,7 @@
 #include <sys/debug.h>
 #include <time.h>
 #include <umem.h>
+
 #include "config.h"
 #include "defs.h"
 #include "dh.h"
@@ -33,6 +34,7 @@
 #include "pkcs11.h"
 #include "pkt.h"
 #include "prf.h"
+#include "util.h"
 #include "worker.h"
 
 static void ikev2_sa_init_init_resp(ikev2_sa_t *restrict, pkt_t *restrict,

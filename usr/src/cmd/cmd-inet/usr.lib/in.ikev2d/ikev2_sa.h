@@ -40,7 +40,6 @@
 #include <stddef.h>
 #include <synch.h>
 #include <thread.h>
-#include "defs.h"
 #include "ikev2.h"
 #include "ts.h"
 

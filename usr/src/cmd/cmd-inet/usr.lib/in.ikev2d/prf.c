@@ -24,8 +24,10 @@
 #include <sys/sha1.h>	/* For length constants */
 #include <sys/sha2.h>	/* For length constants */
 #include <umem.h>
+
 #include "defs.h"
 #include "ikev2.h"
+#include "util.h"
 #include "prf.h"
 #include "pkcs11.h"
 

@@ -22,6 +22,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <net/pfkeyv2.h>
+
 #include "defs.h"
 #include "dh.h"
 #include "ikev2_sa.h"
@@ -34,6 +35,7 @@
 #include "pkcs11.h"
 #include "pkt.h"
 #include "prf.h"
+#include "util.h"
 #include "worker.h"
 
 /*

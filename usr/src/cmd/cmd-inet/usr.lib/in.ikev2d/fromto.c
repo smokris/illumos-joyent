@@ -50,9 +50,11 @@
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
+
 #include "defs.h"
 #include "fromto.h"
 #include "ike.h"
+#include "util.h"
 
 /*
  * Receive packet, with src/dst information.  It is assumed that necessary

@@ -22,10 +22,12 @@
 #include <strings.h>
 #include <synch.h>
 #include <umem.h>
+
 #include "defs.h"
 #include "config.h"
 #include "config_impl.h"
 #include "ikev2_enum.h"
+#include "util.h"
 
 config_t *config;
 rwlock_t config_rule_lock = DEFAULTRWLOCK;

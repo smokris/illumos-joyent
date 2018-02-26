@@ -28,10 +28,27 @@
 #include <sys/types.h>
 #include <thread.h>
 #include <umem.h>
+
 #include "config.h"
 #include "ike.h"
 #include "defs.h"
+#include "util.h"
 
+/*
+ * For logging, we prefer to use symbolic names for numeric constants in the
+ * log message (e.g. 'IKEV2_ENCR_AES_CBC' instead of 12).  However it is
+ * possible to receive unknown values which we still may wish to log.  Instead
+ * of cluttering up the logging statements with lots of temporary buffers, we
+ * give each thread a number of static buffers large enough to hold a
+ * stringified version of a 32-bit number (all the values that have
+ * symbolic names are 32-bits long or smaller).  Successive calls to
+ * enum_printf() use these buffers in a circular fashion so that lookup
+ * functions (e.g. ikev2_spi_str()) can either return a static string (e.g.
+ * "IKEV2_PROTO_ESP") or a buffer holding the stringified numeric value.
+ * The returned pointer should only be used for the duration of the log call.
+ * It should not be used with sensitive data, and no more than ENUMBUF_NUM
+ * calls can occur before buffers are wrapped around.
+ */
 #define	ENUMBUF_NUM	8	/* Num of enumbufs that can be used at a time */
 #define	ENUMBUF_SZ	11	/* Large enough to hold a 32-bit number + NUL */
 

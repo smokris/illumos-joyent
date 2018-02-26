@@ -16,6 +16,7 @@
 #include <ipsec_util.h>
 #include <strings.h>
 #include <sys/debug.h>
+
 #include "config.h"
 #include "dh.h"
 #include "ikev2.h"
@@ -28,6 +29,7 @@
 #include "pkcs11.h"
 #include "prf.h"
 #include "ts.h"
+#include "util.h"
 #include "worker.h"
 
 /*
