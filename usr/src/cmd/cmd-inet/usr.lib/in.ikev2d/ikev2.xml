@@ -17,7 +17,7 @@ http://www.illumos.org/license/CDDL.
 CDDL HEADER END
 -->
 
-<service_bundle type='manifest' name='in.ikev2d'>
+<service_bundle type='manifest' name='ikev2'>
 
 <service
 	name='network/ipsec/ikev2'

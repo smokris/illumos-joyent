@@ -1638,6 +1638,7 @@ f lib/svc/manifest/network/inetd.xml 0444 root sys
 f lib/svc/manifest/network/ipfilter.xml 0444 root sys
 d lib/svc/manifest/network/ipsec 0755 root sys
 f lib/svc/manifest/network/ipsec/ike.xml 0444 root sys
+f lib/svc/manifest/network/ipsec/ikev2.xml 0444 root sys
 f lib/svc/manifest/network/ipsec/ipsecalgs.xml 0444 root sys
 f lib/svc/manifest/network/ipsec/manual-key.xml 0444 root sys
 f lib/svc/manifest/network/ipsec/policy.xml 0444 root sys
@@ -6484,6 +6485,7 @@ f usr/lib/inet/in.daytimed 0555 root bin
 f usr/lib/inet/in.discardd 0555 root bin
 f usr/lib/inet/in.echod 0555 root bin
 h usr/lib/inet/in.iked=usr/lib/isaexec
+f usr/lib/inet/in.ikev2d 0555 root bin
 s usr/lib/inet/in.mpathd=../../../lib/inet/in.mpathd
 f usr/lib/inet/in.ndpd 0555 root bin
 f usr/lib/inet/in.ripngd 0555 root bin
