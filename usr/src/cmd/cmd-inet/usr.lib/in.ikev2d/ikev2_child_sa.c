@@ -1918,7 +1918,6 @@ generate_keys(ikev2_sa_t *restrict i2sa, ikev2_sa_args_t *restrict csa)
 	    prfplus(&prfp, resp->csa_child_encr, encrlen) &&
 	    prfplus(&prfp, resp->csa_child_auth, authlen);
 
-done:
 	prfplus_fini(&prfp);
 
 	(void) bunyan_trace(log, "Finished generating keys",
