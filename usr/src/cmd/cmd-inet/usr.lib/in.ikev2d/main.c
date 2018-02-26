@@ -74,6 +74,7 @@ extern char *my_fmri;
 
 __thread bunyan_logger_t *log = NULL;
 bunyan_logger_t *main_log = NULL;
+uint32_t category = UINT32_MAX;
 int main_port = -1;
 
 lockingfd_t fdlock = {
@@ -157,7 +158,12 @@ static int
 lockingfd_log(nvlist_t *nvl, const char *js, void *arg)
 {
 	lockingfd_t *lf = arg;
+	uint32_t cval = 0;
 	int ret;
+
+	if (nvlist_lookup_uint32(nvl, LOG_KEY_CATEGORY, &cval) == 0 &&
+	    (cval & category) == 0)
+		return (0);
 
 	mutex_enter(&lf->lf_lock);
 	ret = bunyan_stream_fd(nvl, js, (void *)(uintptr_t)lf->lf_fd);

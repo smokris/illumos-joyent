@@ -149,6 +149,10 @@ const void *ss_addr(const struct sockaddr *);
 size_t ss_addrlen(const struct sockaddr *);
 uint8_t ss_addrbits(const struct sockaddr *);
 
+extern uint32_t category;
+
+#define	LOG_KEY_CATEGORY "_category"
+
 #define	LOG_KEY_ERRMSG	"err"
 #define	LOG_KEY_ERRNO	"errno"
 #define	LOG_KEY_FILE	"file"
@@ -172,6 +176,23 @@ uint8_t ss_addrbits(const struct sockaddr *);
 #define	LOG_KEY_MSGID	"msgid"
 #define	LOG_KEY_EXCHTYPE "exch_type"
 
+/* cstyle cannot handle ## __VA_ARGS__ */
+/* BEGIN CSTYLED */
+#define	TSTDERR(_e, _lvl, _msg, ...)			\
+	(void) bunyan_##_lvl(log, (_msg),			\
+	BUNYAN_T_STRING, LOG_KEY_ERRMSG, strerror(_e),		\
+	BUNYAN_T_INT32, LOG_KEY_ERRNO, (int32_t)(_e),		\
+	BUNYAN_T_STRING, LOG_KEY_FUNC, __func__,		\
+	BUNYAN_T_STRING, LOG_KEY_FILE, __FILE__,		\
+	BUNYAN_T_INT32, LOG_KEY_LINE, __LINE__,		\
+	## __VA_ARGS__,						\
+	BUNYAN_T_END)
+
+#define	STDERR(_lvl, _msg, ...) \
+	TSTDERR(errno, _lvl, _msg, ## __VA_ARGS__)
+/* END CSTYLED */
+
+
 #ifdef lint
 /*
  * Currently, we cannot have both __EXTENSIONS__ and XTI sockets enabled
@@ -187,23 +208,6 @@ uint8_t ss_addrbits(const struct sockaddr *);
 #define	B_TRUE _B_TRUE
 #define	B_FALSE _B_FALSE
 #endif
-
-/* cstyle cannot handle ## __VA_ARGS */
-/* BEGIN CSTYLED */
-#define	TSTDERR(_e, _lvl, _msg, ...)			\
-	(void) bunyan_##_lvl(log, (_msg),			\
-	BUNYAN_T_STRING, LOG_KEY_ERRMSG, strerror(_e),		\
-	BUNYAN_T_INT32, LOG_KEY_ERRNO, (int32_t)(_e),		\
-	BUNYAN_T_STRING, LOG_KEY_FUNC, __func__,		\
-	BUNYAN_T_STRING, LOG_KEY_FILE, __FILE__,		\
-	BUNYAN_T_INT32, LOG_KEY_LINE, __LINE__,		\
-	## __VA_ARGS__,						\
-	BUNYAN_T_END)
-
-#define	STDERR(_lvl, _msg, ...) \
-	TSTDERR(errno, _lvl, _msg, ## __VA_ARGS__)
-
-/* END CSTYLED */
 
 typedef enum event {
 	EVENT_NONE,
