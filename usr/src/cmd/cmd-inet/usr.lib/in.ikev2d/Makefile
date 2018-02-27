@@ -33,6 +33,7 @@ OBJS = \
 	config.o		\
 	config_parse.o		\
 	dh.o			\
+	door.o			\
 	fromto.o		\
 	ikev2_child_sa.o	\
 	ikev2_common.o		\

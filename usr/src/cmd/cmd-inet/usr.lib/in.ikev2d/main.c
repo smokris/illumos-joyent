@@ -52,6 +52,7 @@ typedef struct lockingfd {
 extern void pkt_init(void);
 extern void pkt_fini(void);
 extern void pfkey_init(void);
+extern void ikev2_door_init(const char *);
 
 static void signal_init(void);
 static void event(event_t, void *);
@@ -261,6 +262,7 @@ main(int argc, char **argv)
 	worker_init(wk_initial_nworkers);
 	pfkey_init();
 	ikev2_cookie_init();
+	ikev2_door_init(DOORNM);
 	inbound_init();
 
 	main_loop(fd);
