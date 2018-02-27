@@ -101,7 +101,7 @@ ikev2_sa_init_init(ikev2_sa_t *restrict i2sa, parsedmsg_t *restrict pmsg)
 	if (sa_args->i2a_dh == IKEV2_DH_NONE)
 		sa_args->i2a_dh = i2sa->i2sa_rule->rule_xf[0]->xf_dh;
 
-	if (!dh_genpair(sa_args->i2a_dh, &sa_args->i2a_pubkey,
+	if (!gen_keypair(sa_args->i2a_dh, &sa_args->i2a_pubkey,
 	    &sa_args->i2a_privkey))
 		goto fail;
 
@@ -240,7 +240,7 @@ ikev2_sa_init_resp(pkt_t *pkt)
 	 * generating them is a potentially an expensive operation, we wait
 	 * until necessary to create them.
 	 */
-	if (!dh_genpair(sa_args->i2a_dh, &sa_args->i2a_pubkey,
+	if (!gen_keypair(sa_args->i2a_dh, &sa_args->i2a_pubkey,
 	    &sa_args->i2a_privkey))
 		goto fail;
 

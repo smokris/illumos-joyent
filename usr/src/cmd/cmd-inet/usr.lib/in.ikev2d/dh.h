@@ -11,7 +11,7 @@
 
 /*
  * Copyright 2017 Jason King.
- * Copyright (c) 2017, Joyent, Inc.
+ * Copyright 2018, Joyent, Inc.
  */
 
 #ifndef _DH_H
@@ -25,9 +25,9 @@
 extern "C" {
 #endif
 
-boolean_t dh_genpair(ikev2_dh_t, CK_OBJECT_HANDLE_PTR restrict,
+boolean_t gen_keypair(ikev2_dh_t, CK_OBJECT_HANDLE_PTR restrict,
     CK_OBJECT_HANDLE_PTR restrict);
-boolean_t dh_derivekey(CK_OBJECT_HANDLE, uint8_t *restrict, size_t,
+boolean_t derivekey(ikev2_dh_t, CK_OBJECT_HANDLE, uint8_t *restrict, size_t,
     CK_OBJECT_HANDLE_PTR restrict);
 
 #ifdef __cplusplus

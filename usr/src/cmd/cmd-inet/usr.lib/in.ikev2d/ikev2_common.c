@@ -751,8 +751,9 @@ ikev2_ke(ikev2_sa_args_t *restrict i2a, pkt_t *restrict pkt)
 	uint8_t *ke = NULL;
 	char *hex = NULL;
 	size_t kelen = 0, hexlen = 0;
+	ikev2_dh_t dh = i2a->i2a_dh;
 
-	if (i2a->i2a_dh == IKEV2_DH_NONE)
+	if (dh == IKEV2_DH_NONE)
 		return (B_TRUE);
 
 	if ((ke_pay = pkt_get_payload(pkt, IKEV2_PAYLOAD_KE, NULL)) == NULL) {
@@ -764,10 +765,11 @@ ikev2_ke(ikev2_sa_args_t *restrict i2a, pkt_t *restrict pkt)
 	ke = ke_pay->pp_ptr + sizeof (ikev2_ke_t);
 	kelen = ke_pay->pp_len - sizeof (ikev2_ke_t);
 
-	if (!dh_derivekey(i2a->i2a_privkey, ke, kelen, &i2a->i2a_dhkey))
+	if (!derivekey(dh, i2a->i2a_privkey, ke, kelen, &i2a->i2a_dhkey))
 		return (B_FALSE);
 
 	if (show_keys) {
+		/* XXX: should rename these to something more generic */
 		void *gir = NULL;
 		size_t gir_len = 0;
 		CK_RV rc;
@@ -784,7 +786,7 @@ ikev2_ke(ikev2_sa_args_t *restrict i2a, pkt_t *restrict pkt)
 		free(gir);
 	}
 
-	(void) bunyan_debug(log, "Created g^ir",
+	(void) bunyan_debug(log, "Created shared secret key",
 	    show_keys ? BUNYAN_T_STRING : BUNYAN_T_END, "key", hex,
 	    BUNYAN_T_END);
 

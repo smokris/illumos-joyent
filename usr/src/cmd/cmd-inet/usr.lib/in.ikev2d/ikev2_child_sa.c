@@ -468,7 +468,7 @@ ikev2_create_child_sa_resp_common(pkt_t *restrict req, pkt_t *restrict resp,
 			goto reply_with_fail;
 		ikev2_save_nonce(csa, req);
 
-		if (!dh_genpair(csa->i2a_dh, &csa->i2a_pubkey,
+		if (!gen_keypair(csa->i2a_dh, &csa->i2a_pubkey,
 		    &csa->i2a_privkey))
 			goto reply_with_fail;
 		if (!ikev2_ke(csa, req))
