@@ -53,7 +53,7 @@ typedef struct ts_s {
 
 /* pf_key(7P) uses /0 to represent single addresses */
 #define	TS_SADB_PREFIX(_t) \
-    ((_t)->ts_prefix == ss_addrbits(&(_t)->ts_sa) ? 0 : (_t)->ts_prefix)
+	((_t)->ts_prefix == ss_addrbits(&(_t)->ts_sa) ? 0 : (_t)->ts_prefix)
 
 ts_t *sadb_to_ts(const struct sadb_address *restrict, ts_t *restrict);
 boolean_t ts_add(struct ikev2_pkt_ts_state *restrict, const ts_t *restrict);

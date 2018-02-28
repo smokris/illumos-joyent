@@ -250,17 +250,17 @@ struct ikev2_child_sa_s {
 };
 
 #define	I2C_SRC(_c) \
-    ((_c)->i2c_initiator ^ (_c)->i2c_inbound) ? \
-	&(_c)->i2c_ts_i : &(_c)->i2c_ts_r
+	((_c)->i2c_initiator ^ (_c)->i2c_inbound) ? \
+	    &(_c)->i2c_ts_i : &(_c)->i2c_ts_r
 
 #define	I2C_DST(_c) \
-    ((_c)->i2c_initiator ^ (_c)->i2c_inbound) ? \
-	&(_c)->i2c_ts_r : &(_c)->i2c_ts_i
+	((_c)->i2c_initiator ^ (_c)->i2c_inbound) ? \
+	    &(_c)->i2c_ts_r : &(_c)->i2c_ts_i
 
 #define	I2C_SRC_ID(_i2sa, _i2csa) \
-    ((_i2csa)->i2c_inbound ? (_i2sa)->remote_id : (_i2sa)->local_id)
+	((_i2csa)->i2c_inbound ? (_i2sa)->remote_id : (_i2sa)->local_id)
 #define	I2C_DST_ID(_i2sa, _i2csa) \
-    ((_i2csa)->i2c_inbound ? (_i2sa)->local_id : (_i2sa)->remote_id)
+	((_i2csa)->i2c_inbound ? (_i2sa)->local_id : (_i2sa)->remote_id)
 
 ikev2_sa_t *ikev2_sa_getbylspi(uint64_t, boolean_t);
 ikev2_sa_t *ikev2_sa_getbyrspi(uint64_t,
@@ -305,4 +305,4 @@ void ikev2_sa_fini(void);
 }
 #endif
 
-#endif  /* _IKEV2_SA_H */
+#endif /* _IKEV2_SA_H */

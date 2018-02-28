@@ -251,7 +251,7 @@ config_id_strlen(const config_id_t *id)
 		return (id->cid_len + 1);
 	case CFG_AUTH_ID_DN:
 	case CFG_AUTH_ID_GN:
-		/*TODO*/
+		/* TODO */
 		INVALID(id->cid_type);
 		break;
 	case CFG_AUTH_ID_IPV4:

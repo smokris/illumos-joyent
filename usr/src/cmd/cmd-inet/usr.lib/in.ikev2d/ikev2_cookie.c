@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright (c) 2017, Joyent, Inc.
+ * Copyright 2018, Joyent, Inc.
  */
 
 #include <err.h>
@@ -142,7 +142,7 @@ cookie_calc(uint8_t v, uint8_t *restrict nonce, size_t noncelen,
 
 	rc = C_DigestInit(h, &mech);
 	if (rc != CKR_OK) {
-		PKCS11ERR(error,"C_DigestInit", rc);
+		PKCS11ERR(error, "C_DigestInit", rc);
 		goto done;
 	}
 

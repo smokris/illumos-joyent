@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright (c) 2017 Joyent, Inc.
+ * Copyright 2018 Joyent, Inc.
  */
 
 #include <ipsec_util.h>
@@ -1972,6 +1972,6 @@ ikev2_rekey_delete_old_kids(ikev2_sa_t *restrict i2sa,
 
 	(void) pfkey_delete(satype, csa->i2c_spi, src, dst, B_TRUE);
 	ikev2_sa_delete_child(i2sa, csa->i2c_pair);
-	ikev2_sa_delete_child(i2sa,csa);
+	ikev2_sa_delete_child(i2sa, csa);
 }
 #endif

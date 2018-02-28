@@ -538,11 +538,13 @@ signal_init(void)
 	}
 }
 
-#define	SCFERR(level, msg, ...)					\
-    (void) bunyan_##level(log, msg,				\
-    BUNYAN_T_INT32, "scf_error", (int32_t)scf_error(),		\
-    BUNYAN_T_STRING, "scf_errormsg", scf_strerror(scf_error()),	\
-    ## __VA_ARGS__, BUNYAN_T_END)
+/* BEGIN CSTYLED */
+#define	SCFERR(level, msg, ...)						\
+	(void) bunyan_##level(log, msg,					\
+	    BUNYAN_T_INT32, "scf_error", (int32_t)scf_error(),		\
+	    BUNYAN_T_STRING, "scf_errormsg", scf_strerror(scf_error()),	\
+	    ## __VA_ARGS__, BUNYAN_T_END)
+/* END CSTYLED */
 
 static void
 load_smf_config(void)

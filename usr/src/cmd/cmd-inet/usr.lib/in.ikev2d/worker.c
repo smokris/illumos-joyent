@@ -104,7 +104,7 @@ worker_init(size_t n)
 		err(EXIT_FAILURE, "could not create periodic");
 
 	mutex_enter(&worker_lock);
-	list_create(&workers, sizeof (worker_t), offsetof (worker_t, w_node));
+	list_create(&workers, sizeof (worker_t), offsetof(worker_t, w_node));
 	mutex_exit(&worker_lock);
 
 	for (size_t i = 0; i < n; i++) {
@@ -436,7 +436,7 @@ do_user(int events, void *user)
 	    BUNYAN_T_POINTER, "arg", user,
 	    BUNYAN_T_END);
 
-	switch((worker_cmd_t)events) {
+	switch ((worker_cmd_t)events) {
 	case WC_NONE:
 		return;
 	case WC_QUIT:

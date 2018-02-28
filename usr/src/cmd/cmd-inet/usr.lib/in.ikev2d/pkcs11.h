@@ -40,6 +40,8 @@
 extern "C" {
 #endif
 
+/* BEGIN CSTYLED */
+/* cstyle thinks ## __VA_ARGS__ is a preprocessor statement */
 #define	PKCS11ERR(_lvl, _p11f, _rv, ...)				\
 	(void) bunyan_##_lvl(log, "PKCS#11 call failed",		\
 	BUNYAN_T_STRING, LOG_KEY_FILE, __FILE__,			\
@@ -50,6 +52,7 @@ extern "C" {
 	BUNYAN_T_STRING, LOG_KEY_ERRMSG, pkcs11_strerror(_rv),		\
 	## __VA_ARGS__,							\
 	BUNYAN_T_END)
+/* END CSTYLED */
 
 typedef enum encr_mode_e {
 	MODE_NONE,

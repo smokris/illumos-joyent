@@ -126,20 +126,21 @@ static void log_slotinfo(CK_SLOT_ID);
  * by PKCS#11, so their values aren't used beyond the stringified name.
  */
 #define	EALG(_name, _p11, _mode, _min, _max, _incr, _def, _bsz, _iv, _icv, _s) \
-    { \
-	.ed_i2id = IKEV2_ENCR_ ## _name, \
-	.ed_p11id = _p11, \
-	.ed_mode = _mode, \
-	.ed_name = # _name, \
-	.ed_keymin = _min, \
-	.ed_keymax = _max, \
-	.ed_keyincr = _incr, \
-	.ed_keydefault = _def, \
-	.ed_blocklen = _bsz, \
-	.ed_ivlen = _iv, \
-	.ed_icvlen = _icv, \
-	.ed_saltlen = _s \
-    }
+{						\
+	.ed_i2id = IKEV2_ENCR_ ## _name,	\
+	.ed_p11id = _p11,			\
+	.ed_mode = _mode,			\
+	.ed_name = # _name,			\
+	.ed_keymin = _min,			\
+	.ed_keymax = _max,			\
+	.ed_keyincr = _incr,			\
+	.ed_keydefault = _def,			\
+	.ed_blocklen = _bsz,			\
+	.ed_ivlen = _iv,			\
+	.ed_icvlen = _icv,			\
+	.ed_saltlen = _s			\
+}
+
 static encr_data_t encr_tbl[IKEV2_ENCR_MAX + 1] = {
 	/* p11, desc, mode, min, max, incr, default, blocksz, iv, icv, salt */
 	EALG(NONE, 0, MODE_NONE, 0, 0, 0, 0, 0, 0, 0, 0),

@@ -311,7 +311,7 @@ ikev2_sa_init_init_resp(ikev2_sa_t *restrict sa, pkt_t *restrict pkt,
 	}
 
 	(void) bunyan_debug(log, "Processing IKE_SA_INIT response",
-	     BUNYAN_T_END);
+	    BUNYAN_T_END);
 
 	/*
 	 * Since this is an unprotected/unauthenticated reply, we only note
@@ -369,7 +369,8 @@ ikev2_sa_init_init_resp(ikev2_sa_t *restrict sa, pkt_t *restrict pkt,
 	/* And the responder IKE_SA_INIT packet */
 	ikev2_save_init_pkt(sa_args, pkt);
 
-	/* The generated keys use the initiator/responder SPI values from
+	/*
+	 * The generated keys use the initiator/responder SPI values from
 	 * the ikev2_sa_t for the exchange, so we need to set the responder's
 	 * SPI before we try to create our keys.
 	 */
@@ -390,7 +391,6 @@ ikev2_sa_init_init_resp(ikev2_sa_t *restrict sa, pkt_t *restrict pkt,
 
 fail:
 	sa->flags |= I2SA_CONDEMNED;
-	return;
 }
 
 static boolean_t

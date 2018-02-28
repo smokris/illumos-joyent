@@ -24,7 +24,7 @@
  * Use is subject to license terms.
  *
  * Copyright 2017 Jason King.
- * Copyright (c) 2017, Joyent, Inc
+ * Copyright 2018, Joyent, Inc
  */
 
 #include <errno.h>
@@ -558,7 +558,7 @@ ikev2_send_resp(pkt_t *restrict resp)
 	VERIFY(MUTEX_HELD(&i2sa->i2sa_lock));
 	VERIFY(I2P_RESPONSE(resp));
 
-        /*
+	/*
 	 * Normally, we save the last response packet we've sent in order to
 	 * re-send the last response in case the remote system retransmits
 	 * the last exchange it initiated.  However for IKE_SA_INIT exchanges,
@@ -577,7 +577,7 @@ ikev2_send_resp(pkt_t *restrict resp)
 	 * retransmitting the response will trigger an out of sequence message
 	 * and we'll never attempt to respond again, all of which would lead
 	 * to confusion.
-         */
+	 */
 	if (hdr->exch_type != IKEV2_EXCH_IKE_SA_INIT ||
 	    hdr->responder_spi != 0) {
 		ikev2_pkt_free(i2sa->last_resp_sent);
@@ -685,7 +685,7 @@ ikev2_retransmit(ikev2_sa_t *restrict sa, i2sa_req_t *restrict req)
 	if (!ikev2_sa_arm_timer(sa, retry, I2SA_EVT_PKT_XMIT, req)) {
 		(void) bunyan_error(log,
 		    "No memory to reschedule packet retransmit; "
-			    "deleting IKE SA", BUNYAN_T_END);
+		    "deleting IKE SA", BUNYAN_T_END);
 		sa->flags |= I2SA_CONDEMNED;
 	}
 }

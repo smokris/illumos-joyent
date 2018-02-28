@@ -162,7 +162,7 @@ ikev2_sa_getbyrspi(uint64_t spi,
 
 ikev2_sa_t *
 ikev2_sa_getbyaddr(const struct sockaddr *restrict src,
-   const struct sockaddr *restrict dst)
+    const struct sockaddr *restrict dst)
 {
 	ikev2_sa_t *i2sa = NULL;
 	ikev2_sa_t cmp_sa = { 0 };
@@ -1034,13 +1034,13 @@ ikev2_sa_clear_req(ikev2_sa_t *restrict i2sa, i2sa_req_t *restrict i2req)
 {
 	pkt_t *pkt = i2req->i2r_pkt;
 
-        (void) ikev2_sa_disarm_timer(i2sa, I2SA_EVT_PKT_XMIT, i2req);
+	(void) ikev2_sa_disarm_timer(i2sa, I2SA_EVT_PKT_XMIT, i2req);
 
-        i2req->i2r_fired = B_FALSE;
-        i2req->i2r_pkt = NULL;
-        i2req->i2r_arg = NULL;
+	i2req->i2r_fired = B_FALSE;
+	i2req->i2r_pkt = NULL;
+	i2req->i2r_arg = NULL;
 
-        ikev2_pkt_free(pkt);
+	ikev2_pkt_free(pkt);
 }
 
 static uint64_t

@@ -10,7 +10,8 @@
  */
 
 /*
- * Copyright 2014 Jason King.  All rights reserved.
+ * Copyright 2014 Jason King.
+ * Copyright 2018, Joyent, Inc.
  */
 
 #ifndef _PKT_IMPL_H

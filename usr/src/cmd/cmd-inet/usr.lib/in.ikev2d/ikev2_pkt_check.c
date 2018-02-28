@@ -363,7 +363,7 @@ ikev2_checklen_ts(const char *name, const uint8_t *buf, size_t buflen)
 
 overrun:
 	(void) snprintf(msg, sizeof (msg),
-	   "Traffic selector in %s payload overruns end of payload", name);
+	    "Traffic selector in %s payload overruns end of payload", name);
 	(void) bunyan_warn(log, msg, BUNYAN_T_END);
 	return (B_FALSE);
 }
@@ -419,7 +419,7 @@ boolean_t
 ikev2_pkt_checklen(uint8_t type, const uint8_t *buf, size_t len)
 {
 	switch ((ikev2_pay_type_t)type) {
-        case IKEV2_PAYLOAD_NONE:
+	case IKEV2_PAYLOAD_NONE:
 		/* This is never valid for a payload */
 		return (B_FALSE);
 	case IKEV2_PAYLOAD_SA:

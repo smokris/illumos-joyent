@@ -196,7 +196,7 @@ static boolean_t ikev2_sa_match_attr(ikev2_transform_t *restrict);
  */
 boolean_t
 ikev2_sa_match_rule(config_rule_t *restrict rule, pkt_t *restrict pkt,
-	ikev2_sa_match_t *restrict m, boolean_t rekey)
+    ikev2_sa_match_t *restrict m, boolean_t rekey)
 {
 	pkt_payload_t *sa_pay = pkt_get_payload(pkt, IKEV2_PAYLOAD_SA, NULL);
 
@@ -223,11 +223,12 @@ ikev2_sa_match_rule(config_rule_t *restrict rule, pkt_t *restrict pkt,
 	return (B_FALSE);
 }
 
-#define	UNKNOWN_XF(_xf, _val) \
-    (void) bunyan_debug(log, "Unknown transform type; rejecting transform", \
-	BUNYAN_T_STRING, "xftype", ikev2_xf_type_str((_xf)->xf_type), \
-	BUNYAN_T_STRING, "xfval", ikev2_xf_str((_xf)->xf_type, (_val)), \
-	BUNYAN_T_END)
+#define	UNKNOWN_XF(_xf, _val)						\
+	(void) bunyan_debug(log,					\
+	    "Unknown transform type; rejecting transform",		\
+	    BUNYAN_T_STRING, "xftype", ikev2_xf_type_str((_xf)->xf_type), \
+	    BUNYAN_T_STRING, "xfval", ikev2_xf_str((_xf)->xf_type, (_val)), \
+	    BUNYAN_T_END)
 
 /*
  * Compare the config_xf_t and ikev2_sa_proposal_t.  Return B_TRUE if the
@@ -862,8 +863,8 @@ ikev2_create_i2sa_keys(ikev2_sa_t *restrict i2sa, CK_OBJECT_HANDLE skeyseed,
 	 * immediately after we've generated the corresponding cipher key.
 	 *
 	 * For more details, see:
-	 *      RFC5282 7.1 for AES-{CCM,GCM}
-	 *      RFC5529 4.1 for Camellia
+	 *	RFC5282 7.1 for AES-{CCM,GCM}
+	 *	RFC5529 4.1 for Camellia
 	 */
 	if (!prfplus_init(&prfp, i2sa->prf, skeyseed,
 	    ni, ni_len, nr, nr_len, &spis, sizeof (spis), NULL))
@@ -895,7 +896,7 @@ ikev2_sa_args_new(boolean_t create_children)
 	ikev2_sa_args_t *args = NULL;
 	ikev2_child_sa_t *in = NULL, *out = NULL;
 
-	if ((args = umem_zalloc(sizeof *args, UMEM_DEFAULT)) == NULL)
+	if ((args = umem_zalloc(sizeof (*args), UMEM_DEFAULT)) == NULL)
 		return (NULL);
 
 	if (create_children) {

@@ -890,7 +890,7 @@ pfkey_sadb_add_update(ikev2_sa_t *restrict sa,
 
 	if ((sa->flags & I2SA_NAT_LOCAL) && csa->i2c_transport) {
 		flags |= SADB_X_SAFLAGS_NATT_LOC;
-		natt_l= SSTOSA(&sa->lnatt);
+		natt_l = SSTOSA(&sa->lnatt);
 	}
 	if ((sa->flags & I2SA_NAT_REMOTE) && csa->i2c_transport) {
 		flags |= SADB_X_SAFLAGS_NATT_REM;
@@ -1701,7 +1701,7 @@ pfkey_init(void)
 	bunyan_logger_t *newlog = NULL;
 	int rc;
 
-	list_create(&pfreq_list, sizeof (pfreq_t), offsetof (pfreq_t, pr_node));
+	list_create(&pfreq_list, sizeof (pfreq_t), offsetof(pfreq_t, pr_node));
 
 	pfport = port_create();
 	if (pfport == -1)

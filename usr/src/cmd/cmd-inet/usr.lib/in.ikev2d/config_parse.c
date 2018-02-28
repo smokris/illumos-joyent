@@ -365,7 +365,7 @@ config_read(const char *filename)
 		goto fail;
 	}
 
-	if ((cfg = config_new()) == NULL ) {
+	if ((cfg = config_new()) == NULL) {
 		(void) bunyan_fatal(log, "No memory for new configuration",
 		    BUNYAN_T_END);
 		goto fail;
@@ -1435,25 +1435,25 @@ parse_p1_id(token_t *restrict t, config_id_t **restrict idp)
 	*idp = NULL;
 
 	/*
-	* Sadly, while the existing ike.config requires one specify a type
-	* for the local id, it tries to guess the type of the remote ID
-	* string, however it is not documented on how that is done.  This
-	* is a best guess at matching that.  We assume if the string
-	* successfully parses as either an IPV4 or IPV6 address that it
-	* should should be of the respective type, an email address must
-	* contain a '@', something with '.' that didn't parse as an
-	* IPV4 address is a DNS name, something with ':' that didn't parse
-	* as an IPV6 address is a GN (based on draft-ietf-pkix-generalname-00),
-	* while something with '=' that didn't parse as a GN is a DN.
-	*
-	* We currently don't parse the _{PREFIX,RANGE} variants of IPV4 and
-	* IPV6.  Those seem to be ID types specific to IKEv1, and are not
-	* present in IKEv2.  When we add IKEv1 support, we likely will
-	* get rid of them altogether and require our peer to never offer
-	* such an ID.  Every IKEv1 implementation encountered so far appears to
-	* allow one to choose the type of ID presented during authentication,
-	* so it seems unlikely it would cause any interoperability concerns.
-	*/
+	 * Sadly, while the existing ike.config requires one specify a type
+	 * for the local id, it tries to guess the type of the remote ID
+	 * string, however it is not documented on how that is done.  This
+	 * is a best guess at matching that.  We assume if the string
+	 * successfully parses as either an IPV4 or IPV6 address that it
+	 * should should be of the respective type, an email address must
+	 * contain a '@', something with '.' that didn't parse as an
+	 * IPV4 address is a DNS name, something with ':' that didn't parse
+	 * as an IPV6 address is a GN (based on draft-ietf-pkix-generalname-00),
+	 * while something with '=' that didn't parse as a GN is a DN.
+	 *
+	 * We currently don't parse the _{PREFIX,RANGE} variants of IPV4 and
+	 * IPV6.  Those seem to be ID types specific to IKEv1, and are not
+	 * present in IKEv2.  When we add IKEv1 support, we likely will
+	 * get rid of them altogether and require our peer to never offer
+	 * such an ID.  Every IKEv1 implementation encountered so far appears to
+	 * allow one to choose the type of ID presented during authentication,
+	 * so it seems unlikely it would cause any interoperability concerns.
+	 */
 	if (inet_pton(AF_INET, t->t_str, addr.sau_sin) == 1) {
 		idtype = CFG_AUTH_ID_IPV4;
 		len = sizeof (in_addr_t);

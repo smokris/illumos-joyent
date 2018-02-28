@@ -11,7 +11,7 @@
 
 /*
  * Copyright 2015 Jason King.
- * Copyright (c) 2017, Joyent, Inc.
+ * Copyright 2018, Joyent, Inc.
  */
 
 #ifndef _INBOUND_H

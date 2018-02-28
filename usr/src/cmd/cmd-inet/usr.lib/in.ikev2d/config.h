@@ -39,7 +39,7 @@ extern "C" {
 #define	CONFIG_P2_LIFETIME_SECS	3600U
 #define	CONFIG_P2_SOFTLIFE_SECS	3240U
 #define	CONFIG_P2_LIFETIME_KB	(100 * 1024)
-#define CONFIG_P2_SOFTLIFE_KB	(90 * 1024)
+#define	CONFIG_P2_SOFTLIFE_KB	(90 * 1024)
 #define	CONFIG_P2_IDLETIME_SECS 600U
 
 typedef enum config_auth_id {
@@ -124,8 +124,8 @@ typedef struct config_rule {
 } config_rule_t;
 #define	RULE_REFHOLD(cf) atomic_inc_32(&(cf)->rule_refcnt)
 #define	RULE_REFRELE(cf)					\
-    (void) ((atomic_dec_32_nv(&(cf)->rule_refcnt) != 0) ||	\
-    (config_rule_free(cf), 0))
+	(void) ((atomic_dec_32_nv(&(cf)->rule_refcnt) != 0) ||	\
+	    (config_rule_free(cf), 0))
 
 typedef struct config {
 	config_rule_t		**cfg_rules;

@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright (c) 2017, Joyent, Inc.
+ * Copyright 2018, Joyent, Inc.
  */
 
 #ifndef _IKEV2_COMMON_H
@@ -82,7 +82,7 @@ typedef struct ikev2_sa_match_s {
 #define	SA_MATCH_SEEN(m, which) ((m)->ism_seen & SEEN(which))
 #define	SA_MATCHES(m, which) ((m)->ism_match & SEEN(which))
 #define	SA_MATCH(m) \
-    (!!(((m)->ism_match & (m)->ism_seen & (m)->ism_have) == (m)->ism_have))
+	(!!(((m)->ism_match & (m)->ism_seen & (m)->ism_have) == (m)->ism_have))
 
 enum {
 	CSA_IN,

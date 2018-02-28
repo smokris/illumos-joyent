@@ -53,7 +53,7 @@
 #define	ENUMBUF_SZ	11	/* Large enough to hold a 32-bit number + NUL */
 
 struct enumbuf_s {
-	uint	eb_idx;
+	uint_t	eb_idx;
 	char	eb_buf[ENUMBUF_NUM][ENUMBUF_SZ];
 };
 
@@ -310,7 +310,7 @@ key_add_id(const char *name, const char *typename, config_id_t *id)
 		break;
 	case CFG_AUTH_ID_DN:
 	case CFG_AUTH_ID_GN:
-		/*NOTYET*/
+		/* NOTYET */
 		INVALID(id->cid_type);
 		break;
 	}

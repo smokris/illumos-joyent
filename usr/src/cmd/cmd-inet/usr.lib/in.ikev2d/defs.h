@@ -233,4 +233,4 @@ bunyan_logfn_t getlog(bunyan_level_t);
 }
 #endif
 
-#endif  /* _DEFS_H */
+#endif /* _DEFS_H */
