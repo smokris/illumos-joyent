@@ -19,6 +19,7 @@
 #include <door.h>
 #include <err.h>
 #include <errno.h>
+#include <sys/socket.h>
 #include <ikedoor.h>
 #include <stropts.h>
 
