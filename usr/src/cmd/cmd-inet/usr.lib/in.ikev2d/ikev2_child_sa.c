@@ -1354,18 +1354,36 @@ ikev2_sa_select_encr_attr(sadb_x_algdesc_t *restrict alg,
 		uint16_t attr_len = BE_IN16(&attr->attr_length);
 		boolean_t tv = B_FALSE;
 
-		if (IKE_ATTR_GET_TYPE(attr_type) == IKE_ATTR_TV)
+		if (IKE_ATTR_GET_FORMAT(attr_type) == IKE_ATTR_TV)
 			tv = B_TRUE;
-
-		/* Any potential TLV attributes are unsupported */
-		if (!tv)
-			return (B_FALSE);
 
 		attr_type = IKE_ATTR_GET_TYPE(attr_type);
 
-		/* Unsupported attributes cause the transform to be rejected */
-		if (attr_type != IKEV2_XF_ATTR_KEYLEN)
+		/* Any potential TLV attributes are unsupported */
+		if (!tv) {
+			/*
+			 * Since an attribute value could be quite large,
+			 * we won't print any values, just the type and length
+			 * for diagnostic purposes.
+			 */
+			(void) bunyan_debug(log,
+			    "Encryption transform has TLV attribute; rejecting "
+			    "transform",
+			    BUNYAN_T_UINT32, "attribute_type",
+			    (uint32_t)attr_type,
+			    BUNYAN_T_UINT32, "attribute_len",
+			    (uint32_t)attr_len, BUNYAN_T_END);
 			return (B_FALSE);
+		}
+
+		/* Unsupported attributes cause the transform to be rejected */
+		if (attr_type != IKEV2_XF_ATTR_KEYLEN) {
+			(void) bunyan_debug(log,
+			    "Unknown encryption attribute; rejecting transform",
+			    BUNYAN_T_UINT32, "attribute_type",
+			    (uint32_t)attr_type, BUNYAN_T_END);
+			return (B_FALSE);
+		}
 
 		/*
 		 * IKEV2_XF_ATTR_KEYLEN is a TV style attribute, so the length
@@ -1373,8 +1391,18 @@ ikev2_sa_select_encr_attr(sadb_x_algdesc_t *restrict alg,
 		 * attribute.
 		 */
 		if (attr_len < alg->sadb_x_algdesc_minbits ||
-		    attr_len > alg->sadb_x_algdesc_maxbits)
+		    attr_len > alg->sadb_x_algdesc_maxbits) {
+			(void) bunyan_debug(log,
+			    "Key length not in range; rejecting transform",
+			    BUNYAN_T_UINT32, "key_minbits",
+			    (uint32_t)alg->sadb_x_algdesc_minbits,
+			    BUNYAN_T_UINT32, "key_maxbits",
+			    (uint32_t)alg->sadb_x_algdesc_maxbits,
+			    BUNYAN_T_UINT32, "key_bits",
+			    (uint32_t)attr_len, BUNYAN_T_END);
 			return (B_FALSE);
+
+		}
 
 		m->ism_encr_keylen = attr_len;
 		(void) bunyan_debug(log, "Encryption keylength match",
