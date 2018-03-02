@@ -114,9 +114,7 @@ $(PROG): $(OBJS)
 
 include ../Makefile.lib
 
-install: $(PROG) $(ROOTMANIFEST)
-	-$(RM) $(ROOTLIBINETPROG)
-	-$(LN) $(ISAEXEC) $(ROOTLIBINETPROG)
+install: $(ROOTLIBINETPROG) $(ROOTMANIFEST)
 
 check:	$(CHKMANIFEST)
 
