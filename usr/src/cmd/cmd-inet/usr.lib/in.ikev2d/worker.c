@@ -58,6 +58,7 @@ typedef enum worker_state {
 typedef enum worker_alert {
 	WA_NONE,
 	WA_SUSPEND,
+	WA_QUIT,
 } worker_alert_t;
 
 /* Our per-worker thread items */
@@ -120,7 +121,19 @@ worker_init(size_t n)
 void
 worker_fini(void)
 {
-	periodic_fini(wk_periodic);
+	mutex_enter(&worker_lock);
+	worker_state = WS_QUITTING;
+
+	if (port_alert(wk_evport, PORT_ALERT_SET, WA_QUIT, NULL) == -1) {
+		STDERR(fatal, "port_alert() failed");
+		abort();
+	}
+
+	while (wk_nworkers > 0)
+		VERIFY0(cond_wait(&worker_cv, &worker_lock));
+
+	mutex_exit(&worker_lock);
+
 	(void) close(wk_evport);
 }
 
@@ -399,6 +412,8 @@ worker_main(void *arg)
 		}
 	}
 
+	(void) bunyan_debug(log, "Worker exiting", BUNYAN_T_END);
+
 	mutex_enter(&worker_lock);
 	list_remove(&workers, w);
 	wk_nworkers--;
@@ -422,6 +437,11 @@ do_alert(int events, void *user)
 		return;
 	case WA_SUSPEND:
 		worker_do_suspend();
+		return;
+	case WA_QUIT:
+		mutex_enter(&worker_lock);
+		worker->w_quit = B_TRUE;
+		mutex_exit(&worker_lock);
 		return;
 	}
 }
