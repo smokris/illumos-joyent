@@ -17,11 +17,14 @@
 #include <sys/debug.h>
 #include <sys/types.h>
 #include <security/cryptoki.h>
+#include <strings.h>
 #include <bunyan.h>
 #include "dh.h"
 #include "dh_impl.h"
 #include "ikev2_enum.h"
 #include "pkcs11.h"
+
+#define	EC_POINT_FORM_UNCOMPRESSED 0x04
 
 static boolean_t dh_genpair(pkgroup_t *, CK_OBJECT_HANDLE_PTR,
     CK_OBJECT_HANDLE_PTR);
@@ -182,8 +185,6 @@ ecc_derivekey(CK_OBJECT_HANDLE priv, uint8_t *restrict pub, size_t publen,
 		.kdf = CKD_NULL,
 		.pSharedData = NULL_PTR,
 		.ulSharedDataLen = 0,
-		.pPublicData = pub,
-		.ulPublicDataLen = publen,
 	};
 	CK_MECHANISM mech = {
 		.mechanism = CKM_ECDH1_DERIVE,
@@ -196,10 +197,24 @@ ecc_derivekey(CK_OBJECT_HANDLE priv, uint8_t *restrict pub, size_t publen,
 		{ CKA_ENCRYPT, &trueval, sizeof (trueval) },
 		{ CKA_DECRYPT, &trueval, sizeof (trueval) }
 	};
+	uint8_t *curve = umem_alloc(publen + 1, UMEM_DEFAULT);
 	CK_RV rv;
+
+	if (curve == NULL) {
+		(void) bunyan_error(log, "No memory to perform key exchange",
+		    BUNYAN_T_END);
+		return (B_FALSE);
+	}
+
+	curve[0] = EC_POINT_FORM_UNCOMPRESSED;
+	bcopy(curve + 1, pub, publen);
+	ecc_params.pPublicData = pub;
+	ecc_params.ulPublicDataLen = publen + 1;
 
 	rv = C_DeriveKey(p11h(), &mech, priv, template, ARRAY_SIZE(template),
 	    secretp);
+	umem_free(pub, publen + 1);
+
 	if (rv != CKR_OK) {
 		PKCS11ERR(error, "C_DeriveKey", rv);
 		return (B_FALSE);

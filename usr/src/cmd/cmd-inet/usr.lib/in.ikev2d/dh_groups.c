@@ -328,22 +328,40 @@ static uint8_t dh_modp_8192[] = {
     0xFF, 0xFF, 0xFF, 0xFF,
 };
 
-/* iso(1) member-body(2) us(840) ansi-x962(10045) fieldType(1) prime-field(1) */
+/*
+ * 1.2.840.10045.3.1.1
+ * iso(1) member-body(2) us(840) ansi-x962(10045) curves(3) prime(1)
+ * prime192v1(1)
+ */
 static uint8_t ecp_192_oid[] = {
-    0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x01, 0x01 };
-
-/* iso(1) identified-organization(3) certicom(132) curve(0) ansip224r1(33) */
-static uint8_t ecp_224_oid[] =	{ 0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x21 };
-
-/* iso(1) member-body(2) us(840) ansi-x962(10045) fieldType(1) prime-field(7) */
-static uint8_t ecp_256_oid[] = {
-    0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x01, 0x07
+    0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x01
 };
 
-/* iso(1) identified-organization(3) certicom(132) curve(0) ansip384r1(34) */
+/*
+ * 1.3.132.0.33
+ * iso(1) identified-organization(3) certicom(132) curve(0) ansip224r1(33)
+ */
+static uint8_t ecp_224_oid[] =	{ 0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x21 };
+
+/*
+ * 1.2.840.10045.3.1.7
+ * iso(1) member-body(2) us(840) ansi-x962(10045) curves(3) prime(1)
+ * prime256v1(7)
+ */
+static uint8_t ecp_256_oid[] = {
+    0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07
+};
+
+/*
+ * 1.3.132.0.34
+ * iso(1) identified-organization(3) certicom(132) curve(0) ansip384r1(34)
+ */
 static uint8_t ecp_384_oid[] = { 0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x22 };
 
-/* iso(1) identified-organization(3) certicom(132) curve(0) ansip521r1(35) */
+/*
+ * 1.3.132.0.35
+ * iso(1) identified-organization(3) certicom(132) curve(0) ansip521r1(35)
+ */
 static uint8_t ecp_521_oid[] = { 0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x23 };
 
 #define	DH(name, prime, gen) {				\
