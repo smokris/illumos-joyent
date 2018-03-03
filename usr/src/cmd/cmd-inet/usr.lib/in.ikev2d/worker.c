@@ -391,7 +391,7 @@ worker_log_lifetime(boolean_t start)
 
 	VERIFY(MUTEX_HELD(&worker_lock));
 
-	if (worker_state != WS_RUNNING)
+	if (worker_state != WS_RUNNING && worker_state != WS_QUITTING)
 		level = BUNYAN_L_INFO;
 
 	getlog(level)(log, msg, BUNYAN_T_END);
