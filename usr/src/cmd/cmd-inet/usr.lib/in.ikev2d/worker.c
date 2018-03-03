@@ -44,11 +44,42 @@
  * creation (the members of worker_t).  These items are things that for
  * debugging purposes, or things where we don't want to worry about allocation
  * failures during processing (such as a PKCS#11 session handle).
+ *
+ * The pool of workers itself has a lifecycle, it's state denoted by the
+ * worker_state_t enum (and held in the worker_state variable).  The lifecycle
+ * can be illustrated as:
+ *
+ *                      +-------------+                   +--------------+
+ *                      |             |  worker_resume()  |              |
+ *                      | WS_RESUMING | <---------------- | WS_SUSPENDED |
+ *                      |             |                   |              |
+ *                      +-------------+                   +--------------+
+ *                            |                                  ^
+ *                            +----+                             |
+ *                                 |                             |
+ *                                 \/                            |
+ *      +-------------+      +------------+              +---------------+
+ *      |             |      |            |  WA_SUSPEND  |               |
+ * ---> | WS_STARTING | ---> | WS_RUNNING | -----------> | WS_SUSPENDING |
+ *      |             |      |            |              |               |
+ *      +-------------+      +------------+              +---------------+
+ *                                 |
+ *                                 | WA_QUIT
+ *                                 \/
+ *                           +-------------+
+ *                           |             |
+ *                           | WS_QUITTING |
+ *                           |             |
+ *                           +-------------+
+ *
+ * Where WA_SUSPEND and WA_QUIT are port_alert(3C) events that are broadcast
+ * to all workers (note: there is also a separate WM_QUIT message to instruct
+ * an individual worker to exit, but does not indicate the entire pool is
+ * quitting).
  */
-
-/* The state of the worker pool */
 typedef enum worker_state {
-	WS_NORMAL = 0,
+	WS_STARTING = 0,
+	WS_RUNNING,
 	WS_SUSPENDING,
 	WS_SUSPENDED,
 	WS_RESUMING,
@@ -116,6 +147,10 @@ worker_init(size_t n)
 	(void) bunyan_trace(log, "Worker threads created",
 	    BUNYAN_T_UINT32, "numworkers", (uint32_t)wk_nworkers,
 	    BUNYAN_T_END);
+
+	mutex_enter(&worker_lock);
+	worker_state = WS_RUNNING;
+	mutex_exit(&worker_lock);
 }
 
 void
@@ -137,6 +172,9 @@ worker_fini(void)
 	(void) close(wk_evport);
 }
 
+#define	IN_RECONFIG(s) \
+	((s) == WS_SUSPENDING || (s) == WS_SUSPENDED || (s) == WS_RESUMING)
+
 boolean_t
 worker_add(void)
 {
@@ -150,7 +188,7 @@ worker_add(void)
 	 * succeeded or failed.
 	 */
 	mutex_enter(&worker_lock);
-	while (worker_state != WS_NORMAL && worker_state != WS_QUITTING)
+	while (IN_RECONFIG(worker_state))
 		VERIFY0(cond_wait(&worker_cv, &worker_lock));
 
 	/* If we're shutting down, don't bother creating the worker */
@@ -181,11 +219,7 @@ again:
 		abort();
 	}
 
-	list_insert_tail(&workers, w);
-	VERIFY0(cond_broadcast(&worker_cv));
-	wk_nworkers++;
 	mutex_exit(&worker_lock);
-
 	return (B_TRUE);
 
 fail:
@@ -227,8 +261,10 @@ worker_suspend(void)
 
 again:
 	switch (worker_state) {
-	case WS_NORMAL:
+	case WS_RUNNING:
 		break;
+	/* Ignore attempts to suspend threads while we're still starting up */
+	case WS_STARTING:
 	/* No point in suspending if we are quitting */
 	case WS_QUITTING:
 	/*
@@ -316,7 +352,7 @@ worker_resume(void)
 
 again:
 	switch (worker_state) {
-	case WS_NORMAL:
+	case WS_RUNNING:
 	case WS_RESUMING:
 	case WS_QUITTING:
 		mutex_exit(&worker_lock);
@@ -324,6 +360,7 @@ again:
 	case WS_SUSPENDING:
 		VERIFY0(cond_wait(&worker_cv, &worker_lock));
 		goto again;
+	case WS_STARTING:
 	case WS_SUSPENDED:
 		break;
 	}
@@ -335,11 +372,29 @@ again:
 	while (wk_nsuspended > 0)
 		VERIFY0(cond_wait(&worker_cv, &worker_lock));
 
-	worker_state = WS_NORMAL;
+	worker_state = WS_RUNNING;
 	VERIFY0(cond_broadcast(&worker_cv));
 	mutex_exit(&worker_lock);
 
 	(void) bunyan_trace(log, "Finished resuming workers", BUNYAN_T_END);
+}
+
+/*
+ * We want to log the addition or removal of workers after startup at a
+ * higher level than debug.
+ */
+static void
+worker_log_lifetime(boolean_t start)
+{
+	const char *msg = start ? "Worker starting" : "Worker stopping";
+	bunyan_level_t level = BUNYAN_L_TRACE;
+
+	VERIFY(MUTEX_HELD(&worker_lock));
+
+	if (worker_state != WS_RUNNING)
+		level = BUNYAN_L_INFO;
+
+	getlog(level)(log, msg, BUNYAN_T_END);
 }
 
 static void *
@@ -350,7 +405,14 @@ worker_main(void *arg)
 	worker = w;
 	log = w->w_log;
 
-	(void) bunyan_trace(log, "Worker starting", BUNYAN_T_END);
+	mutex_enter(&worker_lock);
+
+	list_insert_tail(&workers, w);
+	wk_nworkers++;
+	worker_log_lifetime(B_TRUE);
+
+	VERIFY0(cond_broadcast(&worker_cv));
+	mutex_exit(&worker_lock);
 
 	while (!w->w_quit) {
 		port_event_t pe = { 0 };
@@ -412,12 +474,14 @@ worker_main(void *arg)
 		}
 	}
 
-	(void) bunyan_debug(log, "Worker exiting", BUNYAN_T_END);
-
 	mutex_enter(&worker_lock);
+
+	worker_log_lifetime(B_FALSE);
+
 	list_remove(&workers, w);
 	wk_nworkers--;
 	VERIFY0(cond_broadcast(&worker_cv));
+
 	mutex_exit(&worker_lock);
 
 	worker = NULL;

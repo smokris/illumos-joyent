@@ -294,7 +294,7 @@ cookie_update_secret(void *dummy)
 
 	VERIFY0(rw_unlock(&i2c_lock));
 
-	(void) bunyan_debug(log, "Created new cookie secret",
+	(void) bunyan_trace(log, "Created new cookie secret",
 	    BUNYAN_T_UINT32, "version", version, BUNYAN_T_END);
 }
 

@@ -1346,7 +1346,7 @@ pfkey_thread(void *arg)
 			exit(EXIT_FAILURE);
 		}
 
-		(void) bunyan_debug(log, "Received port event",
+		(void) bunyan_trace(log, "Received port event",
 		    BUNYAN_T_INT32, "event", pe.portev_events,
 		    BUNYAN_T_STRING, "source",
 		    port_source_str(pe.portev_source),

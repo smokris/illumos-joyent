@@ -280,6 +280,14 @@ ikev2_pfkey(parsedmsg_t *pmsg)
 
 		i2sa = ikev2_sa_getbylspi(local_spi, initiator);
 	} else {
+		if (pmsg->pmsg_samsg->sadb_msg_type != SADB_ACQUIRE) {
+			(void) bunyan_error(log,
+			    "Received an non-ACQUIRE SADB message with a "
+			    "missing KMC", BUNYAN_T_END);
+			parsedmsg_free(pmsg);
+			return;
+		}
+
 		/*
 		 * XXX: Since we set the KMC on every IPsec SA we create,
 		 * can this situation ever be anything other than an

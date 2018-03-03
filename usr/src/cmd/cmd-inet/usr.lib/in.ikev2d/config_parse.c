@@ -607,6 +607,7 @@ config_read(const char *filename)
 	    BUNYAN_T_END);
 
 	(void) bunyan_trace(log, "process_config() exit", BUNYAN_T_END);
+	(void) bunyan_key_remove(log, K_CONFIGFILE);
 	return (cfg);
 
 fail:
@@ -619,6 +620,7 @@ fail:
 	config_free(cfg);
 
 	(void) bunyan_trace(log, "process_config() exit", BUNYAN_T_END);
+	(void) bunyan_key_remove(log, K_CONFIGFILE);
 	return (NULL);
 }
 

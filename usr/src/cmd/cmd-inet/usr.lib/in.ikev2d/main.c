@@ -180,6 +180,7 @@ main(int argc, char **argv)
 	struct rlimit rlim;
 	int c, rc;
 	int fd = -1;
+	bunyan_level_t log_level = BUNYAN_L_TRACE; /* during development only */
 	boolean_t debug_mode = B_FALSE;
 	boolean_t check_cfg = B_FALSE;
 
@@ -204,6 +205,7 @@ main(int argc, char **argv)
 		switch (c) {
 		case 'd':
 			debug_mode = B_TRUE;
+			log_level = BUNYAN_L_DEBUG;
 			break;
 		case 'c':
 			check_cfg = B_TRUE;
@@ -231,7 +233,7 @@ main(int argc, char **argv)
 		errx(EXIT_FAILURE, "bunyan_init() failed: %s", strerror(rc));
 
 	/* hard coded to TRACE just during development */
-	if ((rc = bunyan_stream_add(log, "stdout", BUNYAN_L_TRACE,
+	if ((rc = bunyan_stream_add(log, "stdout", log_level,
 	    lockingfd_log, &fdlock)) < 0) {
 		errx(EXIT_FAILURE, "bunyan_stream_add() failed: %s",
 		    strerror(rc));
