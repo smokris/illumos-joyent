@@ -383,7 +383,7 @@ pkcs11_fini(void)
 		if (rv != CKR_OK)
 			PKCS11ERR(error, "C_CloseSession", rv);
 	}
-	free(pkcs11_handles);
+	umem_cfree(pkcs11_handles, pkcs11_handlesz, sizeof (CK_SESSION_HANDLE));
 	pkcs11_handles = NULL;
 	pkcs11_nhandles = 0;
 	pkcs11_handlesz = 0;
