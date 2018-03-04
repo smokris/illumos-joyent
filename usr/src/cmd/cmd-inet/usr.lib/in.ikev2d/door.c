@@ -44,8 +44,10 @@ ikev2_door_server(void *cookie __unused, char *arg, size_t arglen,
     door_desc_t *descp, uint_t n_desc)
 {
 	ike_service_t *svc = (ike_service_t *)arg;
+#if 0
 	ike_service_t resp = { 0 };
 	size_t resplen = 0;
+#endif
 
 	if (arglen < sizeof (ike_cmd_t)) {
 		/* XXX: Log */
