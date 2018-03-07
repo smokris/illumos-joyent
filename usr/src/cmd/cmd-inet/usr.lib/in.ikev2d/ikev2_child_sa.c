@@ -36,11 +36,11 @@
  * Is the ikev2_sa_args_t being used during an IKE_AUTH exchange for the
  * piggybacked child SA
  */
-#define	IS_AUTH(csa) ((csa)->i2a_is_auth)
+#define	IS_AUTH(cargs) ((cargs)->i2a_is_auth)
 /* Are we initiating the creation of this child SA */
-#define	INITIATOR(csa) ((csa)->i2a_child[0].csa_child->i2c_initiator)
+#define	INITIATOR(cargs) I2C_INITIATOR((cargs)->i2a_child[0].csa_child)
 /* Is the child SA we're creating transport mode? */
-#define	TRANSPORT_MODE(csa) ((csa)->i2a_child[0].csa_child->i2c_transport)
+#define	TRANSPORT_MODE(cargs) I2C_TRANSPORT((cargs)->i2a_child[0].csa_child)
 
 static boolean_t ikev2_create_child_sa_init_common(pkt_t *restrict req,
     ikev2_sa_args_t *restrict);
@@ -261,8 +261,10 @@ ikev2_create_child_sa_init_common(pkt_t *restrict req,
 	uint8_t satype = csa->i2a_sadb_msg->sadb_msg_satype;
 	boolean_t transport_mode = PMSG_IS_TRANSPORT(pmsg);
 
-	csa->i2a_child[CSA_IN].csa_child->i2c_transport = transport_mode;
-	csa->i2a_child[CSA_OUT].csa_child->i2c_transport = transport_mode;
+	if (transport_mode) {
+		csa->i2a_child[CSA_IN].csa_child->i2c_flags |= I2CF_TRANSPORT;
+		csa->i2a_child[CSA_OUT].csa_child->i2c_flags |= I2CF_TRANSPORT;
+	}
 
 	if (!pfkey_getspi(pmsg, satype, &spi)) {
 		goto fail;
@@ -415,8 +417,10 @@ ikev2_create_child_sa_resp_common(pkt_t *restrict req, pkt_t *restrict resp,
 	if (pkt_get_notify(req, IKEV2_N_USE_TRANSPORT_MODE, NULL) != NULL)
 		transport_mode = B_TRUE;
 
-	csa->i2a_child[CSA_IN].csa_child->i2c_transport = transport_mode;
-	csa->i2a_child[CSA_OUT].csa_child->i2c_transport = transport_mode;
+	if (transport_mode) {
+		csa->i2a_child[CSA_IN].csa_child->i2c_flags |= I2CF_TRANSPORT;
+		csa->i2a_child[CSA_OUT].csa_child->i2c_flags |= I2CF_TRANSPORT;
+	}
 
 	if (csa->i2a_is_auth)
 		check_natt_addrs(req, transport_mode);
@@ -719,23 +723,10 @@ ikev2_hard_expire(ikev2_sa_t *restrict i2sa, parsedmsg_t *pmsg)
 	ikev2_spi_proto_t satype;
 
 	if (saext == NULL) {
-		(void) bunyan_info(log,
+		(void) bunyan_error(log,
 		    "Received an SADB_EXPIRE message without an SA extension",
 		    BUNYAN_T_END);
 		goto fail;
-	}
-
-	/*
-	 * Since we control the lifetimes on our end, we always set both
-	 * SAs in a pair to the same lifetime, so they should expire at
-	 * effectively the same time (since each SA is created in a separate
-	 * pf_key(7P) message, there is possibly a small delay that we can
-	 * ignore).  We must only send the outbound (to us) SPIs in a delete
-	 * request, so we ignore hard expires of inbound SAs
-	 */
-	if (saext->sadb_sa_flags & SADB_X_SAFLAGS_INBOUND) {
-		parsedmsg_free(pmsg);
-		return;
 	}
 
 	satype = satype_to_ikev2(pmsg->pmsg_samsg->sadb_msg_satype);
@@ -744,20 +735,40 @@ ikev2_hard_expire(ikev2_sa_t *restrict i2sa, parsedmsg_t *pmsg)
 	csa = ikev2_sa_get_child(i2sa, spi, B_FALSE);
 	if (csa == NULL) {
 		/*
-		 * It (for now at least) appears possible there could be a small
-		 * race where the peer causes us to delete an SA, but a hard
-		 * expire message still ends up being queued.  There's no harm
-		 * if it's already deleted, so we just log it.
+		 * If both peers have similar lifetime policies, it is possible
+		 * that delete requests could cross over the network.  One
+		 * possible outcome of this is that we receive and process a
+		 * delete request from our peer while an SADB_EXPIRE message
+		 * from the kernel gets queued.  In this case we can safely
+		 * ignore the request.  We log it for diagnostic purposes, but
+		 * at a low level to (hopefully) prevent any operator confusion.
 		 */
-		(void) bunyan_info(log,
-		    "Received an SADB_EXPIRE message for a non-existent SA",
+		(void) bunyan_debug(log,
+		    "Received an SADB_EXPIRE message for a non-existent SA; "
+		    "ignoring",
 		    BUNYAN_T_STRING, "satype", ikev2_spi_str(satype),
 		    BUNYAN_T_STRING, "spi", enum_printf("%" PRIx64, spi),
 		    BUNYAN_T_END);
 
 		goto fail;
 	}
-	csa->i2c_moribund = B_TRUE;
+	csa->i2c_flags |= I2CF_DEAD;
+
+	/*
+	 * The kernel sends SADB_EXPIRE messages for both IPsec SAs (inbound
+	 * and outbound).  In IKEv2 we always just send our peer the DELETE
+	 * payload containing SPIs of their inbound SPIs (i.e. we send
+	 * the SPIs we use to send them traffic), and the peer replies
+	 * likewise.  So we ignore SADB_EXPIRE requests for _our_ inbound
+	 * SAs -- ikev2_hard_expire_reply() will guarantee we always delete
+	 * the other pair for this SA.
+	 */
+	if (csa->i2c_flags & I2CF_INBOUND) {
+		/* The kernel and in.ikev2d should agree on the direction */
+		VERIFY(saext->sadb_sa_flags & SADB_X_SAFLAGS_INBOUND);
+		parsedmsg_free(pmsg);
+		return;
+	}
 
 	req = ikev2_pkt_new_exchange(i2sa, IKEV2_EXCH_INFORMATIONAL);
 	if (req == NULL)
@@ -768,6 +779,9 @@ ikev2_hard_expire(ikev2_sa_t *restrict i2sa, parsedmsg_t *pmsg)
 
 	parsedmsg_free(pmsg);
 	pmsg = NULL;
+
+	csa->i2c_flags |= I2CF_MORIBUND;
+	csa->i2c_pair->i2c_flags |= I2CF_MORIBUND;
 
 	if (!ikev2_send_req(req, ikev2_hard_expire_reply, csa))
 		goto fail;
@@ -854,7 +868,7 @@ ikev2_handle_delete(ikev2_sa_t *restrict i2sa, pkt_payload_t *restrict delpay,
 		 * (which from our perspective be the outbound aka paired
 		 * SPI), we don't send the SPI back in a delete payload
 		 */
-		if (csa->i2c_pair != NULL && !csa->i2c_moribund) {
+		if (csa->i2c_pair != NULL && !I2C_MORIBUND(csa)) {
 			ikev2_child_sa_t *pair = csa->i2c_pair;
 
 			spiresp[nspiresp++] = pair->i2c_spi;
@@ -865,8 +879,10 @@ ikev2_handle_delete(ikev2_sa_t *restrict i2sa, pkt_payload_t *restrict delpay,
 		(void) pfkey_delete(satype, spi, srcu, dstu, B_TRUE);
 	}
 
-	(void) ikev2_add_delete(resp, i2satype, spiresp, nspiresp);
-	umem_cfree(spiresp, nspiresp, sizeof (uint64_t));
+	if (nspiresp > 0)
+		(void) ikev2_add_delete(resp, i2satype, spiresp, nspiresp);
+
+	umem_cfree(spiresp, nspi, sizeof (uint64_t));
 }
 
 static void
@@ -1783,7 +1799,7 @@ ikev2_set_child_type(ikev2_child_sa_state_t *restrict kids, boolean_t initiator,
 	for (size_t i = 0; i < 2; i++) {
 		ikev2_child_sa_t *child = kids[i].csa_child;
 
-		child->i2c_initiator = initiator;
+		child->i2c_flags |= initiator ? I2CF_INITIATOR : 0;
 		child->i2c_satype = satype;
 	}
 }
@@ -1850,7 +1866,7 @@ ikev2_create_child_sas(ikev2_sa_t *restrict sa, ikev2_sa_args_t *restrict args)
 		    BUNYAN_T_POINTER, "csa", csa,
 		    BUNYAN_T_STRING, "spi", enum_printf("0x%" PRIx32,
 		    ntohl(csa->i2c_spi)),
-		    BUNYAN_T_BOOLEAN, "inbound", csa->i2c_inbound,
+		    BUNYAN_T_BOOLEAN, "inbound", I2C_INBOUND(csa),
 		    BUNYAN_T_END);
 	}
 

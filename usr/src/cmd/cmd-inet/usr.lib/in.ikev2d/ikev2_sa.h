@@ -24,7 +24,7 @@
  * Use is subject to license terms.
  *
  * Copyright 2014 Jason King.
- * Copyright 2017 Joyent, Inc.
+ * Copyright 2018 Joyent, Inc.
  */
 
 #ifndef _IKEV2_SA_H
@@ -226,6 +226,14 @@ struct ikev2_sa_s {
 	((((i2sa)->i2sa_queue_end + 1) % I2SA_QUEUE_DEPTH) == \
 	(i2sa)->i2sa_queue_start)
 
+typedef enum ikev2_child_sa_flags {
+	I2CF_INITIATOR	= 0x01,
+	I2CF_INBOUND	= 0x02,
+	I2CF_TRANSPORT	= 0x04,
+	I2CF_MORIBUND	= 0x08,		/* In the process of being deleted */
+	I2CF_DEAD	= 0x10,		/* Deleted from the kernel */
+} ikev2_child_sa_flags_t;
+
 struct ikev2_child_sa_s {
 	refhash_link_t		i2c_link;
 	ikev2_child_sa_t	*i2c_pair;
@@ -234,10 +242,7 @@ struct ikev2_child_sa_s {
 	/* A subset of the child SAs state duplicated for observability */
 	ikev2_spi_proto_t	i2c_satype;
 	uint32_t		i2c_spi;
-	boolean_t		i2c_initiator;
-	boolean_t		i2c_inbound;
-	boolean_t		i2c_transport;
-	boolean_t		i2c_moribund;	/* deleted in kernel */
+	uint32_t		i2c_flags;
 
 	ikev2_xf_encr_t		i2c_encr;
 	uint16_t		i2c_encr_keylen; /* in bits */
@@ -249,18 +254,20 @@ struct ikev2_child_sa_s {
 	ts_t			i2c_ts_r;
 };
 
-#define	I2C_SRC(_c) \
-	((_c)->i2c_initiator ^ (_c)->i2c_inbound) ? \
-	    &(_c)->i2c_ts_i : &(_c)->i2c_ts_r
+#define	I2C_INBOUND(i2c)	((i2c)->i2c_flags & I2CF_INBOUND)
+#define	I2C_INITIATOR(i2c)	((i2c)->i2c_flags & I2CF_INITIATOR)
+#define	I2C_TRANSPORT(i2c)	((i2c)->i2c_flags & I2CF_TRANSPORT)
+#define	I2C_MORIBUND(i2c)	((i2c)->i2c_flags & I2CF_MORIBUND)
+#define	I2C_DEAD(i2c)		((i2c)->i2c_flags & I2CF_DEAD)
+#define	I2C_SRC(i2c)		((I2C_INBOUND(i2c) && !I2C_INITIATOR(i2c)) || \
+	(!I2C_INBOUND(i2c) && I2C_INITIATOR(i2c)))
 
-#define	I2C_DST(_c) \
-	((_c)->i2c_initiator ^ (_c)->i2c_inbound) ? \
-	    &(_c)->i2c_ts_r : &(_c)->i2c_ts_i
-
-#define	I2C_SRC_ID(_i2sa, _i2csa) \
-	((_i2csa)->i2c_inbound ? (_i2sa)->remote_id : (_i2sa)->local_id)
-#define	I2C_DST_ID(_i2sa, _i2csa) \
-	((_i2csa)->i2c_inbound ? (_i2sa)->local_id : (_i2sa)->remote_id)
+#define	I2C_TS_SRC(i2c) I2C_SRC(i2c) ? &(csa)->i2c_ts_i : &(csa)->i2c_ts_r
+#define	I2C_TS_DST(i2c) I2C_SRC(i2c) ? &(csa)->i2c_ts_r : &(csa)->i2c_ts_i
+#define	I2C_SRC_ID(i2sa, i2c) \
+	I2C_INBOUND(i2c) ? (i2sa)->remote_id : (i2sa)->local_id
+#define	I2C_DST_ID(i2sa, i2c) \
+	I2C_INBOUND(i2c) ? (i2sa)->local_id : (i2sa)->remote_id
 
 ikev2_sa_t *ikev2_sa_getbylspi(uint64_t, boolean_t);
 ikev2_sa_t *ikev2_sa_getbyrspi(uint64_t,

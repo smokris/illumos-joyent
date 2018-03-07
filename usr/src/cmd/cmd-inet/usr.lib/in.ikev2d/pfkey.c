@@ -847,8 +847,8 @@ pfkey_sadb_add_update(ikev2_sa_t *restrict sa,
 	size_t msglen = 0, encrlen = 0, authlen = 0;
 	uint32_t pair = (csa->i2c_pair != NULL) ? csa->i2c_pair->i2c_spi : 0;
 	uint32_t flags = 0;
-	ts_t *ts_src = I2C_SRC(csa);
-	ts_t *ts_dst = I2C_DST(csa);
+	ts_t *ts_src = I2C_TS_SRC(csa);
+	ts_t *ts_dst = I2C_TS_DST(csa);
 	struct sockaddr *natt_l = NULL, *natt_r = NULL;
 	const config_id_t *id_src = I2C_SRC_ID(sa, csa);
 	const config_id_t *id_dst = I2C_DST_ID(sa, csa);
@@ -882,17 +882,17 @@ pfkey_sadb_add_update(ikev2_sa_t *restrict sa,
 	if (sa->flags & I2SA_INITIATOR)
 		flags |= IKEV2_SADB_INITIATOR;
 
-	flags |= csa->i2c_inbound ?
+	flags |= I2C_INBOUND(csa) ?
 	    SADB_X_SAFLAGS_INBOUND : SADB_X_SAFLAGS_OUTBOUND;
 
-	if (!csa->i2c_transport)
+	if (!I2C_TRANSPORT(csa))
 		flags |= SADB_X_SAFLAGS_TUNNEL;
 
-	if ((sa->flags & I2SA_NAT_LOCAL) && csa->i2c_transport) {
+	if ((sa->flags & I2SA_NAT_LOCAL) && I2C_TRANSPORT(csa)) {
 		flags |= SADB_X_SAFLAGS_NATT_LOC;
 		natt_l = SSTOSA(&sa->lnatt);
 	}
-	if ((sa->flags & I2SA_NAT_REMOTE) && csa->i2c_transport) {
+	if ((sa->flags & I2SA_NAT_REMOTE) && I2C_TRANSPORT(csa)) {
 		flags |= SADB_X_SAFLAGS_NATT_REM;
 		natt_r = SSTOSA(&sa->rnatt);
 	}
@@ -911,14 +911,14 @@ pfkey_sadb_add_update(ikev2_sa_t *restrict sa,
 	 * the creation request.
 	 */
 	pfkey_msg_init(PMSG_FROM_KERNEL(srcmsg) ? srcmsg->pmsg_samsg : NULL,
-	    msg, csa->i2c_inbound ? SADB_UPDATE : SADB_ADD, satype);
+	    msg, I2C_INBOUND(csa) ? SADB_UPDATE : SADB_ADD, satype);
 
 	ext = (sadb_ext_t *)(msg + 1);
 	ext = pfkey_add_sa(ext, csa->i2c_spi, csa->i2c_encr, csa->i2c_auth,
 	    flags);
 	ext = pfkey_add_lifetime(sa->i2sa_rule, ext);
 
-	if (csa->i2c_transport) {
+	if (I2C_TRANSPORT(csa)) {
 		srctype = SADB_EXT_ADDRESS_SRC;
 		dsttype = SADB_EXT_ADDRESS_DST;
 	} else {
@@ -928,10 +928,10 @@ pfkey_sadb_add_update(ikev2_sa_t *restrict sa,
 		 * SRC/DST for the inbound SA.
 		 */
 		ext = pfkey_add_ext(ext,
-		    csa->i2c_inbound ? SADB_EXT_ADDRESS_DST : 0,
+		    I2C_INBOUND(csa) ? SADB_EXT_ADDRESS_DST : 0,
 		    srcmsg->pmsg_exts[SADB_EXT_ADDRESS_SRC]);
 		ext = pfkey_add_ext(ext,
-		    csa->i2c_inbound ? SADB_EXT_ADDRESS_SRC : 0,
+		    I2C_INBOUND(csa) ? SADB_EXT_ADDRESS_SRC : 0,
 		    srcmsg->pmsg_exts[SADB_EXT_ADDRESS_DST]);
 	}
 

@@ -944,7 +944,8 @@ ikev2_child_sa_alloc(boolean_t inbound)
 	if ((csa = umem_cache_alloc(i2c_cache, UMEM_DEFAULT)) == NULL)
 		return (NULL);
 
-	csa->i2c_inbound = inbound;
+	if (inbound)
+		csa->i2c_flags |= I2CF_INBOUND;
 	return (csa);
 }
 
@@ -969,7 +970,7 @@ ikev2_child_sa_t *
 ikev2_sa_get_child(ikev2_sa_t *i2sa, uint32_t spi, boolean_t inbound)
 {
 	ikev2_child_sa_t cmp = {
-		.i2c_inbound = inbound,
+		.i2c_flags = inbound ? I2CF_INBOUND : 0,
 		.i2c_spi = spi
 	};
 
@@ -1014,8 +1015,8 @@ ikev2_sa_delete_children(ikev2_sa_t *restrict i2sa)
 		uint8_t satype = ikev2_to_satype(csa->i2c_satype);
 
 		(void) pfkey_delete(satype, csa->i2c_spi,
-		    csa->i2c_inbound ? dstu : srcu,
-		    csa->i2c_inbound ? srcu : dstu,
+		    I2C_INBOUND(csa) ? dstu : srcu,
+		    I2C_INBOUND(csa) ? srcu : dstu,
 		    (csa->i2c_pair != NULL) ? B_TRUE : B_FALSE);
 
 		if (csa->i2c_pair != NULL) {
@@ -1049,7 +1050,7 @@ i2c_hash(const void *arg)
 	const ikev2_child_sa_t *i2c = arg;
 	uint64_t val = i2c->i2c_spi;
 
-	if (i2c->i2c_inbound)
+	if (I2C_INBOUND(i2c))
 		val |= (1ULL << 32);
 	return (val);
 }
@@ -1065,9 +1066,9 @@ i2c_cmp(const void *larg, const void *rarg)
 	if (l->i2c_spi > r->i2c_spi)
 		return (1);
 
-	if (l->i2c_inbound && !r->i2c_inbound)
+	if (I2C_INBOUND(l) && !I2C_INBOUND(r))
 		return (-1);
-	if (!l->i2c_inbound && r->i2c_inbound)
+	if (!I2C_INBOUND(l) && I2C_INBOUND(r))
 		return (1);
 
 	return (0);
