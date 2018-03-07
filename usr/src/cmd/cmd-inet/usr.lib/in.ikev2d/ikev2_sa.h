@@ -234,8 +234,10 @@ typedef enum ikev2_child_sa_flags {
 	I2CF_DEAD	= 0x10,		/* Deleted from the kernel */
 } ikev2_child_sa_flags_t;
 
+struct ikev2_sa_args_s;
 struct ikev2_child_sa_s {
 	refhash_link_t		i2c_link;
+	struct ikev2_sa_args_s *i2c_rekey;
 	ikev2_child_sa_t	*i2c_pair;
 	hrtime_t		i2c_birth;
 

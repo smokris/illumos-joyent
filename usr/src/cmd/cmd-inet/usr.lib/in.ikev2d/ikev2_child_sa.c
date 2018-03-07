@@ -77,6 +77,8 @@ static void ikev2_set_child_type(ikev2_child_sa_state_t *restrict, boolean_t,
 
 static void check_natt_addrs(pkt_t *restrict, boolean_t);
 static sadb_address_t *get_sadb_addr(parsedmsg_t *, boolean_t);
+static boolean_t ikev2_get_rekey_csa(ikev2_sa_t *restrict,
+    pkt_t *restrict, pkt_t *restrict, ikev2_child_sa_t *restrict *);
 
 /*
  * We are the initiator for an IKE_AUTH exchange, and are performing the
@@ -188,17 +190,17 @@ ikev2_rekey_child_sa_init(ikev2_sa_t *restrict sa, parsedmsg_t *restrict pmsg)
 	VERIFY(sa->flags & I2SA_AUTHENTICATED);
 
 	/* We must use the inbound SPI for the REKEY_SA notification */
-	if ((csa = ikev2_sa_get_child(sa, spi, inbound)) != NULL) {
-		if (!inbound) {
-			if (csa->i2c_pair == NULL) {
-				/* XXX: Log */
-				parsedmsg_free(pmsg);
-				return;
-			}
-			csa = csa->i2c_pair;
-			spi = csa->i2c_spi;
-		}
-	} else {
+	if (!inbound) {
+		(void) bunyan_debug(log,
+		    "Received soft SADB_EXPIRE for the outbound SA; ignoring",
+		    BUNYAN_T_STRING, "satype", ikev2_spi_str(satype),
+		    BUNYAN_T_STRING, "spi", enum_printf("%" PRIx32, spi),
+		    BUNYAN_T_END);
+		parsedmsg_free(pmsg);
+		return;
+	}
+
+	if ((csa = ikev2_sa_get_child(sa, spi, inbound)) == NULL) {
 		(void) bunyan_info(log,
 		    "Received SADB_EXPIRE message for non-existent child SA; "
 		    "ignoring",
@@ -208,7 +210,9 @@ ikev2_rekey_child_sa_init(ikev2_sa_t *restrict sa, parsedmsg_t *restrict pmsg)
 		parsedmsg_free(pmsg);
 		return;
 	}
+
 	args->i2a_old_csa = csa;
+	csa->i2c_rekey = args;
 
 	(void) bunyan_debug(log, "Starting rekey CREATE_CHILD_SA exchange",
 	    BUNYAN_T_STRING, "satype", ikev2_spi_str(satype),
@@ -346,7 +350,8 @@ ikev2_create_child_sa_resp(pkt_t *restrict req)
 {
 	ikev2_sa_t *i2sa = req->pkt_sa;
 	pkt_t *resp = NULL;
-	ikev2_sa_args_t *csa = NULL;
+	ikev2_sa_args_t *args = NULL;
+	ikev2_child_sa_t *csa = NULL;
 
 	if (!(i2sa->flags & I2SA_AUTHENTICATED)) {
 		(void) bunyan_info(log,
@@ -362,7 +367,7 @@ ikev2_create_child_sa_resp(pkt_t *restrict req)
 		return;
 	}
 
-	if ((csa = ikev2_sa_args_new(B_TRUE)) == NULL) {
+	if ((args = ikev2_sa_args_new(B_TRUE)) == NULL) {
 		/*
 		 * There's no specific error notification for this situation,
 		 * however NO_PROPOSAL_CHOSEN is despite it's name a general
@@ -385,14 +390,22 @@ ikev2_create_child_sa_resp(pkt_t *restrict req)
 	 * Also, check if we have have initiated a rekey request, and do the
 	 * 'lowest nonce wins' bit form RFC7296 2.8.1
 	 */
-	csa->i2a_dh = i2sa->i2sa_rule->rule_p2_dh;
+	args->i2a_dh = i2sa->i2sa_rule->rule_p2_dh;
 
-	if (ikev2_create_child_sa_resp_common(req, resp, csa))
+	if (ikev2_get_rekey_csa(i2sa, req, resp, &csa) && csa == NULL) {
 		ikev2_send_resp(resp);
-	else
-		ikev2_pkt_free(resp);
+		ikev2_sa_args_free(args);
+		return;
+	}
 
-	ikev2_sa_args_free(csa);
+	if (!ikev2_create_child_sa_resp_common(req, resp, args)) {
+		ikev2_pkt_free(resp);
+		ikev2_sa_args_free(args);
+		return;
+	}
+
+	ikev2_send_resp(resp);
+	ikev2_sa_args_free(args);
 }
 
 /*
@@ -562,18 +575,77 @@ ikev2_create_child_sa_init_resp(ikev2_sa_t *restrict i2sa, pkt_t *restrict resp,
 
 #ifdef notyet
 static void
+low_arg_nonce(ikev2_sa_args_t *args, uint8_t * const *noncep, size_t *lenp)
+{
+	int cmp = memcmp(args->i2a_nonce_i, args->i2a_nonce_r,
+	    MIN(args->i2a_nonce_i_len, args->i2a_nonce_r_len));
+
+	if (cmp < 0) {
+		*noncep = args->i2a_nonce_i;
+		*lenp = args->i2a_nonce_i_len;
+	} else if (cmp > 1) {
+		*noncep = args->i2a_nonce_r;
+		*lenp = args->i2a_nonce_r_len;
+	} else if (args->i2a_nonce_i_len < args->i2a_nonce_r_len) {
+		*noncep = args->i2a_nonce_i;
+		*lenp = args->i2a_nonce_i_len;
+	} else {
+		/*
+		 * We are relying on our random nonce generator not producting
+		 * successive duplicate values.  If that happens, there are far
+		 * worse problems than this comparison not being techincally
+		 * correct.
+		 */
+		*noncep = args->i2a_nonce_r;
+		*lenp = args->i2a_nonce_r_len;
+	}
+}
+
+static void
 ikev2_rekey_child_sa_init_resp(ikev2_sa_t *restrict i2sa, pkt_t *restrict resp,
     void *restrict arg)
 {
 	ikev2_sa_args_t *sa_arg = arg;
+	ikev2_child_sa_t *csa = arg->i2a_old_csa;
+
+	ikev2_create_child_sa_init_resp_common(i2sa, resp, arg);
+
+	/* No simultaneous rekey occurred, so we're done */
+	if (csa->i2c_pair->i2c_rekey == NULL) {
+		ikev2_sa_args_free(sa_arg);
+		return;
+	}
 
 	/*
-	 * TODO: Check if peer initiated a rekey on the same pair of SAs,
-	 * check nonce values and if our nonce values were larger, delete
-	 * the pair we created (RFC7296 2.8.1)
+	 * A simultaneous rekey request occurred.  We now have the old IPsec
+	 * SA pair, and two new IPsec SAs.  Per RFC7296 2.8.1, of the two new
+	 * pairs of IPsec SAs created, the pair containing the lowest nonce
+	 * loses.  The loser deletes the extraneous new IPsec SA that it
+	 * initiated, while the winner deletes the old IPsec SA.
 	 */
-	ikev2_create_child_sa_init_resp_common(i2sa, resp, arg);
-	ikev2_sa_args_free(arg);
+
+	ikev2_sa_args_t *args2 = csa->i2c_pair->i2c_rekey;
+	ikev2_child_sa_t *low_sa = NULL;
+	const uint8_t *low_n[2];
+	size_t n_len[2] = 0;
+	int cmp;
+
+	low_arg_nonce(sa_arg, &low_n[0], &n_len[0]);
+	low_arg_nonce(args2, &low_n[1], &n_len[1]);
+
+	cmp = memcmp(low_n[0], low_n[1], MIN(n_len[0], n_len[1]));
+	if (cmp < 0 || (cmp == 0 && n_len[0] < n_len[1])) {
+		/* We won, and are done */
+		ikev2_sa_args_free(sa_arg);
+		ikev2_sa_args_free(args2);
+		return;
+	}
+
+	/* We lost, start delete process */
+
+	pkt_t *req = ikev2_pkt_new_exchange(i2sa, IKEV2_EXCH_INFORMATIONAL);
+
+	VERIFY(ikev2_add_delete(req, satype, spi, 1));
 }
 #endif
 
@@ -2004,6 +2076,78 @@ get_sadb_addr(parsedmsg_t *pmsg, boolean_t src)
 	}
 
 	return ((sadb_address_t *)ext);
+}
+
+/*
+ * Determine if we have a REKEY_SA notification, and if so attempt to
+ * lookup the corresponding child SA with that SPI.
+ *
+ * Return:
+ *	B_TRUE if REKEY_SA notification was found
+ *	B_FALSE if REKEY_SA notification was not found
+ */
+static boolean_t
+ikev2_get_rekey_csa(ikev2_sa_t *restrict i2sa, pkt_t *restrict req,
+    pkt_t *restrict resp, ikev2_child_sa_t *restrict *csap)
+{
+	pkt_notify_t *rekey_n = pkt_get_notify(req, IKEV2_N_REKEY_SA, NULL);
+	uint8_t *spiptr = rekey_n->pn_ptr;
+	uint32_t spi = 0;
+
+	VERIFY(!I2P_RESPONSE(req));
+
+	*csap = NULL;
+
+	if (rekey_n == NULL)
+		return (B_FALSE);
+
+	if (rekey_n->pn_spi > UINT32_MAX) {
+		(void) bunyan_info(log,
+		    "Received an IPsec rekey request with an oversized SPI "
+		    "value; replying with INVALID_SYNTAX",
+		    BUNYAN_T_UINT64, "spi", rekey_n->pn_spi,
+		    BUNYAN_T_END);
+		VERIFY(ikev2_add_notify(resp, IKEV2_N_INVALID_SYNTAX));
+		return (B_TRUE);
+	}
+
+	if (rekey_n->pn_spi == 0) {
+		(void) bunyan_info(log,
+		    "Received IPsec rekey request; but cannot determine SPI; "
+		    "replying with INVALID_SYNTAX",
+		    BUNYAN_T_END);
+
+		VERIFY(ikev2_add_notify(resp, IKEV2_N_INVALID_SYNTAX));
+		return (B_TRUE);
+	}
+
+	/*
+	 * The received SPI is the inbound SA of the sender, thus the outbound
+	 * of the receiver (us).
+	 */
+	*csap = ikev2_sa_get_child(i2sa, spi, B_FALSE);
+	if (*csap == NULL) {
+		(void) bunyan_debug(log, "received IPsec rekey request, but "
+		    "cannot find the SA",
+		    BUNYAN_T_STRING, "satype", ikev2_spi_str(rekey_n->pn_type),
+		    BUNYAN_T_STRING, "spi", enum_printf("%" PRIx32, spi),
+		    BUNYAN_T_END);
+		VERIFY(ikev2_add_notify_full(resp, rekey_n->pn_type,
+		    (uint64_t)spi, IKEV2_N_CHILD_SA_NOT_FOUND, NULL, 0));
+		return (B_TRUE);
+	}
+
+	/*
+	 * If we're in the process of deleting this SA pair, abort this
+	 * request with TEMPORARY_FAILURE.  RFC7296 2.25.1
+	 */
+	if (I2C_MORIBUND(*csap)) {
+		VERIFY(ikev2_add_notify(resp, IKEV2_N_TEMPORARY_FAILURE));
+		*csap = NULL;
+		return (B_TRUE);
+	}
+
+	return (B_TRUE);
 }
 
 #ifdef notyet
