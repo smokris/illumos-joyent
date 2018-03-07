@@ -278,7 +278,7 @@ ts_negotiate_one(pkt_payload_t *restrict pay, ts_t *restrict ts,
 	}
 
 	(void) snprintf(msg, sizeof (msg), "Selected %s", ts_type);
-	range_log(log, BUNYAN_L_TRACE, msg, &res);
+	range_log(log, BUNYAN_L_DEBUG, msg, &res);
 
 	range_to_ts(&res, ts);
 	return (B_TRUE);
