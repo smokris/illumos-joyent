@@ -64,10 +64,8 @@ ikev2_pkt_new_exchange(ikev2_sa_t *i2sa, ikev2_exch_t exch_type)
 	    BUNYAN_T_STRING, LOG_KEY_EXCHTYPE, ikev2_exch_str(exch_type),
 	    BUNYAN_T_END);
 
-	pkt = pkt_out_alloc(I2SA_LOCAL_SPI(i2sa),
-	    I2SA_REMOTE_SPI(i2sa),
-	    IKEV2_VERSION,
-	    exch_type, msgid, flags);
+	pkt = pkt_out_alloc(i2sa->i_spi, i2sa->r_spi, IKEV2_VERSION, exch_type,
+	    msgid, flags);
 
 	if (pkt == NULL) {
 		(void) bunyan_error(log, "No memory for new exchange",
