@@ -1887,16 +1887,11 @@ add_addr(config_addr_t **restrict addrs, size_t *restrict naddrs,
     const config_addr_t *restrict src)
 {
 	config_addr_t *newaddrs = NULL;
-	size_t newlen = *naddrs + 1;
-	size_t newamt = newlen * sizeof (config_addr_t);
 
-	VERIFY3U(newamt, >=, sizeof (config_addr_t));
-	VERIFY3U(newamt, >, newlen);
+	newaddrs = umem_reallocarray(*addrs, *naddrs, *naddrs + 1,
+	    sizeof (config_addr_t), UMEM_DEFAULT);
 
-	newaddrs = realloc(*addrs, newamt);
-	VERIFY3P(newaddrs, !=, NULL);
-
-	(void) memcpy(&newaddrs[*naddrs], src, sizeof (*src));
+	bcopy(src, &newaddrs[*naddrs], sizeof (*src));
 
 	*addrs = newaddrs;
 	*naddrs += 1;
