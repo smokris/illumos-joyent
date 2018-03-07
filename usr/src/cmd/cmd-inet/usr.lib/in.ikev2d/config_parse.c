@@ -352,7 +352,8 @@ config_read(const char *filename)
 	size_t rule_count = 0;
 
 	(void) bunyan_trace(log, "process_config() enter", BUNYAN_T_END);
-	(void) bunyan_key_add(log, BUNYAN_T_STRING, K_CONFIGFILE, filename);
+	(void) bunyan_key_add(log, BUNYAN_T_STRING, K_CONFIGFILE, filename,
+	    BUNYAN_T_END);
 
 	if ((f = fopen(filename, "rF")) == NULL) {
 		STDERR(fatal, "cannot open config file");
