@@ -1719,7 +1719,7 @@ get_resp_policy(pkt_t *restrict pkt, boolean_t transport_mode,
 	 * We should only be called from the responder, so this packet should
 	 * be from the initiator.
 	 */
-	VERIFY(I2P_INITIATOR(pkt));
+	VERIFY(!I2P_RESPONSE(pkt));
 
 	ts_first(ts_ip, &ts_i);
 	ts_first(ts_rp, &ts_r);
