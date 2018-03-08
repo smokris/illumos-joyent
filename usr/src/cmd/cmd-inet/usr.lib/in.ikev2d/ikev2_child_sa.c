@@ -1604,26 +1604,10 @@ ikev2_sa_check_acquire(parsedmsg_t *restrict pmsg, ikev2_dh_t dh,
 
 			m->ism_encr = id;
 			ed = encr_data(id);
-#ifdef notyet
-			m->ism_encr_saltlen = comb->sadb_x_comb_encrypt_saltlen;
-			VERIFY3U(comb->sadb_x_comb_encrypt_saltlen, ==,
+			m->ism_encr_saltlen =
+			    comb->sadb_x_comb_encrypt_saltbits;
+			VERIFY3U(comb->sadb_x_comb_encrypt_saltbits, ==,
 			    ed->ed_saltlen);
-#else
-			/*
-			 * Typically, the same mechanisms for use in ESP/AH
-			 * are also defined for IKEv2, and are used in a
-			 * similar manner, so using the IKEv2 defined salt
-			 * length for mechanisms works.  However, the definition
-			 * of a mechanism for IKEv2 use tends to lag that of
-			 * AH/ESP, and it is also possible in the future that
-			 * the use in IKEv2 might differ, so using our value
-			 * is not a good long term solution.  Once OS-6525
-			 * is fixed, the kernel will include the salt length
-			 * for the mechanism in an SADB_ACQUIRE message, so
-			 * we will use that instead.
-			 */
-			m->ism_encr_saltlen = ed->ed_saltlen;
-#endif
 
 			FOREACH_ATTR(xfattr, i2xf) {
 				uint16_t type = BE_IN16(&xfattr->attr_type);
