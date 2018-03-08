@@ -79,6 +79,7 @@ static void check_natt_addrs(pkt_t *restrict, boolean_t);
 static sadb_address_t *get_sadb_addr(parsedmsg_t *, boolean_t);
 static boolean_t ikev2_get_rekey_csa(ikev2_sa_t *restrict,
     pkt_t *restrict, pkt_t *restrict, ikev2_child_sa_t *restrict *);
+boolean_t ikev2_delete(ikev2_sa_t *restrict, ikev2_child_sa_t *restrict);
 
 /*
  * We are the initiator for an IKE_AUTH exchange, and are performing the
@@ -790,7 +791,6 @@ ikev2_hard_expire(ikev2_sa_t *restrict i2sa, parsedmsg_t *pmsg)
 {
 	sadb_sa_t *saext = (sadb_sa_t *)pmsg->pmsg_exts[SADB_EXT_SA];
 	ikev2_child_sa_t *csa = NULL;
-	pkt_t *req = NULL;
 	uint64_t spi = 0;
 	ikev2_spi_proto_t satype;
 
@@ -798,13 +798,16 @@ ikev2_hard_expire(ikev2_sa_t *restrict i2sa, parsedmsg_t *pmsg)
 		(void) bunyan_error(log,
 		    "Received an SADB_EXPIRE message without an SA extension",
 		    BUNYAN_T_END);
-		goto fail;
+		parsedmsg_free(pmsg);
+		return;
 	}
 
 	satype = satype_to_ikev2(pmsg->pmsg_samsg->sadb_msg_satype);
 	spi = saext->sadb_sa_spi;
 
-	csa = ikev2_sa_get_child(i2sa, spi, B_FALSE);
+	csa = ikev2_sa_get_child(i2sa, spi,
+	    (saext->sadb_sa_flags & SADB_X_SAFLAGS_INBOUND) ? B_TRUE : B_FALSE);
+
 	if (csa == NULL) {
 		/*
 		 * If both peers have similar lifetime policies, it is possible
@@ -822,47 +825,63 @@ ikev2_hard_expire(ikev2_sa_t *restrict i2sa, parsedmsg_t *pmsg)
 		    BUNYAN_T_STRING, "spi", enum_printf("%" PRIx64, spi),
 		    BUNYAN_T_END);
 
-		goto fail;
+		parsedmsg_free(pmsg);
+		return;
 	}
+
+	/*
+	 * Even if we end up doing nothing else with the message (see below),
+	 * we still want to mark this SA as dead for observability reasons.
+	 */
 	csa->i2c_flags |= I2CF_DEAD;
 
 	/*
 	 * The kernel sends SADB_EXPIRE messages for both IPsec SAs (inbound
 	 * and outbound).  In IKEv2 we always just send our peer the DELETE
-	 * payload containing SPIs of their inbound SPIs (i.e. we send
-	 * the SPIs we use to send them traffic), and the peer replies
-	 * likewise.  So we ignore SADB_EXPIRE requests for _our_ inbound
-	 * SAs -- ikev2_hard_expire_reply() will guarantee we always delete
+	 * payload containing SPIs of our inbound SPIs (just like when we
+	 * create an SA), and the peer replies likewise.  As a result,
+	 * we ignore SADB_EXPIRE requests for outbound halfs of an SA pair.
+	 * ikev2_delete_reply() will guarantee we always delete
 	 * the other pair for this SA.
 	 */
-	if (csa->i2c_flags & I2CF_INBOUND) {
+	if (!I2C_INBOUND(csa)) {
 		/* The kernel and in.ikev2d should agree on the direction */
-		VERIFY(saext->sadb_sa_flags & SADB_X_SAFLAGS_INBOUND);
+		VERIFY(!(saext->sadb_sa_flags & SADB_X_SAFLAGS_INBOUND));
 		parsedmsg_free(pmsg);
 		return;
 	}
 
-	req = ikev2_pkt_new_exchange(i2sa, IKEV2_EXCH_INFORMATIONAL);
+	(void) ikev2_delete(i2sa, csa);
+}
+
+static void ikev2_delete_reply(ikev2_sa_t *restrict, pkt_t *restrict,
+    void *restrict);
+
+boolean_t
+ikev2_delete(ikev2_sa_t *restrict i2sa, ikev2_child_sa_t *restrict csa)
+{
+	pkt_t *req = ikev2_pkt_new_exchange(i2sa, IKEV2_EXCH_INFORMATIONAL);
+	uint64_t spi;
+
 	if (req == NULL)
-		goto fail;
+		return (B_FALSE);
 
-	/* This is the second payload, it should fit */
-	VERIFY(ikev2_add_delete(req, satype, &spi, 1));
-
-	parsedmsg_free(pmsg);
-	pmsg = NULL;
+	/*
+	 * Like everything else involving IPsec SAs in IKEv2, we always deal
+	 * with our inbound SPI and let our peer respond with their inbound
+	 * SPI.
+	 */
+	VERIFY(I2C_INBOUND(csa));
 
 	csa->i2c_flags |= I2CF_MORIBUND;
 	csa->i2c_pair->i2c_flags |= I2CF_MORIBUND;
 
-	if (!ikev2_send_req(req, ikev2_hard_expire_reply, csa))
-		goto fail;
+	spi = csa->i2c_spi;
 
-	return;
+	/* This is the second payload, it should fit */
+	VERIFY(ikev2_add_delete(req, csa->i2c_satype, &spi, 1));
 
-fail:
-	ikev2_pkt_free(req);
-	parsedmsg_free(pmsg);
+	return (ikev2_send_req(req, ikev2_delete_reply, csa));
 }
 
 void
@@ -958,7 +977,7 @@ ikev2_handle_delete(ikev2_sa_t *restrict i2sa, pkt_payload_t *restrict delpay,
 }
 
 static void
-ikev2_hard_expire_reply(ikev2_sa_t *restrict i2sa, pkt_t *restrict reply,
+ikev2_delete_reply(ikev2_sa_t *restrict i2sa, pkt_t *restrict reply,
     void *restrict arg)
 {
 	ikev2_child_sa_t *csa = arg;
