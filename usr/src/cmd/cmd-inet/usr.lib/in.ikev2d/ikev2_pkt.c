@@ -11,7 +11,7 @@
 
 /*
  * Copyright 2017 Jason King.
- * Copyright (c) 2017, Joyent, Inc.
+ * Copyright 2018, Joyent, Inc.
  */
 
 #include <stddef.h>
@@ -487,7 +487,7 @@ ikev2_add_notify(pkt_t *restrict pkt, ikev2_notify_type_t type)
 
 boolean_t
 ikev2_add_delete(pkt_t *restrict pkt, ikev2_spi_proto_t proto,
-    uint64_t *restrict spis, size_t nspi)
+    uint32_t *restrict spis, size_t nspi)
 {
 	ikev2_delete_t del = { 0 };
 	size_t len = sizeof (del);

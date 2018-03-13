@@ -791,7 +791,7 @@ ikev2_hard_expire(ikev2_sa_t *restrict i2sa, parsedmsg_t *pmsg)
 {
 	sadb_sa_t *saext = (sadb_sa_t *)pmsg->pmsg_exts[SADB_EXT_SA];
 	ikev2_child_sa_t *csa = NULL;
-	uint64_t spi = 0;
+	uint32_t spi = 0;
 	ikev2_spi_proto_t satype;
 
 	if (saext == NULL) {
@@ -822,7 +822,7 @@ ikev2_hard_expire(ikev2_sa_t *restrict i2sa, parsedmsg_t *pmsg)
 		    "Received an SADB_EXPIRE message for a non-existent SA; "
 		    "ignoring",
 		    BUNYAN_T_STRING, "satype", ikev2_spi_str(satype),
-		    BUNYAN_T_STRING, "spi", enum_printf("%" PRIx64, spi),
+		    BUNYAN_T_STRING, "spi", enum_printf("0x%" PRIx32, spi),
 		    BUNYAN_T_END);
 
 		parsedmsg_free(pmsg);
@@ -861,7 +861,7 @@ boolean_t
 ikev2_delete(ikev2_sa_t *restrict i2sa, ikev2_child_sa_t *restrict csa)
 {
 	pkt_t *req = ikev2_pkt_new_exchange(i2sa, IKEV2_EXCH_INFORMATIONAL);
-	uint64_t spi;
+	uint32_t spi;
 
 	if (req == NULL)
 		return (B_FALSE);
@@ -892,7 +892,7 @@ ikev2_handle_delete(ikev2_sa_t *restrict i2sa, pkt_payload_t *restrict delpay,
 	ikev2_delete_t *del = (ikev2_delete_t *)delpay->pp_ptr;
 	/* LINTED E_BAD_PTR_CAST_ALIGN */
 	uint32_t *spiptr = (uint32_t *)(del + 1);
-	uint64_t *spiresp = NULL;
+	uint32_t *spiresp = NULL;
 	struct sockaddr_storage src = { 0 };
 	struct sockaddr_storage dst = { 0 };
 	sockaddr_u_t srcu = { .sau_ss = &src };
@@ -927,7 +927,7 @@ ikev2_handle_delete(ikev2_sa_t *restrict i2sa, pkt_payload_t *restrict delpay,
 		break;
 	}
 
-	spiresp = umem_calloc(nspi, sizeof (uint64_t), UMEM_DEFAULT);
+	spiresp = umem_calloc(nspi, sizeof (uint32_t), UMEM_DEFAULT);
 	if (spiresp == NULL) {
 		(void) bunyan_error(log, "No memory for DELETE response",
 		    BUNYAN_T_END);
@@ -943,7 +943,14 @@ ikev2_handle_delete(ikev2_sa_t *restrict i2sa, pkt_payload_t *restrict delpay,
 		ikev2_child_sa_t *csa = NULL;
 		uint32_t spi = BE_IN32(spiptr);
 
-		csa = ikev2_sa_get_child(i2sa, spi, B_TRUE);
+		/*
+		 * While RFC7296 does a rather poor job of explaining this,
+		 * each side controls their inbound SPI space, so when an
+		 * SPI is sent, it is the inbound SPI of the sending side.
+		 * We are receiving the SPI, so this is (from our perspective)
+		 * the outbound SPI.
+		 */
+		csa = ikev2_sa_get_child(i2sa, spi, B_FALSE);
 		if (csa == NULL) {
 			(void) ikev2_add_notify_full(resp, i2satype, spi,
 			    IKEV2_N_CHILD_SA_NOT_FOUND, NULL, 0);
@@ -973,7 +980,7 @@ ikev2_handle_delete(ikev2_sa_t *restrict i2sa, pkt_payload_t *restrict delpay,
 	if (nspiresp > 0)
 		(void) ikev2_add_delete(resp, i2satype, spiresp, nspiresp);
 
-	umem_cfree(spiresp, nspi, sizeof (uint64_t));
+	umem_cfree(spiresp, nspi, sizeof (uint32_t));
 }
 
 static void

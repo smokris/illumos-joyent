@@ -83,7 +83,7 @@ boolean_t ikev2_add_notify(pkt_t *restrict, ikev2_notify_type_t);
 boolean_t ikev2_add_notify_full(pkt_t *restrict, ikev2_spi_proto_t, uint64_t,
     ikev2_notify_type_t, const void *restrict, size_t);
 
-boolean_t ikev2_add_delete(pkt_t *, ikev2_spi_proto_t, uint64_t *restrict,
+boolean_t ikev2_add_delete(pkt_t *, ikev2_spi_proto_t, uint32_t *restrict,
     size_t);
 boolean_t ikev2_add_delete_spi(pkt_t *, uint64_t);
 
