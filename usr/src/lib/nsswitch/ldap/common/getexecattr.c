@@ -21,6 +21,7 @@
 /*
  * Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ * Copyright 2018, Joyent, Inc.
  */
 
 #include <secdb.h>
@@ -420,7 +421,7 @@ get_wild(ldap_backend_ptr be, nss_XbyY_args_t *argp, int getby_flag)
 	const char	*policy = _priv_exec->policy;
 	const char	*type = _priv_exec->type;
 
-	if (strpbrk(policy, "*()\\") != NULL ||
+	if ((policy != NULL && strpbrk(policy, "*()\\") != NULL) ||
 	    type != NULL && strpbrk(type, "*()\\") != NULL)
 		return ((nss_status_t)NSS_NOTFOUND);
 
@@ -446,11 +447,12 @@ get_wild(ldap_backend_ptr be, nss_XbyY_args_t *argp, int getby_flag)
 		switch (getby_flag) {
 		case NSS_DBOP_EXECATTR_BYID:
 			ret = snprintf(searchfilter, sizeof (searchfilter),
-			    _EXEC_GETEXECID, id, policy, ISWILD(type));
+			    _EXEC_GETEXECID, id, ISWILD(policy), ISWILD(type));
 			if (ret >= sizeof (searchfilter) || ret < 0)
 				goto go_out;
 			ret = snprintf(userdata, sizeof (userdata),
-			    _EXEC_GETEXECID_SSD, id, policy, ISWILD(type));
+			    _EXEC_GETEXECID_SSD, id, ISWILD(policy),
+			    ISWILD(type));
 			if (ret >= sizeof (userdata) || ret < 0)
 				goto go_out;
 			break;
@@ -458,12 +460,12 @@ get_wild(ldap_backend_ptr be, nss_XbyY_args_t *argp, int getby_flag)
 		case NSS_DBOP_EXECATTR_BYNAMEID:
 			ret = snprintf(searchfilter, sizeof (searchfilter),
 			    _EXEC_GETEXECNAMEID, name, id,
-			    policy, ISWILD(type));
+			    ISWILD(policy), ISWILD(type));
 			if (ret >= sizeof (searchfilter) || ret < 0)
 				goto go_out;
 			ret = snprintf(userdata, sizeof (userdata),
 			    _EXEC_GETEXECNAMEID_SSD, name, id,
-			    policy, ISWILD(type));
+			    ISWILD(policy), ISWILD(type));
 			if (ret >= sizeof (userdata) || ret < 0)
 				goto go_out;
 			break;
