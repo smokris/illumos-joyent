@@ -414,6 +414,7 @@ DRV_KMODS	+= pppt
 DRV_KMODS	+= iptun
 DRV_KMODS	+= vmxnet3s
 DRV_KMODS	+= pvscsi
+DRV_KMODS	+= vxlnat
 
 #
 # Common code drivers

@@ -802,6 +802,7 @@ f kernel/drv/amd64/vnd 0755 root sys
 f kernel/drv/amd64/vnic 0755 root sys
 f kernel/drv/amd64/vr 0755 root sys
 f kernel/drv/amd64/vscan 0755 root sys
+f kernel/drv/amd64/vxlnat 0755 root sys
 f kernel/drv/amd64/wc 0755 root sys
 f kernel/drv/amd64/xge 0755 root sys
 f kernel/drv/amd64/xhci 0755 root sys
