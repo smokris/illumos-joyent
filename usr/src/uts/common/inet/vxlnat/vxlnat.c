@@ -64,6 +64,7 @@
 
 dev_info_t *vxlnat_dip;
 
+kmutex_t vxlnat_mutex;
 netstack_t *vxlnat_netstack;
 
 static int
@@ -110,16 +111,55 @@ vxlnat_getinfo(dev_info_t *dip, ddi_info_cmd_t cmd, void *arg, void **resp)
 static int
 vxlnat_open(dev_t *devp, int flags, int otype, cred_t *credp)
 {
+	zoneid_t zoneid;
+	zone_t *zone;
+
 	/* XXX KEBE SAYS FILL ME IN */
-	return (EOPNOTSUPP);
+	if (secpolicy_ip_config(credp, B_FALSE) != 0)
+		return (EPERM);
+
+	zoneid = getzoneid();
+	zone = zone_find_by_id(zoneid);
+	if (zone == NULL)
+		return (ENOENT);
+	if ((zone->zone_flags & ZF_NET_EXCL) == 0) {
+		zone_rele(zone);
+		return (EINVAL);
+	}
+
+	/*
+	 * For now, just one process opens, and it can feed stuff in
+	 * using SIGHUP/whatever.
+	 */
+	mutex_enter(&vxlnat_mutex);
+	if (vxlnat_netstack != NULL) {
+		mutex_exit(&vxlnat_mutex);
+		return (EBUSY);
+	}
+
+	vxlnat_netstack = netstack_find_by_zoneid(zoneid);
+	if (vxlnat_netstack == NULL) {
+		mutex_exit(&vxlnat_mutex);
+		zone_rele(zone);
+		return (ESRCH);
+	}
+
+	mutex_exit(&vxlnat_mutex);
+	zone_rele(zone);
+	return (0);
 }
 
 /* ARGSUSED */
 static int
 vxlnat_close(dev_t dev, int flags, int otype, cred_t *credp)
 {
-	/* XXX KEBE SAYS FILL ME IN */
-	return (EOPNOTSUPP);
+	/* XXX KEBE SAYS OTHER TEARDOWN... */
+
+	mutex_enter(&vxlnat_mutex);
+	VERIFY(vxlnat_netstack != NULL);
+	netstack_rele(vxlnat_netstack);
+	mutex_exit(&vxlnat_mutex);
+	return (0);
 }
 
 /* ARGSUSED */
