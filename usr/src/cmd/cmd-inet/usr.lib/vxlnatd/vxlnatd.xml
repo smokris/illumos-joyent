@@ -50,7 +50,7 @@ Copyright 2018, Joyent, Inc.
 
 		<template>
 			<common_name>
-			  	<loctext xml:lang="C">
+				<loctext xml:lang="C">
 				VXLAN NAT configuration daemon
 				</loctext>
 			</common_name>

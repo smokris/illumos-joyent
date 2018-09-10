@@ -24,6 +24,7 @@
 # Copyright 2014 Garrett D'Amore <garrett@damore.org>
 # Copyright 2017 Nexenta Systems, Inc.
 # Copyright 2019 Peter Tribble
+# Copyright 2020 Joyent, Inc.
 #
 
 include ../Makefile.master
@@ -73,6 +74,7 @@ MANIFEST_TOPDIRS=			\
 	syseventd			\
 	syslogd				\
 	utmpd				\
+	varpd				\
 	vntsd				\
 	ypcmd				\
 	zoneadm				\

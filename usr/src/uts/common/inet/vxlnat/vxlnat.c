@@ -60,12 +60,17 @@
 
 #include <sys/netstack.h>
 #include <sys/vlan.h>
-/* XXX KEBE SAYS MORE, esp. inet/ ones?!? */
+#include <inet/vxlnat.h>
 
-dev_info_t *vxlnat_dip;
+static dev_info_t *vxlnat_dip;
 
+/*
+ * For read/write ops only, NOT NAT engine.
+ * This lock MUST be held first before any traversing of NAT engine structures
+ * and/or locks.  This lock MUST NOT EVER be held by packet-processing.
+ */
 kmutex_t vxlnat_mutex;
-netstack_t *vxlnat_netstack;
+static netstack_t *vxlnat_netstack;
 
 static int
 vxlnat_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
@@ -114,7 +119,6 @@ vxlnat_open(dev_t *devp, int flags, int otype, cred_t *credp)
 	zoneid_t zoneid;
 	zone_t *zone;
 
-	/* XXX KEBE SAYS FILL ME IN */
 	if (secpolicy_ip_config(credp, B_FALSE) != 0)
 		return (EPERM);
 
@@ -144,6 +148,8 @@ vxlnat_open(dev_t *devp, int flags, int otype, cred_t *credp)
 		return (ESRCH);
 	}
 
+	/* XXX KEBE SAYS FILL ME IN -- initialization! */
+
 	mutex_exit(&vxlnat_mutex);
 	zone_rele(zone);
 	return (0);
@@ -153,7 +159,7 @@ vxlnat_open(dev_t *devp, int flags, int otype, cred_t *credp)
 static int
 vxlnat_close(dev_t dev, int flags, int otype, cred_t *credp)
 {
-	/* XXX KEBE SAYS OTHER TEARDOWN... */
+	/* XXX KEBE SAYS FILL ME IN -- teardown! */
 
 	mutex_enter(&vxlnat_mutex);
 	VERIFY(vxlnat_netstack != NULL);
@@ -166,16 +172,50 @@ vxlnat_close(dev_t dev, int flags, int otype, cred_t *credp)
 static int
 vxlnat_read(dev_t dev, struct uio *uiop, cred_t *credp)
 {
-	/* XXX KEBE SAYS FILL ME IN */
-	return (EOPNOTSUPP);
+	if (secpolicy_ip_config(credp, B_FALSE) != 0)
+		return (EPERM);
+
+	/* XXX KEBE SAYS FILL ME IN -- more?!? */
+
+	/* All the state is in vxlnat_rules.c, so do the work there. */
+	return (vxlnat_read_dump(uiop));
 }
 
 /* ARGSUSED */
 static int
 vxlnat_write(dev_t dev, struct uio *uiop, cred_t *credp)
 {
-	/* XXX KEBE SAYS FILL ME IN */
-	return (EOPNOTSUPP);
+	vxn_msg_t one;
+	int error;
+
+	if (secpolicy_ip_config(credp, B_FALSE) != 0)
+		return (EPERM);
+
+	while (uiop->uio_resid >= sizeof (one)) {
+		/* We're not seekable, stop growing offsets now. */
+		uiop->uio_loffset = 0;
+		error = uiomove(&one, sizeof (one), UIO_WRITE, uiop);
+		if (error != 0)
+			return (error);
+
+		error = vxlnat_command(&one);
+		/*
+		 * If the rule is misformed, etc., everything after is
+		 * ignored. Since we have one supported consumer, it's
+		 * okay, just as long as random entity doesn't panic
+		 * the kernel.
+		 */
+		if (error != 0)
+			return (error);
+	}
+
+	/*
+	 * If there's garbage at the end, just ignore for now.  Handy
+	 * DTrace probe below notes amount of garbage.
+	 */
+	DTRACE_PROBE1(vxlnat__write__garbage, ssize_t, uiop->uio_resid);
+
+	return (0);
 }
 
 static int
