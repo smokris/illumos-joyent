@@ -1826,7 +1826,7 @@ IPF_OBJS += cfw.o ip_fil_solaris.o fil.o solaris.o ip_state.o ip_frag.o \
 	    ip_nat.o ip_proxy.o ip_auth.o ip_pool.o ip_htable.o ip_lookup.o \
 	    ip_log.o misc.o ip_compat.o ip_nat6.o drand48.o
 
-VXLNAT_OBJS += vxlnat.o
+VXLNAT_OBJS += vxlnat.o vxlnat_nat.o vxlnat_rules.o
 
 IPD_OBJS += ipd.o
 
