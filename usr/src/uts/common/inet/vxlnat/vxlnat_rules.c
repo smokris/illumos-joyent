@@ -19,6 +19,7 @@
  */
 
 #include <sys/ddi.h>
+#include <sys/dtrace.h>
 #include <inet/vxlnat.h>
 
 /*
@@ -36,13 +37,13 @@ static int vxlnat_dumpcurrent;
 int
 vxlnat_read_dump(struct uio *uiop)
 {
-	int rc;
+	int rc = 0;
+	int dumpprogress = 0;
 
 	mutex_enter(&vxlnat_mutex);
 	/* XXX KEBE THINKS -- if no dump buffer, just return w/o data. */
 	while (rc == 0 && vxlnat_dumpbuf != NULL &&
 	    uiop->uio_resid >= sizeof (vxn_msg_t)) {
-		rc = vxlnat_dump_one(uiop);
 		rc = uiomove(vxlnat_dumpbuf + vxlnat_dumpcurrent,
 		    sizeof (vxn_msg_t), UIO_READ, uiop);
 		if (rc != 0) {
@@ -72,6 +73,7 @@ vxlnat_read_dump(struct uio *uiop)
 	    vxlnat_dumpcurrent, int, vxlnat_dumpcount);
 
 	mutex_exit(&vxlnat_mutex);
+	return (rc);
 }
 
 int
@@ -88,28 +90,28 @@ vxlnat_command(vxn_msg_t *vxnm)
 		/* rc = vxlnat_vxlan_addr(&vxnm->vxnm_private); */
 		rc = EOPNOTSUPP;	/* XXX KEBE SAYS NUKE ME */
 		break;
-	case VXNM_VXLAN_RULE:
+	case VXNM_RULE:
 		/*
 		 * XXX KEBE SAYS add a (vnetid+prefix => external) rule.
 		 */
 		/* rc = vxlnat_nat_rule(vxnm); */
 		rc = EOPNOTSUPP;	/* XXX KEBE SAYS NUKE ME */
 		break;
-	case VXNM_VXLAN_FIXEDIP:
+	case VXNM_FIXEDIP:
 		/*
 		 * XXX KEBE SAYS add a 1-1 (vnetid+IP <==> external) rule.
 		 */
 		/* rc = vxlnat_fixed_ip(vxnm); */
 		rc = EOPNOTSUPP;	/* XXX KEBE SAYS NUKE ME */
 		break;
-	case VXNM_VXLAN_FLUSH:
+	case VXNM_FLUSH:
 		/*
 		 * XXX KEBE SAYS nuke ALL the state.
 		 */
 		/* rc = vxlnat_flush(); */
 		rc = EOPNOTSUPP;	/* XXX KEBE SAYS NUKE ME */
 		break;
-	case VXNM_VXLAN_DUMP:
+	case VXNM_DUMP:
 		/*
 		 * XXX KEBE SAYS setup vxlnat_dump* above.
 		 * XXX KEBE SAYS If function fails for reasons that aren't

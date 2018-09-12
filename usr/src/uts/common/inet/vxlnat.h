@@ -54,7 +54,7 @@ typedef struct vxn_msg_s {
 
 /* Message types. (fields not-ignored in comments) */
 #define	VXNM_VXLAN_ADDR	0x1	/* type, private */
-#define	VNXM_RULE	0x2	/* type, prefix, vlanid, public, private */
+#define	VXNM_RULE	0x2	/* type, prefix, vlanid, public, private */
 #define	VXNM_FIXEDIP	0x3	/* type, vlanid, private, public */
 #define	VXNM_FLUSH	0x4	/* type */
 #define	VXNM_DUMP	0x5	/* type, generates list of RULE and FIXEDIP */
