@@ -70,7 +70,7 @@ static dev_info_t *vxlnat_dip;
  * and/or locks.  This lock MUST NOT EVER be held by packet-processing.
  */
 kmutex_t vxlnat_mutex;
-static netstack_t *vxlnat_netstack;
+netstack_t *vxlnat_netstack;
 
 static int
 vxlnat_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)

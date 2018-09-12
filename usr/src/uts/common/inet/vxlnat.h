@@ -21,6 +21,7 @@
  */
 
 #include <sys/types.h>
+#include <sys/netstack.h>
 #include <netinet/in.h>
 
 #ifdef __cplusplus
