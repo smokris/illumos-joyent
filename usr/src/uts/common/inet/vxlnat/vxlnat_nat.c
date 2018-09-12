@@ -22,3 +22,38 @@
  * entries here.  The conn_recv* functions live here too (for now).
  */
 
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/ksynch.h>
+#include <sys/ksocket.h>
+
+/*
+ * Initialized to NULL, read/write protected by vxlnat_mutex.
+ * Receive functions shouldn't have to access this directly.
+ */
+ksocket_t vxlnat_underlay;
+
+static void
+vxlnat_closesock(void)
+{
+	ASSERT(MUTEX_HELD(&vxlnat_mutex));
+	ksocket_close(vxlnat_underlay, zone_kcred());
+}
+
+/*
+ * XXX KEBE SAYS ESTABLISH ksock.
+ * XXX KEBE ASKS ==> Support more than one VXLAN address?
+ */
+int
+vxlnat_vxlan_addr(in6_addr_t *underlay_ip)
+{
+	mutex_enter(&vxlnat_mutex);
+	/* For now, we make this a one-underlay-address-only solution. */
+	if (vxlnat_underlay != NULL)
+		vxlnat_closesock();
+
+	
+
+	mutex_exit(&vxlnat_mutex);
+	return (EOPNOTSUPP);
+}

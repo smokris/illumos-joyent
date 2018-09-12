@@ -83,12 +83,7 @@ vxlnat_command(vxn_msg_t *vxnm)
 
 	switch (vxnm->vxnm_type) {
 	case VXNM_VXLAN_ADDR:
-		/*
-		 * XXX KEBE SAYS ESTABLISH ksock.
-		 * XXX KEBE ASKS ==> Support more than one VXLAN address?
-		 */
-		/* rc = vxlnat_vxlan_addr(&vxnm->vxnm_private); */
-		rc = EOPNOTSUPP;	/* XXX KEBE SAYS NUKE ME */
+		rc = vxlnat_vxlan_addr(&vxnm->vxnm_private);
 		break;
 	case VXNM_RULE:
 		/*

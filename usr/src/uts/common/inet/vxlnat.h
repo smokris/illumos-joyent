@@ -61,8 +61,10 @@ typedef struct vxn_msg_s {
 
 #ifdef _KERNEL
 extern kmutex_t vxlnat_mutex;
+extern netstack_t *vxlnat_netstack;
 extern int vxlnat_command(vxn_msg_t *);
 extern int vxlnat_read_dump(struct uio *);
+extern int vxlnat_vxlan_addr(in6_addr_t *);
 #endif /* _KERNEL */
 
 #ifdef __cplusplus
