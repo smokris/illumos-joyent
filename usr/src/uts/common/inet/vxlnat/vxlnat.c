@@ -171,9 +171,9 @@ vxlnat_open(dev_t *devp, int flags, int otype, cred_t *credp)
 static int
 vxlnat_close(dev_t dev, int flags, int otype, cred_t *credp)
 {
-	/* XXX KEBE SAYS FILL ME IN -- teardown! */
-
 	mutex_enter(&vxlnat_mutex);
+	/* XXX KEBE SAYS FILL ME IN -- teardown! */
+	vxlnat_closesock();
 	VERIFY(vxlnat_netstack != NULL);
 	netstack_rele(vxlnat_netstack);
 	vxlnat_netstack = NULL;

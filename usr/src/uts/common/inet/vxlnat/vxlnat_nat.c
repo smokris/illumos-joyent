@@ -45,7 +45,7 @@ static boolean_t vxlnat_vxlan_input(ksocket_t, mblk_t *, size_t, int, void *);
  */
 ksocket_t vxlnat_underlay;
 
-static void
+void
 vxlnat_closesock(void)
 {
 	ASSERT(MUTEX_HELD(&vxlnat_mutex));
