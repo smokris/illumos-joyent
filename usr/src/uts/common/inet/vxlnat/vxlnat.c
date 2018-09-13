@@ -112,6 +112,17 @@ vxlnat_getinfo(dev_info_t *dip, ddi_info_cmd_t cmd, void *arg, void **resp)
 	return (error);
 }
 
+static int
+vxlnat_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
+{
+	if (cmd != DDI_DETACH)
+		return (DDI_FAILURE);
+
+	ddi_remove_minor_node(dip, "vxlnat");
+	vxlnat_dip = NULL;
+	return (DDI_SUCCESS);
+}
+
 /* ARGSUSED */
 static int
 vxlnat_open(dev_t *devp, int flags, int otype, cred_t *credp)
@@ -126,7 +137,8 @@ vxlnat_open(dev_t *devp, int flags, int otype, cred_t *credp)
 	zone = zone_find_by_id(zoneid);
 	if (zone == NULL)
 		return (ENOENT);
-	if ((zone->zone_flags & ZF_NET_EXCL) == 0) {
+	if ((zone->zone_flags & ZF_NET_EXCL) == 0 &&
+	    getzoneid() != GLOBAL_ZONEID) {
 		zone_rele(zone);
 		return (EINVAL);
 	}
@@ -164,6 +176,7 @@ vxlnat_close(dev_t dev, int flags, int otype, cred_t *credp)
 	mutex_enter(&vxlnat_mutex);
 	VERIFY(vxlnat_netstack != NULL);
 	netstack_rele(vxlnat_netstack);
+	vxlnat_netstack = NULL;
 	mutex_exit(&vxlnat_mutex);
 	return (0);
 }
@@ -216,17 +229,6 @@ vxlnat_write(dev_t dev, struct uio *uiop, cred_t *credp)
 	DTRACE_PROBE1(vxlnat__write__garbage, ssize_t, uiop->uio_resid);
 
 	return (0);
-}
-
-static int
-vxlnat_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
-{
-	if (cmd != DDI_DETACH)
-		return (DDI_FAILURE);
-
-	ddi_remove_minor_node(dip, "vxlnat");
-	vxlnat_dip = NULL;
-	return (DDI_SUCCESS);
 }
 
 static struct cb_ops vxlnat_cbops = {
