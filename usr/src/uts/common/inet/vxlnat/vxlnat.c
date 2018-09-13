@@ -223,12 +223,12 @@ vxlnat_write(dev_t dev, struct uio *uiop, cred_t *credp)
 	}
 
 	/*
-	 * If there's garbage at the end, just ignore for now.  Handy
+	 * If there's garbage at the end, consume and discard for now.  Handy
 	 * DTrace probe below notes amount of garbage.
 	 */
 	DTRACE_PROBE1(vxlnat__write__garbage, ssize_t, uiop->uio_resid);
-
-	return (0);
+	return (uiop->uio_resid == 0 ? 0 :
+	    uiomove(&one, uiop->uio_resid, UIO_WRITE, uiop));
 }
 
 static struct cb_ops vxlnat_cbops = {

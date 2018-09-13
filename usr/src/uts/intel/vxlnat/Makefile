@@ -27,8 +27,8 @@ ALL_TARGET	= $(BINARY) $(SRC_CONFILE)
 LINT_TARGET	= $(MODULE).lint
 INSTALL_TARGET	= $(BINARY) $(ROOTMODULE) $(ROOT_CONFFILE)
 
-# XXX KEBE ASKS - make this a hard dependency long-term?
-LDFLAGS += -dy -Noverlay/vxlan
+# XXX KEBE ASKS - make overlay/vxlan a hard dependency long-term?
+LDFLAGS += -dy -Nmisc/ksocket -Noverlay/vxlan
 
 .KEEP_STATE:
 

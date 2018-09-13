@@ -21,6 +21,7 @@
  */
 
 #include <sys/types.h>
+#include <sys/ethernet.h>
 #include <sys/netstack.h>
 #include <netinet/in.h>
 
@@ -36,7 +37,9 @@ extern "C" {
 typedef struct vxn_msg_s {
 	uint32_t vxnm_type;	/* A bit much, but good alignment this way. */
 	uint8_t	vxnm_prefix;	/* Prefix-length for private address. */
-	uint8_t vxnm_vlanid[3];	/* VXLAN vnetid in network order. */
+	uint8_t vxnm_vnetid[3];	/* VXLAN vnetid in network order. */
+	uint8_t vxnm_ether_addr[ETHERADDRL]; /* My local ethernet address. */
+	uint16_t vxnm_vlanid;	/* My VLAN id. */
 	in6_addr_t vxnm_public;	/* Public-facing IP. */
 	/*
 	 * VXLAN IP (VXLAN addr), private prefix (rule), or private address
@@ -45,18 +48,18 @@ typedef struct vxn_msg_s {
 	in6_addr_t vxnm_private;
 } vxn_msg_t;
 
-#define	VXNM_SET_VLANID(vxnm, vlanid) \
-	((vxnm)->vxnm_vlanid[0] = (((vlanid) >> 16) & 0xff),	\
-	(vxnm)->vxnm_vlanid[1] = (((vlanid) >> 8) & 0xff),	\
-	(vxnm)->vxnm_vlanid[2] = ((vlanid) & 0xff))
-#define	VXNM_GET_VLANID(vlanid, vxnm) \
-	(vlanid) = (((vxnm)->vxnm_vlanid[0] << 16) |		\
-		((vxnm)->vxnm_vlanid[1] << 8) | (vxnm)->vxnm_vlanid[2]);
+#define	VXNM_SET_VNETID(vxnm, vnetid) \
+	((vxnm)->vxnm_vnetid[0] = (((vnetid) >> 16) & 0xff),	\
+	(vxnm)->vxnm_vnetid[1] = (((vnetid) >> 8) & 0xff),	\
+	(vxnm)->vxnm_vnetid[2] = ((vnetid) & 0xff))
+#define	VXNM_GET_VNETID(vnetid, vxnm) \
+	(vnetid) = (((vxnm)->vxnm_vnetid[0] << 16) |		\
+		((vxnm)->vxnm_vnetid[1] << 8) | (vxnm)->vxnm_vnetid[2]);
 
 /* Message types. (fields not-ignored in comments) */
 #define	VXNM_VXLAN_ADDR	0x1	/* type, private */
-#define	VXNM_RULE	0x2	/* type, prefix, vlanid, public, private */
-#define	VXNM_FIXEDIP	0x3	/* type, vlanid, private, public */
+#define	VXNM_RULE	0x2	/* type, pfx, vnetid, pub, priv, eth, vlanid */
+#define	VXNM_FIXEDIP	0x3	/* type, vnetid, private, public */
 #define	VXNM_FLUSH	0x4	/* type */
 #define	VXNM_DUMP	0x5	/* type, generates list of RULE and FIXEDIP */
 
