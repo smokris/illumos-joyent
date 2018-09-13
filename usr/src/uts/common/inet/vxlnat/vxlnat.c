@@ -75,15 +75,11 @@ netstack_t *vxlnat_netstack;
 static int
 vxlnat_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 {
-	int fmcap = DDI_FM_NOT_CAPABLE;
-
 	if (cmd != DDI_ATTACH)
 		return (DDI_FAILURE);
 
 	if (vxlnat_dip != NULL || ddi_get_instance(dip) != 0)
 		return (DDI_FAILURE);
-
-	ddi_fm_init(dip, &fmcap, NULL);
 
 	if (ddi_create_minor_node(dip, "vxlnat", S_IFCHR,
 	    ddi_get_instance(dip), DDI_PSEUDO, 0) == DDI_FAILURE)
@@ -229,7 +225,6 @@ vxlnat_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 		return (DDI_FAILURE);
 
 	ddi_remove_minor_node(dip, "vxlnat");
-	ddi_fm_fini(dip);
 	vxlnat_dip = NULL;
 	return (DDI_SUCCESS);
 }
