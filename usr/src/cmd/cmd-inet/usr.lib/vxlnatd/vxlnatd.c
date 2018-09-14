@@ -34,6 +34,7 @@ static int	vxlnat_fd = -1;
  * forward declarations
  */
 static void vxlnatd_cleanup();
+static void vxlnatd_log();
 
 /*
  * Print the vxlnatd usage
@@ -126,7 +127,6 @@ main(int argc, char *argv[])
 			 * Handle atoi error
 			 */
 			vxlnatd_debug_level = atoi(optarg);
-			break;
 		case 'f':
 			(void) strlcpy(vxlnatd_conffile, optarg,
 				sizeof(vxlnatd_conffile));
