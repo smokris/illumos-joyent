@@ -63,15 +63,6 @@ typedef struct vxn_msg_s {
 #define	VXNM_FLUSH	0x4	/* type */
 #define	VXNM_DUMP	0x5	/* type, generates list of RULE and FIXEDIP */
 
-#ifdef _KERNEL
-extern kmutex_t vxlnat_mutex;
-extern netstack_t *vxlnat_netstack;
-extern int vxlnat_command(vxn_msg_t *);
-extern int vxlnat_read_dump(struct uio *);
-extern int vxlnat_vxlan_addr(in6_addr_t *);
-extern void vxlnat_closesock(void);
-#endif /* _KERNEL */
-
 #ifdef __cplusplus
 }
 #endif

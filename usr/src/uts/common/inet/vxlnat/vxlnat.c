@@ -22,6 +22,8 @@
  * It's a driver mostly to have an in-zone process open it so the underlying
  * NAT engine can find the netstack it's using.
  *
+ * Once it closes, ALL STATE is shut down.
+ *
  * --------------------
  * General Architecture
  * --------------------
@@ -43,6 +45,9 @@
  * and outright obsolete in SmartOS.  For now, only one open VXLAN NAT
  * instance is allowed, and whatever zone opens that instance has its netstack
  * employed for VXLAN NAT.
+ *
+ * In the future, most/all global state could become yet-another netstack
+ * child (like ip_stack_t, ipsec_stack_t, etc.).
  */
 
 #include <sys/conf.h>
@@ -60,7 +65,7 @@
 
 #include <sys/netstack.h>
 #include <sys/vlan.h>
-#include <inet/vxlnat.h>
+#include <inet/vxlnat_impl.h>
 
 static dev_info_t *vxlnat_dip;
 
@@ -150,6 +155,7 @@ vxlnat_open(dev_t *devp, int flags, int otype, cred_t *credp)
 	mutex_enter(&vxlnat_mutex);
 	if (vxlnat_netstack != NULL) {
 		mutex_exit(&vxlnat_mutex);
+		zone_rele(zone);
 		return (EBUSY);
 	}
 
@@ -161,6 +167,7 @@ vxlnat_open(dev_t *devp, int flags, int otype, cred_t *credp)
 	}
 
 	/* XXX KEBE SAYS FILL ME IN -- initialization! */
+	vxlnat_state_init();
 
 	mutex_exit(&vxlnat_mutex);
 	zone_rele(zone);
@@ -173,7 +180,7 @@ vxlnat_close(dev_t dev, int flags, int otype, cred_t *credp)
 {
 	mutex_enter(&vxlnat_mutex);
 	/* XXX KEBE SAYS FILL ME IN -- teardown! */
-	vxlnat_closesock();
+	vxlnat_state_fini();	/* Implicit closesock here. */
 	VERIFY(vxlnat_netstack != NULL);
 	netstack_rele(vxlnat_netstack);
 	vxlnat_netstack = NULL;

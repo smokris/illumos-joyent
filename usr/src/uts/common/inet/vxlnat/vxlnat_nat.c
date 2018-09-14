@@ -35,7 +35,7 @@
 #include <netinet/in.h>
 #include <netinet/udp.h>
 
-#include <inet/vxlnat.h>
+#include <inet/vxlnat_impl.h>
 
 static boolean_t vxlnat_vxlan_input(ksocket_t, mblk_t *, size_t, int, void *);
 
@@ -64,7 +64,7 @@ vxlnat_opensock(in6_addr_t *underlay_ip)
 
 	ASSERT(MUTEX_HELD(&vxlnat_mutex));
 	/* Open... */
-	rc = ksocket_socket(&vxlnat_underlay, SOCK_DGRAM, AF_INET6, 0,
+	rc = ksocket_socket(&vxlnat_underlay, AF_INET6, SOCK_DGRAM, 0,
 	    KSOCKET_SLEEP, zone_kcred());
 	if (rc != 0)
 		return (rc);
