@@ -49,8 +49,10 @@ void
 vxlnat_closesock(void)
 {
 	ASSERT(MUTEX_HELD(&vxlnat_mutex));
-	(void) ksocket_close(vxlnat_underlay, zone_kcred());
-	vxlnat_underlay = NULL;
+	if (vxlnat_underlay != NULL) {
+		(void) ksocket_close(vxlnat_underlay, zone_kcred());
+		vxlnat_underlay = NULL;
+	}
 }
 
 static int
