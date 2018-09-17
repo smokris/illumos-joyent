@@ -13,18 +13,25 @@
  * Copyright 2018 Joyent, Inc.
  */
 
+#include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <inet/vxlnat.h>
+#include <netinet/in.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <strings.h>
 #include <sys/param.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/varargs.h>
 #include <unistd.h>
 
+#define MAX_CONF_LINLEN	1000
 #define VXLNATCONF	"/etc/inet/vxlnat.conf"
+
+const char *g_cmd = "vxlnatd";
 
 boolean_t	vxlnatd_debug_level = 0;
 static char	vxlnatd_conffile[MAXPATHLEN];
@@ -43,7 +50,7 @@ static void
 usage(FILE *s)
 {
 	fprintf(s,
-	    "Usage: vxlnatd [-fh]\n"
+	    "Usage: vxlnatd [-dfh]\n"
 	    "\n"
 	    "vxlnatd preforms NAT translation for a vxlan network\n"
 	    "by leveraging the vxlnat kernel module.\n"
@@ -54,30 +61,156 @@ usage(FILE *s)
 	    "  -h             print this message and exit\n");
 }
 
+static void
+fatal(char *fmt, ...)
+{
+	va_list ap;
+	int error = errno;
+
+	va_start(ap, fmt);
+
+	(void) fprintf(stderr, "%s: ", g_cmd);
+	/*LINTED*/
+	(void) vfprintf(stderr, fmt, ap);
+
+	if (fmt[strlen(fmt) - 1] != '\n')
+		(void) fprintf(stderr, ": %s\n", strerror(error));
+
+	vxlnatd_cleanup();
+
+	exit(EXIT_FAILURE);
+}
+
+static int
+parse_ip(struct in6_addr *ip, char *ipstr)
+{
+
+	if (inet_pton(AF_INET6, ipstr, ip) != 1) {
+                uint32_t v4;
+                if (inet_pton(AF_INET, ipstr, &v4) != 1) {
+                        return (-1);
+                }
+                IN6_IPADDR_TO_V4MAPPED(v4, ip);
+        }
+
+	return (0);
+}
+
+static vxn_msg_t *
+parse_bindaddr(char *line)
+{
+	char *ipstr;
+	struct in6_addr bind;
+	vxn_msg_t *vxnm;
+
+	if ((ipstr = strtok(line, " \t\n")) == NULL)
+		return (NULL);
+
+	if (parse_ip(&bind, ipstr) == -1)
+		return (NULL);
+
+	if ((vxnm = (vxn_msg_t *)malloc(sizeof(vxn_msg_t))) == NULL)
+		fatal("failed to allocate vxnm");
+
+	bzero(vxnm, sizeof(vxn_msg_t));
+
+	vxnm->vxnm_type = VXNM_VXLAN_ADDR;
+	vxnm->vxnm_private = bind;
+
+	return (vxnm);
+}
+
+
+/*
+ * Parse a single config file entry
+ *
+ * Returns NULL if we failed to parse the entry.
+ * Otherwise the caller is responsible for freeing the returned vxn_msg_t
+ */
+static vxn_msg_t *
+parse_confline(char* line)
+{
+	char *action, *lasts;
+
+	if ((action = strtok_r(line, " \t\n", &lasts)) == NULL)
+		return (NULL);
+
+	if (strcmp(action, "bind") == 0)
+		return parse_bindaddr(lasts);
+
+	/* Add other actions here */
+
+	/* default action if we don't find a match */
+	return (NULL);
+}
+
 /*
  * Read the configuration file and initialize with vxlnat
  */
 static void
 vxlnatd_initconf() {
+	char line[MAX_CONF_LINLEN];
+	FILE *cfd;
+	int i, entries = 0, lineno = 0;
+	size_t arrsize = 32;
+	vxn_msg_t **msgs;
+
 	// open /dev/vxlnat
-	if ((vxlnat_fd = open(VXLNAT_PATH, O_RDWR)) == -1) {
-		fprintf(stderr, "failed to open %s: %s\n", VXLNAT_PATH,
-			strerror(errno));
-		exit(errno);
+	if ((vxlnat_fd = open(VXLNAT_PATH, O_RDWR)) == -1)
+		fatal("failed to open %s", VXLNAT_PATH);
+
+	if ((cfd = fopen(vxlnatd_conffile, "r")) == NULL)
+		fatal("failed to open %s", vxlnatd_conffile);
+
+	if ((msgs = (vxn_msg_t **)malloc(arrsize * sizeof(vxn_msg_t *)))
+		== NULL)
+		fatal("failed to allocate vxn_msg array");
+
+	while(fgets(line, sizeof(line), cfd) != NULL) {
+		vxn_msg_t *vxnm;
+
+		lineno++;
+
+		/* skip empty lines */
+		if (*line == '\n')
+			continue;
+
+		/* ignore lines that are comments */
+		if (*line == '#')
+			continue;
+
+		/* error out if the line is too long */
+		if (line[strlen(line) -1] != '\n')
+			fatal("line %d is too long\n", lineno);
+
+		/* attempt to parse the line into a vxn_msg_t */
+		if ((vxnm = parse_confline(line)) == NULL)
+			fatal("failed to parse config %s at line %d\n",
+				vxlnatd_conffile, lineno);
+
+		/* double the size of the array if we are at max capacity*/
+		if (entries >= (arrsize - 1)) {
+			arrsize = arrsize << 1;
+
+			if ((msgs = (vxn_msg_t **)realloc(msgs,
+				arrsize * sizeof(vxn_msg_t *))) == NULL)
+				fatal("failed to allocate vxn_msg array");
+		}
+
+		msgs[entries] = vxnm;
+		entries++;
 	}
 
 	// send VXNM_VXLAN_ADDR
-	if ((write(vxlnat_fd, (const void*)VXNM_VXLAN_ADDR,
-		sizeof(VXNM_VXLAN_ADDR))) == -1) {
-		fprintf(stderr, "failed write to  %s: %s\n", VXLNAT_PATH,
-			strerror(errno));
-		vxlnatd_cleanup();
-		exit(errno);
+	for (i = 0; i < entries; i++) {
+		if ((write(vxlnat_fd, msgs[i],
+			sizeof(vxn_msg_t))) == -1)
+			fatal("failed to write to %s", VXLNAT_PATH);
+
+		free(msgs[i]);
 	}
 
-
-	// open/handle config file
-
+	free(msgs);
 }
 
 /*
