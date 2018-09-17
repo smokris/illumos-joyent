@@ -13,19 +13,31 @@
 
 PROG=		vxlnatd
 MANIFEST=	vxlnatd.xml
+OBJS=		vxlnatd.o
+SRCS=		$(OBJS:%.o=%.c)
 
 include ../../../Makefile.cmd
+include ../../../Makefile.ctf
 ROOTMANIFESTDIR=	$(ROOTSVCNETWORK)
 $(ROOTMANIFEST)		:= FILEMODE= 444
+
+CPPFLAGS += -D_REENTRANT
+# LDLIBS += -lsocket -lslp
+
 
 .KEEP_STATE:
 
 all:	$(PROG)
 
-include ../Makefile.lib
+$(PROG):	$(OBJS)
+	$(LINK.c) $(OBJS) -o $@ $(LDLIBS)
+	$(POST_PROCESS)
 
-CPPFLAGS += -D_REENTRANT
-# LDLIBS += -lsocket -lslp
+%.o:	%.c
+	$(COMPILE.c) -o $@ $<
+	$(POST_PROCESS_O)
+
+include ../Makefile.lib
 
 install:	all $(ROOTLIBINETPROG) $(ROOTMANIFEST) $(ROOTMETHOD)
 

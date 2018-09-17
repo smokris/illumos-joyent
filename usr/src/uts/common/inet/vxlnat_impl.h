@@ -19,6 +19,8 @@
 #include <inet/vxlnat.h>
 #include <sys/avl.h>
 #include <sys/list.h>
+#include <sys/byteorder.h>
+#include <sys/vxlan.h>
 
 /*
  * XXX KEBE ASKS --> do we assume port IPPORT_VXLAN all the time?
@@ -93,7 +95,7 @@ typedef struct vxlnat_vnet_s {
 	list_t vxnv_rules;
 	/* XXX KEBE SAYS other things like flows go in here too... */
 	uint32_t vxnv_refcount;
-	uint32_t vxnv_vnetid;	/* Just use 32 bits... */
+	uint32_t vxnv_vnetid;	/* Wire byteorder for less swapping on LE */
 } vxlnat_vnet_t;
 #define	VXNV_REFHOLD(vxnv) {			\
 	atomic_inc_32(&(vxnv)->vxnv_refcount);	\
@@ -105,6 +107,38 @@ typedef struct vxlnat_vnet_s {
 	if (atomic_dec_32_nv(&(vxnv)->vxnv_refcount) == 0)	\
 		vxlnat_vnet_free(vxnv);				\
 }
+
+/*
+ * Endian-independent macros for rapid off-wire header reading. i.e. avoid
+ * [nh]to[hn]*()
+ *
+ * VXLAN_ID_WIRE32(id) ==> Zero-out "reserved" bits, preserve wire-order
+ * and position of vnetid.
+ * VXLAN_FLAGS_WIRE32(vni) ==> Zero-out reserved bits, preserve wire-order
+ * and position of flags.
+ * VXLAN_F_VDI_WIRE ==> VXLAN_F_VDI, but w/o needing to swap.
+ *
+ * ALSO:  HTON/NTOH for kernel-makes-right interactions with userland, which
+ * means shifting actual ID to/from low-24-bits of 32-bit word.
+ * VXLAN_ID_HTON(id)
+ * VXLAN_ID_NTOH(id)
+ *
+ * XXX KEBE ASKS ==> If not confusing to folks, move into sys/vxlan.h and
+ * have overlay's VXLAN encap adopt them?
+ */
+#ifdef LITTLE_ENDIAN
+#define	VXLAN_ID_WIRE32(id) ((id) & 0xFFFFFF)
+#define	VXLAN_F_VDI_WIRE 0x08
+#define	VXLAN_ID_HTON(id) htonl((id) << VXLAN_ID_SHIFT)
+#define	VXLAN_ID_NTOH(id) (ntohl(id) >> VXLAN_ID_SHIFT)
+#else	/* i.e. not-LITTLE_ENDIAN */
+#define	VXLAN_ID_WIRE32(id) ((id) & 0xFFFFFF00)
+#define	VXLAN_F_VDI_WIRE VXLAN_F_VDI
+/* XXX KEBE ASKS, do masking here? */
+#define	VXLAN_ID_HTON(id) ((id) << VXLAN_ID_SHIFT)
+#define	VXLAN_ID_NTOH(id) ((id) >> VXLAND_ID_SHIFT)
+#endif	/* LITTLE_ENDIAN */
+#define	VXLAN_FLAGS_WIRE32(flags) ((flags) & VXLAN_F_VDI_WIRE)
 
 extern kmutex_t vxlnat_mutex;
 extern netstack_t *vxlnat_netstack;
@@ -119,4 +153,4 @@ extern void vxlnat_state_fini(void);
 }
 #endif
 
-#endif /* _INET_VXLNAT_H */
+#endif /* _INET_VXLNAT_IMPL_H */

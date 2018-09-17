@@ -106,6 +106,8 @@ vxlnat_read_dump(struct uio *uiop)
 
 /*
  * Find-and-reference-hold a vnet.  If none present, create one.
+ * "vnetid" MUST be in wire-order and its one byte cleared.
+ * 
  */
 vxlnat_vnet_t *
 vxlnat_get_vnet(uint32_t vnetid, boolean_t create_on_miss)
@@ -145,7 +147,7 @@ vxlnat_nat_rule(vxn_msg_t *vxnm)
 
 	ASSERT(MUTEX_HELD(&vxlnat_mutex));
 
-	VXNM_GET_VNETID(vnetid, vxnm);
+	vnetid = VXLAN_ID_HTON(vxnm->vxnm_vnetid);
 	vnet = vxlnat_get_vnet(vnetid, B_TRUE);
 	if (vnet == NULL) {
 		/*

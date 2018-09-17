@@ -6507,6 +6507,7 @@ f usr/lib/inet/pppoec 0555 root bin
 f usr/lib/inet/pppoed 0555 root bin
 f usr/lib/inet/slpd 0555 root bin
 f usr/lib/inet/vrrpd 0555 root bin
+f usr/lib/inet/vxlnatd 0555 root bin
 f usr/lib/inet/wpad 0555 root bin
 f usr/lib/intrd 0555 root bin
 d usr/lib/ipf 0755 root bin

@@ -33,13 +33,15 @@ extern "C" {
 
 /*
  * Fixed-size messages for communicating with /dev/vxlnat.
+ * NOTE:  THIS MUST match on both 32-bit and 64-bit compilations.
  */
 typedef struct vxn_msg_s {
 	uint32_t vxnm_type;	/* A bit much, but good alignment this way. */
-	uint8_t	vxnm_prefix;	/* Prefix-length for private address. */
-	uint8_t vxnm_vnetid[3];	/* VXLAN vnetid in network order. */
-	uint8_t vxnm_ether_addr[ETHERADDRL]; /* My local ethernet address. */
+	/* XXX KEBE ASKS, can I get away with this? */
+	uint_t vxnm_vnetid:24;	/* Host-order, kernel will normalize. */
+	uint_t	vxnm_prefix:8;	/* Prefix-length for private address. */
 	uint16_t vxnm_vlanid;	/* My VLAN id. */
+	uint8_t vxnm_ether_addr[ETHERADDRL]; /* My local ethernet address. */
 	in6_addr_t vxnm_public;	/* Public-facing IP. */
 	/*
 	 * VXLAN IP (VXLAN addr), private prefix (rule), or private address
@@ -47,14 +49,6 @@ typedef struct vxn_msg_s {
 	 */
 	in6_addr_t vxnm_private;
 } vxn_msg_t;
-
-#define	VXNM_SET_VNETID(vxnm, vnetid) \
-	((vxnm)->vxnm_vnetid[0] = (((vnetid) >> 16) & 0xff),	\
-	(vxnm)->vxnm_vnetid[1] = (((vnetid) >> 8) & 0xff),	\
-	(vxnm)->vxnm_vnetid[2] = ((vnetid) & 0xff))
-#define	VXNM_GET_VNETID(vnetid, vxnm) \
-	(vnetid) = (((vxnm)->vxnm_vnetid[0] << 16) |		\
-		((vxnm)->vxnm_vnetid[1] << 8) | (vxnm)->vxnm_vnetid[2]);
 
 /* Message types. (fields not-ignored in comments) */
 #define	VXNM_VXLAN_ADDR	0x1	/* type, private */
