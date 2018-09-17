@@ -22,7 +22,7 @@
 
 /*
  * Copyright (c) 2003, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2011, Joyent Inc. All rights reserved.
+ * Copyright (c) 2018, Joyent Inc. All rights reserved.
  */
 
 #include <assert.h>
@@ -329,6 +329,8 @@ static char *create_token(char *s);
 
 <TSTATE>zfs-io-priority	{ return ZFSPRI; }
 <CSTATE>zfs-io-priority	{ return ZFSPRI; }
+
+<TSTATE>alias	{ return ALIAS; }
 
 <TSTATE>default { return DEFAULT; }
 <CSTATE>default { return DEFAULT; }

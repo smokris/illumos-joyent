@@ -1018,7 +1018,8 @@ lx_zone_get_zvols(zone_t *zone, ldi_handle_t lh, minor_t *emul_minor)
 			    strchr(zc->zc_name, '%') != NULL)
 				continue;
 
-			if (!zone_dataset_visible_inzone(zone, zc->zc_name, &w))
+			if (!zone_dataset_visible_inzone(zone, zc->zc_name, &w,
+			     B_TRUE))
 				continue;
 
 			if (zc->zc_objset_stats.dds_type == DMU_OST_ZVOL) {
@@ -1029,6 +1030,12 @@ lx_zone_get_zvols(zone_t *zone, ldi_handle_t lh, minor_t *emul_minor)
 				/* Create a virtual disk entry for the zvol */
 				vd = kmem_zalloc(sizeof (lx_virt_disk_t),
 				    KM_SLEEP);
+
+				rc = zone_dataset_alias_inzone(zc->zc_name,
+				    zv->lzd_name, MAXPATHLEN, zone);
+				if (rc != 0)
+					continue;
+
 				vd->lxvd_type = LXVD_ZVOL;
 				(void) snprintf(vd->lxvd_name,
 				    sizeof (vd->lxvd_name),
