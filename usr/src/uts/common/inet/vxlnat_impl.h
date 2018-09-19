@@ -42,13 +42,12 @@ extern "C" {
  */
 typedef struct vxlnat_rule_s {
 	list_node_t vxnr_link;
-	struct vxlnat_vnet_s *vxnr_vnet; /* refheld */
+	/* refheld link, or if NULL, this rule is "condemned" and no good. */
+	struct vxlnat_vnet_s *vxnr_vnet;
 	in6_addr_t vxnr_myaddr;
 	in6_addr_t vxnr_pubaddr;
 	uint8_t vxnr_myether[ETHERADDRL];
 	uint16_t vxnr_vlanid;	/* Fabrics use this too. */
-	krwlock_t vxnr_remotes_lock;
-	avl_tree_t vxnr_remotes;
 	uint32_t vxnr_refcount;
 	uint8_t vxnr_prefix;
 } vxlnat_rule_t;
@@ -59,8 +58,8 @@ typedef struct vxlnat_rule_s {
 #define	VXNR_REFRELE(vxnr) {					\
 	ASSERT((vxnr)->vxnr_refcount > 0);			\
 	membar_exit();						\
-	if (atomic_dec_32_nv(&(vxnr)->vxnr_refcnt) == 0)	\
-		vxlnat_vnet_free(vxnr);				\
+	if (atomic_dec_32_nv(&(vxnr)->vxnr_refcount) == 0)	\
+		vxlnat_rule_free(vxnr);				\
 }
 
 /*
@@ -80,8 +79,8 @@ typedef struct vxlnat_remote_s {
 #define	VXNREM_REFRELE(vxnrem) {				\
 	ASSERT((vxnrem)->vxnrem_refcount > 0);			\
 	membar_exit();						\
-	if (atomic_dec_32_nv(&(vxnrem)->vxnrem_refcnt) == 0)	\
-		vxlnat_vnet_free(vxnrem);			\
+	if (atomic_dec_32_nv(&(vxnrem)->vxnrem_refcount) == 0)	\
+		vxlnat_remote_free(vxnrem);			\
 }
 
 /*
@@ -91,9 +90,29 @@ typedef struct vxlnat_remote_s {
  */
 typedef struct vxlnat_vnet_s {
 	avl_node_t vxnv_treenode;
+	/*
+	 * 1-1 IP mappings. (1st lookup for an in-to-out packet.)
+	 * Will map to SOMETHING in IP.
+	 * XXX KEBE ASKS - conn_t or something else TBD?!
+	 */
+	kmutex_t vnxv_fixed_lock;
+	avl_tree_t vnxv_fixed_ips;
+	/*
+	 * NAT flows. (2nd lookup for an in-to-out packet.)
+	 * These are also conn_ts with outer-packet fields for out-to-in
+	 * matches against a conn_t.
+	 */
+	krwlock_t vnxv_flow_lock;
+	avl_tree_t vnxv_flows;
+	/* NAT rules. (3rd lookup for an in-to-out packet.) */
 	kmutex_t vxnv_rule_lock;
 	list_t vxnv_rules;
-	/* XXX KEBE SAYS other things like flows go in here too... */
+	/*
+	 * Internal-network remote-nodes. (only lookup for out-to-in packet.)
+	 * Entries here are also refheld by 1-1s or NAT flows.
+	 */
+	kmutex_t vnxv_remote_lock;
+	avl_tree_t vnxv_remotes;
 	uint32_t vxnv_refcount;
 	uint32_t vxnv_vnetid;	/* Wire byteorder for less swapping on LE */
 } vxlnat_vnet_t;

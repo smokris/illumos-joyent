@@ -97,7 +97,7 @@ vxlnat_opensock(in6_addr_t *underlay_ip)
 }
 
 /*
- * XXX KEBE SAYS ESTABLISH ksock.
+ * Establish a VXLAN-listening kernel socket.
  * XXX KEBE ASKS ==> Support more than one VXLAN address?
  */
 /* ARGSUSED */
@@ -108,8 +108,7 @@ vxlnat_vxlan_addr(in6_addr_t *underlay_ip)
 
 	mutex_enter(&vxlnat_mutex);
 	/* For now, we make this a one-underlay-address-only solution. */
-	if (vxlnat_underlay != NULL)
-		vxlnat_closesock();
+	vxlnat_closesock();
 	rc = vxlnat_opensock(underlay_ip);
 	mutex_exit(&vxlnat_mutex);
 	return (rc);
@@ -123,7 +122,7 @@ static boolean_t
 vxlnat_vxlan_input(ksocket_t insock, mblk_t *chain, size_t msgsize, int oob,
     void *ignored)
 {
-	/* XXX KEBE SAYS For now, drop 'em. */
+	/* XXX KEBE SAYS For now, drop 'em, but FILL ME IN. */
 	freemsgchain(chain);
 	return (B_TRUE);
 }
