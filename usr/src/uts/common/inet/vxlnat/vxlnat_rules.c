@@ -43,6 +43,7 @@ static krwlock_t vxlnat_vnet_lock;	/* Could be mutex if we use refhold. */
 static avl_tree_t vxlnat_vnets;
 
 static void vxlnat_rule_unlink(vxlnat_rule_t *);
+static void vxlnat_fixed_unlink(vxlnat_fixed_t *);
 
 /*
  * Comparison function for vnet AVL tree.
@@ -59,6 +60,34 @@ vxlnat_vnetid_cmp(const void *first, const void *second)
 		return (-1);
 	if (first_vnetid > second_vnetid)
 		return (1);
+	return (0);
+}
+
+/*
+ *
+ * NOTE:  Many structures start with the form:
+ *
+ *	struct foo {
+ *		avl_node_t node;
+ *		in6_addr_t address_which_is_search_key;
+ *		....
+ *
+ * We will use this same AVL comparison function for many of these structures.
+ */
+int
+vxlnat_tree_plus_in6_cmp(const void *first, const void *second)
+{
+	in6_addr_t *firstaddr, *secondaddr;
+	int ret;
+
+	firstaddr = (in6_addr_t *)(((avl_node_t *)first) + 1);
+	secondaddr = (in6_addr_t *)(((avl_node_t *)second) + 1);
+
+	ret = memcmp(firstaddr, secondaddr, sizeof (in6_addr_t));
+	if (ret > 0)
+		return (1);
+	if (ret < 0)
+		return (-1);
 	return (0);
 }
 
@@ -82,10 +111,16 @@ vxlnat_get_vnet(uint32_t vnetid, boolean_t create_on_miss)
 		/* KM_SLEEP means non-NULL guaranteed. */
 		vnet->vxnv_refcount = 1; /* Internment reference. */
 		vnet->vxnv_vnetid = vnetid;
-		/* XXX KEBE SAYS INITIALIZE 1-1 mappings... */
-		/* XXX KEBE SAYS INITIALIZE NAT flows... */
-		/* XXX KEBE SAYS INITIALIZE NAT rules... */
+		/* Initialize 1-1 mappings... */
+		rw_init(&vnet->vxnv_fixed_lock, NULL, RW_DRIVER, NULL);
+		avl_create(&vnet->vxnv_fixed_ips, vxlnat_tree_plus_in6_cmp,
+		    sizeof (vxlnat_fixed_t), 0);
+		/*
+		 * NAT rules already initialized, because mutex and
+		 * list are zeroed-out.
+		 */
 #ifdef notyet
+		/* XXX KEBE SAYS INITIALIZE NAT flows... */
 		/* XXX KEBE SAYS INITIALIZE remotes... */
 		rw_init(&vnet->vxnv_remote_lock, NULL, RW_DRIVER, NULL);
 		avl_create(&vnet->vxnv_remotes, vxlnat_remote_cmp,
@@ -99,7 +134,7 @@ vxlnat_get_vnet(uint32_t vnetid, boolean_t create_on_miss)
 	return (vnet);
 }
 
-static void
+void
 vxlnat_vnet_free(vxlnat_vnet_t *vnet)
 {
 	/* XXX KEBE SAYS FILL ME IN */
@@ -118,7 +153,6 @@ vxlnat_vnet_unlink_locked(vxlnat_vnet_t *vnet)
 	avl_remove(&vxlnat_vnets, vnet);
 	/* XXX KEBE ASKS --> Mark as condemned? */
 	
-	/* XXX KEBE SAYS unlink all remotes */
 	/* Unlink all NAT rules */
 	mutex_enter(&vnet->vxnv_rule_lock);
 	while (!list_is_empty(&vnet->vxnv_rules)) {
@@ -127,8 +161,17 @@ vxlnat_vnet_unlink_locked(vxlnat_vnet_t *vnet)
 		    (vxlnat_rule_t *)list_head(&vnet->vxnv_rules));
 	}
 	mutex_exit(&vnet->vxnv_rule_lock);
-	/* XXX KEBE SAYS unlink all NAT flows */
 	/* XXX KEBE SAYS unlink all 1-1 mappings */
+	rw_enter(&vnet->vxnv_fixed_lock, RW_WRITER);
+	while (!avl_is_empty(&vnet->vxnv_fixed_ips)) {
+		/* Will decrement vnet's refcount too. */
+		vxlnat_fixed_unlink(
+		    (vxlnat_fixed_t *)avl_first(&vnet->vxnv_fixed_ips));
+	}
+	rw_exit(&vnet->vxnv_fixed_lock);
+
+	/* XXX KEBE SAYS unlink all NAT flows */
+	/* XXX KEBE SAYS unlink all remotes */
 
 	VXNV_REFRELE(vnet);	/* Internment reference. */
 }
@@ -137,7 +180,7 @@ vxlnat_vnet_unlink_locked(vxlnat_vnet_t *vnet)
  * Assume it's refheld by the caller, so we will drop two references
  * explicitly (caller's and internment), plus free any rules.
  */
-static void
+void
 vxlnat_vnet_unlink(vxlnat_vnet_t *vnet)
 {
 	ASSERT3U(vnet->vxnv_refcount, >=, 2);
@@ -164,13 +207,15 @@ vxlnat_nat_rule(vxn_msg_t *vxnm)
 
 	ASSERT(MUTEX_HELD(&vxlnat_mutex));
 
+	/* Reserve the requested public IP for shared use. */
+	if (!vxlnat_public_hold(&vxnm->vxnm_public, B_FALSE))
+		return (EADDRNOTAVAIL);
+
 	vnetid = VXLAN_ID_HTON(vxnm->vxnm_vnetid);
 	vnet = vxlnat_get_vnet(vnetid, B_TRUE);
 	if (vnet == NULL) {
-		/*
-		 * RARE case where we failed allocation or some other such
-		 * problem.
-		 */
+		/* RARE case of failed allocation or other disaster. */
+		vxlnat_public_rele(&vxnm->vxnm_public);
 		return (ENOMEM);
 	}
 
@@ -189,19 +234,21 @@ vxlnat_nat_rule(vxn_msg_t *vxnm)
 
 	/* Put rule into vnet. */
 	mutex_enter(&vnet->vxnv_rule_lock);
+	/* XXX KEBE ASKS --> Check for collisions?!? */
 	list_insert_tail(&vnet->vxnv_rules, rule);
 	mutex_enter(&vnet->vxnv_rule_lock);
 
 	return (0);
 }
 
-static void
+void
 vxlnat_rule_free(vxlnat_rule_t *rule)
 {
 	ASSERT3P(rule->vxnr_vnet, ==, NULL);
 	ASSERT3P(rule->vxnr_link.list_next, ==, NULL);
 	ASSERT3P(rule->vxnr_link.list_prev, ==, NULL);
 	ASSERT0(rule->vxnr_refcount);
+	vxlnat_public_rele(&rule->vxnr_pubaddr);
 	kmem_free(rule, sizeof (*rule));
 }
 
@@ -233,14 +280,85 @@ vxlnat_flush(void)
 	return (0);
 }
 
+void
+vxlnat_fixed_free(vxlnat_fixed_t *fixed)
+{
+	ASSERT0(fixed->vxnf_refcount);
+	vxlnat_public_rele(&fixed->vxnf_pubaddr);
+	kmem_free(fixed, sizeof (*fixed));
+}
+
+static void
+vxlnat_fixed_unlink(vxlnat_fixed_t *fixed)
+{
+	vxlnat_vnet_t *vnet = fixed->vxnf_vnet;
+
+	ASSERT3P(vnet, !=, NULL);
+	/* XXX KEBE SAYS rwlock-writer assert... */
+
+	avl_remove(&vnet->vxnv_fixed_ips, fixed);
+	VXNV_REFRELE(vnet);
+	fixed->vxnf_vnet = NULL; /* This condemns the 1-1 mapping. */
+	VXNF_REFRELE(fixed);
+}
+
 /*
- * XXX KEBE SAYS add a 1-1 (vnetid+IP <==> external) rule.
+ * Add a 1-1 (vnetid+IP <==> external) rule.
  */
 static int
 vxlnat_fixed_ip(vxn_msg_t *vxnm)
 {
+	vxlnat_vnet_t *vnet;
+	vxlnat_fixed_t *fixed;
+	uint32_t vnetid;
+	avl_index_t where;
+	int rc;
+
 	/* XXX KEBE SAYS FILL ME IN. */
-	return (EOPNOTSUPP);
+	ASSERT(MUTEX_HELD(&vxlnat_mutex));
+
+	/* Reserve the requested public IP for exclusive use. */
+	if (!vxlnat_public_hold(&vxnm->vxnm_public, B_TRUE))
+		return (EADDRNOTAVAIL);
+
+	vnetid = VXLAN_ID_HTON(vxnm->vxnm_vnetid);
+	vnet = vxlnat_get_vnet(vnetid, B_TRUE);
+	if (vnet == NULL) {
+		/* RARE case of failed allocation or other disaster. */
+		rc = ENOMEM;
+		goto fail;
+	}
+
+	fixed = kmem_alloc(sizeof (*fixed), KM_SLEEP);
+	/* KM_SLEEP means non-NULL guaranteed. */
+	fixed->vxnf_vnet = vnet; /* vnet already refheld, remember? */
+	/* XXX KEBE ASKS, check the vxnm more carefully? */
+	fixed->vxnf_addr = vxnm->vxnm_private;
+	fixed->vxnf_pubaddr = vxnm->vxnm_public;
+	fixed->vxnf_refcount = 1;	/* Internment reference. */
+
+	/*
+	 * XXX KEBE SAYS we likely need to do some ip/netstack magic at this
+	 * point, but I'm not sure what that is.  It WILL, however, go here.
+	 */
+
+	/* Put the 1-1 mapping in place. */
+	rw_enter(&vnet->vxnv_fixed_lock, RW_WRITER);
+	if (avl_find(&vnet->vxnv_fixed_ips, fixed, &where) != NULL) {
+		/* Oh crap, we have an internal IP mapped already. */
+		kmem_free(fixed, sizeof (*fixed));
+		rc = EEXIST;
+	} else {
+		avl_insert(&vnet->vxnv_fixed_ips, fixed, where);
+		rc = 0;
+	}
+	rw_exit(&vnet->vxnv_fixed_lock);
+
+fail:
+	if (rc != 0)
+		vxlnat_public_rele(&vxnm->vxnm_public);
+
+	return (rc);
 }
 
 int
@@ -285,6 +403,7 @@ vxlnat_state_init(void)
 	ASSERT(MUTEX_HELD(&vxlnat_mutex));
 	rw_init(&vxlnat_vnet_lock, NULL, RW_DRIVER, NULL);
 	avl_create(&vxlnat_vnets, vxlnat_vnetid_cmp, sizeof (vxlnat_vnet_t), 0);
+	vxlnat_public_init();
 	/* XXX KEBE SAYS -- more here. */
 }
 
@@ -293,6 +412,7 @@ vxlnat_state_fini(void)
 {
 	ASSERT(MUTEX_HELD(&vxlnat_mutex));
 	(void) vxlnat_flush(); /* If we fail, we're in bigger trouble anyway. */
+	vxlnat_public_init();
 	avl_destroy(&vxlnat_vnets);
 	rw_destroy(&vxlnat_vnet_lock);
 }

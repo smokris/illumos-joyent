@@ -18,6 +18,7 @@
 
 #include <inet/vxlnat.h>
 #include <sys/avl.h>
+#include <sys/uio.h>
 #include <sys/list.h>
 #include <sys/byteorder.h>
 #include <sys/vxlan.h>
@@ -61,6 +62,29 @@ typedef struct vxlnat_rule_s {
 	if (atomic_dec_32_nv(&(vxnr)->vxnr_refcount) == 0)	\
 		vxlnat_rule_free(vxnr);				\
 }
+extern void vxlnat_rule_free(vxlnat_rule_t *);
+
+/*
+ * 1-1 IP mapping.
+ */
+typedef struct vxlnat_fixed_s {
+	avl_node_t vxnf_treenode;
+	in6_addr_t vxnf_addr;	/* XXX KEBE ASKS - must it match to a rule? */
+	in6_addr_t vxnf_pubaddr; /* External IP. */
+	struct vxlnat_vnet_s *vxnf_vnet;
+	uint32_t vxnf_refcount;
+} vxlnat_fixed_t;
+#define	VXNF_REFHOLD(vxnf) {			\
+	atomic_inc_32(&(vxnf)->vxnf_refcount);	\
+	ASSERT((vxnf)->vxnf_refcount > 0);	\
+}
+#define	VXNF_REFRELE(vxnf) {					\
+	ASSERT((vxnf)->vxnf_refcount > 0);			\
+	membar_exit();						\
+	if (atomic_dec_32_nv(&(vxnf)->vxnf_refcount) == 0)	\
+		vxlnat_fixed_free(vxnf);			\
+}
+extern void vxlnat_fixed_free(vxlnat_fixed_t *);
 
 /*
  * REMOTE VXLAN destinations.
@@ -95,15 +119,15 @@ typedef struct vxlnat_vnet_s {
 	 * Will map to SOMETHING in IP.
 	 * XXX KEBE ASKS - conn_t or something else TBD?!
 	 */
-	kmutex_t vnxv_fixed_lock;
-	avl_tree_t vnxv_fixed_ips;
+	krwlock_t vxnv_fixed_lock;
+	avl_tree_t vxnv_fixed_ips;
 	/*
 	 * NAT flows. (2nd lookup for an in-to-out packet.)
 	 * These are also conn_ts with outer-packet fields for out-to-in
 	 * matches against a conn_t.
 	 */
-	krwlock_t vnxv_flow_lock;
-	avl_tree_t vnxv_flows;
+	krwlock_t vxnv_flow_lock;
+	avl_tree_t vxnv_flows;
 	/* NAT rules. (3rd lookup for an in-to-out packet.) */
 	kmutex_t vxnv_rule_lock;
 	list_t vxnv_rules;
@@ -111,8 +135,8 @@ typedef struct vxlnat_vnet_s {
 	 * Internal-network remote-nodes. (only lookup for out-to-in packet.)
 	 * Entries here are also refheld by 1-1s or NAT flows.
 	 */
-	kmutex_t vnxv_remote_lock;
-	avl_tree_t vnxv_remotes;
+	kmutex_t vxnv_remote_lock;
+	avl_tree_t vxnv_remotes;
 	uint32_t vxnv_refcount;
 	uint32_t vxnv_vnetid;	/* Wire byteorder for less swapping on LE */
 } vxlnat_vnet_t;
@@ -126,6 +150,7 @@ typedef struct vxlnat_vnet_s {
 	if (atomic_dec_32_nv(&(vxnv)->vxnv_refcount) == 0)	\
 		vxlnat_vnet_free(vxnv);				\
 }
+extern void vxlnat_vnet_free(vxlnat_vnet_t *);
 
 /*
  * Endian-independent macros for rapid off-wire header reading. i.e. avoid
@@ -167,6 +192,13 @@ extern int vxlnat_vxlan_addr(in6_addr_t *);
 extern void vxlnat_closesock(void);
 extern void vxlnat_state_init(void);
 extern void vxlnat_state_fini(void);
+
+extern void vxlnat_public_init(void);
+extern void vxlnat_public_fini(void);
+extern boolean_t vxlnat_public_hold(in6_addr_t *, boolean_t);
+extern void vxlnat_public_rele(in6_addr_t *);
+
+extern int vxlnat_tree_plus_in6_cmp(const void *, const void *);
 
 #ifdef __cplusplus
 }
