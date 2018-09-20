@@ -138,7 +138,7 @@ void
 vxlnat_vnet_free(vxlnat_vnet_t *vnet)
 {
 	/* XXX KEBE SAYS FILL ME IN */
-	ASSERT0(vnet->vnet_refcnt);
+	ASSERT0(vnet->vxnv_refcount);
 	/* XXX KEBE ASKS -- assert detachment? */
 
 	kmem_free(vnet, sizeof (*vnet));
@@ -203,7 +203,6 @@ vxlnat_nat_rule(vxn_msg_t *vxnm)
 	vxlnat_vnet_t *vnet;
 	vxlnat_rule_t *rule;
 	uint32_t vnetid;
-	int rc;
 
 	ASSERT(MUTEX_HELD(&vxlnat_mutex));
 
