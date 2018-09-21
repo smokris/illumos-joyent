@@ -14,6 +14,7 @@
  */
 
 #include <arpa/inet.h>
+#include <bunyan.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <inet/vxlnat.h>
@@ -33,7 +34,7 @@
 
 const char *g_cmd = "vxlnatd";
 
-boolean_t	vxlnatd_debug_level = 0;
+bunyan_logger_t *vxlnatd_bunyan;
 static char	vxlnatd_conffile[MAXPATHLEN];
 static int	vxlnat_fd = -1;
 
@@ -41,9 +42,8 @@ static int	vxlnat_fd = -1;
  * forward declarations
  */
 static void vxlnatd_cleanup();
-#ifdef notyet
-static void vxlnatd_log();
-#endif
+static void vxlnatd_bunyan_fini();
+static void mac2str(uint8_t *mac, char *buf);
 
 /*
  * Print the vxlnatd usage
@@ -58,7 +58,7 @@ usage(FILE *s)
 	    "by leveraging the vxlnat kernel module.\n"
 	    "\n"
 	    "Options\n"
-	    "  -d             set debug logging level\n"
+	    "  -d             turn on debug logging\n"
 	    "  -f             path to config file\n"
 	    "  -h             print this message and exit\n");
 }
@@ -83,19 +83,80 @@ fatal(char *fmt, ...)
 	exit(EXIT_FAILURE);
 }
 
+static vxn_msg_t*
+alloc_empty_vxnm()
+{
+	vxn_msg_t *vxnm;
+
+	if ((vxnm = (vxn_msg_t *)malloc(sizeof(vxn_msg_t))) == NULL) {
+		(void) bunyan_fatal(vxlnatd_bunyan,
+		    "failed to allocate vxn_msg_t",
+		    BUNYAN_T_STRING, "message", strerror(errno),
+		    BUNYAN_T_INT32, "errno", errno,
+		    BUNYAN_T_END);
+		(void) vxlnatd_cleanup();
+		exit(EXIT_FAILURE);
+	}
+
+	bzero(vxnm, sizeof(vxn_msg_t));
+	return (vxnm);
+}
+
+static void
+log_vxnm(const char *log, vxn_msg_t *vxnm) {
+	char macstr[18];
+
+	mac2str(vxnm->vxnm_ether_addr, macstr);
+
+	(void) bunyan_trace(vxlnatd_bunyan,
+	    log,
+	    BUNYAN_T_UINT32, "type", vxnm->vxnm_type,
+	    BUNYAN_T_UINT32, "vnetid", vxnm->vxnm_vnetid,
+	    BUNYAN_T_UINT32, "prefix", vxnm->vxnm_prefix,
+	    BUNYAN_T_UINT32, "vlanid", vxnm->vxnm_vlanid,
+	    BUNYAN_T_STRING, "ether", macstr,
+	    BUNYAN_T_IP6, "private", &vxnm->vxnm_private,
+	    BUNYAN_T_IP6, "public", &vxnm->vxnm_public,
+	    BUNYAN_T_END);
+}
+
 static int
-parse_ip(struct in6_addr *ip, char *ipstr)
+str2ip(struct in6_addr *ip, char *ipstr)
 {
 
 	if (inet_pton(AF_INET6, ipstr, ip) != 1) {
                 uint32_t v4;
                 if (inet_pton(AF_INET, ipstr, &v4) != 1) {
+			(void) bunyan_error(vxlnatd_bunyan,
+			    "failed to parse IP",
+			    BUNYAN_T_END);
                         return (-1);
                 }
                 IN6_IPADDR_TO_V4MAPPED(v4, ip);
         }
 
 	return (0);
+}
+
+static void
+mac2str(uint8_t *mac, char *buf)
+{
+	int i, n;
+	n = sprintf(buf, "%02x", *mac++);
+	for (i = 0; i < (ETHERADDRL - 1); i++)
+		n += sprintf(buf+n, ":%02x", *mac++);
+}
+
+static boolean_t
+str2mac(char *buf, uint8_t *macaddr)
+{
+	return sscanf(buf, "%x:%x:%x:%x:%x:%x%c",
+	    &macaddr[0],
+	    &macaddr[1],
+	    &macaddr[2],
+	    &macaddr[3],
+	    &macaddr[4],
+	    &macaddr[5]) == 6 ? B_TRUE : B_FALSE;
 }
 
 static vxn_msg_t *
@@ -108,16 +169,157 @@ parse_bindaddr(char *line)
 	if ((ipstr = strtok(line, " \t\n")) == NULL)
 		return (NULL);
 
-	if (parse_ip(&bind, ipstr) == -1)
+	if (str2ip(&bind, ipstr) == -1)
 		return (NULL);
 
-	if ((vxnm = (vxn_msg_t *)malloc(sizeof(vxn_msg_t))) == NULL)
-		fatal("failed to allocate vxnm");
-
-	bzero(vxnm, sizeof(vxn_msg_t));
+	vxnm = alloc_empty_vxnm();
 
 	vxnm->vxnm_type = VXNM_VXLAN_ADDR;
 	vxnm->vxnm_private = bind;
+
+	return (vxnm);
+}
+
+static vxn_msg_t *
+parse_fixedentry(char *line)
+{
+	char *tok;
+	int vnetid;
+	struct in6_addr priv, pub;
+	vxn_msg_t *vxnm;
+
+	if ((tok = strtok(line, " \t\n")) == NULL)
+		return (NULL);
+
+	/*
+	 * check for vnetid
+	 * set errno to 0 in case vnetid is actually 0
+	 */
+	errno = 0;
+	if ((vnetid = atoi(tok)) == 0) {
+		if (errno !=0) {
+			(void) bunyan_warn(vxlnatd_bunyan,
+			    "bad vnetid",
+			    BUNYAN_T_STRING, "vnetid", tok,
+			    BUNYAN_T_END);
+			return (NULL);
+		}
+	}
+
+	if ((tok = strtok(NULL, " \t\n")) == NULL)
+		return (NULL);
+
+	/* check for priv */
+	if (str2ip(&priv, tok) == -1)
+		return (NULL);
+
+	if ((tok = strtok(NULL, " \t\n")) == NULL)
+		return (NULL);
+
+	/* check for pub */
+	if (str2ip(&pub, tok) == -1)
+		return (NULL);
+
+	vxnm = alloc_empty_vxnm();
+
+	vxnm->vxnm_type = VXNM_FIXEDIP;
+	vxnm->vxnm_vnetid = vnetid;
+	vxnm->vxnm_public = pub;
+	vxnm->vxnm_private = priv;
+
+	return (vxnm);
+}
+
+static vxn_msg_t *
+parse_mapentry(char *line)
+{
+	/* type, pfx, vnetid, pub, priv, eth, vlanid */
+	char *tok;
+	int vnetid, vlanid, prefix;
+	struct in6_addr priv, pub;
+	uint8_t ether[ETHERADDRL];
+	vxn_msg_t *vxnm;
+
+	if ((tok = strtok(line, " \t\n")) == NULL)
+		return (NULL);
+
+	/*
+	 * check for vnetid
+	 * set errno to 0 in case vnetid is actually 0
+	 */
+	errno = 0;
+	if ((vnetid = atoi(tok)) == 0) {
+		if (errno !=0) {
+			(void) bunyan_trace(vxlnatd_bunyan,
+			    "bad vnetid",
+			    BUNYAN_T_STRING, "vnetid", tok,
+			    BUNYAN_T_END);
+			return (NULL);
+		}
+	}
+
+	if ((tok = strtok(NULL, " \t\n")) == NULL)
+		return (NULL);
+
+	/* check for vlanid */
+	errno = 0;
+	if ((vlanid = atoi(tok)) == 0) {
+		if (errno !=0) {
+			(void) bunyan_trace(vxlnatd_bunyan,
+			    "bad vlanid",
+			    BUNYAN_T_STRING, "vlanid", tok,
+			    BUNYAN_T_END);
+			return (NULL);
+		}
+	}
+
+	if ((tok = strtok(NULL, " \t\n")) == NULL)
+		return (NULL);
+
+	/* check for ether */
+	if (!str2mac(tok, ether))
+		return (NULL);
+
+	if ((tok = strtok(NULL, "/")) == NULL)
+		return (NULL);
+
+	/* check for priv */
+	if (str2ip(&priv, tok) == -1)
+		return (NULL);
+
+
+	if ((tok = strtok(NULL, " \t\n")) == NULL)
+		return (NULL);
+
+	/* check for prefix */
+	errno = 0;
+	if ((prefix = atoi(tok)) == 0) {
+		if (errno !=0) {
+			(void) bunyan_warn(vxlnatd_bunyan,
+			    "bad prefix",
+			    BUNYAN_T_STRING, "prefix", tok,
+			    BUNYAN_T_END);
+			return (NULL);
+		}
+	}
+
+	if ((tok = strtok(NULL, " \t\n")) == NULL)
+		return (NULL);
+
+	/* check for pub */
+	if (str2ip(&pub, tok) == -1)
+		return (NULL);
+
+	vxnm = alloc_empty_vxnm();
+
+	vxnm->vxnm_type = VXNM_RULE;
+	vxnm->vxnm_vnetid = vnetid;
+	vxnm->vxnm_vlanid = vlanid;
+	vxnm->vxnm_prefix = prefix;
+	vxnm->vxnm_public = pub;
+	vxnm->vxnm_private = priv;
+
+	bcopy(ether, vxnm->vxnm_ether_addr, sizeof(ether));
 
 	return (vxnm);
 }
@@ -140,9 +342,18 @@ parse_confline(char* line)
 	if (strcmp(action, "bind") == 0)
 		return parse_bindaddr(lasts);
 
-	/* Add other actions here */
+	if (strcmp(action, "fixed") == 0)
+		return parse_fixedentry(lasts);
+
+	if (strcmp(action, "map") == 0)
+		return parse_mapentry(lasts);
 
 	/* default action if we don't find a match */
+	(void) bunyan_warn(vxlnatd_bunyan,
+	    "unknown action",
+	    BUNYAN_T_STRING, "action", action,
+	    BUNYAN_T_END);
+
 	return (NULL);
 }
 
@@ -158,15 +369,38 @@ vxlnatd_initconf() {
 	vxn_msg_t **msgs;
 
 	// open /dev/vxlnat
-	if ((vxlnat_fd = open(VXLNAT_PATH, O_RDWR)) == -1)
-		fatal("failed to open %s", VXLNAT_PATH);
+	if ((vxlnat_fd = open(VXLNAT_PATH, O_RDWR)) == -1) {
+		(void) bunyan_fatal(vxlnatd_bunyan,
+		    "failed to open vxlnat device",
+		    BUNYAN_T_STRING, "message", strerror(errno),
+		    BUNYAN_T_STRING, "path", VXLNAT_PATH,
+		    BUNYAN_T_INT32, "errno", errno,
+		    BUNYAN_T_END);
+		(void) vxlnatd_cleanup();
+		exit(EXIT_FAILURE);
+	}
 
-	if ((cfd = fopen(vxlnatd_conffile, "r")) == NULL)
-		fatal("failed to open %s", vxlnatd_conffile);
+	if ((cfd = fopen(vxlnatd_conffile, "r")) == NULL) {
+		(void) bunyan_error(vxlnatd_bunyan,
+		    "failed to open vxlnatd config",
+		    BUNYAN_T_STRING, "message", strerror(errno),
+		    BUNYAN_T_STRING, "path", vxlnatd_conffile,
+		    BUNYAN_T_INT32, "errno", errno,
+		    BUNYAN_T_END);
+		(void) vxlnatd_cleanup();
+		exit(EXIT_FAILURE);
+	}
 
 	if ((msgs = (vxn_msg_t **)malloc(arrsize * sizeof(vxn_msg_t *)))
-		== NULL)
-		fatal("failed to allocate vxn_msg array");
+	    == NULL) {
+		(void) bunyan_fatal(vxlnatd_bunyan,
+		    "failed to allocate vxnm array",
+		    BUNYAN_T_STRING, "message", strerror(errno),
+		    BUNYAN_T_INT32, "errno", errno,
+		    BUNYAN_T_END);
+		(void) vxlnatd_cleanup();
+		exit(EXIT_FAILURE);
+	}
 
 	while(fgets(line, sizeof(line), cfd) != NULL) {
 		vxn_msg_t *vxnm;
@@ -182,21 +416,41 @@ vxlnatd_initconf() {
 			continue;
 
 		/* error out if the line is too long */
-		if (line[strlen(line) -1] != '\n')
-			fatal("line %d is too long\n", lineno);
+		if (line[strlen(line) -1] != '\n') {
+			(void) bunyan_error(vxlnatd_bunyan,
+			    "config file line is too long",
+			    BUNYAN_T_STRING, "path", vxlnatd_conffile,
+			    BUNYAN_T_INT32, "line", lineno,
+			    BUNYAN_T_END);
+			(void) vxlnatd_cleanup();
+			exit(EXIT_FAILURE);
+		}
 
 		/* attempt to parse the line into a vxn_msg_t */
-		if ((vxnm = parse_confline(line)) == NULL)
-			fatal("failed to parse config %s at line %d\n",
-				vxlnatd_conffile, lineno);
+		if ((vxnm = parse_confline(line)) == NULL) {
+			(void) bunyan_error(vxlnatd_bunyan,
+			    "failed to parse config file line",
+			    BUNYAN_T_STRING, "path", vxlnatd_conffile,
+			    BUNYAN_T_INT32, "line", lineno,
+			    BUNYAN_T_END);
+			(void) vxlnatd_cleanup();
+			exit(EXIT_FAILURE);
+		}
 
 		/* double the size of the array if we are at max capacity*/
 		if (entries >= (arrsize - 1)) {
 			arrsize = arrsize << 1;
 
 			if ((msgs = (vxn_msg_t **)realloc(msgs,
-				arrsize * sizeof(vxn_msg_t *))) == NULL)
-				fatal("failed to allocate vxn_msg array");
+			    arrsize * sizeof(vxn_msg_t *))) == NULL) {
+				(void) bunyan_fatal(vxlnatd_bunyan,
+				    "failed to allocate vxn_msg array",
+				    BUNYAN_T_STRING, "message", strerror(errno),
+				    BUNYAN_T_INT32, "errno", errno,
+				    BUNYAN_T_END);
+				(void) vxlnatd_cleanup();
+				exit(EXIT_FAILURE);
+			}
 		}
 
 		msgs[entries] = vxnm;
@@ -205,9 +459,17 @@ vxlnatd_initconf() {
 
 	// send VXNM_VXLAN_ADDR
 	for (i = 0; i < entries; i++) {
+		(void) log_vxnm("writing vxn_msg_t to vxlnat device", msgs[i]);
 		if ((write(vxlnat_fd, msgs[i],
-			sizeof(vxn_msg_t))) == -1)
-			fatal("failed to write to %s", VXLNAT_PATH);
+		    sizeof(vxn_msg_t))) == -1) {
+			(void) bunyan_fatal(vxlnatd_bunyan,
+			    "failed to write to vxlnat device",
+			    BUNYAN_T_STRING, "message", strerror(errno),
+			    BUNYAN_T_INT32, "errno", errno,
+			    BUNYAN_T_END);
+			(void) vxlnatd_cleanup();
+			exit(EXIT_FAILURE);
+		}
 
 		free(msgs[i]);
 	}
@@ -223,18 +485,31 @@ vxlnatd_cleanup() {
 	if (vxlnat_fd > 0) {
 		close(vxlnat_fd);
 	}
-
+	vxlnatd_bunyan_fini();
 }
 
-#ifdef notyet
 /*
- * vxlnatd common logging
+ * vxlnatd bunyan logging
  */
-static void
-vxlnatd_log() {
+static int
+vxlnatd_bunyan_init(int level) {
+	int ret;
 
+	if ((ret = bunyan_init("vxlnatd", &vxlnatd_bunyan)) != 0)
+		return (ret);
+	ret = bunyan_stream_add(vxlnatd_bunyan, "stderr", level,
+		bunyan_stream_fd, (void *)STDERR_FILENO);
+	if (ret != 0)
+		(void)vxlnatd_bunyan_fini();
+	return (ret);
 }
-#endif
+
+static void
+vxlnatd_bunyan_fini(void)
+{
+	if (vxlnatd_bunyan != NULL)
+		bunyan_fini(vxlnatd_bunyan);
+}
 
 /* ARGSUSED */
 int
@@ -254,16 +529,15 @@ main(int argc, char *argv[])
 
 
 	int opt;
+	int vxlnatd_debug_level;
+	int d_flag = 0;
 
 	(void) strlcpy(vxlnatd_conffile, VXLNATCONF, sizeof(vxlnatd_conffile));
-	while ((opt = getopt(argc, argv, "d:f:h")) != -1) {
+	while ((opt = getopt(argc, argv, "df:h")) != -1) {
 		switch (opt) {
 		case 'd':
-			/*
-			 * TODO figure out debug log levels...
-			 * Handle atoi error
-			 */
-			vxlnatd_debug_level = atoi(optarg);
+			d_flag++;
+			break;
 		case 'f':
 			(void) strlcpy(vxlnatd_conffile, optarg,
 				sizeof(vxlnatd_conffile));
@@ -276,6 +550,11 @@ main(int argc, char *argv[])
 			return (1);
 		}
 	}
+
+	vxlnatd_debug_level = (d_flag > 0) ? BUNYAN_L_TRACE : BUNYAN_L_INFO;
+
+	if (vxlnatd_bunyan_init(vxlnatd_debug_level) != 0)
+		fatal("failed to setup bunyan logger\n");
 
 	vxlnatd_initconf();
 
