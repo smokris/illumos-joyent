@@ -233,7 +233,7 @@ vxlnat_nat_rule(vxn_msg_t *vxnm)
 	mutex_enter(&vnet->vxnv_rule_lock);
 	/* XXX KEBE ASKS --> Check for collisions?!? */
 	list_insert_tail(&vnet->vxnv_rules, rule);
-	mutex_enter(&vnet->vxnv_rule_lock);
+	mutex_exit(&vnet->vxnv_rule_lock);
 
 	return (0);
 }
