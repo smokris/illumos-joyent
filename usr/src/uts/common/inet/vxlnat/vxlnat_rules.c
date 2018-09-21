@@ -115,10 +115,8 @@ vxlnat_get_vnet(uint32_t vnetid, boolean_t create_on_miss)
 		rw_init(&vnet->vxnv_fixed_lock, NULL, RW_DRIVER, NULL);
 		avl_create(&vnet->vxnv_fixed_ips, vxlnat_tree_plus_in6_cmp,
 		    sizeof (vxlnat_fixed_t), 0);
-		/*
-		 * NAT rules already initialized, because mutex and
-		 * list are zeroed-out.
-		 */
+		/* NAT mutex is zeroed-out. */
+		list_create(&vnet->vxnv_rules, sizeof (vxlnat_rule_t), 0);
 #ifdef notyet
 		/* XXX KEBE SAYS INITIALIZE NAT flows... */
 		/* XXX KEBE SAYS INITIALIZE remotes... */
