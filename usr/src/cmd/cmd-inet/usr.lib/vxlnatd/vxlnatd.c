@@ -41,7 +41,9 @@ static int	vxlnat_fd = -1;
  * forward declarations
  */
 static void vxlnatd_cleanup();
+#ifdef notyet
 static void vxlnatd_log();
+#endif
 
 /*
  * Print the vxlnatd usage
@@ -224,6 +226,7 @@ vxlnatd_cleanup() {
 
 }
 
+#ifdef notyet
 /*
  * vxlnatd common logging
  */
@@ -231,6 +234,7 @@ static void
 vxlnatd_log() {
 
 }
+#endif
 
 /* ARGSUSED */
 int
