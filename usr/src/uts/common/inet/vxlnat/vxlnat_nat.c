@@ -106,11 +106,10 @@ vxlnat_vxlan_addr(in6_addr_t *underlay_ip)
 {
 	int rc;
 
-	mutex_enter(&vxlnat_mutex);
+	ASSERT(MUTEX_HELD(&vxlnat_mutex));
 	/* For now, we make this a one-underlay-address-only solution. */
 	vxlnat_closesock();
 	rc = vxlnat_opensock(underlay_ip);
-	mutex_exit(&vxlnat_mutex);
 	return (rc);
 }
 

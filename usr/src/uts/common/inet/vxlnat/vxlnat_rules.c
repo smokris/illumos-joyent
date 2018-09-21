@@ -421,6 +421,7 @@ vxlnat_read_dump(struct uio *uiop)
 	int dumpprogress = 0;
 
 	mutex_enter(&vxlnat_mutex);
+
 	/* XXX KEBE THINKS -- if no dump buffer, just return w/o data. */
 	while (rc == 0 && vxlnat_dumpbuf != NULL &&
 	    uiop->uio_resid >= sizeof (vxn_msg_t)) {

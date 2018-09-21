@@ -218,7 +218,10 @@ vxlnat_write(dev_t dev, struct uio *uiop, cred_t *credp)
 		if (error != 0)
 			return (error);
 
+		/* All commands go in one at a time, for now. */
+		mutex_enter(&vxlnat_mutex);
 		error = vxlnat_command(&one);
+		mutex_exit(&vxlnat_mutex);
 		/*
 		 * If the rule is misformed, etc., everything after is
 		 * ignored. Since we have one supported consumer, it's
