@@ -32,8 +32,9 @@
  * one-at-a-time thing.  Protected by vxlnat_mutex.
  */
 static vxn_msg_t *vxlnat_dumpbuf;
-static int vxlnat_dumpcount;
-static int vxlnat_dumpcurrent;
+static size_t vxlnat_initial;	/* non-zero if no read yet. */
+static size_t vxlnat_dumpcount;
+static size_t vxlnat_dumpcurrent;
 
 /*
  * Store per-vnet-state in AVL tree.  We could be handling 1000s or more...
@@ -224,7 +225,8 @@ vxlnat_nat_rule(vxn_msg_t *vxnm)
 	rule->vxnr_myaddr = vxnm->vxnm_private;
 	rule->vxnr_pubaddr = vxnm->vxnm_public;
 	rule->vxnr_prefix = vxnm->vxnm_prefix;
-	rule->vxnr_vlanid = vxnm->vxnm_vlanid;
+	/* For easier packet matching, keep vlanid in network order. */
+	rule->vxnr_vlanid = htons(vxnm->vxnm_vlanid);
 	bcopy(vxnm->vxnm_ether_addr, rule->vxnr_myether, ETHERADDRL);
 	rule->vxnr_refcount = 1;	/* Internment reference. */
 	list_link_init(&rule->vxnr_link);
@@ -274,6 +276,12 @@ vxlnat_flush(void)
 	while (!avl_is_empty(&vxlnat_vnets))
 		vxlnat_vnet_unlink_locked(avl_first(&vxlnat_vnets));
 	rw_exit(&vxlnat_vnet_lock);
+	if (vxlnat_dumpbuf != NULL) {
+		kmem_free(vxlnat_dumpbuf,
+		    vxlnat_dumpcount * sizeof (vxn_msg_t));
+		vxlnat_dumpbuf = NULL;
+		vxlnat_initial = vxlnat_dumpcount = vxlnat_dumpcurrent = 0;
+	}
 	return (0);
 }
 
@@ -358,6 +366,114 @@ fail:
 	return (rc);
 }
 
+static void
+vxlnat_rule_to_msg(vxn_msg_t *msg, vxlnat_rule_t *rule)
+{
+	msg->vxnm_type = VXNM_RULE;
+	msg->vxnm_vnetid = VXLAN_ID_NTOH(rule->vxnr_vnet->vxnv_vnetid);
+	msg->vxnm_prefix = rule->vxnr_prefix;
+	msg->vxnm_vlanid = ntohs(rule->vxnr_vlanid);
+	bcopy(rule->vxnr_myether, msg->vxnm_ether_addr, ETHERADDRL);
+	msg->vxnm_public = rule->vxnr_pubaddr;
+	msg->vxnm_private = rule->vxnr_myaddr;
+}
+
+static void
+vxlnat_fixed_to_msg(vxn_msg_t *msg, vxlnat_fixed_t *fixed)
+{
+	msg->vxnm_type = VXNM_FIXEDIP;
+	msg->vxnm_vnetid = VXLAN_ID_NTOH(fixed->vxnf_vnet->vxnv_vnetid);
+	msg->vxnm_prefix = 0;
+	msg->vxnm_vlanid = 0;	/* XXX KEBE ASKS - keep track of this?!? */
+	bzero(msg->vxnm_ether_addr, ETHERADDRL);
+	msg->vxnm_public = fixed->vxnf_pubaddr;
+	msg->vxnm_private = fixed->vxnf_addr;
+}
+
+static int
+vxlnat_dump(void)
+{
+	int rc = 0;
+	size_t entries = 0;
+	vxlnat_vnet_t *vnet;
+	vxlnat_fixed_t *fixed;
+	vxlnat_rule_t *rule;
+	vxn_msg_t *current;
+
+	ASSERT(MUTEX_HELD(&vxlnat_mutex));
+
+	/*
+	 * XXX KEBE SAYS setup vxlnat_dump* above.
+	 * XXX KEBE SAYS If function fails for reasons that aren't "dump in
+	 * progress", make sure it keeps vxlnat_dump* stuff clean
+	 *
+	 * NOTE: Other commands are excluded at this point, but packet
+	 * processing is not.  OTOH, packet processing doesn't affect any
+	 * entities we dump (at this time).  We only dump things that can be
+	 * added with commands.  (So no remote VXLAN peers and no NAT flows.)
+	 */
+
+	/* Lock down things. */
+	rw_enter(&vxlnat_vnet_lock, RW_READER);
+	if (avl_numnodes(&vxlnat_vnets) == 0)
+		goto bail;	/* Nothing to see here, move along. */
+
+	/*
+	 * This is going to be inefficient, requiring two passes through each
+	 * vnet.  The first pass locks-down and counts.  Then we allocate
+	 * based on the count.  The second pass copies out and unlocks.
+	 */
+	for (vnet = avl_first(&vxlnat_vnets); vnet != NULL;
+	    vnet = AVL_NEXT(&vxlnat_vnets, vnet)) {
+		rw_enter(&vnet->vxnv_fixed_lock, RW_READER);
+		entries += avl_numnodes(&vnet->vxnv_fixed_ips);
+		mutex_enter(&vnet->vxnv_rule_lock);
+		/* Let's hope this isn't a big number... */
+		for (rule = list_head(&vnet->vxnv_rules); rule != NULL;
+		    rule = list_next(&vnet->vxnv_rules, rule)) {
+			entries++;
+		}
+		/* XXX KEBE ASKS -- other fields?!? */
+	}
+	if (entries == 0)
+		goto bail;	/* VNETs but with no rules AND no 1-1s?!? */
+	/* Don't be too agressive in allocating this. */
+	vxlnat_dumpbuf = kmem_alloc(entries * sizeof (vxn_msg_t),
+	    KM_NOSLEEP | KM_NORMALPRI);
+	if (vxlnat_dumpbuf == NULL)
+		rc = ENOMEM;	/* We still have to unlock everything. */
+	current = vxlnat_dumpbuf;
+
+	/* Second pass. */
+	for (vnet = avl_first(&vxlnat_vnets); vnet != NULL;
+	    vnet = AVL_NEXT(&vxlnat_vnets, vnet)) {
+		/* XXX KEBE ASKS -- other fields?!? */
+		for (rule = list_head(&vnet->vxnv_rules); rule != NULL;
+		    rule = list_next(&vnet->vxnv_rules, rule)) {
+			if (rc == 0) {
+				vxlnat_rule_to_msg(current, rule);
+				current++;
+			}
+		}
+		mutex_exit(&vnet->vxnv_rule_lock);
+		for (fixed = avl_first(&vnet->vxnv_fixed_ips); fixed != NULL;
+		    fixed = AVL_NEXT(&vnet->vxnv_fixed_ips, fixed)) {
+			if (rc == 0) {
+				vxlnat_fixed_to_msg(current, fixed);
+				current++;
+			}
+		}
+		rw_exit(&vnet->vxnv_fixed_lock);
+	}
+	vxlnat_dumpcount = vxlnat_initial = entries;
+	vxlnat_dumpcurrent = 0;
+	ASSERT3P((vxlnat_dumpbuf + entries), ==, current);
+
+bail:
+	rw_exit(&vxlnat_vnet_lock);
+	return (rc);
+}
+
 int
 vxlnat_command(vxn_msg_t *vxnm)
 {
@@ -377,14 +493,7 @@ vxlnat_command(vxn_msg_t *vxnm)
 		rc = vxlnat_flush();
 		break;
 	case VXNM_DUMP:
-		/*
-		 * XXX KEBE SAYS setup vxlnat_dump* above.
-		 * XXX KEBE SAYS If function fails for reasons that aren't
-		 * "dump in progress", make sure it keeps vxlnat_dump* stuff
-		 * clean
-		 */
-		/* rc = vxlnat_dump(); */
-		rc = EOPNOTSUPP;	/* XXX KEBE SAYS NUKE ME */
+		rc = vxlnat_dump();
 		break;
 	default:
 		rc = EINVAL;
@@ -418,9 +527,23 @@ int
 vxlnat_read_dump(struct uio *uiop)
 {
 	int rc = 0;
-	int dumpprogress = 0;
+	size_t dumpprogress = 0;
 
 	mutex_enter(&vxlnat_mutex);
+
+	/*
+	 * Initial-case ==> dumpbuf with none delivered yet.
+	 * Utter an 8-byte count.
+	 */
+	if (vxlnat_initial != 0 && uiop->uio_resid >= sizeof (uint64_t)) {
+		uint64_t total = vxlnat_dumpcount;
+
+		ASSERT(vxlnat_dumpbuf != NULL && vxlnat_dumpcurrent == 0);
+		rc = uiomove(&total, sizeof (uint64_t), UIO_READ, uiop);
+		if (rc != 0)
+			goto bail;
+		vxlnat_initial = 0;
+	}
 
 	/* XXX KEBE THINKS -- if no dump buffer, just return w/o data. */
 	while (rc == 0 && vxlnat_dumpbuf != NULL &&
@@ -444,14 +567,15 @@ vxlnat_read_dump(struct uio *uiop)
 		}
 	}
 
+bail:
 	/*
 	 * If there's room at the end, just ignore that space for now.	Handy
 	 * DTrace probe below notes amount of extra bytes..
 	 */
 	DTRACE_PROBE1(vxlnat__read__extrabytes, ssize_t, uiop->uio_resid);
 	/* Note progress of dump with DTrace probes. */
-	DTRACE_PROBE3(vxlnat__read__dumpprogress, int, dumpprogress, int,
-	    vxlnat_dumpcurrent, int, vxlnat_dumpcount);
+	DTRACE_PROBE3(vxlnat__read__dumpprogress, size_t, dumpprogress, size_t,
+	    vxlnat_dumpcurrent, size_t, vxlnat_dumpcount);
 
 	mutex_exit(&vxlnat_mutex);
 	return (rc);

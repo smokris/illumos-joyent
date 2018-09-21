@@ -166,7 +166,7 @@ vxlnat_open(dev_t *devp, int flags, int otype, cred_t *credp)
 		return (ESRCH);
 	}
 
-	/* XXX KEBE SAYS FILL ME IN -- initialization! */
+	/* XXX KEBE ASKS -- more initialization? */
 	vxlnat_state_init();
 
 	mutex_exit(&vxlnat_mutex);
@@ -179,8 +179,8 @@ static int
 vxlnat_close(dev_t dev, int flags, int otype, cred_t *credp)
 {
 	mutex_enter(&vxlnat_mutex);
-	/* XXX KEBE SAYS FILL ME IN -- teardown! */
-	vxlnat_state_fini();	/* Implicit closesock here. */
+	/* XXX KEBE ASKS -- more teardown? */
+	vxlnat_state_fini();	/* Implicit flush here. */
 	VERIFY(vxlnat_netstack != NULL);
 	netstack_rele(vxlnat_netstack);
 	vxlnat_netstack = NULL;
@@ -195,7 +195,7 @@ vxlnat_read(dev_t dev, struct uio *uiop, cred_t *credp)
 	if (secpolicy_ip_config(credp, B_FALSE) != 0)
 		return (EPERM);
 
-	/* XXX KEBE SAYS FILL ME IN -- more?!? */
+	/* XXX KEBE ASKS -- more?!? */
 
 	/* All the state is in vxlnat_rules.c, so do the work there. */
 	return (vxlnat_read_dump(uiop));

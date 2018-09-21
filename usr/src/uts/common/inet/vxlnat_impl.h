@@ -180,7 +180,7 @@ extern void vxlnat_vnet_free(vxlnat_vnet_t *);
 #define	VXLAN_F_VDI_WIRE VXLAN_F_VDI
 /* XXX KEBE ASKS, do masking here? */
 #define	VXLAN_ID_HTON(id) ((id) << VXLAN_ID_SHIFT)
-#define	VXLAN_ID_NTOH(id) ((id) >> VXLAND_ID_SHIFT)
+#define	VXLAN_ID_NTOH(id) ((id) >> VXLAN_ID_SHIFT)
 #endif	/* LITTLE_ENDIAN */
 #define	VXLAN_FLAGS_WIRE32(flags) ((flags) & VXLAN_F_VDI_WIRE)
 
