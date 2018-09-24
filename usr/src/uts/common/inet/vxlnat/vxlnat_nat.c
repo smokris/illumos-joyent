@@ -29,9 +29,12 @@
 #include <sys/kmem.h>
 #include <sys/stream.h>
 #include <sys/strsubr.h>
+#include <sys/strsun.h>
 #include <sys/sysmacros.h>
 #include <sys/debug.h>
+#include <sys/dtrace.h>
 #include <sys/errno.h>
+#include <sys/tihdr.h>
 #include <netinet/in.h>
 #include <netinet/udp.h>
 
@@ -113,6 +116,55 @@ vxlnat_vxlan_addr(in6_addr_t *underlay_ip)
 	return (rc);
 }
 
+static void
+vxlnat_one_vxlan(mblk_t *mp, struct sockaddr_in *underlay_src)
+{
+	vxlan_hdr_t *vxh;
+	vxlnat_vnet_t *vnet;
+
+	if (MBLKL(mp) < sizeof (*vxh)) {
+		DTRACE_PROBE1(vxlnat__in__drop__vxlsize, mblk_t *, mp);
+		freemsg(mp);
+		return;
+	}
+	vxh = (vxlan_hdr_t *)mp->b_rptr;
+
+	/* If we start using more than just the one flag, fix it. */
+	if (vxh->vxlan_flags != VXLAN_F_VDI_WIRE) {
+		DTRACE_PROBE1(vxlnat__in__drop__VDI, mblk_t *, mp);
+		freemsg(mp);
+		return;
+	}
+
+	/* Remember, we key off of what's on the wire. */
+	vnet = vxlnat_get_vnet(VXLAN_ID_WIRE32(vxh->vxlan_id), B_FALSE);
+	if (vnet == NULL) {
+		DTRACE_PROBE1(vxlnat__in__drop__vnetid, uint32_t,
+		    VXLAN_ID_HTON(VXLAN_ID_WIRE32(vxh->vxlan_id)));
+		freemsg(mp);
+		return;
+	}
+
+	DTRACE_PROBE2(vxlnat__in__vnet, uint32_t,
+	    VXLAN_ID_HTON(VXLAN_ID_WIRE32(vxh->vxlan_id)),
+	    vxlnat_vnet_t, vnet);
+
+	/*
+	 * Off-vxlan processing steps:
+	 * 1.) Locate the ethernet header and check/update/add-into remotes.
+	 * 2.) Search 1-1s, process if hit.
+	 * 3.) Search flows, process if hit.
+	 * 4.) Search rules, create new flow (or not) if hit.
+	 * 5.) Drop the packets.
+	 */
+
+	/* XXX KEBE SAYS BUILD STEPS 1-4. */
+
+	/* 5.) Nothing, drop the packet. */
+	/* XXX KEBE ASKS DIAGNOSTIC? */
+	VXNV_REFRELE(vnet);
+	freemsg(mp);
+}
 /*
  * ONLY return B_FALSE if we get a packet-clogging event.
  */
@@ -121,7 +173,39 @@ static boolean_t
 vxlnat_vxlan_input(ksocket_t insock, mblk_t *chain, size_t msgsize, int oob,
     void *ignored)
 {
-	/* XXX KEBE SAYS For now, drop 'em, but FILL ME IN. */
-	freemsgchain(chain);
+	mblk_t *mp, *nextmp;
+
+	/*
+	 * XXX KEBE ASKS --> move hold & release outside of loop?
+	 * If so, hold rwlock here.
+	 */
+
+	for (mp = chain; mp != NULL; mp = nextmp) {
+		struct T_unitdata_ind *tudi;
+		struct sockaddr_in *sin;
+
+		nextmp = mp->b_next;
+		if (DB_TYPE(mp) != M_PROTO || mp->b_cont == NULL) {
+			DTRACE_PROBE1(vxlnat__in__drop__mblk, mblk_t *, mp);
+			freemsg(mp);
+			continue;
+		}
+
+		/* LINTED -- aligned */
+		tudi = (struct T_unitdata_ind *)mp->b_rptr;
+		if (tudi->PRIM_type != T_UNITDATA_IND) {
+			DTRACE_PROBE1(vxlnat__in__drop__TPI, mblk_t *, mp);
+			freemsg(mp);
+			continue;
+		}
+		/* LINTED -- aligned */
+		sin = (struct sockaddr_in *)(mp->b_rptr + tudi->SRC_offset);
+		VERIFY(sin->sin_family == AF_INET);
+		VERIFY(tudi->SRC_length >= sizeof (*sin));
+
+		vxlnat_one_vxlan(mp->b_cont, sin);
+		freeb(mp);
+	}
+
 	return (B_TRUE);
 }

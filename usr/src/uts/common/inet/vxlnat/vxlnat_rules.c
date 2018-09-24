@@ -299,11 +299,11 @@ vxlnat_fixed_unlink(vxlnat_fixed_t *fixed)
 	vxlnat_vnet_t *vnet = fixed->vxnf_vnet;
 
 	ASSERT3P(vnet, !=, NULL);
-	/* XXX KEBE SAYS rwlock-writer assert... */
+	ASSERT(RW_WRITE_HELD(&vnet->vxnv_fixed_lock));
 
 	avl_remove(&vnet->vxnv_fixed_ips, fixed);
 	VXNV_REFRELE(vnet);
-	fixed->vxnf_vnet = NULL; /* This condemns the 1-1 mapping. */
+	fixed->vxnf_vnet = NULL; /* This condemns this 1-1 mapping. */
 	VXNF_REFRELE(fixed);
 }
 

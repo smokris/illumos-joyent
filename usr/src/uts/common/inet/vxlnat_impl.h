@@ -137,6 +137,7 @@ typedef struct vxlnat_vnet_s {
 	 */
 	kmutex_t vxnv_remote_lock;
 	avl_tree_t vxnv_remotes;
+
 	uint32_t vxnv_refcount;
 	uint32_t vxnv_vnetid;	/* Wire byteorder for less swapping on LE */
 } vxlnat_vnet_t;
@@ -199,6 +200,8 @@ extern boolean_t vxlnat_public_hold(in6_addr_t *, boolean_t);
 extern void vxlnat_public_rele(in6_addr_t *);
 
 extern int vxlnat_tree_plus_in6_cmp(const void *, const void *);
+
+extern vxlnat_vnet_t *vxlnat_get_vnet(uint32_t, boolean_t);
 
 #ifdef __cplusplus
 }
