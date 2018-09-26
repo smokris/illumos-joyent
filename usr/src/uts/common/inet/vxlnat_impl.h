@@ -93,8 +93,15 @@ typedef struct vxlnat_remote_s {
 	avl_node_t vxnrem_treenode;
 	in6_addr_t vxnrem_addr;	/* Same prefix as one in rule. */
 	in6_addr_t vxnrem_uaddr; /* Underlay VXLAN destination. */
+	struct vxlnat_vnet_s *vxnrem_vnet;	/* Reference-held. */
 	uint32_t vxnrem_refcount;
 	uint8_t vxnrem_ether[ETHERADDRL];
+	uint16_t vxnrem_vlan;
+	/*
+	 * XXX KEBE SAYS put some lifetime/usetime/etc. here
+	 * so we don't keep too many of these.  Either that, or maybe
+	 * convert to a qqcache or (patents expiring) ARC.
+	 */
 } vxlnat_remote_t;
 #define	VXNREM_REFHOLD(vxnrem) {			\
 	atomic_inc_32(&(vxnrem)->vxnrem_refcount);	\

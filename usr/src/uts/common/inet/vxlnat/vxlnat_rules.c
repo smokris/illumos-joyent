@@ -45,6 +45,8 @@ static avl_tree_t vxlnat_vnets;
 
 static void vxlnat_rule_unlink(vxlnat_rule_t *);
 static void vxlnat_fixed_unlink(vxlnat_fixed_t *);
+/* In vxlnat_nat.c */
+extern void vxlnat_remote_unlink(vxlnat_remote_t *);
 
 /*
  * Comparison function for vnet AVL tree.
@@ -127,7 +129,8 @@ vxlnat_get_vnet(uint32_t vnetid, boolean_t create_on_miss)
 #endif /* notyet */
 		avl_insert(&vxlnat_vnets, vnet, where);
 	}
-	VXNV_REFHOLD(vnet);	/* Caller's reference. */
+	if (vnet != NULL)
+		VXNV_REFHOLD(vnet);	/* Caller's reference. */
 	rw_exit(&vxlnat_vnet_lock);
 
 	return (vnet);
@@ -169,8 +172,16 @@ vxlnat_vnet_unlink_locked(vxlnat_vnet_t *vnet)
 	}
 	rw_exit(&vnet->vxnv_fixed_lock);
 
+	/* Unlink all remotes */
+	mutex_enter(&vnet->vxnv_remote_lock);
+	while (!avl_is_empty(&vnet->vxnv_remotes)) {
+		/* Will decrement vnet's refcount too. */
+		vxlnat_remote_unlink(
+		    (vxlnat_remote_t *)avl_first(&vnet->vxnv_remotes));
+	}
+	mutex_exit(&vnet->vxnv_remote_lock);
+
 	/* XXX KEBE SAYS unlink all NAT flows */
-	/* XXX KEBE SAYS unlink all remotes */
 
 	VXNV_REFRELE(vnet);	/* Internment reference. */
 }
@@ -194,7 +205,7 @@ vxlnat_vnet_unlink(vxlnat_vnet_t *vnet)
 }
 
 /*
- * XXX KEBE SAYS add a (vnetid+prefix => external) rule.
+ * Add a (vnetid+prefix => external) rule.
  */
 static int
 vxlnat_nat_rule(vxn_msg_t *vxnm)
