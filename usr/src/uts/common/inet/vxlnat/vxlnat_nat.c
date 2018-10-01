@@ -390,6 +390,8 @@ vxlnat_one_vxlan(mblk_t *mp, struct sockaddr_in *underlay_src)
 	}
 	rw_enter(&vnet->vxnv_fixed_lock, RW_READER);
 	fixed = avl_find(&vnet->vxnv_fixed_ips, &fsearch, NULL);
+	if (fixed != NULL)
+		VXNF_REFHOLD(fixed);
 	rw_exit(&vnet->vxnv_fixed_lock);
 	if (fixed != NULL) {
 		/* XXX KEBE SAYS -- FILL ME IN... but for now: */

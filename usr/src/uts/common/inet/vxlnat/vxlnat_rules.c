@@ -300,6 +300,7 @@ void
 vxlnat_fixed_free(vxlnat_fixed_t *fixed)
 {
 	ASSERT0(fixed->vxnf_refcount);
+
 	vxlnat_public_rele(&fixed->vxnf_pubaddr);
 	kmem_free(fixed, sizeof (*fixed));
 }
@@ -308,14 +309,85 @@ static void
 vxlnat_fixed_unlink(vxlnat_fixed_t *fixed)
 {
 	vxlnat_vnet_t *vnet = fixed->vxnf_vnet;
+	ire_t *ire = fixed->vxnf_ire;
 
 	ASSERT3P(vnet, !=, NULL);
 	ASSERT(RW_WRITE_HELD(&vnet->vxnv_fixed_lock));
 
+	/* Rid ourselves of the IRE now. */
+	if (ire != NULL) {
+		ASSERT(ire->ire_type == IRE_LOCAL);
+		ASSERT3P((void *)ire->ire_dep_sib_next, ==, (void *)fixed);
+		ire->ire_dep_sib_next = NULL;
+		VXNF_REFRELE(fixed);	/* ire's hold on us. */
+		/* Rewire IRE back to normal. */
+		ire->ire_recvfn = (ire->ire_ipversion == IPV4_VERSION) ?
+		    ire_recv_local_v4 : ire_recv_local_v6;
+		ire_refrele(ire);
+	}
+
 	avl_remove(&vnet->vxnv_fixed_ips, fixed);
-	VXNV_REFRELE(vnet);
 	fixed->vxnf_vnet = NULL; /* This condemns this 1-1 mapping. */
+	VXNV_REFRELE(vnet);
 	VXNF_REFRELE(fixed);
+}
+
+/*
+ * New ire_recvfn implementations if we're doing 1-1 mappings.
+ */
+static void
+vxlnat_fixed_ire_recv_v6(ire_t *ire, mblk_t *mp, void *iph_arg,
+    ip_recv_attr_t *ira)
+{
+	/* XXX KEBE SAYS FILL ME IN, but for now... */
+	freemsg(mp);
+}
+
+static void
+vxlnat_fixed_ire_recv_v4(ire_t *ire, mblk_t *mp, void *iph_arg,
+    ip_recv_attr_t *ira)
+{
+	vxlnat_fixed_t *fixed;
+	vxlnat_vnet_t *vnet;
+	/* ip_stack_t *ipst; */
+
+	/* Make a note for DAD that this address is in use */
+	ire->ire_last_used_time = LBOLT_FASTPATH;
+
+	/* Only target the IRE_LOCAL with the right zoneid. */
+	ira->ira_zoneid = ire->ire_zoneid;
+
+	/*
+	 * Reality check some things.
+	 */
+	fixed = (vxlnat_fixed_t *)ire->ire_dep_sib_next;
+	vnet = fixed->vxnf_vnet;
+
+	ASSERT3P(ire, ==, fixed->vxnf_ire);
+
+	if (IRE_IS_CONDEMNED(ire) || vnet == NULL)
+		goto detach_ire_and_bail;
+
+	/*
+	 * So we're here, and since we have a refheld IRE, we have a refheld
+	 * fixed and vnet. Do some of what ip_input_local_v4() does (inbound
+	 * checksum?  some ira checks?), but otherwise, swap the destination
+	 * address as mapped in "fixed", recompute any checksums, and send it
+	 * along its merry way (with a ttl decement too) to a VXLAN
+	 * destination.
+	 */
+	/* XXX KEBE SAYS FILL ME IN, but for now... */
+	freemsg(mp);
+	return;
+
+detach_ire_and_bail:
+	/* Oh no, something's condemned.  Drop the IRE now. */
+	ire->ire_recvfn = ire_recv_local_v4;
+	ire->ire_dep_sib_next = NULL;
+	VXNF_REFRELE(fixed);
+	/* Pass the packet back... */
+	ire_recv_local_v4(ire, mp, iph_arg, ira);
+	return;
 }
 
 /*
@@ -329,6 +401,8 @@ vxlnat_fixed_ip(vxn_msg_t *vxnm)
 	uint32_t vnetid;
 	avl_index_t where;
 	int rc;
+	ire_t *ire;
+	ip_stack_t *ipst;
 
 	/* XXX KEBE SAYS FILL ME IN. */
 	ASSERT(MUTEX_HELD(&vxlnat_mutex));
@@ -357,16 +431,65 @@ vxlnat_fixed_ip(vxn_msg_t *vxnm)
 	 * XXX KEBE SAYS we likely need to do some ip/netstack magic at this
 	 * point, but I'm not sure what that is.  It WILL, however, go here.
 	 */
+	ipst = vxlnat_netstack->netstack_ip;
+	ire = IN6_IS_ADDR_V4MAPPED(&fixed->vxnf_pubaddr) ?
+	    ire_ftable_lookup_simple_v4(fixed->vxnf_pubaddr._S6_un._S6_u32[3],
+	    0, ipst, NULL) :
+	    ire_ftable_lookup_simple_v6(&fixed->vxnf_pubaddr, 0, ipst, NULL);
+
+	if (ire == NULL) {
+		/*
+		 * Can't find a local IRE. For now, return.
+		 * XXX KEBE ASKS --> Do we instead put a new entry in
+		 * there?  Or do we count on zone/netstack configuration
+		 * to make sure the requested external address is there?!
+		 */
+		kmem_free(fixed, sizeof (*fixed));
+		rc = EADDRNOTAVAIL;
+		goto fail;
+	}
+
+	/*
+	 * Check the IRE for appropriate properties.
+	 *
+	 * This may change as we implement, but for now, we MUST have an ipif
+	 * (local address) for the public IP.  This can/should be on the
+	 * public NIC OR on a me-only etherstub to enable instantiating
+	 * redundant version of vxlnat on other netstacks on other
+	 * {zones,machines} without triggering DAD.
+	 */
+	if (ire->ire_type != IRE_LOCAL) {
+		ire_refrele(ire);
+		kmem_free(fixed, sizeof (*fixed));
+		rc = EADDRNOTAVAIL;	/* XXX KEBE ASKS different errno? */
+		goto fail;
+	}
 
 	/* Put the 1-1 mapping in place. */
 	rw_enter(&vnet->vxnv_fixed_lock, RW_WRITER);
 	if (avl_find(&vnet->vxnv_fixed_ips, fixed, &where) != NULL) {
 		/* Oh crap, we have an internal IP mapped already. */
+		ire_refrele(ire);
 		kmem_free(fixed, sizeof (*fixed));
 		rc = EEXIST;
 	} else {
 		avl_insert(&vnet->vxnv_fixed_ips, fixed, where);
 		rc = 0;
+		/*
+		 * CHEESY USE OF POINTERS WARNING: I'm going to use
+		 * ire_dep_children for this IRE_LOCAL as a backpointer to
+		 * this 'fixed'.  This'll allow rapid packet processing.
+		 * Inspection seems to indicate that IRE_LOCAL ires NEVER use
+		 * the ire_dep* pointers, so we'll use one (and independent of
+		 * ip_stack_t's ips_ire_dep_lock as well).  If I'm wrong,
+		 * fix it here and add a new pointer in ip.h for ire_t.
+		 */
+		ire->ire_dep_sib_next = (ire_t *)fixed;
+		/* and then rewire the ire receive function. */
+		ire->ire_recvfn = (ire->ire_ipversion == IPV4_VERSION) ?
+		    vxlnat_fixed_ire_recv_v4 : vxlnat_fixed_ire_recv_v6;
+		VXNF_REFHOLD(fixed);	/* ire holds us too... */
+		fixed->vxnf_ire = ire;
 	}
 	rw_exit(&vnet->vxnv_fixed_lock);
 

@@ -28,7 +28,7 @@ LINT_TARGET	= $(MODULE).lint
 INSTALL_TARGET	= $(BINARY) $(ROOTMODULE) $(ROOT_CONFFILE)
 
 # XXX KEBE ASKS - make overlay/vxlan a hard dependency long-term?
-LDFLAGS += -dy -Nmisc/ksocket -Noverlay/vxlan
+LDFLAGS += -dy -Nmisc/ksocket -Noverlay/vxlan -Ndrv/ip
 
 .KEEP_STATE:
 

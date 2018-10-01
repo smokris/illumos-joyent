@@ -17,6 +17,9 @@
 #define	_INET_VXLNAT_IMPL_H
 
 #include <inet/vxlnat.h>
+#include <inet/ip.h>
+#include <inet/ip_ire.h>
+#include <sys/clock_impl.h>
 #include <sys/avl.h>
 #include <sys/uio.h>
 #include <sys/list.h>
@@ -72,6 +75,7 @@ typedef struct vxlnat_fixed_s {
 	in6_addr_t vxnf_addr;	/* XXX KEBE ASKS - must it match to a rule? */
 	in6_addr_t vxnf_pubaddr; /* External IP. */
 	struct vxlnat_vnet_s *vxnf_vnet;
+	ire_t *vxnf_ire;	/* Should be a local IRE from the ftable. */
 	uint32_t vxnf_refcount;
 } vxlnat_fixed_t;
 #define	VXNF_REFHOLD(vxnf) {			\
