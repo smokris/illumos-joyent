@@ -184,18 +184,18 @@ extern void vxlnat_vnet_free(vxlnat_vnet_t *);
  * XXX KEBE ASKS ==> If not confusing to folks, move into sys/vxlan.h and
  * have overlay's VXLAN encap adopt them?
  */
-#ifdef LITTLE_ENDIAN
-#define	VXLAN_ID_WIRE32(id) ((id) & 0xFFFFFF)
-#define	VXLAN_F_VDI_WIRE 0x08
-#define	VXLAN_ID_HTON(id) htonl((id) << VXLAN_ID_SHIFT)
-#define	VXLAN_ID_NTOH(id) (ntohl(id) >> VXLAN_ID_SHIFT)
-#else	/* i.e. not-LITTLE_ENDIAN */
+#ifdef _BIG_ENDIAN
 #define	VXLAN_ID_WIRE32(id) ((id) & 0xFFFFFF00)
 #define	VXLAN_F_VDI_WIRE VXLAN_F_VDI
 /* XXX KEBE ASKS, do masking here? */
 #define	VXLAN_ID_HTON(id) ((id) << VXLAN_ID_SHIFT)
 #define	VXLAN_ID_NTOH(id) ((id) >> VXLAN_ID_SHIFT)
-#endif	/* LITTLE_ENDIAN */
+#else	/* i.e. _LITTLE_ENDIAN */
+#define	VXLAN_ID_WIRE32(id) ((id) & 0xFFFFFF)
+#define	VXLAN_F_VDI_WIRE 0x08
+#define	VXLAN_ID_HTON(id) htonl((id) << VXLAN_ID_SHIFT)
+#define	VXLAN_ID_NTOH(id) (ntohl(id) >> VXLAN_ID_SHIFT)
+#endif	/* _BIG_ENDIAN */
 #define	VXLAN_FLAGS_WIRE32(flags) ((flags) & VXLAN_F_VDI_WIRE)
 
 extern kmutex_t vxlnat_mutex;
