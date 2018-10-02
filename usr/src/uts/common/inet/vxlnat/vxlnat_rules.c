@@ -326,68 +326,16 @@ vxlnat_fixed_unlink(vxlnat_fixed_t *fixed)
 		ire_refrele(ire);
 	}
 
+	/* And the remote, if it's there. */
+	if (fixed->vxnf_remote != NULL) {
+		VXNREM_REFRELE(fixed->vxnf_remote);
+		fixed->vxnf_remote = NULL;
+	}
+
 	avl_remove(&vnet->vxnv_fixed_ips, fixed);
 	fixed->vxnf_vnet = NULL; /* This condemns this 1-1 mapping. */
 	VXNV_REFRELE(vnet);
 	VXNF_REFRELE(fixed);
-}
-
-/*
- * New ire_recvfn implementations if we're doing 1-1 mappings.
- */
-static void
-vxlnat_fixed_ire_recv_v6(ire_t *ire, mblk_t *mp, void *iph_arg,
-    ip_recv_attr_t *ira)
-{
-	/* XXX KEBE SAYS FILL ME IN, but for now... */
-	freemsg(mp);
-}
-
-static void
-vxlnat_fixed_ire_recv_v4(ire_t *ire, mblk_t *mp, void *iph_arg,
-    ip_recv_attr_t *ira)
-{
-	vxlnat_fixed_t *fixed;
-	vxlnat_vnet_t *vnet;
-	/* ip_stack_t *ipst; */
-
-	/* Make a note for DAD that this address is in use */
-	ire->ire_last_used_time = LBOLT_FASTPATH;
-
-	/* Only target the IRE_LOCAL with the right zoneid. */
-	ira->ira_zoneid = ire->ire_zoneid;
-
-	/*
-	 * Reality check some things.
-	 */
-	fixed = (vxlnat_fixed_t *)ire->ire_dep_sib_next;
-	vnet = fixed->vxnf_vnet;
-
-	ASSERT3P(ire, ==, fixed->vxnf_ire);
-
-	if (IRE_IS_CONDEMNED(ire) || vnet == NULL)
-		goto detach_ire_and_bail;
-
-	/*
-	 * So we're here, and since we have a refheld IRE, we have a refheld
-	 * fixed and vnet. Do some of what ip_input_local_v4() does (inbound
-	 * checksum?  some ira checks?), but otherwise, swap the destination
-	 * address as mapped in "fixed", recompute any checksums, and send it
-	 * along its merry way (with a ttl decement too) to a VXLAN
-	 * destination.
-	 */
-	/* XXX KEBE SAYS FILL ME IN, but for now... */
-	freemsg(mp);
-	return;
-
-detach_ire_and_bail:
-	/* Oh no, something's condemned.  Drop the IRE now. */
-	ire->ire_recvfn = ire_recv_local_v4;
-	ire->ire_dep_sib_next = NULL;
-	VXNF_REFRELE(fixed);
-	/* Pass the packet back... */
-	ire_recv_local_v4(ire, mp, iph_arg, ira);
-	return;
 }
 
 /*
@@ -419,7 +367,7 @@ vxlnat_fixed_ip(vxn_msg_t *vxnm)
 		goto fail;
 	}
 
-	fixed = kmem_alloc(sizeof (*fixed), KM_SLEEP);
+	fixed = kmem_zalloc(sizeof (*fixed), KM_SLEEP);
 	/* KM_SLEEP means non-NULL guaranteed. */
 	fixed->vxnf_vnet = vnet; /* vnet already refheld, remember? */
 	/* XXX KEBE ASKS, check the vxnm more carefully? */
@@ -428,8 +376,7 @@ vxlnat_fixed_ip(vxn_msg_t *vxnm)
 	fixed->vxnf_refcount = 1;	/* Internment reference. */
 
 	/*
-	 * XXX KEBE SAYS we likely need to do some ip/netstack magic at this
-	 * point, but I'm not sure what that is.  It WILL, however, go here.
+	 * Find a local-address IRE for the public address.
 	 */
 	ipst = vxlnat_netstack->netstack_ip;
 	ire = IN6_IS_ADDR_V4MAPPED(&fixed->vxnf_pubaddr) ?
@@ -454,9 +401,9 @@ vxlnat_fixed_ip(vxn_msg_t *vxnm)
 	 *
 	 * This may change as we implement, but for now, we MUST have an ipif
 	 * (local address) for the public IP.  This can/should be on the
-	 * public NIC OR on a me-only etherstub to enable instantiating
-	 * redundant version of vxlnat on other netstacks on other
-	 * {zones,machines} without triggering DAD.
+	 * public NIC OR on a my-netstack-only etherstub to enable
+	 * instantiating redundant versions of vxlnat on other netstacks on
+	 * other {zones,machines} without triggering DAD.
 	 */
 	if (ire->ire_type != IRE_LOCAL) {
 		ire_refrele(ire);

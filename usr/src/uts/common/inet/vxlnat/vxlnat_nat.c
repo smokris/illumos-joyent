@@ -39,6 +39,8 @@
 #include <netinet/udp.h>
 #include <inet/ip.h>
 #include <inet/ip6.h>
+#include <inet/udp_impl.h>
+#include <inet/tcp.h>
 
 #include <inet/vxlnat_impl.h>
 
@@ -121,7 +123,7 @@ vxlnat_vxlan_addr(in6_addr_t *underlay_ip)
 /*
  * Free a remote VXLAN destination.
  */
-static void
+void
 vxlnat_remote_free(vxlnat_remote_t *remote)
 {
 	ASSERT0(remote->vxnrem_refcount);
@@ -195,7 +197,7 @@ vxlnat_get_remote(vxlnat_vnet_t *vnet, in6_addr_t *remote_addr,
  * stripped down to its IP header.
  */
 static mblk_t *
-vxlnat_cache_remote(mblk_t *mp, struct sockaddr_in *underlay_src,
+vxlnat_cache_remote(mblk_t *mp, struct sockaddr_in6 *underlay_src,
     vxlnat_vnet_t *vnet)
 {
 	struct ether_vlan_header *evh;
@@ -292,9 +294,10 @@ vxlnat_cache_remote(mblk_t *mp, struct sockaddr_in *underlay_src,
 		 * Replace the underlay? NOTE: Fix if/when underlay becomes
 		 * IPv6.
 		 */
-		IN6_INADDR_TO_V4MAPPED(&underlay_src->sin_addr, &remote_addr);
-		if (!IN6_ARE_ADDR_EQUAL(&remote->vxnrem_uaddr, &remote_addr))
+		if (!IN6_ARE_ADDR_EQUAL(&remote->vxnrem_uaddr,
+		    &underlay_src->sin6_addr)) {
 			remote->vxnrem_uaddr = remote_addr;
+		}
 		/* Replace the vlan ID. Maintain network order... */
 		if (remote->vxnrem_vlan != vlan)
 			remote->vxnrem_vlan = vlan;
@@ -316,7 +319,7 @@ vxlnat_cache_remote(mblk_t *mp, struct sockaddr_in *underlay_src,
  * Process exactly one VXLAN packet.
  */
 static void
-vxlnat_one_vxlan(mblk_t *mp, struct sockaddr_in *underlay_src)
+vxlnat_one_vxlan(mblk_t *mp, struct sockaddr_in6 *underlay_src)
 {
 	vxlan_hdr_t *vxh;
 	vxlnat_vnet_t *vnet;
@@ -427,7 +430,7 @@ vxlnat_vxlan_input(ksocket_t insock, mblk_t *chain, size_t msgsize, int oob,
 
 	for (mp = chain; mp != NULL; mp = nextmp) {
 		struct T_unitdata_ind *tudi;
-		struct sockaddr_in *sin;
+		struct sockaddr_in6 *sin6;
 
 		nextmp = mp->b_next;
 		if (DB_TYPE(mp) != M_PROTO || mp->b_cont == NULL) {
@@ -444,13 +447,229 @@ vxlnat_vxlan_input(ksocket_t insock, mblk_t *chain, size_t msgsize, int oob,
 			continue;
 		}
 		/* LINTED -- aligned */
-		sin = (struct sockaddr_in *)(mp->b_rptr + tudi->SRC_offset);
-		VERIFY(sin->sin_family == AF_INET);
-		VERIFY(tudi->SRC_length >= sizeof (*sin));
+		sin6 = (struct sockaddr_in6 *)(mp->b_rptr + tudi->SRC_offset);
+		VERIFY(sin6->sin6_family == AF_INET6);
+		VERIFY(tudi->SRC_length >= sizeof (*sin6));
 
-		vxlnat_one_vxlan(mp->b_cont, sin);
+		vxlnat_one_vxlan(mp->b_cont, sin6);
 		freeb(mp);
 	}
 
 	return (B_TRUE);
+}
+
+/*
+ * Use RFC 1624's techniques:
+ *
+ * newsum == ~(~oldsum + (~new16a + old16a + ~new16b + old16b...))
+ *
+ * NOTE: All args here must be idempotent, no operators beyond pointers, please.
+ */
+#define V4_ADDRCHANGE_SUM(oldsum, newsum, old_addr, new_addr)	\
+	(newsum) = ~(ntohs(oldsum)) & 0xffff; \
+	(newsum) += (~(ntohs(new_addr & 0xffff)) + ntohs(old_addr & 0xffff)); \
+	(newsum) = ((newsum) + ((newsum) >> 16)) & 0xffff; \
+	(newsum) += (~(htons((new_addr >> 16) & 0xffff)) + \
+	    (ntohs(old_addr >> 16) & 0xffff)); \
+	(newsum) = ((newsum) + ((newsum) >> 16)) & 0xffff; \
+	(oldsum) = htons(newsum);
+
+/*
+ * Take a 1-1/fixed IPv4 packet and convert it for transmission out the
+ * appropriate end. "to_private" is what it says on the tin.
+ */
+static mblk_t *
+vxlnat_fixed_fixv4(mblk_t *mp, vxlnat_fixed_t *fixed, boolean_t to_private)
+{
+	ipaddr_t new_one, old_one;
+	ipaddr_t *new_ones_place;
+	ipha_t *ipha = (ipha_t *)mp->b_rptr;
+	uint32_t csum;
+	uint8_t *nexthdr, *end_wptr;
+
+	if (to_private) {
+		IN6_V4MAPPED_TO_IPADDR(&fixed->vxnf_addr, new_one);
+		new_ones_place = &ipha->ipha_dst;
+	} else {
+		IN6_V4MAPPED_TO_IPADDR(&fixed->vxnf_pubaddr, new_one);
+		new_ones_place = &ipha->ipha_src;
+	}
+
+	old_one = *new_ones_place;
+	*new_ones_place = new_one;
+
+	/*
+	 * Recompute the IP header checksum, and check for the TCP or UDP
+	 * checksum as well, as they'll need recomputing as well.
+	 */
+
+	/* First, the IPv4 header itself. */
+	V4_ADDRCHANGE_SUM(ipha->ipha_hdr_checksum, csum, old_one, new_one);
+
+	nexthdr = (uint8_t *)ipha + IPH_HDR_LENGTH(ipha);
+	if (nexthdr >= mp->b_wptr) {
+		nexthdr = mp->b_cont->b_rptr +
+		    (MBLKL(mp) - IPH_HDR_LENGTH(ipha));
+		end_wptr = mp->b_cont->b_wptr;
+	} else {
+		end_wptr = mp->b_wptr;
+	}
+
+	if (ipha->ipha_protocol == IPPROTO_TCP) {
+		tcpha_t *tcph = (tcpha_t *)nexthdr;
+
+		if ((uint8_t *)(tcph + 1) > end_wptr) {
+			/* Bail for now. */
+			DTRACE_PROBE1(vxlnat__fix__tcp__mblkspan, mblk_t *,
+			    mp);
+			freemsg(mp);
+			return (NULL);
+		}
+		V4_ADDRCHANGE_SUM(tcph->tha_sum, csum, old_one, new_one);
+	} else if (ipha->ipha_protocol == IPPROTO_UDP) {
+		udpha_t *udph = (udpha_t *)nexthdr;
+
+		if ((uint8_t *)(udph + 1) > end_wptr) {
+			/* Bail for now. */
+			DTRACE_PROBE1(vxlnat__fix__udp__mblkspan, mblk_t *,
+			    mp);
+			freemsg(mp);
+			return (NULL);
+		}
+		V4_ADDRCHANGE_SUM(udph->uha_checksum, csum, old_one, new_one);
+	}
+	/* Otherwise we can't make any other assumptions for now... */
+
+	return (mp);
+}
+
+vxlnat_remote_t *
+vxlnat_xmit_vxlanv4(mblk_t *mp, vxlnat_remote_t *remote, vxlnat_vnet_t *vnet)
+{
+	struct sockaddr_in6 sin6;
+	struct msghdr msghdr;
+	mblk_t *vlan_mp;
+	extern uint_t vxlan_alloc_size, vxlan_noalloc_min;
+	vxlan_hdr_t *vxh;
+	int rc;
+
+	if (remote == NULL || remote->vxnrem_vnet == NULL) {
+		/*
+		 * We need to do the moral equivalent of PF_KEY ACQUIRE or
+		 * overlay's queue-resolve so that we can have someone in
+		 * user-space send me a remote.  Until then, drop the
+		 * reference if condemned, free the message, and return NULL.
+		 */
+		DTRACE_PROBE1(vxlnat__xmit__vxlanv4, vxlnat_remote_t *, remote);
+		if (remote != NULL)
+			VXNREM_REFRELE(remote);
+		freemsg(mp);
+		return (NULL);
+	}
+	ASSERT(vnet == remote->vxnrem_vnet);
+
+	if (DB_REF(mp) > 1 || mp->b_rptr - vxlan_noalloc_min < DB_BASE(mp)) {
+		vlan_mp = allocb(vxlan_alloc_size, BPRI_HI);
+		if (vlan_mp == NULL) {
+			DTRACE_PROBE1(vxlnat__xmit__vxlanv4__allocfail,
+			    vxlnat_remote_t *, remote);
+			freemsg(mp);
+			/* Just drop the packet, but don't tell caller. */
+			return (remote);
+		}
+		vlan_mp->b_wptr = DB_LIM(vlan_mp);
+		vlan_mp->b_rptr = vlan_mp->b_wptr;
+		vlan_mp->b_cont = mp;
+	} else {
+		vlan_mp = mp;
+	}
+	vlan_mp->b_rptr -= VXLAN_HDR_LEN;
+	vxh = (vxlan_hdr_t *)vlan_mp->b_rptr;
+	vxh->vxlan_flags = VXLAN_F_VDI_WIRE;
+	vxh->vxlan_id = vnet->vxnv_vnetid;	/* Already in wire-order. */
+
+	msghdr.msg_name = (struct sockaddr_storage *)&sin6;
+	msghdr.msg_namelen = sizeof (sin6);
+	sin6.sin6_family = AF_INET6;
+	sin6.sin6_port = htons(IPPORT_VXLAN);
+	sin6.sin6_addr = remote->vxnrem_uaddr;
+	
+	rc = ksocket_sendmblk(vxlnat_underlay, &msghdr, 0, &mp, zone_kcred());
+	if (rc != 0) {
+		DTRACE_PROBE2(vxlnat__xmit__vxlan4__sendfail, int, rc,
+		    vxlnat_remote_t *, remote);
+		freemsg(mp);
+	}
+	return (remote);
+}
+
+/*
+ * New ire_recvfn implementations if we're doing 1-1 mappings.
+ */
+void
+vxlnat_fixed_ire_recv_v6(ire_t *ire, mblk_t *mp, void *iph_arg,
+    ip_recv_attr_t *ira)
+{
+	/* XXX KEBE SAYS FILL ME IN, but for now... */
+	freemsg(mp);
+}
+
+void
+vxlnat_fixed_ire_recv_v4(ire_t *ire, mblk_t *mp, void *iph_arg,
+    ip_recv_attr_t *ira)
+{
+	vxlnat_fixed_t *fixed;
+	vxlnat_vnet_t *vnet;
+	/* ip_stack_t *ipst; */
+
+	/* Make a note for DAD that this address is in use */
+	ire->ire_last_used_time = LBOLT_FASTPATH;
+
+	/* Only target the IRE_LOCAL with the right zoneid. */
+	ira->ira_zoneid = ire->ire_zoneid;
+
+	/*
+	 * Reality check some things.
+	 */
+	fixed = (vxlnat_fixed_t *)ire->ire_dep_sib_next;
+	vnet = fixed->vxnf_vnet;
+
+	ASSERT3P(ire, ==, fixed->vxnf_ire);
+
+	if (IRE_IS_CONDEMNED(ire) || vnet == NULL)
+		goto detach_ire_and_bail;
+
+	/*
+	 * So we're here, and since we have a refheld IRE, we have a refheld
+	 * fixed and vnet. Do some of what ip_input_local_v4() does (inbound
+	 * checksum?  some ira checks?), but otherwise, swap the destination
+	 * address as mapped in "fixed", recompute any checksums, and send it
+	 * along its merry way (with a ttl decement too) to a VXLAN
+	 * destination.
+	 */
+	mp = vxlnat_fixed_fixv4(mp, fixed, B_TRUE);
+	if (mp == NULL)
+		return; /* Assume it's been freed & dtraced already. */
+
+	/*
+	 * Otherwise, we're ready to transmit this packet over the vxlan
+	 * socket.
+	 */
+	fixed->vxnf_remote = vxlnat_xmit_vxlanv4(mp, fixed->vxnf_remote, vnet);
+	if (fixed->vxnf_remote == NULL) {
+		/* XXX KEBE ASKS, DTrace probe here?  Or in-function? */
+		DTRACE_PROBE2(vxlnat__fixed__xmitdrop,
+		    in6_addr_t *, &fixed->vxnf_addr,
+		    uint32_t, VXLAN_ID_NTOH(vnet->vxnv_vnetid));
+	}
+	return;
+
+detach_ire_and_bail:
+	/* Oh no, something's condemned.  Drop the IRE now. */
+	ire->ire_recvfn = ire_recv_local_v4;
+	ire->ire_dep_sib_next = NULL;
+	VXNF_REFRELE(fixed);
+	/* Pass the packet back... */
+	ire_recv_local_v4(ire, mp, iph_arg, ira);
+	return;
 }

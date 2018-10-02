@@ -76,6 +76,7 @@ typedef struct vxlnat_fixed_s {
 	in6_addr_t vxnf_pubaddr; /* External IP. */
 	struct vxlnat_vnet_s *vxnf_vnet;
 	ire_t *vxnf_ire;	/* Should be a local IRE from the ftable. */
+	struct vxlnat_remote_s *vxnf_remote;
 	uint32_t vxnf_refcount;
 } vxlnat_fixed_t;
 #define	VXNF_REFHOLD(vxnf) {			\
@@ -117,6 +118,7 @@ typedef struct vxlnat_remote_s {
 	if (atomic_dec_32_nv(&(vxnrem)->vxnrem_refcount) == 0)	\
 		vxlnat_remote_free(vxnrem);			\
 }
+extern void vxlnat_remote_free(vxlnat_remote_t *);
 
 /*
  * per-vnetid overarching structure.  AVL tree keyed by vnetid.
@@ -211,6 +213,13 @@ extern boolean_t vxlnat_public_hold(in6_addr_t *, boolean_t);
 extern void vxlnat_public_rele(in6_addr_t *);
 
 extern int vxlnat_tree_plus_in6_cmp(const void *, const void *);
+
+/* ire_recvfn functions for 1-1/fixed maps. */
+extern void vxlnat_fixed_ire_recv_v4(ire_t *, mblk_t *, void *,
+    ip_recv_attr_t *);
+extern void vxlnat_fixed_ire_recv_v6(ire_t *, mblk_t *, void *,
+    ip_recv_attr_t *);
+
 
 extern vxlnat_vnet_t *vxlnat_get_vnet(uint32_t, boolean_t);
 
