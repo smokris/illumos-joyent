@@ -118,15 +118,18 @@ vxlnat_get_vnet(uint32_t vnetid, boolean_t create_on_miss)
 		rw_init(&vnet->vxnv_fixed_lock, NULL, RW_DRIVER, NULL);
 		avl_create(&vnet->vxnv_fixed_ips, vxlnat_tree_plus_in6_cmp,
 		    sizeof (vxlnat_fixed_t), 0);
-		/* NAT mutex is zeroed-out. */
+		/* Initialize NAT rules.  (NAT mutex is zeroed-out.) */
 		list_create(&vnet->vxnv_rules, sizeof (vxlnat_rule_t), 0);
 #ifdef notyet
 		/* XXX KEBE SAYS INITIALIZE NAT flows... */
-		/* XXX KEBE SAYS INITIALIZE remotes... */
-		rw_init(&vnet->vxnv_remote_lock, NULL, RW_DRIVER, NULL);
-		avl_create(&vnet->vxnv_remotes, vxlnat_remote_cmp,
-		    sizeof (vxlnat_remote_t), 0);
 #endif /* notyet */
+		/*
+		 * Initialize remote VXLAN destination cache.
+		 * (remotes mutex is zeroed-out.)
+		 */
+		avl_create(&vnet->vxnv_remotes, vxlnat_tree_plus_in6_cmp,
+		    sizeof (vxlnat_remote_t), 0);
+
 		avl_insert(&vxlnat_vnets, vnet, where);
 	}
 	if (vnet != NULL)
