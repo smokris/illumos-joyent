@@ -45,6 +45,8 @@
 #include <inet/vxlnat_impl.h>
 
 static boolean_t vxlnat_vxlan_input(ksocket_t, mblk_t *, size_t, int, void *);
+static mblk_t *vxlnat_fixed_fixv4(mblk_t *mp, vxlnat_fixed_t *fixed,
+    boolean_t to_private);
 
 /*
  * Initialized to NULL, read/write protected by vxlnat_mutex.
@@ -397,8 +399,43 @@ vxlnat_one_vxlan(mblk_t *mp, struct sockaddr_in6 *underlay_src)
 		VXNF_REFHOLD(fixed);
 	rw_exit(&vnet->vxnv_fixed_lock);
 	if (fixed != NULL) {
+		mblk_t *newmp = NULL;
 		/* XXX KEBE SAYS -- FILL ME IN... but for now: */
-		freemsg(mp);
+		if (ipha != NULL)
+			newmp = vxlnat_fixed_fixv4(mp, fixed, B_FALSE);
+
+		/* XXX handle ip6h */
+
+		if (newmp != NULL) {
+			cred_t *zcred;
+			ip_xmit_attr_t ixa;
+			int ret;
+
+			ASSERT(ipha != NULL);
+
+			zcred = zone_kcred();
+			bzero(&ixa, sizeof (ixa));
+
+			/* XXX hash dstaddr to an ixa_xmit_hint value */
+			ixa.ixa_flags = IXAF_BASIC_SIMPLE_V4;
+			ixa.ixa_zoneid = crgetzoneid(zcred);
+			ixa.ixa_cred = zcred;
+			ixa.ixa_cpid = NOPID;
+			ixa.ixa_ipst = vxlnat_netstack->netstack_ip;
+			ixa.ixa_ifindex = 0;
+			ixa.ixa_tsl = NULL;
+
+			ret = ip_output_simple_v4(newmp, &ixa);
+			if (ret != 0)
+				freemsg(newmp);
+
+			/*
+			 * be safe and call cleanup in case IPSEC is ever used.
+			 */
+			ixa_cleanup(&ixa);
+		} else {
+			freemsg(mp);
+		}
 
 		/* All done... */
 		VXNF_REFRELE(fixed);
