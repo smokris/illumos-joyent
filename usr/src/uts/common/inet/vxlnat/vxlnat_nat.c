@@ -551,6 +551,7 @@ vxlnat_xmit_vxlanv4(mblk_t *mp, vxlnat_remote_t *remote, vxlnat_vnet_t *vnet)
 	mblk_t *vlan_mp;
 	extern uint_t vxlan_alloc_size, vxlan_noalloc_min;
 	vxlan_hdr_t *vxh;
+	struct ether_vlan_header *evh;
 	int rc;
 
 	if (remote == NULL || remote->vxnrem_vnet == NULL) {
@@ -583,10 +584,27 @@ vxlnat_xmit_vxlanv4(mblk_t *mp, vxlnat_remote_t *remote, vxlnat_vnet_t *vnet)
 	} else {
 		vlan_mp = mp;
 	}
-	vlan_mp->b_rptr -= VXLAN_HDR_LEN;
+	vlan_mp->b_rptr -= sizeof (*vxh) + sizeof (*evh);
 	vxh = (vxlan_hdr_t *)vlan_mp->b_rptr;
 	vxh->vxlan_flags = VXLAN_F_VDI_WIRE;
 	vxh->vxlan_id = vnet->vxnv_vnetid;	/* Already in wire-order. */
+
+	/* XXX KEBE SAYS FILL IN ETHERNET HEADER XXX */
+	evh = (struct ether_vlan_header *)(vxh + 1);
+	ether_copy(&remote->vxnrem_ether, &evh->ether_dhost);
+	/*
+	 * XXX KEBE SAYS OH HELL, we need "my entry's" etherenet, which only
+	 * exists for nat rules at the moment.  Wing it for now.
+	 */
+	evh->ether_shost.ether_addr_octet[0] = 0x1;
+	evh->ether_shost.ether_addr_octet[1] = 0x2;
+	evh->ether_shost.ether_addr_octet[2] = 0x3;
+	evh->ether_shost.ether_addr_octet[3] = 0x4;
+	evh->ether_shost.ether_addr_octet[4] = 0x5;
+	evh->ether_shost.ether_addr_octet[5] = 0x6;
+	evh->ether_tpid = htons(ETHERTYPE_VLAN);
+	evh->ether_tci = remote->vxnrem_vlan;
+	evh->ether_type = htons(ETHERTYPE_IP);
 
 	msghdr.msg_name = (struct sockaddr_storage *)&sin6;
 	msghdr.msg_namelen = sizeof (sin6);
