@@ -296,7 +296,7 @@ vxlnat_cache_remote(mblk_t *mp, struct sockaddr_in6 *underlay_src,
 		 */
 		if (!IN6_ARE_ADDR_EQUAL(&remote->vxnrem_uaddr,
 		    &underlay_src->sin6_addr)) {
-			remote->vxnrem_uaddr = remote_addr;
+			remote->vxnrem_uaddr = underlay_src->sin6_addr;
 		}
 		/* Replace the vlan ID. Maintain network order... */
 		if (remote->vxnrem_vlan != vlan)
