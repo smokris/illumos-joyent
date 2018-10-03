@@ -544,7 +544,8 @@ vxlnat_fixed_fixv4(mblk_t *mp, vxlnat_fixed_t *fixed, boolean_t to_private)
 }
 
 vxlnat_remote_t *
-vxlnat_xmit_vxlanv4(mblk_t *mp, vxlnat_remote_t *remote, vxlnat_vnet_t *vnet)
+vxlnat_xmit_vxlanv4(mblk_t *mp, in6_addr_t *overlay_dst,
+    vxlnat_remote_t *remote, vxlnat_vnet_t *vnet)
 {
 	struct sockaddr_in6 sin6;
 	struct msghdr msghdr;
@@ -555,17 +556,26 @@ vxlnat_xmit_vxlanv4(mblk_t *mp, vxlnat_remote_t *remote, vxlnat_vnet_t *vnet)
 	int rc;
 
 	if (remote == NULL || remote->vxnrem_vnet == NULL) {
-		/*
-		 * We need to do the moral equivalent of PF_KEY ACQUIRE or
-		 * overlay's queue-resolve so that we can have someone in
-		 * user-space send me a remote.  Until then, drop the
-		 * reference if condemned, free the message, and return NULL.
-		 */
 		DTRACE_PROBE1(vxlnat__xmit__vxlanv4, vxlnat_remote_t *, remote);
+		/* Release the condemned remote. */
 		if (remote != NULL)
 			VXNREM_REFRELE(remote);
-		freemsg(mp);
-		return (NULL);
+
+		/* See if we have a remote ready to use... */
+		remote = vxlnat_get_remote(vnet, overlay_dst, B_FALSE);
+
+		if (remote == NULL) {
+			/*
+			 * We need to do the moral equivalent of PF_KEY
+			 * ACQUIRE or overlay's queue-resolve so that we can
+			 * have someone in user-space send me a remote.  Until
+			 * then, drop the reference if condemned, free the
+			 * message, and return NULL.
+			 */
+
+			freemsg(mp);
+			return (NULL);
+		}
 	}
 	ASSERT(vnet == remote->vxnrem_vnet);
 
@@ -673,7 +683,8 @@ vxlnat_fixed_ire_recv_v4(ire_t *ire, mblk_t *mp, void *iph_arg,
 	 * Otherwise, we're ready to transmit this packet over the vxlan
 	 * socket.
 	 */
-	fixed->vxnf_remote = vxlnat_xmit_vxlanv4(mp, fixed->vxnf_remote, vnet);
+	fixed->vxnf_remote = vxlnat_xmit_vxlanv4(mp, &fixed->vxnf_addr,
+	    fixed->vxnf_remote, vnet);
 	if (fixed->vxnf_remote == NULL) {
 		/* XXX KEBE ASKS, DTrace probe here?  Or in-function? */
 		DTRACE_PROBE2(vxlnat__fixed__xmitdrop,
