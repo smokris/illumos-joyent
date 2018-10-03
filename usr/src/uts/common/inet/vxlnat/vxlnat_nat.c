@@ -547,13 +547,14 @@ vxlnat_remote_t *
 vxlnat_xmit_vxlanv4(mblk_t *mp, in6_addr_t *overlay_dst,
     vxlnat_remote_t *remote, vxlnat_vnet_t *vnet)
 {
-	struct sockaddr_in6 sin6;
-	struct msghdr msghdr;
+	struct sockaddr_in6 sin6 = {AF_INET6};
+	struct msghdr msghdr = {NULL};
 	mblk_t *vlan_mp;
 	extern uint_t vxlan_alloc_size, vxlan_noalloc_min;
 	vxlan_hdr_t *vxh;
 	struct ether_vlan_header *evh;
 	int rc;
+	cred_t *cred;
 
 	if (remote == NULL || remote->vxnrem_vnet == NULL) {
 		DTRACE_PROBE1(vxlnat__xmit__vxlanv4, vxlnat_remote_t *, remote);
@@ -618,15 +619,31 @@ vxlnat_xmit_vxlanv4(mblk_t *mp, in6_addr_t *overlay_dst,
 
 	msghdr.msg_name = (struct sockaddr_storage *)&sin6;
 	msghdr.msg_namelen = sizeof (sin6);
-	sin6.sin6_family = AF_INET6;
+	/* Address family and other zeroing already done up top. */
 	sin6.sin6_port = htons(IPPORT_VXLAN);
 	sin6.sin6_addr = remote->vxnrem_uaddr;
 	
-	rc = ksocket_sendmblk(vxlnat_underlay, &msghdr, 0, &mp, zone_kcred());
+	/*
+	 * cred_t dance is because we may be getting this straight from
+	 * interrupt context.
+	 */
+	cred = zone_get_kcred(netstack_get_zoneid(vxlnat_netstack));
+	if (cred == NULL) {
+		DTRACE_PROBE1(vxlnat__xmit__vxlan4__credfail, 
+		    vxlnat_remote_t *, remote);
+		freemsg(vlan_mp);
+	}
+	/*
+	 * Use MSG_DONTWAIT to avoid blocks, esp. if we're getting this
+	 * straight from interrupt context.
+	 */
+	rc = ksocket_sendmblk(vxlnat_underlay, &msghdr, MSG_DONTWAIT, &vlan_mp,
+	    cred);
+	crfree(cred);
 	if (rc != 0) {
 		DTRACE_PROBE2(vxlnat__xmit__vxlan4__sendfail, int, rc,
 		    vxlnat_remote_t *, remote);
-		freemsg(mp);
+		freemsg(vlan_mp);
 	}
 	return (remote);
 }
