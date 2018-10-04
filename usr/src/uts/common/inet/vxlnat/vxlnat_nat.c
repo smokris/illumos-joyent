@@ -496,20 +496,32 @@ vxlnat_vxlan_input(ksocket_t insock, mblk_t *chain, size_t msgsize, int oob,
 }
 
 /*
- * Use RFC 1624's techniques:
+ * Use RFC 1141's technique (with a check for -0).
  *
- * newsum == ~(~oldsum + (~new16a + old16a + ~new16b + old16b...))
+ * newsum = oldsum - (new16a + old16a - new16b + old16b ...);
  *
- * NOTE: All args here must be idempotent, no operators beyond pointers, please.
+ * NOTE: "oldsum" is right off the wire in wire-native order.
+ * NOTE2: "old" and "new" ALSO point to things in wire-native order.
+ * NOTE3:  THIS MUST TAKE A MULTIPLE OF 2 BYTES (i.e. uint16_t array).
+ * NOTE4: The 32-bit running sum means we can't take len > 64k.
  */
-#define V4_ADDRCHANGE_SUM(oldsum, newsum, old_addr, new_addr)	\
-	(newsum) = ~(ntohs(oldsum)) & 0xffff; \
-	(newsum) += (~(ntohs(new_addr & 0xffff)) + ntohs(old_addr & 0xffff)); \
-	(newsum) = ((newsum) + ((newsum) >> 16)) & 0xffff; \
-	(newsum) += (~(htons((new_addr >> 16) & 0xffff)) + \
-	    (ntohs(old_addr >> 16) & 0xffff)); \
-	(newsum) = ((newsum) + ((newsum) >> 16)) & 0xffff; \
-	(oldsum) = htons(newsum);
+uint16_t
+vxlnat_cksum_adjust(uint16_t oldsum, uint16_t *old, uint16_t *new, uint_t len)
+{
+	uint32_t newsum = ntohs(oldsum);
+
+	ASSERT((len & 0x1) == 0);
+	while (len != 0) {
+		newsum -= ntohs(*new);
+		newsum += ntohs(*old);
+		len -= 2;
+		old++;
+		new++;
+	}
+	newsum += (newsum >> 16) & 0xffff;
+
+	return (newsum == 0xffff ? 0 : htons(newsum));
+}
 
 /*
  * Take a 1-1/fixed IPv4 packet and convert it for transmission out the
@@ -521,7 +533,6 @@ vxlnat_fixed_fixv4(mblk_t *mp, vxlnat_fixed_t *fixed, boolean_t to_private)
 	ipaddr_t new_one, old_one;
 	ipaddr_t *new_ones_place;
 	ipha_t *ipha = (ipha_t *)mp->b_rptr;
-	uint32_t csum;
 	uint8_t *nexthdr, *end_wptr;
 
 	if (to_private) {
@@ -541,7 +552,8 @@ vxlnat_fixed_fixv4(mblk_t *mp, vxlnat_fixed_t *fixed, boolean_t to_private)
 	 */
 
 	/* First, the IPv4 header itself. */
-	V4_ADDRCHANGE_SUM(ipha->ipha_hdr_checksum, csum, old_one, new_one);
+	ipha->ipha_hdr_checksum = vxlnat_cksum_adjust(ipha->ipha_hdr_checksum,
+	    (uint16_t *)&old_one, (uint16_t *)&new_one, sizeof (ipaddr_t));
 
 	nexthdr = (uint8_t *)ipha + IPH_HDR_LENGTH(ipha);
 	if (nexthdr >= mp->b_wptr) {
@@ -562,7 +574,9 @@ vxlnat_fixed_fixv4(mblk_t *mp, vxlnat_fixed_t *fixed, boolean_t to_private)
 			freemsg(mp);
 			return (NULL);
 		}
-		V4_ADDRCHANGE_SUM(tcph->tha_sum, csum, old_one, new_one);
+		tcph->tha_sum = vxlnat_cksum_adjust(tcph->tha_sum,
+		    (uint16_t *)&old_one, (uint16_t *)&new_one,
+		    sizeof (ipaddr_t));
 	} else if (ipha->ipha_protocol == IPPROTO_UDP) {
 		udpha_t *udph = (udpha_t *)nexthdr;
 
@@ -573,7 +587,9 @@ vxlnat_fixed_fixv4(mblk_t *mp, vxlnat_fixed_t *fixed, boolean_t to_private)
 			freemsg(mp);
 			return (NULL);
 		}
-		V4_ADDRCHANGE_SUM(udph->uha_checksum, csum, old_one, new_one);
+		udph->uha_checksum = vxlnat_cksum_adjust(udph->uha_checksum,
+		    (uint16_t *)&old_one, (uint16_t *)&new_one,
+		    sizeof (ipaddr_t));
 	}
 	/* Otherwise we can't make any other assumptions for now... */
 
