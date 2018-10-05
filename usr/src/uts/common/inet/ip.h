@@ -3321,6 +3321,7 @@ extern int	ip_output_simple_v6(mblk_t *, ip_xmit_attr_t *);
 extern int	ip_output_options(mblk_t *, ipha_t *, ip_xmit_attr_t *,
     ill_t *);
 extern void	ip_output_local_options(ipha_t *, ip_stack_t *);
+extern boolean_t ip_output_sw_cksum_v4(mblk_t *, ipha_t *, ip_xmit_attr_t *);
 
 extern ip_xmit_attr_t *conn_get_ixa(conn_t *, boolean_t);
 extern ip_xmit_attr_t *conn_get_ixa_tryhard(conn_t *, boolean_t);

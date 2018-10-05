@@ -1611,7 +1611,7 @@ ire_send_noroute_v4(ire_t *ire, mblk_t *mp, void *iph_arg,
  * Returns B_FALSE if the packet was too short for the checksum. Caller
  * should free and do stats.
  */
-static boolean_t
+boolean_t
 ip_output_sw_cksum_v4(mblk_t *mp, ipha_t *ipha, ip_xmit_attr_t *ixa)
 {
 	ip_stack_t	*ipst = ixa->ixa_ipst;

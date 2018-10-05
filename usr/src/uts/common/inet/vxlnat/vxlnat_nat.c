@@ -53,11 +53,16 @@ static mblk_t *vxlnat_fixed_fixv4(mblk_t *mp, vxlnat_fixed_t *fixed,
  * Receive functions shouldn't have to access this directly.
  */
 ksocket_t vxlnat_underlay;
+ire_t *vxlnat_underlay_ire;
 
 void
 vxlnat_closesock(void)
 {
 	ASSERT(MUTEX_HELD(&vxlnat_mutex));
+	if (vxlnat_underlay_ire != NULL) {
+		ire_refrele(vxlnat_underlay_ire);
+		vxlnat_underlay_ire = NULL;
+	}
 	if (vxlnat_underlay != NULL) {
 		(void) ksocket_close(vxlnat_underlay, zone_kcred());
 		vxlnat_underlay = NULL;
@@ -70,6 +75,7 @@ vxlnat_opensock(in6_addr_t *underlay_ip)
 	int rc, val;
 	/* Assume rest is initialized to 0s. */
 	struct sockaddr_in6 sin6 = {AF_INET6, BE_16(IPPORT_VXLAN)};
+	ip_stack_t *ipst = vxlnat_netstack->netstack_ip;
 
 	ASSERT(MUTEX_HELD(&vxlnat_mutex));
 	/* Open... */
@@ -94,6 +100,21 @@ vxlnat_opensock(in6_addr_t *underlay_ip)
 	if (rc != 0) {
 		vxlnat_closesock();
 		return (rc);
+	}
+
+	/*
+	 * Grab the IRE for underlay address.
+	 */
+	ASSERT3P(vxlnat_underlay_ire, ==, NULL);
+	vxlnat_underlay_ire = (IN6_IS_ADDR_V4MAPPED(underlay_ip)) ?
+	    ire_ftable_lookup_simple_v4(underlay_ip->_S6_un._S6_u32[3],
+	    0, ipst, NULL) :
+	    ire_ftable_lookup_simple_v6(underlay_ip, 0, ipst, NULL);
+	if (vxlnat_underlay_ire == NULL) {
+		DTRACE_PROBE1(vxlnat__opensock__ire__fail, in6_addr_t *,
+		    underlay_ip);
+		vxlnat_closesock();
+		return (EADDRNOTAVAIL);
 	}
 
 	/* Once we return from this, start eating data. */
@@ -234,6 +255,16 @@ vxlnat_cache_remote(mblk_t *mp, struct sockaddr_in6 *underlay_src,
 		vlan = 0;
 		mp->b_rptr += sizeof (*eh);
 	}
+	if (ethertype != ETHERTYPE_IP && ethertype != ETHERTYPE_IPV6) {
+		/*
+		 * XXX KEBE SAYS for now, don't handle non-IP packets.
+		 * This includes ARP.
+		 */
+		DTRACE_PROBE1(vxlnat__in__drop__nonip, mblk_t *, mp);
+		freemsg(mp);
+		return (NULL);
+	}
+
 	/* Handle case of split ether + IP headers. */
 	if (MBLKL(mp) < sizeof (ipha_t)) {
 		mblk_t *freemp;
@@ -275,7 +306,7 @@ vxlnat_cache_remote(mblk_t *mp, struct sockaddr_in6 *underlay_src,
 		remote_addr = ip6h->ip6_src;
 	}
 
-	/* XXX KEBE SAYS FIND remote and replace OR create new remote. */
+	/* Find remote and replace OR create new remote. */
 	remote = vxlnat_get_remote(vnet, &remote_addr, B_TRUE);
 	if (remote != NULL) {
 		/*
@@ -400,16 +431,22 @@ vxlnat_one_vxlan(mblk_t *mp, struct sockaddr_in6 *underlay_src)
 	rw_exit(&vnet->vxnv_fixed_lock);
 	if (fixed != NULL) {
 		mblk_t *newmp = NULL;
+
+		/*
+		 * XXX KEBE ASKS --> Do MTU check NOW?!  That way, we have
+		 * pre-natted data.  One gotcha, external dests may have
+		 * different PathMTUs so see below about EMSGSIZE...
+		 */
+
 		/* XXX KEBE SAYS -- FILL ME IN... but for now: */
 		if (ipha != NULL)
 			newmp = vxlnat_fixed_fixv4(mp, fixed, B_FALSE);
-
-		/* XXX handle ip6h */
+		else
+			freemsg(mp); /* XXX handle ip6h */
 
 		if (newmp != NULL) {
 			cred_t *zcred;
 			ip_xmit_attr_t ixa;
-			int ret;
 
 			ASSERT(ipha != NULL);
 
@@ -418,6 +455,18 @@ vxlnat_one_vxlan(mblk_t *mp, struct sockaddr_in6 *underlay_src)
 
 			/* XXX hash dstaddr to an ixa_xmit_hint value */
 			ixa.ixa_flags = (IXAF_IS_IPV4 | IXAF_VERIFY_SOURCE);
+			if (ntohs(ipha->ipha_fragment_offset_and_flags) &
+			    IPH_DF) {
+				/*
+				 * The idea is the below call to IP will, if
+				 * needed, self-generate an ICMP
+				 * NEEDS_FRAGMENTATION message which we will
+				 * parse and send along its merry way.  If one
+				 * is generated, it'll be handled like it came
+				 * in off anywhere else in the network.
+				 */
+				ixa.ixa_flags |= IXAF_DONTFRAG;
+			}
 			ixa.ixa_zoneid = crgetzoneid(zcred);
 			ixa.ixa_cred = zcred;
 			ixa.ixa_cpid = NOPID;
@@ -425,16 +474,19 @@ vxlnat_one_vxlan(mblk_t *mp, struct sockaddr_in6 *underlay_src)
 			ixa.ixa_ifindex = 0;
 			ixa.ixa_tsl = NULL;
 
-			ret = ip_output_simple_v4(newmp, &ixa);
-			if (ret != 0)
-				freemsg(newmp);
+			/*
+			 * Even if this fails, "newmp" gets consumed.
+			 *
+			 * XXX KEBE ASKS - check for EMSGSIZE in case
+			 * ipha->ipha_dst is even SMALLER than the ire we have
+			 * for ourselves may indicate?
+			 */
+			(void) ip_output_simple_v4(newmp, &ixa);
 
 			/*
 			 * be safe and call cleanup in case IPSEC is ever used.
 			 */
 			ixa_cleanup(&ixa);
-		} else {
-			freemsg(mp);
 		}
 
 		/* All done... */
@@ -524,6 +576,64 @@ vxlnat_cksum_adjust(uint16_t oldsum, uint16_t *old, uint16_t *new, uint_t len)
 }
 
 /*
+ * Fix inner headers on an ICMP packet.
+ *
+ * XXX KEBE SAYS FOR NOW, just do addresses for 1-1/fixed.  When we do
+ * flows, include old_port/new_port as well.
+ */
+static mblk_t *
+vxlnat_fix_icmp_inner_v4(mblk_t *mp, icmph_t *icmph, ipaddr_t old_one,
+    ipaddr_t new_one, boolean_t to_private)
+{
+	mblk_t *newmp;
+	ipha_t *inner_ipha;
+	ipaddr_t *new_ones_place;
+
+	if ((uint8_t *)(icmph + 1) + sizeof (ipha_t) > mp->b_wptr) {
+		/* Pay the pullup tax. */
+		newmp = msgpullup(mp, -1);
+		freemsg(mp);
+		if (newmp == NULL) {
+			DTRACE_PROBE1(vxlnat__fixicmp__pullupfail, void *,
+			    NULL);
+			return (NULL);
+		}
+		if (MBLKL(newmp) < 2 * sizeof (ipha_t) + sizeof (icmph_t)) {
+			/* Wow! Too-tiny ICMP packet. */
+			DTRACE_PROBE1(vxlnat__fixicmp__tootiny, mblk_t *,
+			    newmp);
+			freeb(newmp);
+			return (NULL);
+		}
+		mp = newmp;
+		/* Temporarily use inner_ipha for the outer one. */
+		inner_ipha = (ipha_t *)mp->b_rptr;
+		icmph = (icmph_t *)(mp->b_rptr + IPH_HDR_LENGTH(inner_ipha));
+	}
+	inner_ipha = (ipha_t *)(icmph + 1);
+	new_ones_place = to_private ?
+	    &inner_ipha->ipha_src : &inner_ipha->ipha_dst;
+	if (*new_ones_place != old_one) {
+		/* Either I'm buggy or the packet is. */
+		DTRACE_PROBE2(vxlnat__fixicmp__badinneraddr, ipaddr_t,
+		    old_one, ipaddr_t, *new_ones_place);
+		freeb(mp);
+		return (NULL);
+	}
+	*new_ones_place = new_one;
+
+	/* Adjust ICMP checksum... */
+	icmph->icmph_checksum = vxlnat_cksum_adjust(icmph->icmph_checksum,
+	    (uint16_t *)&old_one, (uint16_t *)&new_one, sizeof (ipaddr_t));
+
+	/*
+	 * XXX KEBE ASKS, recompute *inner-packet* checksums?  Let's not for
+	 * now, but consider this Fair Warning (or some other VH album...).
+	 */
+	return (mp);
+}
+
+/*
  * Take a 1-1/fixed IPv4 packet and convert it for transmission out the
  * appropriate end. "to_private" is what it says on the tin.
  */
@@ -564,10 +674,11 @@ vxlnat_fixed_fixv4(mblk_t *mp, vxlnat_fixed_t *fixed, boolean_t to_private)
 		end_wptr = mp->b_wptr;
 	}
 
-	if (ipha->ipha_protocol == IPPROTO_TCP) {
+	switch (ipha->ipha_protocol) {
+	case IPPROTO_TCP: {
 		tcpha_t *tcph = (tcpha_t *)nexthdr;
 
-		if ((uint8_t *)(tcph + 1) > end_wptr) {
+		if (nexthdr + sizeof (*tcph) >= end_wptr) {
 			/* Bail for now. */
 			DTRACE_PROBE1(vxlnat__fix__tcp__mblkspan, mblk_t *,
 			    mp);
@@ -577,10 +688,12 @@ vxlnat_fixed_fixv4(mblk_t *mp, vxlnat_fixed_t *fixed, boolean_t to_private)
 		tcph->tha_sum = vxlnat_cksum_adjust(tcph->tha_sum,
 		    (uint16_t *)&old_one, (uint16_t *)&new_one,
 		    sizeof (ipaddr_t));
-	} else if (ipha->ipha_protocol == IPPROTO_UDP) {
+		break;	/* Out of switch. */
+	}
+	case IPPROTO_UDP: {
 		udpha_t *udph = (udpha_t *)nexthdr;
 
-		if ((uint8_t *)(udph + 1) > end_wptr) {
+		if (nexthdr + sizeof (*udph) >= end_wptr) {
 			/* Bail for now. */
 			DTRACE_PROBE1(vxlnat__fix__udp__mblkspan, mblk_t *,
 			    mp);
@@ -590,8 +703,71 @@ vxlnat_fixed_fixv4(mblk_t *mp, vxlnat_fixed_t *fixed, boolean_t to_private)
 		udph->uha_checksum = vxlnat_cksum_adjust(udph->uha_checksum,
 		    (uint16_t *)&old_one, (uint16_t *)&new_one,
 		    sizeof (ipaddr_t));
+		break;	/* Out of switch. */
+	}
+	case IPPROTO_ICMP: {
+		icmph_t *icmph = (icmph_t *)nexthdr;
+
+		/*
+		 * We need to check the case of ICMP messages that contain
+		 * IP packets.  We will need to at least change the addresses,
+		 * and *maybe* the checksums too if necessary.
+		 *
+		 * This may replicate some of icmp_inbound_v4(), alas.
+		 */
+		if (nexthdr + sizeof (*icmph) >= end_wptr) {
+			mblk_t *newmp;
+			/*
+			 * Unlike the others, we're going to pay the pullup
+			 * tax here.
+			 */
+			newmp = msgpullup(mp, -1);
+			freemsg(mp);
+			if (newmp == NULL) {
+				DTRACE_PROBE1(vxlnat__icmp__pullupfail, void *,
+				    NULL);
+				return (NULL);
+			}
+			mp = newmp;
+			ipha = (ipha_t *)(mp->b_rptr);
+			nexthdr = (uint8_t *)ipha + IPH_HDR_LENGTH(ipha);
+			icmph = (icmph_t *)nexthdr;
+		}
+
+		switch (icmph->icmph_type) {
+		case ICMP_ADDRESS_MASK_REPLY:
+		case ICMP_ADDRESS_MASK_REQUEST:
+		case ICMP_TIME_STAMP_REPLY:
+		case ICMP_TIME_STAMP_REQUEST:
+		case ICMP_ECHO_REQUEST:
+		case ICMP_ECHO_REPLY:
+			/* These merely need to get passed along. */
+			break;
+		case ICMP_ROUTER_ADVERTISEMENT:
+		case ICMP_ROUTER_SOLICITATION:
+			/* These shouldn't be traversing a NAT at all. Drop. */
+			DTRACE_PROBE1(vxlnat__icmp__cantpass, int,
+			    icmph->icmph_type);
+			freemsg(mp);
+			return (NULL);
+		case ICMP_PARAM_PROBLEM:
+		case ICMP_TIME_EXCEEDED:
+		case ICMP_DEST_UNREACHABLE:
+			/* These include inner-IP headers we need to adjust. */
+			mp = vxlnat_fix_icmp_inner_v4(mp, icmph, old_one,
+			    new_one, to_private);
+			break;
+		default:
+			/* Pass along to receiver, but warn. */
+			DTRACE_PROBE1(vxlnat__icmp__unknown, int,
+			    icmph->icmph_type);
+			break;
+		}
 	}
 	/* Otherwise we can't make any other assumptions for now... */
+	default:
+		break;
+	}
 
 	return (mp);
 }
@@ -653,11 +829,11 @@ vxlnat_xmit_vxlanv4(mblk_t *mp, in6_addr_t *overlay_dst,
 	vxh->vxlan_flags = VXLAN_F_VDI_WIRE;
 	vxh->vxlan_id = vnet->vxnv_vnetid;	/* Already in wire-order. */
 
-	/* XXX KEBE SAYS FILL IN ETHERNET HEADER XXX */
+	/* Fill in the Ethernet header. */
 	evh = (struct ether_vlan_header *)(vxh + 1);
 	ether_copy(&remote->vxnrem_ether, &evh->ether_dhost);
 	/*
-	 * XXX KEBE SAYS OH HELL, we need "my entry's" etherenet, which only
+	 * XXX KEBE SAYS OH HELL, we need "my entry's" ethernet, which only
 	 * exists for nat rules at the moment.  Wing it for now.
 	 */
 	evh->ether_shost.ether_addr_octet[0] = 0x1;
@@ -702,8 +878,17 @@ vxlnat_xmit_vxlanv4(mblk_t *mp, in6_addr_t *overlay_dst,
 }
 
 /*
- * New ire_recvfn implementations if we're doing 1-1 mappings.
+ * New ire_{recv,send}fn implementations if we're doing 1-1 mappings.
  */
+int
+vxlnat_fixed_ire_send_v6(ire_t *ire, mblk_t *mp, void *iph_arg,
+    ip_xmit_attr_t *ixa, uint32_t *identp)
+{
+	/* XXX KEBE SAYS FILL ME IN, but for now... */
+	freemsg(mp);
+	return (EOPNOTSUPP);
+}
+
 void
 vxlnat_fixed_ire_recv_v6(ire_t *ire, mblk_t *mp, void *iph_arg,
     ip_recv_attr_t *ira)
@@ -712,19 +897,75 @@ vxlnat_fixed_ire_recv_v6(ire_t *ire, mblk_t *mp, void *iph_arg,
 	freemsg(mp);
 }
 
+/*
+ * I believe the common case for this will be from self-generated ICMP
+ * messages.  Other same-netstack-originated traffic will also come through
+ * here (one internal reaching what turns out to be another internal).
+ */
+int
+vxlnat_fixed_ire_send_v4(ire_t *ire, mblk_t *mp, void *iph_arg,
+    ip_xmit_attr_t *ixa, uint32_t *identp)
+{
+	ip_recv_attr_t iras;	/* NOTE: No bzero because we pay more later */
+	ipha_t *ipha = (ipha_t *)iph_arg;
+
+	/*
+	 * XXX KEBE ASKS, any DTrace probes or other instrumentation that
+	 * perhaps should be set?
+	 */
+
+	/* Map ixa to ira. */
+	iras.ira_pktlen = ixa->ixa_pktlen;
+	/* XXX KEBE ASKS more?!? */
+
+	/*
+	 * In normal TCP/IP processing, this shortcuts the IP header checksum
+	 * AND POSSIBLY THE ULP checksum cases.  Since this is likely to head
+	 * back into the internal network, we need to recompute things again.
+	 */
+	if (!ip_output_sw_cksum_v4(mp, ipha, ixa)) {
+		freemsg(mp);
+		return (EMSGSIZE);
+	}
+#if 0
+	/* XXX KEBE ASKS Special-case ICMP here? */
+	if (ipha->ipha_protocol == IPPROTO_ICMP) {
+		icmph_t *icmph;
+
+		icmph = (icmph_t *)((uint8_t *)ipha + IPH_HDR_LENGTH(ipha));
+		if ((uint8_t *)icmph >= mp->b_wptr) {
+			freemsg(mp);
+			return (EMSGSIZE);
+		}
+		icmph->icmph_checksum = 0;
+		icmph->icmph_checksum = IP_CSUM(mp, IPH_HDR_LENGTH(ipha), 0);
+	}
+#endif
+
+	vxlnat_fixed_ire_recv_v4(ire, mp, iph_arg, &iras);
+
+	return (0);
+}
+
 void
 vxlnat_fixed_ire_recv_v4(ire_t *ire, mblk_t *mp, void *iph_arg,
     ip_recv_attr_t *ira)
 {
 	vxlnat_fixed_t *fixed;
 	vxlnat_vnet_t *vnet;
-	/* ip_stack_t *ipst; */
+	ipha_t *ipha = (ipha_t *)iph_arg;
+	int newmtu;
 
 	/* Make a note for DAD that this address is in use */
 	ire->ire_last_used_time = LBOLT_FASTPATH;
 
 	/* Only target the IRE_LOCAL with the right zoneid. */
 	ira->ira_zoneid = ire->ire_zoneid;
+
+	/*
+	 * XXX KEBE ASKS, any DTrace probes or other instrumentation that
+	 * perhaps should be set?
+	 */
 
 	/*
 	 * Reality check some things.
@@ -736,6 +977,25 @@ vxlnat_fixed_ire_recv_v4(ire_t *ire, mblk_t *mp, void *iph_arg,
 
 	if (IRE_IS_CONDEMNED(ire) || vnet == NULL)
 		goto detach_ire_and_bail;
+
+	/*
+	 * Not a common-case, but a possible one.  If our underlay MTU is
+	 * smaller than the external MTU, it is possible that we will have a
+	 * size mismatch and therefore need to either fragment at the VXLAN
+	 * layer (VXLAN UDP packet sent as two or more IP fragments) OR
+	 * if IPH_DF is set, send an ICMP_NEEDS_FRAGMENTATION back to the
+	 * sender.  Perform the check here BEFORE we NAT the packet.
+	 */
+	ASSERT(vxlnat_underlay_ire->ire_ill != NULL);
+	newmtu = vxlnat_underlay_ire->ire_ill->ill_mtu - sizeof (ipha_t) -
+	    sizeof (udpha_t) - sizeof (vxlan_hdr_t) -
+	    sizeof (struct ether_vlan_header);
+	if ((ntohs(ipha->ipha_fragment_offset_and_flags) & IPH_DF) &&
+	    ntohs(ipha->ipha_length) > newmtu) {
+		icmp_frag_needed(mp, newmtu, ira);
+		/* We're done.  Assume icmp_frag_needed() consumed mp. */
+		return;
+	}
 
 	/*
 	 * So we're here, and since we have a refheld IRE, we have a refheld

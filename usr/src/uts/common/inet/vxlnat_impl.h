@@ -18,6 +18,7 @@
 
 #include <inet/vxlnat.h>
 #include <inet/ip.h>
+#include <inet/ip6.h>
 #include <inet/ip_ire.h>
 #include <sys/clock_impl.h>
 #include <sys/avl.h>
@@ -214,11 +215,15 @@ extern void vxlnat_public_rele(in6_addr_t *);
 
 extern int vxlnat_tree_plus_in6_cmp(const void *, const void *);
 
-/* ire_recvfn functions for 1-1/fixed maps. */
+/* ire_recvfn & ire_sendfn functions for 1-1/fixed maps. */
 extern void vxlnat_fixed_ire_recv_v4(ire_t *, mblk_t *, void *,
     ip_recv_attr_t *);
 extern void vxlnat_fixed_ire_recv_v6(ire_t *, mblk_t *, void *,
     ip_recv_attr_t *);
+extern int vxlnat_fixed_ire_send_v4(ire_t *, mblk_t *, void *,
+    ip_xmit_attr_t *, uint32_t *);
+extern int vxlnat_fixed_ire_send_v6(ire_t *, mblk_t *, void *,
+    ip_xmit_attr_t *, uint32_t *);
 
 
 extern vxlnat_vnet_t *vxlnat_get_vnet(uint32_t, boolean_t);

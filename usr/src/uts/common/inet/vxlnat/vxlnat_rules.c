@@ -435,9 +435,15 @@ vxlnat_fixed_ip(vxn_msg_t *vxnm)
 		 * fix it here and add a new pointer in ip.h for ire_t.
 		 */
 		ire->ire_dep_sib_next = (ire_t *)fixed;
-		/* and then rewire the ire receive function. */
-		ire->ire_recvfn = (ire->ire_ipversion == IPV4_VERSION) ?
-		    vxlnat_fixed_ire_recv_v4 : vxlnat_fixed_ire_recv_v6;
+		/* and then rewire the ire receive and send functions. */
+		if (ire->ire_ipversion == IPV4_VERSION) {
+			ire->ire_recvfn = vxlnat_fixed_ire_recv_v4;
+			ire->ire_sendfn = vxlnat_fixed_ire_send_v4;
+		} else {
+			ASSERT(ire->ire_ipversion == IPV6_VERSION);
+			ire->ire_recvfn = vxlnat_fixed_ire_recv_v6;
+			ire->ire_sendfn = vxlnat_fixed_ire_send_v6;
+		}
 		VXNF_REFHOLD(fixed);	/* ire holds us too... */
 		fixed->vxnf_ire = ire;
 	}
