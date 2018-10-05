@@ -417,7 +417,7 @@ vxlnat_one_vxlan(mblk_t *mp, struct sockaddr_in6 *underlay_src)
 			bzero(&ixa, sizeof (ixa));
 
 			/* XXX hash dstaddr to an ixa_xmit_hint value */
-			ixa.ixa_flags = IXAF_BASIC_SIMPLE_V4;
+			ixa.ixa_flags = (IXAF_IS_IPV4 | IXAF_VERIFY_SOURCE);
 			ixa.ixa_zoneid = crgetzoneid(zcred);
 			ixa.ixa_cred = zcred;
 			ixa.ixa_cpid = NOPID;
