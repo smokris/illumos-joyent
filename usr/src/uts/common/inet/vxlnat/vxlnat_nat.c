@@ -445,48 +445,49 @@ vxlnat_one_vxlan(mblk_t *mp, struct sockaddr_in6 *underlay_src)
 			freemsg(mp); /* XXX handle ip6h */
 
 		if (newmp != NULL) {
-			cred_t *zcred;
-			ip_xmit_attr_t ixa;
+			ire_t *outbound_ire;
+			/* Use C99's initializers for fun & profit. */
+			ip_recv_attr_t iras =
+			    { IRAF_IS_IPV4 | IRAF_VERIFIED_SRC };
 
-			ASSERT(ipha != NULL);
-
-			zcred = zone_kcred();
-			bzero(&ixa, sizeof (ixa));
-
-			/* XXX hash dstaddr to an ixa_xmit_hint value */
-			ixa.ixa_flags = (IXAF_IS_IPV4 | IXAF_VERIFY_SOURCE);
-			if (ntohs(ipha->ipha_fragment_offset_and_flags) &
-			    IPH_DF) {
-				/*
-				 * The idea is the below call to IP will, if
-				 * needed, self-generate an ICMP
-				 * NEEDS_FRAGMENTATION message which we will
-				 * parse and send along its merry way.  If one
-				 * is generated, it'll be handled like it came
-				 * in off anywhere else in the network.
-				 */
-				ixa.ixa_flags |= IXAF_DONTFRAG;
+			ASSERT3P(ipha, !=, NULL);
+			ASSERT3P(ipha, ==, newmp->b_rptr);
+			/* XXX KEBE ASKS, IRR_ALLOCATE okay?!? */
+			outbound_ire = ire_route_recursive_dstonly_v4(
+			    ipha->ipha_dst, IRR_ALLOCATE,
+			    0 /* XXX KEBE SAYS XMIT HINT! */,
+			    vxlnat_netstack->netstack_ip);
+			if (outbound_ire == NULL) {
+				/* Bail! */
+				VXNF_REFRELE(fixed);
+				VXNV_REFRELE(vnet);
+				return;
 			}
-			ixa.ixa_zoneid = crgetzoneid(zcred);
-			ixa.ixa_cred = zcred;
-			ixa.ixa_cpid = NOPID;
-			ixa.ixa_ipst = vxlnat_netstack->netstack_ip;
-			ixa.ixa_ifindex = 0;
-			ixa.ixa_tsl = NULL;
 
+			iras.ira_ip_hdr_length = IPH_HDR_LENGTH(ipha);
+			if (iras.ira_ip_hdr_length > sizeof (ipha_t))
+				iras.ira_flags |= IRAF_IPV4_OPTIONS;
+			iras.ira_xmit_hint = 0; /* XXX KEBE SAYS FIX ME! */
+			iras.ira_zoneid = outbound_ire->ire_zoneid;
+			iras.ira_pktlen = ntohs(ipha->ipha_length);
+			iras.ira_protocol = ipha->ipha_protocol;
+			/* XXX KEBE ASKS rifindex & ruifindex ?!? */
 			/*
-			 * Even if this fails, "newmp" gets consumed.
-			 *
-			 * XXX KEBE ASKS - check for EMSGSIZE in case
-			 * ipha->ipha_dst is even SMALLER than the ire we have
-			 * for ourselves may indicate?
+			 * NOTE: AT LEAST ira_ill needs ILLF_ROUTER set, as
+			 * well as the ill for the external NIC (where
+			 * off-link destinations live).  For fixed, ira_ill
+			 * should be the ill of the external source.
 			 */
-			(void) ip_output_simple_v4(newmp, &ixa);
+			iras.ira_rill = vxlnat_underlay_ire->ire_ill;
+			iras.ira_ill = fixed->vxnf_ire->ire_ill;
+			/* XXX KEBE ASKS cred & cpid ? */
+			iras.ira_verified_src = ipha->ipha_src;
+			/* XXX KEBE SAYS don't sweat IPsec stuff. */
+			/* XXX KEBE SAYS ALSO don't sweat l2src & mhip */
 
-			/*
-			 * be safe and call cleanup in case IPSEC is ever used.
-			 */
-			ixa_cleanup(&ixa);
+			/* Okay, we're good! Let's pretend we're forwarding. */
+			ire_recv_forward_v4(outbound_ire, mp, ipha, &iras);
+			ire_refrele(outbound_ire);
 		}
 
 		/* All done... */
