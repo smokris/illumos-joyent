@@ -457,7 +457,8 @@ vxlnat_one_vxlan(mblk_t *mp, struct sockaddr_in6 *underlay_src)
 			    ipha->ipha_dst, IRR_ALLOCATE,
 			    0 /* XXX KEBE SAYS XMIT HINT! */,
 			    vxlnat_netstack->netstack_ip);
-			if (outbound_ire == NULL) {
+			VERIFY3P(outbound_ire, !=, NULL);
+			if (outbound_ire->ire_type == IRE_NOROUTE) {
 				/* Bail! */
 				VXNF_REFRELE(fixed);
 				VXNV_REFRELE(vnet);
