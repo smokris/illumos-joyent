@@ -22,6 +22,7 @@
 #include <sys/dtrace.h>
 #include <sys/debug.h>
 #include <inet/vxlnat_impl.h>
+#include <inet/ip_if.h>	/* XXX KEBE SAYS CHEESY HACK */
 
 /*
  * These are all initialized to NULL or 0.
@@ -321,6 +322,11 @@ vxlnat_fixed_unlink(vxlnat_fixed_t *fixed)
 	if (ire != NULL) {
 		ASSERT(ire->ire_type == IRE_LOCAL);
 		ASSERT3P((void *)ire->ire_dep_sib_next, ==, (void *)fixed);
+
+		/* XXX KEBE SAYS CHEESY HACK. */
+		if (fixed->vxnf_clear_router)
+			ire->ire_ill->ill_flags &= ~ILLF_ROUTER;
+
 		ire->ire_dep_sib_next = NULL;
 		VXNF_REFRELE(fixed);	/* ire's hold on us. */
 		/* Rewire IRE back to normal. */
@@ -446,6 +452,16 @@ vxlnat_fixed_ip(vxn_msg_t *vxnm)
 		}
 		VXNF_REFHOLD(fixed);	/* ire holds us too... */
 		fixed->vxnf_ire = ire;
+		/*
+		 * XXX KEBE SAYS CHEESY HACK:
+		 */
+		if (!(ire->ire_ill->ill_flags & ILLF_ROUTER)) {
+			fixed->vxnf_clear_router = B_TRUE;
+			ire->ire_ill->ill_flags |= ILLF_ROUTER;
+		} else {
+			/* Just so we're clear... */
+			fixed->vxnf_clear_router = B_FALSE;
+		}
 	}
 	rw_exit(&vnet->vxnv_fixed_lock);
 
