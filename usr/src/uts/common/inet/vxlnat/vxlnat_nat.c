@@ -776,7 +776,7 @@ vxlnat_fixed_fixv4(mblk_t *mp, vxlnat_fixed_t *fixed, boolean_t to_private)
 
 vxlnat_remote_t *
 vxlnat_xmit_vxlanv4(mblk_t *mp, in6_addr_t *overlay_dst,
-    vxlnat_remote_t *remote, vxlnat_vnet_t *vnet)
+    vxlnat_remote_t *remote, uint8_t *myether, vxlnat_vnet_t *vnet)
 {
 	struct sockaddr_in6 sin6 = {AF_INET6};
 	struct msghdr msghdr = {NULL};
@@ -834,16 +834,7 @@ vxlnat_xmit_vxlanv4(mblk_t *mp, in6_addr_t *overlay_dst,
 	/* Fill in the Ethernet header. */
 	evh = (struct ether_vlan_header *)(vxh + 1);
 	ether_copy(&remote->vxnrem_ether, &evh->ether_dhost);
-	/*
-	 * XXX KEBE SAYS OH HELL, we need "my entry's" ethernet, which only
-	 * exists for nat rules at the moment.  Wing it for now.
-	 */
-	evh->ether_shost.ether_addr_octet[0] = 0x1;
-	evh->ether_shost.ether_addr_octet[1] = 0x2;
-	evh->ether_shost.ether_addr_octet[2] = 0x3;
-	evh->ether_shost.ether_addr_octet[3] = 0x4;
-	evh->ether_shost.ether_addr_octet[4] = 0x5;
-	evh->ether_shost.ether_addr_octet[5] = 0x6;
+	ether_copy(myether, &evh->ether_shost);
 	evh->ether_tpid = htons(ETHERTYPE_VLAN);
 	evh->ether_tci = remote->vxnrem_vlan;
 	evh->ether_type = htons(ETHERTYPE_IP);
@@ -1016,7 +1007,7 @@ vxlnat_fixed_ire_recv_v4(ire_t *ire, mblk_t *mp, void *iph_arg,
 	 * socket.
 	 */
 	fixed->vxnf_remote = vxlnat_xmit_vxlanv4(mp, &fixed->vxnf_addr,
-	    fixed->vxnf_remote, vnet);
+	    fixed->vxnf_remote, fixed->vxnf_myether, vnet);
 	if (fixed->vxnf_remote == NULL) {
 		/* XXX KEBE ASKS, DTrace probe here?  Or in-function? */
 		DTRACE_PROBE2(vxlnat__fixed__xmitdrop,

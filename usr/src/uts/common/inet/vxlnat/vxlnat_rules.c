@@ -383,6 +383,8 @@ vxlnat_fixed_ip(vxn_msg_t *vxnm)
 	fixed->vxnf_addr = vxnm->vxnm_private;
 	fixed->vxnf_pubaddr = vxnm->vxnm_public;
 	fixed->vxnf_refcount = 1;	/* Internment reference. */
+	bcopy(&vxnm->vxnm_ether_addr, &fixed->vxnf_myether, ETHERADDRL);
+	fixed->vxnf_vlanid = htons(vxnm->vxnm_vlanid);
 
 	/*
 	 * Find a local-address IRE for the public address.
@@ -490,8 +492,8 @@ vxlnat_fixed_to_msg(vxn_msg_t *msg, vxlnat_fixed_t *fixed)
 	msg->vxnm_type = VXNM_FIXEDIP;
 	msg->vxnm_vnetid = VXLAN_ID_NTOH(fixed->vxnf_vnet->vxnv_vnetid);
 	msg->vxnm_prefix = 0;
-	msg->vxnm_vlanid = 0;	/* XXX KEBE ASKS - keep track of this?!? */
-	bzero(msg->vxnm_ether_addr, ETHERADDRL);
+	msg->vxnm_vlanid = ntohs(fixed->vxnf_vlanid);
+	bcopy(fixed->vxnf_myether, msg->vxnm_ether_addr, ETHERADDRL);
 	msg->vxnm_public = fixed->vxnf_pubaddr;
 	msg->vxnm_private = fixed->vxnf_addr;
 }
