@@ -175,6 +175,7 @@ parse_fixedentry(char *line)
 {
 	char *tok;
 	int vnetid;
+	uint8_t ether[ETHERADDRL];
 	struct in6_addr priv, pub;
 	vxn_msg_t *vxnm;
 
@@ -199,6 +200,13 @@ parse_fixedentry(char *line)
 	if ((tok = strtok(NULL, " \t\n")) == NULL)
 		return (NULL);
 
+	/* check for ether */
+	if (!str2mac(tok, ether))
+		return (NULL);
+
+	if ((tok = strtok(NULL, " \t\n")) == NULL)
+		return (NULL);
+
 	/* check for priv */
 	if (str2ip(&priv, tok) == -1)
 		return (NULL);
@@ -216,6 +224,7 @@ parse_fixedentry(char *line)
 	vxnm->vxnm_vnetid = vnetid;
 	vxnm->vxnm_public = pub;
 	vxnm->vxnm_private = priv;
+	bcopy(ether, vxnm->vxnm_ether_addr, sizeof (ether));
 
 	return (vxnm);
 }
