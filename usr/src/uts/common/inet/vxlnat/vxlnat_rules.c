@@ -96,6 +96,37 @@ vxlnat_tree_plus_in6_cmp(const void *first, const void *second)
 }
 
 /*
+ * Comparison function for NAT flow.
+ */
+static int
+vxlnat_flow_cmp_v4(const void *first, const void *second)
+{
+	vxlnat_flow_t *first_flow = (vxlnat_flow_t *)first;
+	vxlnat_flow_t *second_flow = (vxlnat_flow_t *)second;
+	uint64_t firstaddrs, secondaddrs, firstportproto, secondportproto;
+
+	firstaddrs = first_flow->vxnfl_src._S6_un._S6_u32[3] |
+	    (((uint64_t)first_flow->vxnfl_dst._S6_un._S6_u32[3]) << 32ULL);
+	secondaddrs = second_flow->vxnfl_src._S6_un._S6_u32[3] |
+	    (((uint64_t)second_flow->vxnfl_dst._S6_un._S6_u32[3]) << 32ULL);
+	firstportproto = first_flow->vxnfl_ports |
+	    (((uint64_t)first_flow->vxnfl_protocol) << 32ULL);
+	secondportproto = second_flow->vxnfl_ports |
+	    (((uint64_t)second_flow->vxnfl_protocol) << 32ULL);
+
+	if (firstaddrs > secondaddrs)
+		return (1);
+	else if (firstaddrs < secondaddrs)
+		return (-1);
+	else if (firstportproto > secondportproto)
+		return (1);
+	else if (firstportproto < secondportproto)
+		return (-1);
+
+	return (0);
+}
+
+/*
  * Find-and-reference-hold a vnet.  If none present, create one.
  * "vnetid" MUST be in wire-order and its one byte cleared.
  */
@@ -121,9 +152,12 @@ vxlnat_get_vnet(uint32_t vnetid, boolean_t create_on_miss)
 		    sizeof (vxlnat_fixed_t), 0);
 		/* Initialize NAT rules.  (NAT mutex is zeroed-out.) */
 		list_create(&vnet->vxnv_rules, sizeof (vxlnat_rule_t), 0);
-#ifdef notyet
-		/* XXX KEBE SAYS INITIALIZE NAT flows... */
-#endif /* notyet */
+
+		/* Initialize NAT flows... */
+		rw_init(&vnet->vxnv_flowv4_lock, NULL, RW_DRIVER, NULL);
+		avl_create(&vnet->vxnv_flows_v4, vxlnat_flow_cmp_v4,
+		    sizeof (vxlnat_flow_t), 0);
+
 		/*
 		 * Initialize remote VXLAN destination cache.
 		 * (remotes mutex is zeroed-out.)
@@ -434,8 +468,8 @@ vxlnat_fixed_ip(vxn_msg_t *vxnm)
 		avl_insert(&vnet->vxnv_fixed_ips, fixed, where);
 		rc = 0;
 		/*
-		 * CHEESY USE OF POINTERS WARNING: I'm going to use
-		 * ire_dep_children for this IRE_LOCAL as a backpointer to
+		 * ODD USE OF POINTERS WARNING: I'm going to use
+		 * ire_dep_sib_next for this IRE_LOCAL as a backpointer to
 		 * this 'fixed'.  This'll allow rapid packet processing.
 		 * Inspection seems to indicate that IRE_LOCAL ires NEVER use
 		 * the ire_dep* pointers, so we'll use one (and independent of
@@ -443,6 +477,8 @@ vxlnat_fixed_ip(vxn_msg_t *vxnm)
 		 * fix it here and add a new pointer in ip.h for ire_t.
 		 */
 		ire->ire_dep_sib_next = (ire_t *)fixed;
+		VXNF_REFHOLD(fixed);	/* ire holds us too... */
+		fixed->vxnf_ire = ire;
 		/* and then rewire the ire receive and send functions. */
 		if (ire->ire_ipversion == IPV4_VERSION) {
 			ire->ire_recvfn = vxlnat_fixed_ire_recv_v4;
@@ -452,8 +488,7 @@ vxlnat_fixed_ip(vxn_msg_t *vxnm)
 			ire->ire_recvfn = vxlnat_fixed_ire_recv_v6;
 			ire->ire_sendfn = vxlnat_fixed_ire_send_v6;
 		}
-		VXNF_REFHOLD(fixed);	/* ire holds us too... */
-		fixed->vxnf_ire = ire;
+#if 1	/* Cheesy hack */
 		/*
 		 * XXX KEBE SAYS CHEESY HACK:
 		 */
@@ -464,6 +499,7 @@ vxlnat_fixed_ip(vxn_msg_t *vxnm)
 			/* Just so we're clear... */
 			fixed->vxnf_clear_router = B_FALSE;
 		}
+#endif	/* Cheesy hack */
 	}
 	rw_exit(&vnet->vxnv_fixed_lock);
 

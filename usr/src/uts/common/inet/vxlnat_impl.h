@@ -69,14 +69,44 @@ typedef struct vxlnat_rule_s {
 extern void vxlnat_rule_free(vxlnat_rule_t *);
 
 /*
+ * NAT FLOWS.  These are per-vnet, and keyed/searched by:
+ * <inner-IP-source,IP-dest,inner-source-port,dest-port,protocol>.
+ * They will be tied-to/part-of
+ */
+typedef struct vxlnat_flow_s {
+	avl_node_t vxnfl_treenode;
+	/*
+	 * I'm guessing that dst varies more than src.  Also
+	 * the plan is for the comparitor function to bcmp() both
+	 * of these as one call for IPv6 (if we ever get to that..).
+	 */
+	in6_addr_t vxnfl_dst;
+	in6_addr_t vxnfl_src;	/* INNER source address. */
+	uint32_t vxnfl_ports;
+	uint8_t vxnfl_protocol;
+	uint8_t vxnfl_isv4 : 1,	/* Will save us 12 bytes of compares... */
+		vxlfl_reserved1 : 7;
+	conn_t *vxnfl_connp;	/* Question - embed instead? */
+	vxlnat_rule_t *vxnfl_rule; /* Refhold to rule that generated me. */
+} vxlnat_flow_t;
+/* Exploit endianisms, maintain network order... */
+#ifdef _BIG_ENDIAN
+#define	VXNFL_SPORT(ports) (uint16_t)((ports) >> 16) /* Unsigned all around. */
+#define	VXNFL_DPORT(ports) ((ports) & 0xFFFF)
+#else
+#define	VXNFL_SPORT(ports) ((ports) & 0xFFFF)
+#define	VXNFL_DPORT(ports) (uint16_t)((ports) >> 16) /* Unsigned all around. */
+#endif
+
+/*
  * 1-1 IP mapping.
  */
 typedef struct vxlnat_fixed_s {
 	avl_node_t vxnf_treenode;
-	in6_addr_t vxnf_addr;	/* XXX KEBE ASKS - must it match to a rule? */
+	in6_addr_t vxnf_addr;	/* For now it needn't match to a rule. */
 	in6_addr_t vxnf_pubaddr; /* External IP. */
 	struct vxlnat_vnet_s *vxnf_vnet;
-	ire_t *vxnf_ire;	/* Should be a local IRE from the ftable. */
+	ire_t *vxnf_ire;	/* Should be an IRE_LOCAL from the ftable. */
 	struct vxlnat_remote_s *vxnf_remote;
 	uint8_t vxnf_myether[ETHERADDRL];
 	uint16_t vxnf_vlanid;	/* Stored in network order for quick xmit. */
@@ -100,7 +130,7 @@ extern void vxlnat_fixed_free(vxlnat_fixed_t *);
  */
 typedef struct vxlnat_remote_s {
 	avl_node_t vxnrem_treenode;
-	in6_addr_t vxnrem_addr;	/* Same prefix as one in rule. */
+	in6_addr_t vxnrem_addr;	/* Same prefix as one in rule, or fixed addr. */
 	in6_addr_t vxnrem_uaddr; /* Underlay VXLAN destination. */
 	struct vxlnat_vnet_s *vxnrem_vnet;	/* Reference-held. */
 	uint32_t vxnrem_refcount;
@@ -133,21 +163,26 @@ typedef struct vxlnat_vnet_s {
 	avl_node_t vxnv_treenode;
 	/*
 	 * 1-1 IP mappings. (1st lookup for an in-to-out packet.)
-	 * Will map to SOMETHING in IP.
-	 * XXX KEBE ASKS - conn_t or something else TBD?!
+	 * Will map to an IRE_LOCAL in IP.
 	 */
 	krwlock_t vxnv_fixed_lock;
 	avl_tree_t vxnv_fixed_ips;
+
 	/*
 	 * NAT flows. (2nd lookup for an in-to-out packet.)
 	 * These are also conn_ts with outer-packet fields for out-to-in
 	 * matches against a conn_t.
+	 *
+	 * NOTE: We're going to keep a separate tree for inner IPv6 NAT, if
+	 * we ever need it.
 	 */
-	krwlock_t vxnv_flow_lock;
-	avl_tree_t vxnv_flows;
+	krwlock_t vxnv_flowv4_lock;
+	avl_tree_t vxnv_flows_v4;
+
 	/* NAT rules. (3rd lookup for an in-to-out packet.) */
 	kmutex_t vxnv_rule_lock;
 	list_t vxnv_rules;
+
 	/*
 	 * Internal-network remote-nodes. (only lookup for out-to-in packet.)
 	 * Entries here are also refheld by 1-1s or NAT flows.

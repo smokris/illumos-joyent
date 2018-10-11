@@ -349,6 +349,138 @@ vxlnat_cache_remote(mblk_t *mp, struct sockaddr_in6 *underlay_src,
 }
 
 /*
+ * Inspect the packet and find ports & protos (or ICMP types & codes)
+ * and see if we have an established NAT flow.
+ *
+ * XXX KEBE WONDERS if the transmission path will more closely resemble
+ * vxlnat_one_vxlan_fixed() because of ipha_ident issues or not...
+ *
+ * B_TRUE means the packet was handled, and we shouldn't continue processing
+ * (even if "was handled" means droppage).
+ */
+static boolean_t
+vxlnat_one_vxlan_flow(vxlnat_vnet_t *vnet, mblk_t *mp, ipha_t *ipha,
+    ip6_t *ip6h)
+{
+	/* XXX KEBE SAYS FILL ME IN. */
+	/* For now... */
+	return (B_FALSE);
+}
+
+/*
+ * If we reach here, we need to find a NAT rule, and see if we can/should
+ * CREATE a new NAT flow, or whether or not we should drop, maybe even
+ * returning an ICMP message of some sort.
+ *
+ * B_TRUE means the packet was handled, and we shouldn't continue processing
+ * (even if "was handled" means droppage).
+ */
+static boolean_t
+vxlnat_one_vxlan_rule(vxlnat_vnet_t *vnet, mblk_t *mp, ipha_t *ipha,
+    ip6_t *ip6h)
+{
+	/* XXX KEBE SAYS FILL ME IN. */
+	/* For now... */
+	return (B_FALSE);
+}
+
+/*
+ * See if the inbound VXLAN packet hits a 1-1/fixed mapping, and process if it
+ * does.  B_TRUE means the packet was handled, and we shouldn't continue
+ * processing (even if "was handled" means droppage).
+ */
+static boolean_t
+vxlnat_one_vxlan_fixed(vxlnat_vnet_t *vnet, mblk_t *mp, ipha_t *ipha,
+    ip6_t *ip6h)
+{
+	vxlnat_fixed_t *fixed, fsearch;
+	mblk_t *newmp;
+	ire_t *outbound_ire;
+	/* Use C99's initializers for fun & profit. */
+	ip_recv_attr_t iras = { IRAF_IS_IPV4 | IRAF_VERIFIED_SRC };
+
+	if (ipha != NULL) {
+		IN6_INADDR_TO_V4MAPPED((struct in_addr *)(&ipha->ipha_src),
+		    &fsearch.vxnf_addr);
+	} else {
+		/* vxlnat_cache_remote() did reality checks... */
+		ASSERT(ipha == NULL && ip6h != NULL);
+		fsearch.vxnf_addr = ip6h->ip6_src;
+	}
+
+	rw_enter(&vnet->vxnv_fixed_lock, RW_READER);
+	fixed = avl_find(&vnet->vxnv_fixed_ips, &fsearch, NULL);
+	if (fixed != NULL)
+		VXNF_REFHOLD(fixed);
+	rw_exit(&vnet->vxnv_fixed_lock);
+	if (fixed == NULL)
+		return (B_FALSE);	/* Try another method of processing. */
+
+	newmp = NULL;
+	/*
+	 * XXX KEBE ASKS --> Do an MTU check NOW?!  That way, we have
+	 * pre-natted data.  One gotcha, external dests may have
+	 * different PathMTUs so see below about EMSGSIZE...
+	 *
+	 * For now, let the post-NAT crunch through
+	 * ire_recv_forward_v4() take care of all of that.
+	 */
+
+	if (ipha != NULL)
+		newmp = vxlnat_fixed_fixv4(mp, fixed, B_FALSE);
+	else {
+		freemsg(mp); /* XXX handle ip6h */
+		return (B_TRUE);
+	}
+
+	if (newmp == NULL)
+		return (B_TRUE);	/* mp eaten by vxlnat_fixed_fixv4() */
+
+
+	ASSERT3P(ipha, ==, newmp->b_rptr);
+	/* XXX KEBE ASKS, IRR_ALLOCATE okay?!? */
+	/* XXX KEBE SAYS XMIT HINT! */
+	outbound_ire = ire_route_recursive_dstonly_v4(ipha->ipha_dst,
+	    IRR_ALLOCATE, 0, vxlnat_netstack->netstack_ip);
+	VERIFY3P(outbound_ire, !=, NULL);
+	if (outbound_ire->ire_type == IRE_NOROUTE) {
+		/* Bail! */
+		DTRACE_PROBE2(vxlnat__in__drop__fixedire, ipaddr_t,
+		    ipha->ipha_dst, mblk_t *, mp);
+		VXNF_REFRELE(fixed);
+		freemsg(mp);
+		return (B_TRUE);
+	}
+
+	iras.ira_ip_hdr_length = IPH_HDR_LENGTH(ipha);
+	if (iras.ira_ip_hdr_length > sizeof (ipha_t))
+		iras.ira_flags |= IRAF_IPV4_OPTIONS;
+	iras.ira_xmit_hint = 0; /* XXX KEBE SAYS FIX ME! */
+	iras.ira_zoneid = outbound_ire->ire_zoneid;
+	iras.ira_pktlen = ntohs(ipha->ipha_length);
+	iras.ira_protocol = ipha->ipha_protocol;
+	/* XXX KEBE ASKS rifindex & ruifindex ?!? */
+	/*
+	 * NOTE: AT LEAST ira_ill needs ILLF_ROUTER set, as
+	 * well as the ill for the external NIC (where
+	 * off-link destinations live).  For fixed, ira_ill
+	 * should be the ill of the external source.
+	 */
+	iras.ira_rill = vxlnat_underlay_ire->ire_ill;
+	iras.ira_ill = fixed->vxnf_ire->ire_ill;
+	/* XXX KEBE ASKS cred & cpid ? */
+	iras.ira_verified_src = ipha->ipha_src;
+	/* XXX KEBE SAYS don't sweat IPsec stuff. */
+	/* XXX KEBE SAYS ALSO don't sweat l2src & mhip */
+
+	/* Okay, we're good! Let's pretend we're forwarding. */
+	ire_recv_forward_v4(outbound_ire, mp, ipha, &iras);
+	ire_refrele(outbound_ire);
+
+	return (B_TRUE);
+}
+
+/*
  * Process exactly one VXLAN packet.
  */
 static void
@@ -358,7 +490,6 @@ vxlnat_one_vxlan(mblk_t *mp, struct sockaddr_in6 *underlay_src)
 	vxlnat_vnet_t *vnet;
 	ipha_t *ipha;
 	ip6_t *ip6h;
-	vxlnat_fixed_t *fixed, fsearch;
 
 	if (MBLKL(mp) < sizeof (*vxh)) {
 		/* XXX KEBE ASKS -- should we be more forgiving? */
@@ -406,103 +537,46 @@ vxlnat_one_vxlan(mblk_t *mp, struct sockaddr_in6 *underlay_src)
 		freeb(oldmp);
 	}
 	mp = vxlnat_cache_remote(mp, underlay_src, vnet);
-	if (mp == NULL) {
-		VXNV_REFRELE(vnet);
-		return;
+	if (mp == NULL)
+		goto bail_no_free;
+
+	/* Let's cache the IP header here... */
+	ipha = (ipha_t *)mp->b_rptr;
+	switch (IPH_HDR_VERSION(ipha)) {
+	case IPV4_VERSION:
+		ip6h = NULL;
+		break;
+	case IPV6_VERSION:
+		ip6h = (ip6_t *)ipha;
+		ipha = NULL;
+		break;
+	default:
+		DTRACE_PROBE2(vxlnat__in__drop__ipvers, int,
+		    IPH_HDR_VERSION(ipha), mblk_t *, mp);
+		goto bail_and_free;
 	}
 
 	/* 2.) Search 1-1s, process if hit. */
-	ipha = (ipha_t *)mp->b_rptr;
-	if (IPH_HDR_VERSION(ipha) == IPV4_VERSION) {
-		ip6h = NULL;
-		IN6_INADDR_TO_V4MAPPED((struct in_addr *)(&ipha->ipha_src),
-		    &fsearch.vxnf_addr);
-	} else {
-		/* vxlnat_cache_remote() did reality checks... */
-		ASSERT(IPH_HDR_VERSION(ipha) == IPV6_VERSION);
-		ip6h = (ip6_t *)ipha;
-		ipha = NULL;
-		fsearch.vxnf_addr = ip6h->ip6_src;
-	}
-	rw_enter(&vnet->vxnv_fixed_lock, RW_READER);
-	fixed = avl_find(&vnet->vxnv_fixed_ips, &fsearch, NULL);
-	if (fixed != NULL)
-		VXNF_REFHOLD(fixed);
-	rw_exit(&vnet->vxnv_fixed_lock);
-	if (fixed != NULL) {
-		mblk_t *newmp = NULL;
+	if (vxlnat_one_vxlan_fixed(vnet, mp, ipha, ip6h))
+		goto bail_no_free;	/* Success means mp was consumed. */
 
-		/*
-		 * XXX KEBE ASKS --> Do MTU check NOW?!  That way, we have
-		 * pre-natted data.  One gotcha, external dests may have
-		 * different PathMTUs so see below about EMSGSIZE...
-		 */
+	/* 3.) Search flows, process if hit. */
+	if (vxlnat_one_vxlan_flow(vnet, mp, ipha, ip6h))
+		goto bail_no_free;	/* Success means mp was consumed. */
 
-		/* XXX KEBE SAYS -- FILL ME IN... but for now: */
-		if (ipha != NULL)
-			newmp = vxlnat_fixed_fixv4(mp, fixed, B_FALSE);
-		else
-			freemsg(mp); /* XXX handle ip6h */
-
-		if (newmp != NULL) {
-			ire_t *outbound_ire;
-			/* Use C99's initializers for fun & profit. */
-			ip_recv_attr_t iras =
-			    { IRAF_IS_IPV4 | IRAF_VERIFIED_SRC };
-
-			ASSERT3P(ipha, !=, NULL);
-			ASSERT3P(ipha, ==, newmp->b_rptr);
-			/* XXX KEBE ASKS, IRR_ALLOCATE okay?!? */
-			outbound_ire = ire_route_recursive_dstonly_v4(
-			    ipha->ipha_dst, IRR_ALLOCATE,
-			    0 /* XXX KEBE SAYS XMIT HINT! */,
-			    vxlnat_netstack->netstack_ip);
-			VERIFY3P(outbound_ire, !=, NULL);
-			if (outbound_ire->ire_type == IRE_NOROUTE) {
-				/* Bail! */
-				VXNF_REFRELE(fixed);
-				VXNV_REFRELE(vnet);
-				return;
-			}
-
-			iras.ira_ip_hdr_length = IPH_HDR_LENGTH(ipha);
-			if (iras.ira_ip_hdr_length > sizeof (ipha_t))
-				iras.ira_flags |= IRAF_IPV4_OPTIONS;
-			iras.ira_xmit_hint = 0; /* XXX KEBE SAYS FIX ME! */
-			iras.ira_zoneid = outbound_ire->ire_zoneid;
-			iras.ira_pktlen = ntohs(ipha->ipha_length);
-			iras.ira_protocol = ipha->ipha_protocol;
-			/* XXX KEBE ASKS rifindex & ruifindex ?!? */
-			/*
-			 * NOTE: AT LEAST ira_ill needs ILLF_ROUTER set, as
-			 * well as the ill for the external NIC (where
-			 * off-link destinations live).  For fixed, ira_ill
-			 * should be the ill of the external source.
-			 */
-			iras.ira_rill = vxlnat_underlay_ire->ire_ill;
-			iras.ira_ill = fixed->vxnf_ire->ire_ill;
-			/* XXX KEBE ASKS cred & cpid ? */
-			iras.ira_verified_src = ipha->ipha_src;
-			/* XXX KEBE SAYS don't sweat IPsec stuff. */
-			/* XXX KEBE SAYS ALSO don't sweat l2src & mhip */
-
-			/* Okay, we're good! Let's pretend we're forwarding. */
-			ire_recv_forward_v4(outbound_ire, mp, ipha, &iras);
-			ire_refrele(outbound_ire);
-		}
-
-		/* All done... */
-		VXNF_REFRELE(fixed);
-		VXNV_REFRELE(vnet);
-		return;
-	}
-
-	/* XXX KEBE SAYS BUILD STEPS 3-4. */
+	/* 4.) Search rules, create new flow (or not) if hit. */
+	if (vxlnat_one_vxlan_rule(vnet, mp, ipha, ip6h))
+		goto bail_no_free;	/* Success means mp was consumed. */
 
 	/* 5.) Nothing, drop the packet. */
-	/* XXX KEBE ASKS DIAGNOSTIC? */
-	VXNV_REFRELE(vnet);
+
+	DTRACE_PROBE2(vxlnat__in___drop__nohits, vxlnat_vnet_t *, vnet,
+	    mblk_t *, mp);
+
+bail_and_free:
 	freemsg(mp);
+bail_no_free:
+	VXNV_REFRELE(vnet);
 }
 /*
  * ONLY return B_FALSE if we get a packet-clogging event.
@@ -638,6 +712,7 @@ vxlnat_fix_icmp_inner_v4(mblk_t *mp, icmph_t *icmph, ipaddr_t old_one,
 /*
  * Take a 1-1/fixed IPv4 packet and convert it for transmission out the
  * appropriate end. "to_private" is what it says on the tin.
+ * ALWAYS consumes "mp", regardless of return value.
  */
 static mblk_t *
 vxlnat_fixed_fixv4(mblk_t *mp, vxlnat_fixed_t *fixed, boolean_t to_private)
