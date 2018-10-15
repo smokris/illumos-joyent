@@ -13,12 +13,14 @@
  * Copyright 2018, Joyent, Inc.
  */
 #define __EXTENSIONS__
+
 #include <err.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <kstat.h>
 #include <libcustr.h>
 #include <limits.h>
+#include <stdarg.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,21 +32,15 @@
 #include <sys/errno.h>
 #include <sys/kstat.h>
 
-typedef struct cpuload {
-	int		cl_cpuid;
-	uint64_t	cl_intrmax;
-	uint64_t	cl_intrsum;
-	double		dl_avgintload;
-	double		dl_avgitnsec;
-} cpuload_t;
+#include "intrd.h"
 
-static int ivec_ctor(void *, void *, int);
-static void ivec_dtor(void *, void *);
-
+static int intrd_daemonize(void);
+static void intrd_dfatal(int, const char *, ...);
+static void setup(kstat_ctl_t **restrict, config_t *restrict);
 static void loop(const config_t *restrict, kstat_ctl_t *restrict);
 static void delta_save(stats_t **, size_t, stats_t *, uint_t);
 
-static umem_cache_t *ivec_cache;
+uint_t max_cpu;
 
 #ifdef DEBUG
 const char *
@@ -72,20 +68,129 @@ main(int argc, char **argv)
 {
 	kstat_ctl_t *kcp;
 	config_t cfg = { 0 };
+	int dfd, status;
 
 	umem_nofail_callback(nomem);
 
-	if ((ivec_cache = umem_cache_create("ivec cache", sizeof (ivec_t), 8,
-	    ivec_ctor, ivec_dtor, NULL, NULL, NULL, 0)) == NULL)
-		err(EXIT_FAILURE, "unable to create ivec_cache");
+	dfd = intrd_daemonize();
+
+	setup(&kcp, &cfg);
+
+	status = 0;
+	(void) write(dfd, &status, sizeof (status));
+	(void) close(dfd);
+
+	loop(&cfg, kcp);
+
+	kstat_close(kcp);
+	return (0);
+}
+
+static int
+intrd_daemonize(void)
+{
+	sigset_t set, oset;
+	int estatus, pfds[2];
+	pid_t child;
+	priv_set_t *pset;
+
+	if (chdir("/") != 0)
+		err(EXIT_FAILURE, "failed to chdir /");
+
+	/*
+	 * At this point, block all signals going in so we don't have the parent
+	 * mistakingly exit when the child is running, but never block SIGABRT.
+	 */
+	if (sigfillset(&set) != 0)
+		abort();
+	if (sigdelset(&set, SIGABRT) != 0)
+		abort();
+	if (sigprocmask(SIG_BLOCK, &set, &oset) != 0)
+		abort();
+
+	/*
+	 * Do the fork+setsid dance.
+	 */
+	if (pipe(pfds) != 0)
+		err(EXIT_FAILURE, "failed to create pipe for daemonizing");
+
+	if ((child = fork()) == -1)
+		err(EXIT_FAILURE, "failed to fork for daemonizing");
+
+	if (child != 0) {
+		/* We'll be exiting shortly, so allow for silent failure */
+		(void) close(pfds[1]);
+		if (read(pfds[0], &estatus, sizeof (estatus)) ==
+		    sizeof (estatus))
+			_exit(estatus);
+
+		if (waitpid(chid, &estatus, 0) == child && WIFEXITED(estatus))
+			_exit(WEXITSTATUS(estatus));
+
+		_exit(EXIT_FAILURE);
+	}
+
+	/*
+	 * Drop privileges.
+	 * XXX: Should we run as nobody and maybe have SMF give us
+	 * basic + PRIV_SYS_RES_CONFIG
+	 */
+	if (setgroups(0, NULL) != 0)
+		abort();
+	if ((pset = priv_allocset()) == NULL)
+		abort();
+
+	priv_basicset(pset);
+	if (priv_delset(pset, PRIV_PROC_EXEC) == -1 ||
+	    priv_delset(pset, PRIV_PROC_INFO) == -1 ||
+	    priv_delset(pset, PRIV_PROC_FORK) == -1 ||
+	    priv_delset(pset, PRIV_PROC_SESSION) == -1 ||
+	    priv_delset(pset, PRIV_FILE_LINK_ANY) == -1 ||
+	    priv_addset(pset, PRIV_SYS_RES_CONFIG) == -1) {
+		abort();
+	}
+
+	if (setppriv(PRIV_SET, PRIV_PERMITTED, pset) == -1)
+		abort();
+	if (setppriv(PRIV_SET, PRIV_EFFECTIVE, pset) == -1)
+		abort();
+
+	priv_freeset(pset);
+
+	if (close(pfds[0]) != 0)
+		abort();
+	if (setsid() == -1)
+		abort();
+	if (sigprocmask(SIG_SETMASK, &oset, NULL) != 0)
+		abort();
+	(void) umask(0022);
+
+	return (pfds[1]);
+}
+
+static void
+setup(kstat_ctl_t **restrict kcpp, config_t *restrict cfg)
+{
+	kstat_ctl_t *kcp;
+	long val;
+
+	intrd_kstat_init();
 
 	if ((kcp = kstat_open()) == NULL)
 		err(EXIT_FAILURE, "could not open /dev/kstat");
+	*kcpp = kcp;
 
-	loop(&cfg, kcp);
-	kstat_close(kcp);
+	if ((val = sysconf(_SC_NPROCESSORS_MAX)) == -1)
+		err(EXIT_FAILURE, "sysconf(_SC_NPROCESSORS_MAX) failed");
 
-	return (0);
+	if (val > UINT32_MAX || val <= 0) {
+		errx(EXIT_FAILURE, "max # of processors (%ld) of range "
+		    "[1, %u]", val, UINT32_MAX);
+	}
+	max_cpu = (uint_t)val;
+
+	// XXX: Initialize cfg
+	bzero(cfg, sizeof (*cfg));
 }
 
 static void
@@ -118,7 +223,6 @@ loop(const config_t *restrict cfg, kstat_ctl_t *restrict kcp)
 			continue;
 		}
 		delta_save(deltas, delta_sz, delta, statslen);
-
 		sum = stats_sum(deltas, deltas_sz, &ndeltas);
 
 	}
@@ -269,57 +373,16 @@ xreallocarray(void *p, size_t n, size_t elsize)
 	return (newp);
 }
 
-ivec_t *
-ivec_dup(const ivec_t *iv)
-{
-	ivec_t *newiv = ivec_new();
-	custr_t *newcu = newiv->ivec_name;
-
-	bcopy(iv, newiv, sizeof (*iv));
-	newiv->ivec_buspath = xstrdup(iv->ivec_buspath);
-	newiv->ivec_name = newcu;
-	custr_append(newcu, custr_cstr(iv->ivec_name));
-
-	return (newiv);
-}
-
-ivec_t *
-ivec_new(void)
-{
-	return (umem_cache_alloc(ivec_cache, UMEM_NOFAIL));
-}
-
-void
-ivec_free(ivec_t *iv)
-{
-	if (iv == NULL)
-		return;
-
-	custr_t *cu = iv->ivec_name;
-
-	bzero(iv, sizeof (*iv));
-	iv->ivec_num_ino = 1;
-	iv->ivec_nshared = 1;
-	iv->ivec_name = cu;
-	custr_reset(cu);
-}
-
-static int
-ivec_ctor(void *buf, void *dummy __unused, int flags __unused)
-{
-	ivec_t *iv = buf;
-
-	bzero(iv, sizeof (*iv));
-	VERIFY0(custr_alloc(&iv->ivec_name));
-	iv->iv_num_ino = 1;
-	iv->iv_nshared = 1;
-
-	return (0);
-}
-
 static void
-ivec_dtor(void *buf, void *dummy __unused)
+intrd_dfatal(int dfd, const char *fmt, ...)
 {
-	ivec_t *iv = buf;
-	custr_free(iv->iv_name);
+	int status = EXIT_FAILURE;
+	va_list ap;
+
+	va_start(ap, fmt);
+	(void) vfprintf(stderr, fmt, ap);
+	va_end(ap);
+
+	(void) write(dfd, &status, sizeof (status));
+	exit(status);
 }
