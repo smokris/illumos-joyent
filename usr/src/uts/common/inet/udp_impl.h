@@ -256,6 +256,8 @@ extern void	udp_kstat2_fini(netstackid_t, kstat_t *);
 
 extern void	udp_stack_cpu_add(udp_stack_t *, processorid_t);
 
+extern in_port_t udp_update_next_port(udp_t *, in_port_t, boolean_t);
+
 /*
  * Object to represent database of options to search passed to
  * {sock,tpi}optcom_req() interface routine to take care of option

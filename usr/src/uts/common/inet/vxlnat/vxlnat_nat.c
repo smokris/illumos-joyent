@@ -39,6 +39,7 @@
 #include <netinet/udp.h>
 #include <inet/ip.h>
 #include <inet/ip6.h>
+#include <inet/tcp_impl.h>
 #include <inet/udp_impl.h>
 #include <inet/tcp.h>
 
@@ -349,6 +350,110 @@ vxlnat_cache_remote(mblk_t *mp, struct sockaddr_in6 *underlay_src,
 }
 
 /*
+ * Extract transport-level information to find a NAT flow.
+ * Consume mp and return B_FALSE if there's a problem.  Fill in "ports"
+ * and "protocol" and return B_TRUE if there's not.
+ */
+static boolean_t
+vxlnat_grab_transport(mblk_t *mp, ipha_t *ipha, ip6_t *ip6h, uint32_t *ports,
+    uint8_t *protocol, uint8_t **nexthdr_ptr)
+{
+	uint8_t *nexthdr;
+
+	/* Punt on IPv6 for now... */
+	if (ip6h != NULL) {
+		freemsg(mp);
+		return (B_FALSE);
+	}
+
+	ASSERT(ipha != NULL);
+	*protocol = ipha->ipha_protocol;
+	nexthdr = ((uint8_t *)ipha + IPH_HDR_LENGTH(ipha));
+	*nexthdr_ptr = nexthdr;	/* Get this out of the way now. */
+	if (nexthdr > mp->b_wptr) {
+		DTRACE_PROBE1(vxlnat__in__drop__trnexthdr, mblk_t *, mp);
+		freemsg(mp);
+		return (B_FALSE);
+	}
+	switch (*protocol) {
+	case IPPROTO_TCP: {
+		tcpha_t *tcph = (tcpha_t *)nexthdr;
+
+		if (nexthdr + sizeof (*tcph) > mp->b_wptr) {
+			DTRACE_PROBE1(vxlnat__in__drop__tcpnexthdr, mblk_t *,
+			    mp);
+			freemsg(mp);
+			return (B_FALSE);
+		}
+		*ports = *((uint32_t *)tcph);
+		/* XXX KEBE SAYS - grab other metadata here NOW? */
+		break;
+	}
+	case IPPROTO_UDP: {
+		udpha_t *udph = (udpha_t *)nexthdr;
+
+		if (nexthdr + sizeof (*udph) > mp->b_wptr) {
+			DTRACE_PROBE1(vxlnat__in__drop__udpnexthdr, mblk_t *,
+			    mp);
+			freemsg(mp);
+			return (B_FALSE);
+		}
+		*ports = *((uint32_t *)udph);
+		/*
+		 * XXX KEBE SAYS - not as much as TCP, but grab other metadata
+		 * here NOW?
+		 */
+		break;
+	}
+	case IPPROTO_ICMP: {
+		icmph_t *icmph = (icmph_t *)nexthdr;
+
+		if (nexthdr + sizeof (*icmph) > mp->b_wptr) {
+			DTRACE_PROBE1(vxlnat__in__drop__icmpnexthdr, mblk_t *,
+			    mp);
+			freemsg(mp);
+			return (B_FALSE);
+		}
+		/* XXX KEBE SAYS sort out ICMP header... */
+		switch (icmph->icmph_type) {
+		case ICMP_ECHO_REQUEST:
+		case ICMP_TIME_STAMP_REQUEST:
+		case ICMP_TIME_EXCEEDED:
+		case ICMP_INFO_REQUEST:
+		case ICMP_ADDRESS_MASK_REPLY:
+			/* All ones we can sorta cope with... */
+			break;
+		default:
+			DTRACE_PROBE2(vxlnat__in__drop__icmptype, int,
+			    icmph->icmph_type, mblk_t *, mp);
+			freemsg(mp);
+			return (B_FALSE);
+		}
+		/* NOTE: as of now, will switch position depending on endian. */
+		*ports = icmph->icmph_echo_ident;
+		break;
+	}
+	default:
+		*ports = 0;
+		break;
+	}
+
+	return (B_TRUE);
+}
+
+/*
+ * This is the evaluate-packet vs. NAT flow state function.
+ * This function does NOT alter "mp".
+ */
+static boolean_t
+vxlnat_verify_natstate(mblk_t *mp, ipha_t *ipha, ip6_t *ip6h,
+    vxlnat_flow_t *flow, uint8_t *nexthdr)
+{
+	/* XXX KEBE SAYS FILL ME IN! */
+	return (B_FALSE);
+}
+
+/*
  * Inspect the packet and find ports & protos (or ICMP types & codes)
  * and see if we have an established NAT flow.
  *
@@ -362,8 +467,155 @@ static boolean_t
 vxlnat_one_vxlan_flow(vxlnat_vnet_t *vnet, mblk_t *mp, ipha_t *ipha,
     ip6_t *ip6h)
 {
-	/* XXX KEBE SAYS FILL ME IN. */
-	/* For now... */
+	vxlnat_flow_t *flow, searcher;
+	uint8_t *nexthdr;
+
+	/*
+	 * XXX KEBE WONDERS, should we return vxlnat_flow_t instead if we
+	 * miss?  That way, we only need to find the ports/protocol ONCE.
+	 */
+
+	if (ip6h != NULL) {
+		/* Eventually, grab addresses for "searcher". */
+		return (B_FALSE);	/* Bail on IPv6 for now... */
+	} else {
+		ASSERT(ipha != NULL);
+		searcher.vxnfl_isv4 = B_TRUE;	/* Required? */
+		IN6_INADDR_TO_V4MAPPED((struct in_addr *)(&ipha->ipha_src),
+		    &searcher.vxnfl_src);
+		IN6_INADDR_TO_V4MAPPED((struct in_addr *)(&ipha->ipha_dst),
+		    &searcher.vxnfl_dst);
+	}
+
+	if (!vxlnat_grab_transport(mp, ipha, ip6h, &searcher.vxnfl_ports,
+	    &searcher.vxnfl_protocol, &nexthdr)) {
+		DTRACE_PROBE1(vxlnat__in__flowgrab, mblk_t *, mp);
+		freemsg(mp);
+		return (B_TRUE);
+	}
+	
+
+	/*
+	 * XXX KEBE SAYS Eventually put the rw&find in an IPv4-only block,
+	 * because IPv6 (if we NAT it like IPv4) will have its own table/tree.
+	 */
+	rw_enter(&vnet->vxnv_flowv4_lock, RW_READER);
+	flow = avl_find(&vnet->vxnv_flows_v4, &searcher, NULL);
+	if (flow != NULL)
+		VXNFL_REFHOLD(flow);
+	rw_exit(&vnet->vxnv_flowv4_lock);
+
+	if (flow == NULL)
+		return (B_FALSE);	/* Let caller handle things. */
+
+	if (!vxlnat_verify_natstate(mp, ipha, ip6h, flow, nexthdr)) {
+		freemsg(mp);	/* XXX KEBE SAYS FOR NOW... */
+	} else {
+		/* XXX KEBE SAYS PROCESS... */
+	}
+
+	VXNFL_REFRELE(flow);
+	return (B_TRUE);
+}
+
+/*
+ * We have a new packet that seems to require a new NAT flow.  Construct that
+ * flow now, and intern it as both a conn_t in IP *and* in the vnet's
+ * appropriate vxnv_flows* tree.  Return NULL if we have a problem.
+ */
+static vxlnat_flow_t *
+vxlnat_new_flow(vxlnat_rule_t *rule, in6_addr_t *inner_src, in6_addr_t *dst,
+    uint32_t ports, uint8_t protocol)
+{
+	vxlnat_vnet_t *vnet = rule->vxnr_vnet;
+	vxlnat_flow_t *flow, *oldflow;
+	avl_tree_t *flowtree;
+	krwlock_t *flowlock;
+	avl_index_t where;
+
+	flow = kmem_alloc(sizeof (*flow), KM_NOSLEEP | KM_NORMALPRI);
+	if (flow == NULL)
+		return (NULL);
+
+	flow->vxnfl_dst = *dst;
+	flow->vxnfl_src = *inner_src;
+	flow->vxnfl_ports = ports;
+	flow->vxnfl_protocol = protocol;
+	flow->vxnfl_refcount = 2; /* One for internment, one for caller. */
+	/* Assume no mixed-IP-version mappings for now. */
+	if (IN6_IS_ADDR_V4MAPPED(inner_src)) {
+		ASSERT(IN6_IS_ADDR_V4MAPPED(dst));
+		flow->vxnfl_isv4 = B_TRUE;
+		flowtree = &vnet->vxnv_flows_v4;
+		flowlock = &vnet->vxnv_flowv4_lock;
+	} else {
+		ASSERT(!IN6_IS_ADDR_V4MAPPED(dst));
+		flow->vxnfl_isv4 = B_FALSE;
+		/* XXX KEBE SAYS we don't do IPv6 for now. */
+		DTRACE_PROBE2(vxlnat__flow__newv6, in6_addr_t *, inner_src,
+		    in6_addr_t *, dst);
+		kmem_free(flow, sizeof (*flow));
+		return (NULL);
+	}
+	VXNR_REFHOLD(rule);	/* For the flow itself... */
+	flow->vxnfl_rule = rule;
+
+	rw_enter(flowlock, RW_WRITER);
+	oldflow = (vxlnat_flow_t *)avl_find(flowtree, flow, &where);
+	if (oldflow != NULL) {
+		/*
+		 * Hmmm, someone put one in while we were dinking around.
+		 * XXX KEBE SAYS return the old one, refheld, for now.
+		 */
+		VXNR_REFRELE(rule);
+		kmem_free(flow, sizeof (*flow));
+		VXNFL_REFHOLD(oldflow);
+		flow = oldflow;
+	} else {
+		avl_insert(flowtree, flow, where);
+		/*
+		 * Do conn_t magic here, except for the conn_t activation.  I
+		 * am aware of holding the rwlock-as-write here.  We may need
+		 * to move this outside the rwlock hold, and
+		 * reacquire-on-failure.
+		 */
+		if (!vxlnat_new_conn(flow)) {
+			ASSERT(flow->vxnfl_connp == NULL);
+			avl_remove(flowtree, flow);
+			VXNR_REFRELE(flow->vxnfl_rule);
+			kmem_free(flow, sizeof (*flow));
+			flow = NULL;
+		}
+	}
+	rw_exit(flowlock);
+	
+	/* We just created this one, activate it. */
+	if (oldflow == NULL && flow != NULL)
+		vxlnat_activate_conn(flow);
+
+	return (flow);
+}
+
+void
+vxlnat_flow_free(vxlnat_flow_t *flow)
+{
+	ASSERT(flow->vxnfl_refcount == 0);
+
+	/* XXX KEBE SAYS FILL ME IN?! */
+	/* XXX KEBE ASKS ipcl_hash_remove()? */
+
+	flow->vxnfl_connp->conn_priv = NULL; /* Sufficient? */
+	CONN_DEC_REF(flow->vxnfl_connp);
+	VXNR_REFRELE(flow->vxnfl_rule);
+	kmem_free(flow, sizeof (*flow));
+}
+
+static boolean_t
+vxlnat_verify_initial(mblk_t *mp, ipha_t *ipha, ip6_t *ip6h,
+    uint32_t ports, uint8_t protocol, uint8_t *nexthdr)
+{
+	/* XXX KEBE SAYS FILL ME IN! */
+	freemsg(mp);
 	return (B_FALSE);
 }
 
@@ -380,12 +632,21 @@ vxlnat_one_vxlan_rule(vxlnat_vnet_t *vnet, mblk_t *mp, ipha_t *ipha,
     ip6_t *ip6h)
 {
 	vxlnat_rule_t *rule;
+	vxlnat_flow_t *flow;
+	in6_addr_t v4m_src, v4m_dst, *inner_src, *dst;
+	uint32_t ports;
+	uint8_t protocol;
+	uint8_t *nexthdr;
 
-	/* XXX handle IPv6 later */
+	/* XXX handle IPv6 later, assigning inner_src and dst to ip6_t addrs. */
 	if (ip6h != NULL)
 		return (B_FALSE);
 
 	ASSERT3P(ipha, !=, NULL);
+	inner_src = &v4m_src;
+	dst = &v4m_dst;
+	IN6_INADDR_TO_V4MAPPED((struct in_addr *)(&ipha->ipha_src), inner_src);
+	IN6_INADDR_TO_V4MAPPED((struct in_addr *)(&ipha->ipha_dst), dst);
 
 	mutex_enter(&vnet->vxnv_rule_lock);
 	rule = list_head(&vnet->vxnv_rules);
@@ -393,6 +654,8 @@ vxlnat_one_vxlan_rule(vxlnat_vnet_t *vnet, mblk_t *mp, ipha_t *ipha,
 	/*
 	 * search for a match in the nat rules
 	 * XXX investigate perf issues with with respect to list_t size
+	 * XXX KEBE SAYS rewrite when we start doing IPv6 to use "inner_src"
+	 * and "dst". 
 	 */
 	while (rule != NULL) {
 		ipaddr_t ipaddr;
@@ -419,11 +682,37 @@ vxlnat_one_vxlan_rule(vxlnat_vnet_t *vnet, mblk_t *mp, ipha_t *ipha,
 		return (B_FALSE);
 
 	/* process packet */
+
 	/*
-	static vxlnat_flow_t *
-	vxlnat_new_flow(vxlnat_rule_t *rule, in6_addr_t *inner_src, in6_addr_t *dst,
-	    uint32_t ports, uint8_t protocol)
+	 * Grab transport header, and figure out if we can proceed.
+	 *
+	 * NOTE: vxlnat_grab_transport() will free/consume mp if it fails,
+	 * because we want to isolate non-flow-starters without having them
+	 * create new flows.  This means we return B_TRUE (consumed mp) on
+	 * failure. 
 	 */
+	if (!vxlnat_grab_transport(mp, ipha, ip6h, &ports, &protocol, &nexthdr))
+		return (B_TRUE); /* see above... */
+	if (!vxlnat_verify_initial(mp, ipha, ip6h, ports, protocol, nexthdr))
+		return (B_TRUE);
+	
+
+	flow = vxlnat_new_flow(rule, inner_src, dst, ports, protocol);
+	if (flow != NULL) {
+		/*
+		 * Call same function that vxlnat_one_vxlan_flow() uses
+		 * to remap & transmit the packet out the external side.
+		 *
+		 * NOTE:  We've already checked the initial-packet-
+		 * qualification, so unlike the main datapath, we don't
+		 * need to call vxlnat_verify_natstate()
+		 */
+
+		 /* XXX KEBE SAYS PROCESS... */
+		
+		VXNFL_REFRELE(flow);
+		return (B_TRUE);
+	}
 
 	return (B_FALSE);
 }
@@ -564,12 +853,12 @@ vxlnat_one_vxlan(mblk_t *mp, struct sockaddr_in6 *underlay_src)
 	    vxlnat_vnet_t, vnet);
 
 	/*
-	 * Off-vxlan processing steps:
+	 * Arrived-from-vxlan processing steps:
 	 * 1.) Locate the ethernet header and check/update/add-into remotes.
 	 * 2.) Search 1-1s, process if hit.
 	 * 3.) Search flows, process if hit.
 	 * 4.) Search rules, create new flow (or not) if hit.
-	 * 5.) Drop the packets.
+	 * 5.) Drop the packet.
 	 */
 
 	/* 1.) Locate the ethernet header and check/update/add-into remotes. */

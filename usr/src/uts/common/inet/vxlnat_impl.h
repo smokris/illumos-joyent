@@ -51,6 +51,7 @@ typedef struct vxlnat_rule_s {
 	struct vxlnat_vnet_s *vxnr_vnet;
 	in6_addr_t vxnr_myaddr;
 	in6_addr_t vxnr_pubaddr;
+	/* XXX KEBE ASKS, ire? */
 	uint8_t vxnr_myether[ETHERADDRL];
 	uint16_t vxnr_vlanid;	/* Fabrics use this too. */
 	uint32_t vxnr_refcount;
@@ -71,7 +72,7 @@ extern void vxlnat_rule_free(vxlnat_rule_t *);
 /*
  * NAT FLOWS.  These are per-vnet, and keyed/searched by:
  * <inner-IP-source,IP-dest,inner-source-port,dest-port,protocol>.
- * They will be tied-to/part-of
+ * They will be tied-to/part-of a conn_t.
  */
 typedef struct vxlnat_flow_s {
 	avl_node_t vxnfl_treenode;
@@ -86,8 +87,14 @@ typedef struct vxlnat_flow_s {
 	uint8_t vxnfl_protocol;
 	uint8_t vxnfl_isv4 : 1,	/* Will save us 12 bytes of compares... */
 		vxlfl_reserved1 : 7;
+	/* Theoretically 16 bits lies where this comment is. */
+	uint32_t vxnfl_refcount;
 	conn_t *vxnfl_connp;	/* Question - embed instead? */
 	vxlnat_rule_t *vxnfl_rule; /* Refhold to rule that generated me. */
+	/*
+	 * XXX KEBE SAYS Other NAT-state belongs here too.  Like time-values
+	 * for timeouts, and more!
+	 */
 } vxlnat_flow_t;
 /* Exploit endianisms, maintain network order... */
 #ifdef _BIG_ENDIAN
@@ -97,6 +104,17 @@ typedef struct vxlnat_flow_s {
 #define	VXNFL_SPORT(ports) ((ports) & 0xFFFF)
 #define	VXNFL_DPORT(ports) (uint16_t)((ports) >> 16) /* Unsigned all around. */
 #endif
+#define	VXNFL_REFHOLD(vxnfl) {			\
+	atomic_inc_32(&(vxnfl)->vxnfl_refcount);	\
+	ASSERT((vxnfl)->vxnfl_refcount > 0);	\
+}
+#define	VXNFL_REFRELE(vxnfl) {					\
+	ASSERT((vxnfl)->vxnfl_refcount > 0);			\
+	membar_exit();						\
+	if (atomic_dec_32_nv(&(vxnfl)->vxnfl_refcount) == 0)	\
+		vxlnat_flow_free(vxnfl);			\
+}
+extern void vxlnat_flow_free(vxlnat_flow_t *);
 
 /*
  * 1-1 IP mapping.
@@ -263,6 +281,11 @@ extern int vxlnat_fixed_ire_send_v4(ire_t *, mblk_t *, void *,
 extern int vxlnat_fixed_ire_send_v6(ire_t *, mblk_t *, void *,
     ip_xmit_attr_t *, uint32_t *);
 
+extern boolean_t vxlnat_new_conn(vxlnat_flow_t *);
+extern void vxlnat_activate_conn(vxlnat_flow_t *);
+#ifdef notyet
+extern void vxlnat_deactivate_conn(vxlnat_flow_t *);
+#endif
 
 extern vxlnat_vnet_t *vxlnat_get_vnet(uint32_t, boolean_t);
 

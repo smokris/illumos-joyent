@@ -176,8 +176,6 @@ static mblk_t	*udp_prepend_header_template(conn_t *, ip_xmit_attr_t *,
 static void	udp_ud_err(queue_t *q, mblk_t *mp, t_scalar_t err);
 static void	udp_ud_err_connected(conn_t *, t_scalar_t);
 static void	udp_tpi_unbind(queue_t *q, mblk_t *mp);
-static in_port_t udp_update_next_port(udp_t *udp, in_port_t port,
-    boolean_t random);
 static void	udp_wput_other(queue_t *q, mblk_t *mp);
 static void	udp_wput_iocdata(queue_t *q, mblk_t *mp);
 static int	udp_wput_fallback(queue_t *q, mblk_t *mp);
@@ -2654,7 +2652,7 @@ udp_tpi_unbind(queue_t *q, mblk_t *mp)
  * us->us_epriv_ports is not sorted thus we loop over it until
  * there are no changes.
  */
-static in_port_t
+in_port_t
 udp_update_next_port(udp_t *udp, in_port_t port, boolean_t random)
 {
 	int i, bump;
