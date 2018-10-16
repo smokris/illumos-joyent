@@ -20,6 +20,8 @@
 #include <kstat.h>
 #include <libcustr.h>
 #include <limits.h>
+#include <priv.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -31,6 +33,8 @@
 #include <sys/debug.h>
 #include <sys/errno.h>
 #include <sys/kstat.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 
 #include "intrd.h"
 
@@ -124,7 +128,7 @@ intrd_daemonize(void)
 		    sizeof (estatus))
 			_exit(estatus);
 
-		if (waitpid(chid, &estatus, 0) == child && WIFEXITED(estatus))
+		if (waitpid(child, &estatus, 0) == child && WIFEXITED(estatus))
 			_exit(WEXITSTATUS(estatus));
 
 		_exit(EXIT_FAILURE);
@@ -222,7 +226,7 @@ loop(const config_t *restrict cfg, kstat_ctl_t *restrict kcp)
 			 */
 			continue;
 		}
-		delta_save(deltas, delta_sz, delta, statslen);
+		delta_save(deltas, deltas_sz, delta, statslen);
 		sum = stats_sum(deltas, deltas_sz, &ndeltas);
 
 	}
@@ -255,13 +259,15 @@ delta_save(stats_t **deltas, size_t n, stats_t *newdelta, uint_t statslen)
 		break;
 	}
 
+	/* If all the slots are full, drop the last entry */
 	if (i == n) {
 		i = n - 1;
 		stats_free(deltas[i]);
 	}
 
+	/* Move everything over one slot */
 	(void) memmove(deltas + 1, deltas, i * sizeof (stats_t *));
-	deltas[0] = delta;
+	deltas[0] = newdelta;
 }
 
 static void *

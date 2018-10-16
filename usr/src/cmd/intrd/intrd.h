@@ -59,7 +59,7 @@ typedef struct ivec {
 typedef struct cpustat {
 	hrtime_t	cs_crtime;
 	int		cs_cpuid;
-	lgrp_id_t	cg_lgrp;
+	lgrp_id_t	cs_lgrp;
 	uint64_t	cs_cpu_nsec_idle;
 	uint64_t	cs_cpu_nsec_user;
 	uint64_t	cs_cpu_nsec_kernel;
@@ -102,13 +102,14 @@ typedef struct stats {
 	ivec_t		**sts_ivecs;
 	size_t		sts_nivecs;
 
-	cpugrp_t	sts_lgrp[LGRP_MAX];
+	cpugrp_t	*sts_lgrp;
+	size_t		sts_nlgrp;
 } stats_t;
 
 static inline list_t *
-ivec_list(struct stats_t *stat, const ivec_t *iv)
+ivec_list(stats_t *stat, const ivec_t *iv)
 {
-    if (!list_link_active(&iv->ivec_node))
+    if (!list_link_active((list_node_t *)&iv->ivec_node))
         return (NULL);
 
     cpustat_t *cs = stat->sts_cpu_byid[iv->ivec_cpuid];
@@ -122,7 +123,7 @@ extern uint_t max_cpu;
 
 stats_t *stats_get(const config_t *restrict, kstat_ctl_t *restrict, uint_t);
 stats_t *stats_delta(const stats_t *, const stats_t *);
-stats_t *stats_sum(const stats_t **, size_t, size_t *);
+stats_t *stats_sum(stats_t * const*, size_t, size_t *);
 stats_t *stats_dup(const stats_t *);
 void stats_free(stats_t *);
 

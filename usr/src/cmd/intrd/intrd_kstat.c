@@ -144,7 +144,7 @@ stats_get(const config_t *restrict cfg, kstat_ctl_t *restrict kcp,
 			sts->sts_cpu[j++] = sts->sts_cpu_byid[i];
 	}
 	read_info.ri_cpu = NULL;
-	read_info.ri_ncpu = read_info.ri_cpualloc = 0;
+	read_info.ri_ncpu = 0;
 
 	/*
 	 * Combine any shared or grouped interrupts before assigning
@@ -175,7 +175,7 @@ stats_get(const config_t *restrict cfg, kstat_ctl_t *restrict kcp,
 		ivec_t *ivp = sts->sts_ivecs[i];
 		cpustat_t *cs = sts->sts_cpu_byid[ivp->ivec_cpuid];
 
-		list_append_tail(&cs->cs_ivecs, ivp);
+		list_insert_tail(&cs->cs_ivecs, ivp);
 		cs->cs_nivecs++;
 	}
 
@@ -195,99 +195,82 @@ fail:
 }
 
 static boolean_t
-get_lgrp_children(cpugrp_t *cg, lgrp_cookie_t cookie, lgrp_id_t id)
-{
-	lgrp_id_t ids[LGRP_MAX];
-	int num;
-
-	num = lgrp_children(cookie, parent, &ids, LGRP_MAX);
-	if (num == -1)
-		return (B_FALSE);
-
-	cg->cg_id = id;
-	cg->cg_children = xcalloc(num, sizeof (lgrp_id_t));
-	cg->cg_nchildren = num;
-	bcopy(ids, cg->cg_children, num * sizeof (lgrp_id_t));
-
-	return (B_TRUE);
-}
-
-static boolean_t
-do_lgrp_children(lgrp_cookie_t cookie, lgrp_id_t parent, lgrp_id_t id,
-    stats_t *stp)
-{
-	cpugrp_t *cg;
-
-	VERIFY3S(id, <, LGRP_MAX);
-	VERIFY3S(id, >=, 0);
-
-	cg = &stp->sts_lgrp[id];
-	cg->cg_parent = parent;
-
-	if (!get_lgrp_children(cg, cookie, id))
-		return (B_FALSE);
-
-	for (int i = 0; i < num; i++) {
-		if (!do_lgrp_children(cookie, id, cg->il_children[i], stp))
-			return (B_FALSE);
-	}
-
-	return (B_TRUE);
-}
-
-static boolean_t
 build_lgrp_tree(stats_t *st)
 {
 	lgrp_cookie_t cookie;
-	int i, j, n;
+	int nlgrp;
 
 	cookie = lgrp_init(LGRP_VIEW_OS);
 	VERIFY(cookie != LGRP_COOKIE_NONE);
 
-	if (!do_lgrp_children(cookie, LGRP_ROOTID, LGRP_ROOTID, st))
+	if ((nlgrp = lgrp_nlgrps(cookie)) == -1) {
+		VERIFY0(lgrp_fini(cookie));
 		return (B_FALSE);
+	}
 
-	processorid_t cpuids[max_cpu];
+	if (nlgrp == 0) {
+		VERIFY0(lgrp_fini(cookie));
+		return (B_TRUE);
+	}
+
+	st->sts_lgrp = xcalloc(nlgrp, sizeof (cpugrp_t));
+	st->sts_nlgrp = (size_t)nlgrp;
 
 	/*
-	 * XXX: If we can guarantee that lgrp id values are always in the
-	 * range [0..lgrp_nlgrps()] (the documentation and source is not
-	 * clear on this), we could simplify this a lot and just iterate
-	 * through the ids and grab the list of children for each lgrp.
+	 * If we ever have systems so large that these sizes pose a problem,
+	 * this whole application will likely need to be rewritten or discarded.
 	 */
-	for (i = 0; i < LGRP_MAX; i++) {
-		lgrp_id_t grpid = st->sts_lgrp[i].cg_id;
+	processorid_t cpuids[max_cpu];
+	lgrp_id_t lgrpids[nlgrp];
 
-		if (grpid == LGRP_NONE)
-			continue;
+	for (lgrp_id_t lgrpid = 0; lgrpid < nlgrp; lgrpid++) {
+		cpugrp_t *cg = &st->sts_lgrp[lgrpid];
+
+		cg->cg_id = lgrpid;
+
+		bzero(lgrpids, nlgrp * sizeof (lgrp_id_t));
+		int nkids = lgrp_children(cookie, lgrpid, lgrpids, nlgrp);
+		if (nkids == -1)
+			goto fail;
+
+		cg->cg_nchildren = (size_t)nkids;
+		if (nkids > 0) {
+			cg->cg_children = xcalloc(nkids, sizeof (lgrp_id_t));
+			bcopy(lgrpids, cg->cg_children,
+			    nkids * sizeof (lgrp_id_t));
+		}
+
+		for (int i = 0; i < nkids; i++) {
+			lgrp_id_t childid = cg->cg_children[i];
+			cpugrp_t *child = &st->sts_lgrp[childid];
+			child->cg_parent = lgrpid;
+		}
 
 		bzero(cpuids, max_cpu * sizeof (processorid_t));
+		int ncpu = lgrp_cpus(cookie, lgrpid, cpuids, max_cpu,
+		    LGRP_CONTENT_DIRECT);
 
-		if ((n = lgrp_cpus(cookie, grpid, &cpuids, max_cpu,
-		    LGRP_CONENT_DIRECT)) == -1)
-			return (B_FALSE);
+		if (ncpu == -1)
+			goto fail;
 
-		VERIFY3S(n, <, max_cpu);
+		for (int i = 0; i < ncpu; i++) {
+			processorid_t cpuid = cpuids[i];
+			VERIFY3S(cpuid, <, max_cpu);
 
-		for (j = 0; j < n; j++) {
-			cpustat_t *cs = st->sts_cpu_byid[cpuids[j]];
-
+			cpustat_t *cs = st->sts_cpu_byid[cpuid];
 			if (cs == NULL)
 				continue;
 
-			cs->cs_lgrp = grpid;
+			cs->cs_lgrp = lgrpid;
 		}
 	}
 
 	lgrp_fini(cookie);
-
-	/* Make sure every CPU has been assigned to an lgrp */
-	for (i = 0; i < st->sts_ncpu; i++) {
-		if (st->sts_cpu[i]->cg_lgrp == LGRP_NONE)
-			return (B_FALSE);
-	}
-
 	return (B_TRUE);
+
+fail:
+	lgrp_fini(cookie);
+	return (B_FALSE);
 }
 
 /*
@@ -733,7 +716,7 @@ stats_delta(const stats_t *restrict st, const stats_t *restrict stprev)
 	const cpustat_t *cs;
 	cpustat_t *csd;
 	ivec_t *iv, *ivd;
-	size_t i, j;
+	size_t i;
 
 	if (st == NULL || stprev == NULL)
 		return (NULL);
@@ -768,10 +751,13 @@ stats_delta(const stats_t *restrict st, const stats_t *restrict stprev)
 		CS_SUB(cpu_nsec_dtrace, csd, cs);
 		CS_SUB(cpu_nsec_intr, csd, cs);
 
-		for (j = 0; j < cs->cs_nivecs; j++) {
-			iv = cs->cs_ivecs[j];
-			ivd = csd->cs_ivecs[j];
-
+		iv = list_head((list_t *)&cs->cs_ivecs);
+		ivd = list_head(&csd->cs_ivecs);
+		while(iv != NULL && ivd != NULL) {
+			/*
+			 * If !stats_differ(st, stprev), then these entries
+			 * should always correspond.
+			 */
 			VERIFY3S(iv->ivec_instance, ==, ivd->ivec_instance);
 			if (ivd->ivec_crtime < iv->ivec_crtime) {
 				syslog(LOG_WARNING,
@@ -785,6 +771,9 @@ stats_delta(const stats_t *restrict st, const stats_t *restrict stprev)
 				goto fail;
 			}
 			ivd->ivec_time -= iv->ivec_time;
+
+			iv = list_next((list_t *)&cs->cs_ivecs, iv);
+			ivd = list_next(&csd->cs_ivecs, ivd);
 		}
 	}
 #undef CS_SUB
@@ -799,10 +788,10 @@ fail:
 }
 
 stats_t *
-stats_sum(const stats_t **restrict deltas, size_t n, size_t *restrict total)
+stats_sum(stats_t * const *restrict deltas, size_t n, size_t *restrict total)
 {
 	VERIFY3U(n, >, 0);
-	VERIFY3P(deltas[0], != NULL);
+	VERIFY3P(deltas[0], !=, NULL);
 
 	stats_t *sum = stats_dup(deltas[0]);
 	boolean_t overflow = B_FALSE;
@@ -831,16 +820,23 @@ stats_sum(const stats_t **restrict deltas, size_t n, size_t *restrict total)
 			if (overflow)
 				goto fail;
 
-			for (size_t k = 0; k < sumcs->cs_nivecs; k++) {
-				ivec_t *sumiv = sumcs->cs_ivecs[k];
-				ivec_t *sumd = dcs->cs_ivecs[k];
+			list_t *sumivl = &sumcs->cs_ivecs;
+			list_t *sumdl = &dcs->cs_ivecs;
 
+			ivec_t *sumiv = list_head(sumivl);
+			ivec_t *sumd = list_head(sumdl);
+			while (sumiv != NULL && sumd != NULL) {
 				overflow |= uint64_add(sumiv->ivec_time,
 				    sumd->ivec_time, &sumiv->ivec_time);
 
 				if (overflow)
 					goto fail;
+
+				sumiv = list_next(sumivl, sumiv);
+				sumd = list_next(sumdl, sumd);
 			}
+			VERIFY3P(sumiv, ==, NULL);
+			VERIFY3P(sumd, ==, NULL);
 		}
 		*total++;
 	}
@@ -890,13 +886,29 @@ stats_differ(const stats_t *s1, const stats_t *s2)
 		const cpustat_t *c1 = s1->sts_cpu[i];
 		const cpustat_t *c2 = s2->sts_cpu[i];
 
+		/*
+		 * A new stats_t generated from a kstat snapshot will
+		 * have its cpustat_t's sorted by CPU ID, so both lists
+		 * should be in the same order.
+		 */
+		if (c1->cs_cpuid != c2->cs_cpuid)
+			return (B_TRUE);
+
 		if (c1->cs_nivecs != c2->cs_nivecs)
 			return (B_TRUE);
 
-		for (size_t j = 0; j < c1->cs_nivecs; j++) {
-			const ivec_t *iv1 = c1->cs_ivecs[j];
-			const ivec_t *iv2 = c2->cs_ivecs[j];
+		list_t *l1 = (list_t *)&c1->cs_ivecs;
+		list_t *l2 = (list_t *)&c2->cs_ivecs;
 
+		const ivec_t *iv1 = list_head(l1);
+		const ivec_t *iv2 = list_head(l2);
+
+		while (iv1 != NULL && iv2 != NULL) {
+			/*
+			 * Similarly to cpustat_t's, ivec_t's are sorted by
+			 * instance id, so l1 and l2 should be in the same
+			 * order.
+			 */
 			if (iv1->ivec_instance != iv2->ivec_instance)
 				return (B_TRUE);
 			if (iv1->ivec_cpuid != iv2->ivec_cpuid)
@@ -905,7 +917,12 @@ stats_differ(const stats_t *s1, const stats_t *s2)
 				return (B_TRUE);
 			if (strcmp(iv1->ivec_buspath, iv2->ivec_buspath) != 0)
 				return (B_TRUE);
+
+			iv1 = list_next(l1, (ivec_t *)iv1);
+			iv2 = list_next(l2, (ivec_t *)iv2);
 		}
+		if (iv1 != NULL || iv2 != NULL)
+			return (B_TRUE);
 	}
 
 	return (B_FALSE);
@@ -927,7 +944,7 @@ kstat_iter(kstat_ctl_t *restrict kcp, kstat_itercb_t cb, void *restrict arg)
 static stats_t *
 stats_new(void)
 {
-	return (umem_cache_create(stats_cache, UMEM_NOFAIL));
+	return (umem_cache_alloc(stats_cache, UMEM_NOFAIL));
 }
 
 void
@@ -945,9 +962,10 @@ stats_free(stats_t *stp)
 	free(stp->sts_cpu);
 	free(stp->sts_cpu_byid);
 
+	for (i = 0; i < stp->sts_nlgrp; i++)
+		free(stp->sts_lgrp[i].cg_children);
+
 	bzero(stp, sizeof (*stp));
-	for (i = 0; i < LGRP_MAX; i++)
-		stp->sts_lgrp[i] = LGRP_NONE;
 
 	umem_cache_free(stats_cache, stp);
 }
@@ -989,6 +1007,7 @@ ivec_free(ivec_t *iv)
 	custr_t *cu = iv->ivec_name;
 
 	VERIFY(!list_link_active(&iv->ivec_node));
+	free(iv->ivec_buspath);
 	bzero(iv, sizeof (*iv));
 	iv->ivec_num_ino = 1;
 	iv->ivec_nshared = 1;
@@ -1041,8 +1060,8 @@ cpustat_dup(const cpustat_t *src)
 	cs->cs_cpu_nsec_dtrace = src->cs_cpu_nsec_dtrace;
 	cs->cs_cpu_nsec_intr = src->cs_cpu_nsec_intr;
 
-	for (ivsrc = list_head(ivlist); ivsrc != NULL;
-	    ivsrc = list_next(ivlist, ivsrc)) {
+	for (ivsrc = list_head(srclist); ivsrc != NULL;
+	    ivsrc = list_next(srclist, ivsrc)) {
 		list_insert_tail(&cs->cs_ivecs, ivec_dup(ivsrc));
 		cs->cs_nivecs++;
 	}
@@ -1056,9 +1075,6 @@ stats_ctor(void *buf, void *dummy __unused, int flags __unused)
 	stats_t *st = buf;
 
 	bzero(st, sizeof (*st));
-	for (int i = 0; i < LGRP_MAX; i++)
-		st->sts_lgrp[i] = LGRP_NONE;
-
 	return (0);
 }
 
@@ -1081,7 +1097,7 @@ cpustat_dtor(void *buf, void *dummy __unused)
 	cpustat_t *cs = buf;
 
 	VERIFY0(cs->cs_nivecs);
-	list_destory(&cs->cs_ivecs);
+	list_destroy(&cs->cs_ivecs);
 }
 
 static int
@@ -1093,8 +1109,8 @@ ivec_ctor(void *buf, void *dummy __unused, int flags __unused)
 	bzero(iv, sizeof (*iv));
 	if ((ret = custr_alloc(&iv->ivec_name)) != 0)
 		return (ret);
-	iv->iv_num_ino = 1;
-	iv->iv_nshared = 1;
+	iv->ivec_num_ino = 1;
+	iv->ivec_nshared = 1;
 
 	return (0);
 }
@@ -1103,7 +1119,7 @@ static void
 ivec_dtor(void *buf, void *dummy __unused)
 {
 	ivec_t *iv = buf;
-	custr_free(iv->iv_name);
+	custr_free(iv->ivec_name);
 }
 
 void
