@@ -379,8 +379,52 @@ static boolean_t
 vxlnat_one_vxlan_rule(vxlnat_vnet_t *vnet, mblk_t *mp, ipha_t *ipha,
     ip6_t *ip6h)
 {
-	/* XXX KEBE SAYS FILL ME IN. */
-	/* For now... */
+	vxlnat_rule_t *rule;
+
+	/* XXX handle IPv6 later */
+	if (ip6h != NULL)
+		return (B_FALSE);
+
+	ASSERT3P(ipha, !=, NULL);
+
+	mutex_enter(&vnet->vxnv_rule_lock);
+	rule = list_head(&vnet->vxnv_rules);
+
+	/*
+	 * search for a match in the nat rules
+	 * XXX investigate perf issues with with respect to list_t size
+	 */
+	while (rule != NULL) {
+		ipaddr_t ipaddr;
+		uint32_t netmask = 0xffffffff;
+		uint8_t prefix = rule->vxnr_prefix - 96;
+
+		/* calculate the v4 netmask */
+		netmask <<= (32 - prefix);
+		netmask = htonl(netmask);
+
+		IN6_V4MAPPED_TO_IPADDR(&rule->vxnr_myaddr, ipaddr);
+		/* XXX ASSERT vlanid? */
+		if ((ipaddr & netmask) == (ipha->ipha_src & netmask)) {
+			VXNR_REFHOLD(rule);
+			break;
+		}
+
+		rule = list_next(&vnet->vxnv_rules, rule);
+	}
+
+	mutex_exit(&vnet->vxnv_rule_lock);
+
+	if (rule == NULL)
+		return (B_FALSE);
+
+	/* process packet */
+	/*
+	static vxlnat_flow_t *
+	vxlnat_new_flow(vxlnat_rule_t *rule, in6_addr_t *inner_src, in6_addr_t *dst,
+	    uint32_t ports, uint8_t protocol)
+	 */
+
 	return (B_FALSE);
 }
 
