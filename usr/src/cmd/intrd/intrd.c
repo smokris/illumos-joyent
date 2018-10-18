@@ -286,6 +286,59 @@ delta_save(stats_t **deltas, size_t n, stats_t *newdelta, uint_t statslen)
 	deltas[0] = newdelta;
 }
 
+static void
+calc_lgrp_load(cpugrp_t *grp, load_t *ld, lgrp_id_t id)
+{
+	cpugrp_t *cg = grp + id;
+	load_t *lgrp = LOAD_LGRP(ld, id);
+
+	for (size_t i = 0; i < cg->cg_nchildren; i++) {
+		calc_lgrp_load(grp, ld, cg->cg_children[i]);
+
+		load_t *lchild = LOAD_LGRP(ld, cg->cg_children[i]);
+
+		lgrp->ld_total += lchild->ld_total;
+		lgrp->ld_intrtotal += lchild->ld_intrtotal;
+		lgrp->ld_bigint = LOAD_MAXINT(lgrp, lchild);
+	}
+
+}
+
+static load_t *
+calc_load(stats_t *stp)
+{
+	load_t *ld = xcalloc(max_cpu + stp->sts_nlgrp, sizeof (load_t));
+	uint64_t sum, intrsum;
+	ivec_t *bigint;
+
+	for (size_t i = 0; i < stp->sts_ncpu; i++) {
+		cpustat_t *cs = stp->sts_cpu[i];
+		load_t *lcpu = LOAD_CPU(ld, cs->cs_cpuid);
+		load_t *llgrp = LOAD_LGRP(ld, cs->cs_lgrp);
+		ivec_t *iv;
+
+		lcpu->ld_total = cs->cs_cpu_nsec_idle + cs->cs_cpu_nsec_user +
+		    cs->cs_cpu_nsec_kernel + cs->cs_cpu_nsec_dtrace +
+		    cs->cs_cpu_nsec_intr;
+
+		for (iv = list_head(&cs->cs_ivecs); iv != NULL;
+		    iv = list_next(&cs->cs_ivecs, iv)) {
+			lcpu->ld_intrtotal += iv->ivec_time;
+			if (lcpu->ld_bigint == NULL ||
+			    lcpu->ld_bigint->ivec_time < iv->ivec_time)
+				lcpu->ld_bigint = iv;
+		}
+
+		llgrp->ld_total += lcpu->ld_total;
+		llgrp->ld_intrtotal += lcpu->ld_intrtotal;
+		llgrp->ld_bigint = LOAD_MAXINT(llgrp, lcpu);
+	}
+
+	calc_lgrp_load(stp->sts_lgrp, ld, 0);
+
+	return (ld);
+}
+
 static void *
 filter(void *arr, size_t n, void *(*cb)(void *, void *), void *arg)
 {
