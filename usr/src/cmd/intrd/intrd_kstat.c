@@ -1025,10 +1025,11 @@ stats_dump(const stats_t *stp)
 		for (iv = list_head(&cs->cs_ivecs); iv != NULL;
 		    iv = list_next(&cs->cs_ivecs, iv)) {
 			total += iv->ivec_time;
-			(void) printf("%16s int#%llu pil %llu %llu\n",
-			    custr_cstr(iv->ivec_name), iv->ivec_ino,
+			(void) printf("%*s %-16s int#%llu pil %llu %llu\n",
+			    (int)8, "", custr_cstr(iv->ivec_name), iv->ivec_ino,
 			    iv->ivec_pil, iv->ivec_time);
 		}
+		(void) printf("  intr total:      %llu\n", total);
 	}
 
 	(void) fputc('\n', stdout);

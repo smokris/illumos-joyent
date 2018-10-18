@@ -228,9 +228,6 @@ loop(const config_t *restrict cfg, kstat_ctl_t *restrict kcp)
 		if ((stats[gen] = stats_get(cfg, kcp, interval)) == NULL)
 			continue;
 
-		printf("Stats\n");
-		stats_dump(stats[gen]);
-
 		delta = stats_delta(stats[gen], stats[gen ^ 1]);
 		gen ^= 1;
 
@@ -245,6 +242,7 @@ loop(const config_t *restrict cfg, kstat_ctl_t *restrict kcp)
 		delta_save(deltas, deltas_sz, delta, cfg->cfg_statslen);
 		sum = stats_sum(deltas, deltas_sz, &ndeltas);
 
+		printf("Delta\n");
 		stats_dump(delta);
 	}
 }
