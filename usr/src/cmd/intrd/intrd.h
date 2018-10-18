@@ -115,7 +115,7 @@ typedef struct load {
 #define LOAD_LGRP(_load, _id) ((_load) + max_cpu + (_id))
 #define LOAD_CPU(_load, _id) ((_load) + (_id))
 #define LOAD_BIGINT_LOAD(_load) \
-    (((_load)->ld_bigint != NULL) ? (_load)->ld_bigint : 0)
+    (((_load)->ld_bigint != NULL) ? (_load)->ld_bigint->ivec_time : 0)
 #define LOAD_MAXINT(_l1, _l2) \
     ((LOAD_BIGINT_LOAD(_l1) > LOAD_BIGINT_LOAD(_l2)) ? \
      (_l1)->ld_bigint : (_l2)->ld_bigint)

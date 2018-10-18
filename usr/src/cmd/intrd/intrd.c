@@ -43,6 +43,8 @@ static void intrd_dfatal(int, const char *, ...);
 static void setup(kstat_ctl_t **restrict, config_t *restrict);
 static void loop(const config_t *restrict, kstat_ctl_t *restrict);
 static void delta_save(stats_t **, size_t, stats_t *, uint_t);
+static load_t *calc_load(stats_t *);
+static void load_free(load_t *);
 
 uint_t max_cpu;
 
@@ -210,8 +212,6 @@ setup(kstat_ctl_t **restrict kcpp, config_t *restrict cfg)
 static void
 loop(const config_t *restrict cfg, kstat_ctl_t *restrict kcp)
 {
-	printf("avg int: %u interval: %u\n", cfg->cfg_avginterval, cfg->cfg_interval); fflush(stdout);
-
 	const size_t deltas_sz = cfg->cfg_avginterval / cfg->cfg_interval + 1;
 
 	stats_t *stats[2] = { 0 };
@@ -242,8 +242,30 @@ loop(const config_t *restrict cfg, kstat_ctl_t *restrict kcp)
 		delta_save(deltas, deltas_sz, delta, cfg->cfg_statslen);
 		sum = stats_sum(deltas, deltas_sz, &ndeltas);
 
-		printf("Delta\n");
-		stats_dump(delta);
+		{
+			stats_t *st = (sum != NULL) ? sum : delta;
+			load_t *load = calc_load(st);
+
+			for (size_t i = 0; i < st->sts_ncpu; i++) {
+				load_t *cpuload;
+				int cpuid = st->sts_cpu[i]->cs_cpuid;
+				double pct;
+
+				cpuload = LOAD_CPU(load, cpuid);
+				pct = (double)cpuload->ld_intrtotal /
+				    cpuload->ld_total;
+				(void) printf("CPU %3d %.1f%% intr\n", cpuid,
+				    pct);
+				if (cpuload->ld_bigint == NULL)
+					continue;
+
+				(void) printf("    Big intr: %s int#%llu\n",
+				    custr_cstr(cpuload->ld_bigint->ivec_name),
+				    cpuload->ld_bigint->ivec_ino);
+			}
+
+			load_free(load);
+		}
 	}
 }
 
@@ -324,8 +346,7 @@ calc_load(stats_t *stp)
 		for (iv = list_head(&cs->cs_ivecs); iv != NULL;
 		    iv = list_next(&cs->cs_ivecs, iv)) {
 			lcpu->ld_intrtotal += iv->ivec_time;
-			if (lcpu->ld_bigint == NULL ||
-			    lcpu->ld_bigint->ivec_time < iv->ivec_time)
+			if (LOAD_BIGINT_LOAD(lcpu) < iv->ivec_time)
 				lcpu->ld_bigint = iv;
 		}
 
@@ -337,29 +358,6 @@ calc_load(stats_t *stp)
 	calc_lgrp_load(stp->sts_lgrp, ld, 0);
 
 	return (ld);
-}
-
-static void *
-filter(void *arr, size_t n, void *(*cb)(void *, void *), void *arg)
-{
-	char **pp = arr;
-	char **new = xcalloc(n, sizeof (char *));
-	size_t len = 0;
-
-	for (size_t i = 0; i < n; i++) {
-		void *p = cb(pp[i], arg);
-
-		if (p != NULL) {
-			new[len++] = p;
-		}
-	}
-
-	if (len == 0) {
-		free(new);
-		return (NULL);
-	}
-
-	return (xreallocarray(new, len, sizeof (char *)));
 }
 
 int
@@ -416,6 +414,14 @@ ivec_cmp_cpu(const void *a, const void *b)
 		return (1);
 
 	return (0);
+}
+
+static void
+load_free(load_t *ld)
+{
+	if (ld == NULL)
+		return;
+	free(ld);
 }
 
 char *
