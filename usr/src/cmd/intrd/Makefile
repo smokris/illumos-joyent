@@ -22,15 +22,23 @@
 #
 # Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
 # Use is subject to license terms.
+# Copyright 2018, Joyent, Inc.
 #
 # Makefile for interrupt distribution daemon
 #
 
 PROG=		intrd
+OBJS=		intrd.o intrd_kstat.o intrd_move.o
+SRCS=		$(OBJS:%.o=%.c)
+
 MANIFEST=	intrd.xml
 SVCMETHOD=	svc-intrd
 
 include ../Makefile.cmd
+include ../Makefile.ctf
+
+CSTD=	$(CSTD_GNU99)
+LDLIBS +=	-lkstat -lcustr -lcmdutils -llgrp -lumem
 
 TARGET=	all
 
@@ -45,9 +53,14 @@ $(ROOTPROG)	:= FILEMODE= 555
 
 all: $(PROG)
 
+$(PROG): $(OBJS)
+	$(LINK.c) -o $@ $(OBJS) $(LDLIBS)
+	$(POST_PROCESS)
+
 install: all .WAIT $(ROOTPROG) $(ROOTMANIFEST) $(ROOTSVCMETHOD)
 
 clean:
+	rm $(OBJS)
 
 check:	$(CHKMANIFEST)
 

@@ -71,18 +71,29 @@ int
 main(int argc, char **argv)
 {
 	kstat_ctl_t *kcp;
-	config_t cfg = { 0 };
+	config_t cfg = {
+		.cfg_interval = 10,
+		.cfg_idle_interval = 45,
+		.cfg_retry_interval = 1,
+		.cfg_avginterval = 60,
+		.cfg_statslen = 120,
+		.cfg_tooslow = 0.05
+	};
 	int dfd, status;
 
 	umem_nofail_callback(nomem);
 
+#if 0
 	dfd = intrd_daemonize();
+#endif
 
 	setup(&kcp, &cfg);
 
+#if 0
 	status = 0;
 	(void) write(dfd, &status, sizeof (status));
 	(void) close(dfd);
+#endif
 
 	loop(&cfg, kcp);
 
@@ -194,12 +205,13 @@ setup(kstat_ctl_t **restrict kcpp, config_t *restrict cfg)
 	max_cpu = (uint_t)val;
 
 	// XXX: Initialize cfg
-	bzero(cfg, sizeof (*cfg));
 }
 
 static void
 loop(const config_t *restrict cfg, kstat_ctl_t *restrict kcp)
 {
+	printf("avg int: %u interval: %u\n", cfg->cfg_avginterval, cfg->cfg_interval); fflush(stdout);
+
 	const size_t deltas_sz = cfg->cfg_avginterval / cfg->cfg_interval + 1;
 
 	stats_t *stats[2] = { 0 };
@@ -216,6 +228,9 @@ loop(const config_t *restrict cfg, kstat_ctl_t *restrict kcp)
 		if ((stats[gen] = stats_get(cfg, kcp, interval)) == NULL)
 			continue;
 
+		printf("Stats\n");
+		stats_dump(stats[gen]);
+
 		delta = stats_delta(stats[gen], stats[gen ^ 1]);
 		gen ^= 1;
 
@@ -224,30 +239,33 @@ loop(const config_t *restrict cfg, kstat_ctl_t *restrict kcp)
 			 * Something changed between the current and previous
 			 * stat collection.  Try again later.
 			 */
+			(void) printf("NULL delta\n");
 			continue;
 		}
-		delta_save(deltas, deltas_sz, delta, statslen);
+		delta_save(deltas, deltas_sz, delta, cfg->cfg_statslen);
 		sum = stats_sum(deltas, deltas_sz, &ndeltas);
 
+		stats_dump(delta);
 	}
-
 }
 
 static void
 delta_save(stats_t **deltas, size_t n, stats_t *newdelta, uint_t statslen)
 {
-	hrtime_t cutoff;
-	size_t i,j;
+	hrtime_t cutoff, prevtime = INT64_MAX;
+	size_t i, j;
 
 	VERIFY3U(n, >, 1);
 
 	cutoff = newdelta->sts_maxtime - (hrtime_t)statslen * NANOSEC;
 
 	for (i = 0; i < n; i++) {
-		if (i + 1 < n) {
-			VERIFY3S(deltas[i]->sts_mintime, >=,
-			    deltas[i + 1]->sts_mintime);
-		}
+		if (deltas[i] == NULL)
+			continue;
+
+		/* These should be in order from newest to oldest */
+		VERIFY3S(prevtime, >, deltas[i]->sts_mintime);
+		prevtime = deltas[i]->sts_mintime;
 
 		if (deltas[i]->sts_mintime >= cutoff)
 			continue;
@@ -364,7 +382,7 @@ xcalloc(size_t nelem, size_t eltsize)
 {
 	void *p = calloc(nelem, eltsize);
 
-	if (p == NULL)
+	if (p == NULL && nelem > 0)
 		err(EXIT_FAILURE, "calloc failed");
 	return (p);
 }
@@ -374,7 +392,7 @@ xreallocarray(void *p, size_t n, size_t elsize)
 {
 	void *newp = reallocarray(p, n, elsize);
 
-	if (newp == NULL)
+	if (newp == NULL && n > 0)
 		err(EXIT_FAILURE, "reallocarray failed");
 	return (newp);
 }

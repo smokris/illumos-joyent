@@ -1,4 +1,4 @@
-<F28>/*
+/*
  * CDDL HEADER START
  *
  * The contents of this file are subject to the terms of the
@@ -24,11 +24,15 @@
  * Copyright 2018, Joyent, Inc.
  */
 
+#include <sys/types.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <stdio.h>
 #include <string.h>
 #include <errno.h>
 #include <sys/pci_tools.h>
+
+#include "intrd.h"
 
 static int
 open_dev(const char *path)

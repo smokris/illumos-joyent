@@ -23,6 +23,7 @@
 #include <limits.h>
 #include <stddef.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <strings.h>
 #include <syslog.h>
@@ -69,6 +70,7 @@ static int get_cpuinfo(kstat_ctl_t *restrict, kstat_t *restrict,
     void *restrict);
 static int get_cpu(kstat_ctl_t *restrict, kstat_t *restrict, void *restrict);
 static int get_ivecs(kstat_ctl_t *restrict, kstat_t *restrict, void *restrict);
+static boolean_t build_lgrp_tree(stats_t *);
 
 static void consolidate_ivecs(ivec_t **restrict, size_t *restrict);
 static void set_timerange(stats_t *, cpustat_t **, size_t, ivec_t **, size_t);
@@ -85,22 +87,36 @@ stats_t *
 stats_get(const config_t *restrict cfg, kstat_ctl_t *restrict kcp,
     uint_t interval)
 {
+	static struct count_info ci = { 0 };
+	static boolean_t first = B_TRUE;
+
 	stats_t *sts = NULL;
 	kstat_t *ksp;
 	kid_t kid;
 	struct read_info read_info = { 0 };
-	struct count_info ci = { 0 };
 	size_t i, j;
 
-	if ((kid = kstat_chain_update(kcp)) == 0)
-		return (NULL);
-
-	if (kid == -1)
+	if ((kid = kstat_chain_update(kcp)) == -1) {
+		if (errno == EAGAIN)
+			return (NULL);
 		err(EXIT_FAILURE, "failed to update kstat chain");
+	}
 
-	(void) kstat_iter(kcp, count_kstats, &ci);
-	if (ci.ci_ncpuinfo != ci.ci_ncpu)
-		return (NULL);
+	if (first || kid != 0) {
+		(void) memset(&ci, 0, sizeof (ci));
+		(void) kstat_iter(kcp, count_kstats, &ci);
+
+		(void) printf("count: cpuinfo %zu cpu %zu ivec: %zu\n",
+		    ci.ci_ncpuinfo, ci.ci_ncpu, ci.ci_nivec);
+
+		if (ci.ci_ncpuinfo != ci.ci_ncpu) {
+			(void) printf("CPU totals mismatch: "
+			    "cpuinfo: %zu cpu: %zu\n",
+			    ci.ci_ncpuinfo, ci.ci_ncpu);
+			return (NULL);
+		}
+		first = B_FALSE;
+	}
 
 	read_info.ri_cpu = xcalloc(max_cpu, sizeof (cpustat_t *));
 
@@ -166,10 +182,6 @@ stats_get(const config_t *restrict cfg, kstat_ctl_t *restrict kcp,
 	    read_info.ri_nivec * sizeof (ivec_t *));
 	sts->sts_nivecs = read_info.ri_nivec;
 
-	free(read_info.ri_ivec);
-	read_info.ri_ivec = NULL;
-	read_info.ri_nivec = read_info.ri_ivecalloc = 0;
-
 	/* Assign interrupts to their corresponding cpustat_t */
 	for (i = 0; i < sts->sts_nivecs; i++) {
 		ivec_t *ivp = sts->sts_ivecs[i];
@@ -179,9 +191,18 @@ stats_get(const config_t *restrict cfg, kstat_ctl_t *restrict kcp,
 		cs->cs_nivecs++;
 	}
 
+	free(read_info.ri_ivec);
+	read_info.ri_ivec = NULL;
+	read_info.ri_nivec = read_info.ri_ivecalloc = 0;
+
+	if (!build_lgrp_tree(sts))
+		goto fail;
+
 	return (sts);
 
 fail:
+	printf("%s fail\n", __func__);
+
 	for (size_t i = 0; i < max_cpu; i++)
 		cpustat_free(read_info.ri_cpu[i]);
 	free(read_info.ri_cpu);
@@ -281,6 +302,7 @@ fail:
 static void
 consolidate_ivecs(ivec_t **restrict ivecs, size_t *restrict np)
 {
+#if 0
 	ivec_t **temp;
 	size_t i, j, n, nout;
 
@@ -375,6 +397,7 @@ consolidate_ivecs(ivec_t **restrict ivecs, size_t *restrict np)
 #endif
 
 	free(temp);
+#endif
 }
 
 static boolean_t
@@ -432,7 +455,7 @@ count_kstats(kstat_ctl_t *restrict kcp, kstat_t *restrict ksp, void *arg)
 	    strcmp(ksp->ks_name, "sys") == 0) {
 		VERIFY3S(ksp->ks_instance, <, max_cpu);
 		count->ci_ncpu++;
-	} else if (strcmp(ksp->ks_module, "ivec") == 0 &&
+	} else if (strcmp(ksp->ks_module, "pci_intrs") == 0 &&
 	    strcmp(ksp->ks_name, "npe") == 0) {
 		count->ci_nivec++;
 	}
@@ -478,7 +501,7 @@ get_cpuinfo(kstat_ctl_t *restrict kcp, kstat_t *restrict ksp, void *arg)
 	VERIFY3S(ksp->ks_instance, >=, 0);
 	VERIFY3S(ksp->ks_instance, <, max_cpu);
 
-	if (strcmp(KSTAT_NAMED_STR_PTR(&nm[hint]), "on-line") != 0)
+	if (strcmp(nm[hint].value.c, "on-line") != 0)
 		return (KITER_NEXT);
 
 	cpustat_t *cs = cpustat_new();
@@ -545,7 +568,7 @@ get_cpu(kstat_ctl_t *restrict kcp, kstat_t *restrict ksp, void *restrict arg)
 	VERIFY3S(kernel, >, -1);
 	VERIFY3S(user, >, -1);
 
-	cs->cs_crtime = ksp->ks_crtime;
+	cs->cs_snaptime = ksp->ks_snaptime;
 	cs->cs_cpu_nsec_idle = nm[idle].value.ui64;
 	cs->cs_cpu_nsec_user = nm[user].value.ui64;
 	cs->cs_cpu_nsec_intr = nm[intr].value.ui64;
@@ -575,7 +598,7 @@ get_ivecs(kstat_ctl_t *restrict kcp, kstat_t *restrict ksp, void *restrict arg)
 		return (KITER_NEXT);
 
 	if (kstat_read(kcp, ksp, NULL) == -1) {
-		if (errno = ENXIO) {
+		if (errno == ENXIO) {
 			rip->ri_changed = B_TRUE;
 			return (KITER_DONE);
 		}
@@ -621,6 +644,9 @@ get_ivecs(kstat_ctl_t *restrict kcp, kstat_t *restrict ksp, void *restrict arg)
 		return (KITER_NEXT);
 
 	if (rip->ri_nivec == rip->ri_ivecalloc) {
+		(void) printf("ivec mismatch: nivec %zu alloc %zu\n",
+		    rip->ri_nivec, rip->ri_ivecalloc);
+
 		rip->ri_changed = B_TRUE;
 		return (KITER_DONE);
 	}
@@ -628,7 +654,7 @@ get_ivecs(kstat_ctl_t *restrict kcp, kstat_t *restrict ksp, void *restrict arg)
 	ivec_t *ivp = ivec_new();
 
 	ivp->ivec_instance = ksp->ks_instance;
-	ivp->ivec_crtime = ksp->ks_snaptime;
+	ivp->ivec_snaptime = ksp->ks_snaptime;
 	ivp->ivec_cookie = nm[cookie].value.ui64;
 	ivp->ivec_pil = nm[pil].value.ui64;
 	ivp->ivec_ino = nm[ino].value.ui64;
@@ -661,11 +687,14 @@ getstat_tooslow(stats_t *stp, uint_t interval, double tooslow)
 	VERIFY3S(stp->sts_maxtime, >=, stp->sts_mintime);
 
 	diff = stp->sts_maxtime - stp->sts_mintime;
-	portion = (double)diff / (double)interval;
+	portion = (double)diff / (double)(interval * NANOSEC);
 
 	syslog(LOG_DEBUG,
 	    "spent %.1f%% of the polling interval collecting stats "
 	    "(max: %.1f%%)", portion * 100.0, tooslow * 100.0);
+
+	(void) printf("spent %.1f%% of the polling interval collecting stats "
+	    "(max: %.1f%%)\n", portion * 100.0, tooslow * 100.0);
 
 	return ((portion < tooslow) ? B_FALSE : B_TRUE);
 }
@@ -683,7 +712,7 @@ set_timerange(stats_t *stp, cpustat_t **cpus, size_t ncpu, ivec_t **ivecs,
 		if (cpus[i] == NULL)
 			continue;
 
-		hrtime_t crtime = cpus[i]->cs_crtime;
+		hrtime_t crtime = cpus[i]->cs_snaptime;
 
 		if (crtime > stp->sts_maxtime)
 			stp->sts_maxtime = crtime;
@@ -692,7 +721,7 @@ set_timerange(stats_t *stp, cpustat_t **cpus, size_t ncpu, ivec_t **ivecs,
 	}
 
 	for (i = 0; i < nivec; i++) {
-		hrtime_t crtime = ivecs[i]->ivec_crtime;
+		hrtime_t crtime = ivecs[i]->ivec_snaptime;
 
 		if (crtime > stp->sts_maxtime)
 			stp->sts_maxtime = crtime;
@@ -701,11 +730,19 @@ set_timerange(stats_t *stp, cpustat_t **cpus, size_t ncpu, ivec_t **ivecs,
 	}
 }
 
+
 static inline boolean_t
 uint64_add(uint64_t a, uint64_t b, uint64_t *res)
 {
+#if 0
 	if (__builtin_uaddll_overflow(a, b, res))
 		return (B_TRUE);
+#else
+	*res = a + b;
+	if (*res < a || *res < b)
+		return (B_TRUE);
+#endif
+
 	return (B_FALSE);
 }
 
@@ -739,12 +776,11 @@ stats_delta(const stats_t *restrict st, const stats_t *restrict stprev)
 
 		VERIFY3S(csd->cs_cpuid, ==, cs->cs_cpuid);
 
-		if (csd->cs_crtime < cs->cs_crtime) {
+		if (csd->cs_snaptime < cs->cs_snaptime) {
 			syslog(LOG_WARNING, "kstat time is not increasing");
 			goto fail;
 		}
 
-		csd->cs_crtime -= cs->cs_crtime;
 		CS_SUB(cpu_nsec_idle, csd, cs);
 		CS_SUB(cpu_nsec_user, csd, cs);
 		CS_SUB(cpu_nsec_kernel, csd, cs);
@@ -759,7 +795,7 @@ stats_delta(const stats_t *restrict st, const stats_t *restrict stprev)
 			 * should always correspond.
 			 */
 			VERIFY3S(iv->ivec_instance, ==, ivd->ivec_instance);
-			if (ivd->ivec_crtime < iv->ivec_crtime) {
+			if (ivd->ivec_snaptime < iv->ivec_snaptime) {
 				syslog(LOG_WARNING,
 				    "kstat time is not increasing");
 				goto fail;
@@ -858,6 +894,8 @@ stats_dup(const stats_t *src)
 	stp = stats_new();
 	stp->sts_cpu_byid = xcalloc(max_cpu, sizeof (cpustat_t *));
 	stp->sts_cpu = xcalloc(src->sts_ncpu, sizeof (cpustat_t *));
+	stp->sts_ivecs = xcalloc(src->sts_nivecs, sizeof (ivec_t *));
+	stp->sts_lgrp = xcalloc(src->sts_nlgrp, sizeof (cpugrp_t));
 
 	stp->sts_mintime = src->sts_mintime;
 	stp->sts_maxtime = src->sts_maxtime;
@@ -868,6 +906,29 @@ stats_dup(const stats_t *src)
 
 		stp->sts_cpu_byid[cs->cs_cpuid] = cs;
 		stp->sts_cpu[stp->sts_ncpu] = cs;
+
+		ivec_t *iv;
+		list_t *ivlist = &cs->cs_ivecs;
+
+		for (iv = list_head(ivlist); iv != NULL;
+		    iv = list_next(ivlist, iv)) {
+			stp->sts_ivecs[stp->sts_nivecs++] = iv;
+		}
+	}
+	VERIFY3U(stp->sts_nivecs, ==, src->sts_nivecs);
+
+	for (stp->sts_nlgrp = 0; stp->sts_nlgrp < src->sts_nlgrp;
+	    stp->sts_nlgrp++) {
+		const cpugrp_t *srcgrp = &src->sts_lgrp[stp->sts_nlgrp];
+		cpugrp_t *grp = &stp->sts_lgrp[stp->sts_nlgrp];
+
+		grp->cg_id = srcgrp->cg_id;
+		grp->cg_parent = srcgrp->cg_parent;
+		grp->cg_children = xcalloc(srcgrp->cg_nchildren,
+		    sizeof (lgrp_id_t));
+		bcopy(srcgrp->cg_children, grp->cg_children,
+		    srcgrp->cg_nchildren * sizeof (lgrp_id_t));
+		grp->cg_nchildren = srcgrp->cg_nchildren;
 	}
 
 	return (stp);
@@ -928,6 +989,51 @@ stats_differ(const stats_t *s1, const stats_t *s2)
 	return (B_FALSE);
 }
 
+void
+stats_dump(const stats_t *stp)
+{
+	(void) printf("Mintime: %lld Maxtime: %lld (%lld)\n",
+	    stp->sts_mintime, stp->sts_maxtime,
+	    stp->sts_maxtime - stp->sts_mintime);
+
+	for (size_t i = 0; i < stp->sts_ncpu; i++) {
+		cpustat_t *cs = stp->sts_cpu[i];
+		uint64_t total = cs->cs_cpu_nsec_idle + cs->cs_cpu_nsec_user +
+			cs->cs_cpu_nsec_kernel + cs->cs_cpu_nsec_dtrace +
+			cs->cs_cpu_nsec_intr;
+
+		(void) printf("    CPU %d Snaptime: %+lld\n",
+		    cs->cs_cpuid, cs->cs_snaptime - stp->sts_mintime);
+
+		(void) printf("        idle: %3llu%% %llu\n"
+		    "        user: %3llu%% %llu\n"
+		    "      kernel: %3llu%% %llu\n"
+		    "      dtrace: %3llu%% %llu\n"
+		    "        intr: %3llu%% %llu%\n",
+		    cs->cs_cpu_nsec_idle * 100 / total, cs->cs_cpu_nsec_idle,
+		    cs->cs_cpu_nsec_user * 100 / total, cs->cs_cpu_nsec_user,
+		    cs->cs_cpu_nsec_kernel * 100 / total,
+		    cs->cs_cpu_nsec_kernel,
+		    cs->cs_cpu_nsec_dtrace * 100 / total,
+		    cs->cs_cpu_nsec_dtrace,
+		    cs->cs_cpu_nsec_intr * 100 / total, cs->cs_cpu_nsec_intr);
+		(void) printf("       total:      %llu\n", total);
+
+		total = 0;
+
+		ivec_t *iv;
+		for (iv = list_head(&cs->cs_ivecs); iv != NULL;
+		    iv = list_next(&cs->cs_ivecs, iv)) {
+			total += iv->ivec_time;
+			(void) printf("%16s int#%llu pil %llu %llu\n",
+			    custr_cstr(iv->ivec_name), iv->ivec_ino,
+			    iv->ivec_pil, iv->ivec_time);
+		}
+	}
+
+	(void) fputc('\n', stdout);
+}
+
 static int
 kstat_iter(kstat_ctl_t *restrict kcp, kstat_itercb_t cb, void *restrict arg)
 {
@@ -961,6 +1067,7 @@ stats_free(stats_t *stp)
 	}
 	free(stp->sts_cpu);
 	free(stp->sts_cpu_byid);
+	free(stp->sts_ivecs);
 
 	for (i = 0; i < stp->sts_nlgrp; i++)
 		free(stp->sts_lgrp[i].cg_children);
@@ -975,7 +1082,7 @@ ivec_dup(const ivec_t *iv)
 {
 	ivec_t *newiv = ivec_new();
 
-	newiv->ivec_crtime = iv->ivec_crtime;
+	newiv->ivec_snaptime = iv->ivec_snaptime;
 	newiv->ivec_instance = iv->ivec_instance;
 	newiv->ivec_cpuid = iv->ivec_cpuid;
 	newiv->ivec_oldcpuid = iv->ivec_oldcpuid;
@@ -1030,13 +1137,12 @@ cpustat_free(cpustat_t *cs)
 
 	ivec_t *iv;
 
-	for (iv = list_head(&cs->cs_ivecs); iv != NULL;
-	    iv = list_next(&cs->cs_ivecs, iv)) {
+	while ((iv = list_remove_head(&cs->cs_ivecs)) != NULL) {
 		ivec_free(iv);
 		cs->cs_nivecs--;
 	}
 
-	cs->cs_crtime = 0;
+	cs->cs_snaptime = 0;
 	cs->cs_cpuid = 0;
 	cs->cs_cpu_nsec_idle = cs->cs_cpu_nsec_user = cs->cs_cpu_nsec_kernel =
 	    cs->cs_cpu_nsec_dtrace = cs->cs_cpu_nsec_intr = 0;
@@ -1049,10 +1155,10 @@ cpustat_t *
 cpustat_dup(const cpustat_t *src)
 {
 	cpustat_t *cs = cpustat_new();
-	list_t *srclist = (list_t *)(&cs->cs_ivecs);
+	list_t *srclist = (list_t *)(&src->cs_ivecs);
 	ivec_t *ivsrc;
 
-	cs->cs_crtime = src->cs_crtime;
+	cs->cs_snaptime = src->cs_snaptime;
 	cs->cs_cpuid = src->cs_cpuid;
 	cs->cs_cpu_nsec_idle = src->cs_cpu_nsec_idle;
 	cs->cs_cpu_nsec_user = src->cs_cpu_nsec_user;

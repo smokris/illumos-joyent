@@ -34,6 +34,7 @@ typedef struct config {
 	uint_t	cfg_retry_interval;
 	// idle_load
 	uint_t	cfg_avginterval;
+	uint_t	cfg_statslen;
 	double	cfg_tooslow;
 	double	cfg_unsafe_load;
 	double	cfg_mindelta;
@@ -41,7 +42,7 @@ typedef struct config {
 
 typedef struct ivec {
 	list_node_t	ivec_node;
-	hrtime_t	ivec_crtime;
+	hrtime_t	ivec_snaptime;
 	int		ivec_instance;
 	int		ivec_cpuid;
 	int		ivec_oldcpuid;
@@ -57,7 +58,7 @@ typedef struct ivec {
 } ivec_t;
 
 typedef struct cpustat {
-	hrtime_t	cs_crtime;
+	hrtime_t	cs_snaptime;
 	int		cs_cpuid;
 	lgrp_id_t	cs_lgrp;
 	uint64_t	cs_cpu_nsec_idle;
@@ -106,19 +107,6 @@ typedef struct stats {
 	size_t		sts_nlgrp;
 } stats_t;
 
-static inline list_t *
-ivec_list(stats_t *stat, const ivec_t *iv)
-{
-    if (!list_link_active((list_node_t *)&iv->ivec_node))
-        return (NULL);
-
-    cpustat_t *cs = stat->sts_cpu_byid[iv->ivec_cpuid];
-    if (cs == NULL)
-        return (NULL);
-
-    return (&cs->cs_ivecs);
-}
-
 extern uint_t max_cpu;
 
 stats_t *stats_get(const config_t *restrict, kstat_ctl_t *restrict, uint_t);
@@ -126,6 +114,7 @@ stats_t *stats_delta(const stats_t *, const stats_t *);
 stats_t *stats_sum(stats_t * const*, size_t, size_t *);
 stats_t *stats_dup(const stats_t *);
 void stats_free(stats_t *);
+void stats_dump(const stats_t *);
 
 int cpustat_cmp_id(const void *, const void *);
 int ivec_cmp_id(const void *, const void *);
