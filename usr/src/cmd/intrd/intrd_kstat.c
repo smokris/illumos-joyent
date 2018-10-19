@@ -12,13 +12,11 @@
 /*
  * Copyright 2018, Joyent, Inc.
  */
-
-#define __EXTENSIONS__
-
 #include <err.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <kstat.h>
+#include <libcmdutils.h>
 #include <libcustr.h>
 #include <limits.h>
 #include <stddef.h>
@@ -35,51 +33,27 @@
 
 #include "intrd.h"
 
-struct count_info {
-	size_t	ci_ncpuinfo;
-	size_t	ci_ncpu;
-	size_t	ci_nivec;
-};
-
-struct read_info {
-	cpustat_t **ri_cpu;
-	size_t ri_ncpu;
-	ivec_t **ri_ivec;
-	size_t ri_nivec;
-	size_t ri_ivecalloc;
-	boolean_t ri_changed;
-};
-
-enum {
-	KITER_NEXT = 0,
-	KITER_DONE,
-	KITER_STOP
-};
-
-
 static umem_cache_t *ivec_cache;
 static umem_cache_t *cpustat_cache;
 static umem_cache_t *stats_cache;
 
-typedef int (*kstat_itercb_t)(kstat_ctl_t *restrict, kstat_t *restrict,
+typedef intrd_walk_ret_t (*kstat_itercb_t)(kstat_ctl_t *restrict,
+    kstat_t *restrict, void *restrict);
+static intrd_walk_ret_t kstat_iter(kstat_ctl_t *restrict, kstat_itercb_t,
     void *restrict);
-static int kstat_iter(kstat_ctl_t *restrict, kstat_itercb_t, void *restrict);
 
-static int count_kstats(kstat_ctl_t *restrict, kstat_t *restrict, void *);
-static int get_cpuinfo(kstat_ctl_t *restrict, kstat_t *restrict,
+static intrd_walk_ret_t get_cpu(kstat_ctl_t *restrict, kstat_t *restrict,
     void *restrict);
-static int get_cpu(kstat_ctl_t *restrict, kstat_t *restrict, void *restrict);
-static int get_ivecs(kstat_ctl_t *restrict, kstat_t *restrict, void *restrict);
+static intrd_walk_ret_t get_ivecs(kstat_ctl_t *restrict, kstat_t *restrict,
+    void *restrict);
 static boolean_t build_lgrp_tree(stats_t *);
 
-static void consolidate_ivecs(ivec_t **restrict, size_t *restrict);
+static void consolidate_ivecs(stats_t *);
 static void set_timerange(stats_t *, cpustat_t **, size_t, ivec_t **, size_t);
 static boolean_t getstat_tooslow(stats_t *, uint_t, double);
-static boolean_t stats_differ(const stats_t *s1, const stats_t *s2);
 
 static boolean_t ivec_shared_intr(const ivec_t *, const ivec_t *);
 static boolean_t ivec_shared_msi(const ivec_t *, const ivec_t *);
-static int ivec_cmp_msi(const void *, const void *);
 
 static stats_t *stats_new(void);
 
@@ -87,13 +61,9 @@ stats_t *
 stats_get(const config_t *restrict cfg, kstat_ctl_t *restrict kcp,
     uint_t interval)
 {
-	static struct count_info ci = { 0 };
-	static boolean_t first = B_TRUE;
-
 	stats_t *sts = NULL;
 	kstat_t *ksp;
 	kid_t kid;
-	struct read_info read_info = { 0 };
 	size_t i, j;
 
 	if ((kid = kstat_chain_update(kcp)) == -1) {
@@ -102,98 +72,32 @@ stats_get(const config_t *restrict cfg, kstat_ctl_t *restrict kcp,
 		err(EXIT_FAILURE, "failed to update kstat chain");
 	}
 
-	if (first || kid != 0) {
-		(void) memset(&ci, 0, sizeof (ci));
-		(void) kstat_iter(kcp, count_kstats, &ci);
+	sts = stats_new();
+	sts->sts_kid = kcp->kc_chain_id;
 
-		(void) printf("count: cpuinfo %zu cpu %zu ivec: %zu\n",
-		    ci.ci_ncpuinfo, ci.ci_ncpu, ci.ci_nivec);
-
-		if (ci.ci_ncpuinfo != ci.ci_ncpu) {
-			(void) printf("CPU totals mismatch: "
-			    "cpuinfo: %zu cpu: %zu\n",
-			    ci.ci_ncpuinfo, ci.ci_ncpu);
-			return (NULL);
-		}
-		first = B_FALSE;
+	if (kstat_iter(kcp, get_cpu, sts) != INTRD_WALK_DONE) {
+		stats_free(sts);
+		return (NULL);
 	}
 
-	read_info.ri_cpu = xcalloc(max_cpu, sizeof (cpustat_t *));
-
-	read_info.ri_ivec = xcalloc(ci.ci_nivec, sizeof (ivec_t *));
-	read_info.ri_ivecalloc = ci.ci_nivec;
-
-	kstat_iter(kcp, get_cpuinfo, &read_info);
-	if (read_info.ri_changed)
-		goto fail;
-
-	kstat_iter(kcp, get_cpu, &read_info);
-	if (read_info.ri_changed)
-		goto fail;
-
-	kstat_iter(kcp, get_ivecs, &read_info);
-	if (read_info.ri_changed)
-		goto fail;
-
-
-	sts = stats_new();
-
-	set_timerange(sts, read_info.ri_cpu, max_cpu, read_info.ri_ivec,
-	    read_info.ri_nivec);
+	/*
+	 * We must read the CPU stats first to create all the cpustat_t
+	 * instances that will hold the ivec_t instances.
+	 */
+	if (kstat_iter(kcp, get_ivecs, sts) != INTRD_WALK_DONE) {
+		stats_free(sts);
+		return (NULL);
+	}
 
 	if (getstat_tooslow(sts, interval, cfg->cfg_tooslow)) {
 		goto fail;
 	}
 
 	/*
-	 * Move the cpustat data into sts.  Since read_info.ri_cpu is
-	 * indexed by CPU ID, we can merely move it to sts_cpu_byid.
-	 * sts->sts_cpu is merely all the present and on-line CPUs.  We
-	 * iterate by CPU id, so sts->sts_cpu ends up sorted by CPU id without
-	 * needing to do an additional sort.
-	 */
-	sts->sts_cpu = xcalloc(read_info.ri_ncpu, sizeof (cpustat_t *));
-	sts->sts_ncpu = read_info.ri_ncpu;
-	sts->sts_cpu_byid = read_info.ri_cpu;
-	for (i = j = 0; i < max_cpu; i++) {
-		if (sts->sts_cpu_byid[i] != NULL)
-			sts->sts_cpu[j++] = sts->sts_cpu_byid[i];
-	}
-	read_info.ri_cpu = NULL;
-	read_info.ri_ncpu = 0;
-
-	/*
 	 * Combine any shared or grouped interrupts before assigning
 	 * to cpustat_t's.
 	 */
-	consolidate_ivecs(read_info.ri_ivec, &read_info.ri_nivec);
-
-	/*
-	 * Sort by instance.  This will mean as we add them to their respective
-	 * cpustat_t's, the interrupts will be ordered by instance.  Keeping
-	 * the list sorted by instance simplifies comparisons when doing
-	 * diffs or when combining diffs.
-	 */
-	qsort(read_info.ri_ivec, read_info.ri_nivec, sizeof (ivec_t *),
-	    ivec_cmp_id);
-
-	sts->sts_ivecs = xcalloc(read_info.ri_nivec, sizeof (ivec_t *));
-	bcopy(read_info.ri_ivec, sts->sts_ivecs,
-	    read_info.ri_nivec * sizeof (ivec_t *));
-	sts->sts_nivecs = read_info.ri_nivec;
-
-	/* Assign interrupts to their corresponding cpustat_t */
-	for (i = 0; i < sts->sts_nivecs; i++) {
-		ivec_t *ivp = sts->sts_ivecs[i];
-		cpustat_t *cs = sts->sts_cpu_byid[ivp->ivec_cpuid];
-
-		list_insert_tail(&cs->cs_ivecs, ivp);
-		cs->cs_nivecs++;
-	}
-
-	free(read_info.ri_ivec);
-	read_info.ri_ivec = NULL;
-	read_info.ri_nivec = read_info.ri_ivecalloc = 0;
+	consolidate_ivecs(sts);
 
 	if (!build_lgrp_tree(sts))
 		goto fail;
@@ -202,15 +106,6 @@ stats_get(const config_t *restrict cfg, kstat_ctl_t *restrict kcp,
 
 fail:
 	printf("%s fail\n", __func__);
-
-	for (size_t i = 0; i < max_cpu; i++)
-		cpustat_free(read_info.ri_cpu[i]);
-	free(read_info.ri_cpu);
-
-	for (size_t i = 0; i < read_info.ri_nivec; i++)
-		ivec_free(read_info.ri_ivec[i]);
-	free(read_info.ri_ivec);
-
 	stats_free(sts);
 	return (NULL);
 }
@@ -278,7 +173,7 @@ build_lgrp_tree(stats_t *st)
 			processorid_t cpuid = cpuids[i];
 			VERIFY3S(cpuid, <, max_cpu);
 
-			cpustat_t *cs = st->sts_cpu_byid[cpuid];
+			cpustat_t *cs = STATS_CPU(st, cpuid);
 			if (cs == NULL)
 				continue;
 
@@ -299,42 +194,54 @@ fail:
  * entry (since they have to move together).  On X86, also group MSI
  * interrupts for the same device (for similar reasons).
  */
-static void
-consolidate_ivecs(ivec_t **restrict ivecs, size_t *restrict np)
+static int
+ivec_cmp(const void *a, const void *b)
 {
-#if 0
-	ivec_t **temp;
-	size_t i, j, n, nout;
+	const ivec_t *l = *((ivec_t **)a);
+	const ivec_t *r = *((ivec_t **)b);
+	int ret;
 
-	/*
-	 * Only one interrupt on a system seems unlikely to the point of
-	 * impossibility, but to be on the safe side, make sure we have at
-	 * least two to examine.
-	 */
-	n = *np;
-	if (n < 2)
-		return;
+	VERIFY3S(l->ivec_cpuid, ==, r->ivec_cpuid);
+	if ((ret = strcmp(l->ivec_buspath, r->ivec_buspath)) != 0)
+		return (ret);
 
-	temp = xcalloc(n, sizeof (ivec_t *));
-	bcopy(ivecs, temp, n * sizeof (ivec_t *));
+	if (l->ivec_ino < r->ivec_ino)
+		return (-1);
+	if (l->ivec_ino > r->ivec_ino)
+		return (1);
 
-	/*
-	 * First, consolidate interrupts sharing the same CPU, bus, and
-	 * interrupt number (ino).  To simplify, we first sort the interrupts
-	 * by CPU, bus, interrupt number, and inst.  Then we collapse any
-	 * consecutive runs of ivecs that share the same CPU, bus, and
-	 * interrupt number.
-	 *
-	 * XXX: Should we look for and explicitly limit this to fixed
-	 * interrupts?
-	 */
-	qsort(temp, n, sizeof (ivec_t *), ivec_cmp_cpu);
+	if (l->ivec_instance < r->ivec_instance)
+		return (-1);
+	if (l->ivec_instance > r->ivec_instance)
+		return (1);
 
-	for (i = j = nout = 0; i < n; i = j) {
-		ivec_t *iv = temp[i];
+	return (0);
+}
+
+static intrd_walk_ret_t
+consolidate_ivec_cb(stats_t *stp, cpustat_t *cs, void *arg)
+{
+	if (cs->cs_nivecs == 0)
+		return (INTRD_WALK_NEXT);
+
+	list_t *ivlist = &cs->cs_ivecs;
+	ivec_t *iv;
+	ivec_t *temp[cs->cs_nivecs];
+	size_t n, i, j;
+
+	n = 0;
+	for (iv = list_head(ivlist); iv != NULL; iv = list_next(ivlist, iv))
+		temp[n++] = iv;
+	VERIFY3U(n, ==, cs->cs_nivecs);
+
+	qsort(temp, n, sizeof (ivec_t *), ivec_cmp);
+
+	for (i = 0; i < n; i = j) {
+		iv = temp[i];
 
 		for (j = i + 1; j < n; j++) {
 			ivec_t *ivnext = temp[j];
+
 			if (!ivec_shared_intr(iv, ivnext))
 				break;
 
@@ -344,79 +251,45 @@ consolidate_ivecs(ivec_t **restrict ivecs, size_t *restrict np)
 			VERIFY0(custr_append(iv->ivec_name,
 			    custr_cstr(ivnext->ivec_name)));
 
+			list_remove(ivlist, ivnext);
 			ivec_free(ivnext);
-			temp[j] = NULL;
 		}
-		ivecs[nout++] = iv;
 	}
 
-	for (i = nout; i < n; i++)
-		ivecs[i] = NULL;
-	*np = nout;
+	return (INTRD_WALK_NEXT);
+}
 
-#ifdef __x86
-	/*
-	 * Per the original perl intrd implementation MSI instances of the
-	 * same name share the same MSI address on X86 systems and must be
-	 * moved as a group.  Therefore we sort by MSI/non-MSI (note MSIX
-	 * are _not_ considered MSI interrupts), then by name, then instance.
-	 * We then do a similar grouping as above.
-	 */
-
-	n = *np;
-	bcopy(ivecs, temp, n * sizeof (ivec_t *));
-	qsort(temp, n, sizeof (ivec_t *), ivec_cmp_msi);
-	for (i = j = nout = 0; i < n; i = j) {
-		ivec_t *iv = temp[i];
-
-		/*
-		 * We sorted the MSI interrupts first, once we hit the first
-		 * non-MSI interrupt, we can stop.
-		 */
-		if (strcmp(iv->ivec_type, "msi") != 0)
-			break;
-
-		for (j = i + 1; j < n; j++) {
-			ivec_t *ivnext = temp[j];
-
-			if (!ivec_shared_msi(iv, ivnext))
-				break;
-
-			iv->ivec_time += ivnext->ivec_time;
-			iv->ivec_num_ino++;
-			ivec_free(ivnext);
-			temp[j] = NULL;
-		}
-		ivecs[nout++] = iv;
-	}
-
-	for (i = nout; i < n; i++)
-		ivecs[i] = NULL;
-	*np = nout;
-
-#endif
-
-	free(temp);
-#endif
+static void
+consolidate_ivecs(stats_t *stp)
+{
+	cpu_iter(stp, consolidate_ivec_cb, NULL);
 }
 
 static boolean_t
 ivec_shared_intr(const ivec_t *i1, const ivec_t *i2)
 {
+#if 0
 	if (i1->ivec_ino != i2->ivec_ino)
 		return (B_FALSE);
 	if (strcmp(i1->ivec_buspath, i2->ivec_buspath) != 0)
 		return (B_FALSE);
 
 	return (B_TRUE);
+#else
+	return (B_FALSE);
+#endif
 }
 
 static boolean_t
 ivec_shared_msi(const ivec_t *i1, const ivec_t *i2)
 {
+#if 0
 	if (strcmp(custr_cstr(i1->ivec_name), custr_cstr(i2->ivec_name)) != 0)
 		return (B_FALSE);
 	return (B_TRUE);
+#else
+	return (B_FALSE);
+#endif
 }
 
 static int
@@ -443,109 +316,42 @@ ivec_cmp_msi(const void *a, const void *b)
 	return ((l->ivec_instance < r->ivec_instance) ? -1 : 1);
 }
 
-static int
-count_kstats(kstat_ctl_t *restrict kcp, kstat_t *restrict ksp, void *arg)
-{
-	struct count_info *count = arg;
-
-	if (strcmp(ksp->ks_module, "cpu_info") == 0) {
-		VERIFY3S(ksp->ks_instance, <, max_cpu);
-		count->ci_ncpuinfo++;
-	} else if (strcmp(ksp->ks_module, "cpu") == 0 &&
-	    strcmp(ksp->ks_name, "sys") == 0) {
-		VERIFY3S(ksp->ks_instance, <, max_cpu);
-		count->ci_ncpu++;
-	} else if (strcmp(ksp->ks_module, "pci_intrs") == 0 &&
-	    strcmp(ksp->ks_name, "npe") == 0) {
-		count->ci_nivec++;
-	}
-
-	return (KITER_NEXT);
-}
-
-static int
-get_cpuinfo(kstat_ctl_t *restrict kcp, kstat_t *restrict ksp, void *arg)
-{
-	/*
-	 * Cache the index of the cpu state field in the cpu_info kstat.
-	 */
-	static uint_t hint = -1;
-
-	struct read_info *rip = arg;
-
-	if (strcmp(ksp->ks_module, "cpu_info") != 0)
-		return (KITER_NEXT);
-
-	if (kstat_read(kcp, ksp, NULL) == -1) {
-		if (errno == ENXIO) {
-			rip->ri_changed = B_TRUE;
-			return (KITER_DONE);
-		}
-		err(EXIT_FAILURE, "unable to read kstat %s:%d",
-		    ksp->ks_name, ksp->ks_instance);
-	}
-
-	VERIFY3S(ksp->ks_type, ==, KSTAT_TYPE_NAMED);
-	kstat_named_t *nm = KSTAT_NAMED_PTR(ksp);
-
-	if (hint == -1) {
-		for (uint_t i = 0; i < ksp->ks_ndata; i++) {
-			if (strcmp(nm[i].name, "state") != 0)
-				continue;
-
-			hint = i;
-			break;
-		}
-	}
-
-	VERIFY3S(ksp->ks_instance, >=, 0);
-	VERIFY3S(ksp->ks_instance, <, max_cpu);
-
-	if (strcmp(nm[hint].value.c, "on-line") != 0)
-		return (KITER_NEXT);
-
-	cpustat_t *cs = cpustat_new();
-
-	cs->cs_cpuid = ksp->ks_instance;
-	rip->ri_cpu[cs->cs_cpuid] = cs;
-	rip->ri_ncpu++;
-
-	return (KITER_NEXT);
-}
-
-static int
+static intrd_walk_ret_t
 get_cpu(kstat_ctl_t *restrict kcp, kstat_t *restrict ksp, void *restrict arg)
 {
+	/*
+	 * Cache index of the kstat_named_t fields we want.  These should never
+	 * change while the system is running.
+	 */
 	static int idle = -1;
 	static int kernel = -1;
 	static int user = -1;
 	static int dtrace = -1;
 	static int intr = -1;
 
-	struct read_info *rip = arg;
-	cpustat_t *cs = NULL;
-
 	if (strcmp(ksp->ks_module, "cpu") != 0)
-		return (KITER_NEXT);
+		return (INTRD_WALK_NEXT);
 	if (strcmp(ksp->ks_name, "sys") != 0)
-		return (KITER_NEXT);
+		return (INTRD_WALK_NEXT);
 
 	VERIFY3S(ksp->ks_instance, <, max_cpu);
-	if ((cs = rip->ri_cpu[ksp->ks_instance]) == NULL)
-		return (KITER_NEXT);
-
 	if (kstat_read(kcp, ksp, NULL) == -1) {
-		if (errno == ENXIO) {
-			rip->ri_changed = B_TRUE;
-			return (KITER_DONE);
-		}
+		/* ENXIO means the kstat chain has changed.  Abort and retry */
+		if (errno == ENXIO)
+			return (INTRD_WALK_ERROR);
+
 		err(EXIT_FAILURE, "unable to read kstat %s:%d",
 		    ksp->ks_name, ksp->ks_instance);
 	}
 
 	VERIFY3S(ksp->ks_type, ==, KSTAT_TYPE_NAMED);
 
+	stats_t *stp = arg;
+	cpustat_t *cs = NULL;
 	kstat_named_t *nm = KSTAT_NAMED_PTR(ksp);
+
+	STATS_CPU(stp, ksp->ks_instance) = cs = cpustat_new();
+	cs->cs_cpuid = ksp->ks_instance;
 
 	if (idle == -1) {
 		for (uint_t i = 0; i < ksp->ks_ndata; i++) {
@@ -575,10 +381,17 @@ get_cpu(kstat_ctl_t *restrict kcp, kstat_t *restrict ksp, void *restrict arg)
 	cs->cs_cpu_nsec_kernel = nm[kernel].value.ui64;
 	cs->cs_cpu_nsec_dtrace = nm[dtrace].value.ui64;
 
-	return (KITER_NEXT);
+	if (cs->cs_snaptime < stp->sts_mintime)
+		stp->sts_mintime = cs->cs_snaptime;
+	if (cs->cs_snaptime > stp->sts_maxtime)
+		stp->sts_maxtime = cs->cs_snaptime;
+
+	stp->sts_ncpu++;
+
+	return (INTRD_WALK_NEXT);
 }
 
-static int
+static intrd_walk_ret_t
 get_ivecs(kstat_ctl_t *restrict kcp, kstat_t *restrict ksp, void *restrict arg)
 {
 	static int cookie = -1;
@@ -590,24 +403,20 @@ get_ivecs(kstat_ctl_t *restrict kcp, kstat_t *restrict ksp, void *restrict arg)
 	static int name = -1;
 	static int f_time = -1;
 
-	struct read_info *rip = arg;
-
 	if (strcmp(ksp->ks_module, "pci_intrs") != 0)
-		return (KITER_NEXT);
+		return (INTRD_WALK_NEXT);
 	if (strcmp(ksp->ks_name, "npe") != 0)
-		return (KITER_NEXT);
+		return (INTRD_WALK_NEXT);
 
 	if (kstat_read(kcp, ksp, NULL) == -1) {
-		if (errno == ENXIO) {
-			rip->ri_changed = B_TRUE;
-			return (KITER_DONE);
-		}
+		/* ENXIO means the kstat chain has changed.  Abort and retry */
+		if (errno == ENXIO)
+			return (INTRD_WALK_ERROR);
 		err(EXIT_FAILURE, "unable to read kstat %s:%d",
 		    ksp->ks_name, ksp->ks_instance);
 	}
 
 	VERIFY3S(ksp->ks_type, ==, KSTAT_TYPE_NAMED);
-
 	kstat_named_t *nm = KSTAT_NAMED_PTR(ksp);
 
 	if (cookie == -1) {
@@ -641,15 +450,7 @@ get_ivecs(kstat_ctl_t *restrict kcp, kstat_t *restrict ksp, void *restrict arg)
 	VERIFY3S(f_time, >, -1);
 
 	if (strcmp(nm[type].value.c, "disabled") == 0)
-		return (KITER_NEXT);
-
-	if (rip->ri_nivec == rip->ri_ivecalloc) {
-		(void) printf("ivec mismatch: nivec %zu alloc %zu\n",
-		    rip->ri_nivec, rip->ri_ivecalloc);
-
-		rip->ri_changed = B_TRUE;
-		return (KITER_DONE);
-	}
+		return (INTRD_WALK_NEXT);
 
 	ivec_t *ivp = ivec_new();
 
@@ -668,9 +469,18 @@ get_ivecs(kstat_ctl_t *restrict kcp, kstat_t *restrict ksp, void *restrict arg)
 	(void) strlcpy(ivp->ivec_type, nm[type].value.c,
 	    sizeof (ivp->ivec_type));
 
-	rip->ri_ivec[rip->ri_nivec++] = ivp;
+	stats_t *stp = arg;
+	cpustat_t *cs = STATS_CPU(stp, ivp->ivec_cpuid);
 
-	return (KITER_NEXT);
+	list_insert_tail(&cs->cs_ivecs, ivp);
+	cs->cs_nivecs++;
+
+	if (ivp->ivec_snaptime < stp->sts_mintime)
+		stp->sts_mintime = ivp->ivec_snaptime;
+	if (ivp->ivec_snaptime > stp->sts_maxtime)
+		stp->sts_maxtime = ivp->ivec_snaptime;
+
+	return (INTRD_WALK_NEXT);
 }
 
 /*
@@ -680,56 +490,26 @@ get_ivecs(kstat_ctl_t *restrict kcp, kstat_t *restrict ksp, void *restrict arg)
 static boolean_t
 getstat_tooslow(stats_t *stp, uint_t interval, double tooslow)
 {
+	char numbuf[NN_NUMBUF_SZ];
 	hrtime_t diff;
 	double portion;
-	size_t i;
 
 	VERIFY3S(stp->sts_maxtime, >=, stp->sts_mintime);
 
 	diff = stp->sts_maxtime - stp->sts_mintime;
+	nanonicenum(diff, numbuf, sizeof (numbuf));
+
 	portion = (double)diff / (double)(interval * NANOSEC);
 
 	syslog(LOG_DEBUG,
 	    "spent %.1f%% of the polling interval collecting stats "
 	    "(max: %.1f%%)", portion * 100.0, tooslow * 100.0);
 
-	(void) printf("spent %.1f%% of the polling interval collecting stats "
-	    "(max: %.1f%%)\n", portion * 100.0, tooslow * 100.0);
+	(void) printf("spent %ss %.1f%% of the polling interval collecting stats "
+	    "(max: %.1f%%)\n", numbuf, portion * 100.0, tooslow * 100.0);
 
 	return ((portion < tooslow) ? B_FALSE : B_TRUE);
 }
-
-static void
-set_timerange(stats_t *stp, cpustat_t **cpus, size_t ncpu, ivec_t **ivecs,
-    size_t nivec)
-{
-	size_t i;
-
-	stp->sts_mintime = INT64_MAX;
-	stp->sts_maxtime = INT64_MIN;
-
-	for (i = 0; i < ncpu; i++) {
-		if (cpus[i] == NULL)
-			continue;
-
-		hrtime_t crtime = cpus[i]->cs_snaptime;
-
-		if (crtime > stp->sts_maxtime)
-			stp->sts_maxtime = crtime;
-		if (crtime < stp->sts_mintime)
-			stp->sts_mintime = crtime;
-	}
-
-	for (i = 0; i < nivec; i++) {
-		hrtime_t crtime = ivecs[i]->ivec_snaptime;
-
-		if (crtime > stp->sts_maxtime)
-			stp->sts_maxtime = crtime;
-		if (crtime < stp->sts_mintime)
-			stp->sts_mintime = crtime;
-	}
-}
-
 
 static inline boolean_t
 uint64_add(uint64_t a, uint64_t b, uint64_t *res)
@@ -746,81 +526,162 @@ uint64_add(uint64_t a, uint64_t b, uint64_t *res)
 	return (B_FALSE);
 }
 
-stats_t *
-stats_delta(const stats_t *restrict st, const stats_t *restrict stprev)
+static intrd_walk_ret_t
+stats_delta_cb(stats_t *stp, cpustat_t *cs, void *arg)
 {
-	stats_t *delta = NULL;
-	const cpustat_t *cs;
-	cpustat_t *csd;
-	ivec_t *iv, *ivd;
-	size_t i;
+	const stats_t *stprev = arg;
+	const cpustat_t *csprev = stprev->sts_cpu[cs->cs_cpuid];
 
-	if (st == NULL || stprev == NULL)
-		return (NULL);
+#define	CS_SUB(field, d, c)						\
+	if ((d)->cs_ ## field < (c)->cs_ ## field) {			\
+		syslog(LOG_WARNING, "%s kstat is decreasing", #field);	\
+		return (INTRD_WALK_ERROR);				\
+	}								\
+	(d)->cs_ ## field -= (c)->cs_ ## field
 
-	if (stats_differ(st, stprev))
-		return (NULL);
+	CS_SUB(cpu_nsec_idle, cs, csprev);
+	CS_SUB(cpu_nsec_user, cs, csprev);
+	CS_SUB(cpu_nsec_kernel, cs, csprev);
+	CS_SUB(cpu_nsec_dtrace, cs, csprev);
+	CS_SUB(cpu_nsec_intr, cs, csprev);
 
-	delta = stats_dup(st);
-
-#define	CS_SUB(field, d, c) \
-	if ((d)->cs_ ## field < (c)->cs_ ## field) { \
-		syslog(LOG_WARNING, "%s kstat is decreasing", #field); \
-		goto fail; \
-	} \
-	(d)->cs_ ## field -= (c)->cs_ ## field;
-
-	for (i = 0; i < st->sts_ncpu; i++) {
-		cs = stprev->sts_cpu[i];
-		csd = delta->sts_cpu[i];
-
-		VERIFY3S(csd->cs_cpuid, ==, cs->cs_cpuid);
-
-		if (csd->cs_snaptime < cs->cs_snaptime) {
-			syslog(LOG_WARNING, "kstat time is not increasing");
-			goto fail;
-		}
-
-		CS_SUB(cpu_nsec_idle, csd, cs);
-		CS_SUB(cpu_nsec_user, csd, cs);
-		CS_SUB(cpu_nsec_kernel, csd, cs);
-		CS_SUB(cpu_nsec_dtrace, csd, cs);
-		CS_SUB(cpu_nsec_intr, csd, cs);
-
-		iv = list_head((list_t *)&cs->cs_ivecs);
-		ivd = list_head(&csd->cs_ivecs);
-		while(iv != NULL && ivd != NULL) {
-			/*
-			 * If !stats_differ(st, stprev), then these entries
-			 * should always correspond.
-			 */
-			VERIFY3S(iv->ivec_instance, ==, ivd->ivec_instance);
-			if (ivd->ivec_snaptime < iv->ivec_snaptime) {
-				syslog(LOG_WARNING,
-				    "kstat time is not increasing");
-				goto fail;
-			}
-
-			if (ivd->ivec_time < iv->ivec_time) {
-				syslog(LOG_WARNING,
-				    "interrupt time kstat not increasing");
-				goto fail;
-			}
-			ivd->ivec_time -= iv->ivec_time;
-
-			iv = list_next((list_t *)&cs->cs_ivecs, iv);
-			ivd = list_next(&csd->cs_ivecs, ivd);
-		}
-	}
 #undef CS_SUB
 
-	delta->sts_mintime = stprev->sts_mintime;
+	ivec_t *iv = list_head(&cs->cs_ivecs);
+	ivec_t *ivprev = list_head((list_t *)&csprev->cs_ivecs);
+	while (iv != NULL && ivprev != NULL) {
+		VERIFY3S(iv->ivec_instance, ==, ivprev->ivec_instance);
+
+		if (iv->ivec_snaptime < ivprev->ivec_snaptime) {
+			syslog(LOG_WARNING,
+			    "kstat pci_intrs %d snaptime is decreasing",
+			    iv->ivec_instance);
+			return (INTRD_WALK_ERROR);
+		}
+
+		if (iv->ivec_time < ivprev->ivec_time) {
+			syslog(LOG_WARNING,
+			    "kstat pci_intrs %d value is decreasing",
+			    iv->ivec_instance);
+			return (INTRD_WALK_ERROR);
+		}
+		iv->ivec_time -= ivprev->ivec_time;
+
+		iv = list_next(&cs->cs_ivecs, iv);
+		ivprev = list_next((list_t *)&csprev->cs_ivecs, ivprev);
+	}
+
+	return (INTRD_WALK_NEXT);
+}
+
+static boolean_t
+stats_differ(const stats_t *s1, const stats_t *s2)
+{
+	for (size_t i = 0; i < max_cpu; i++) {
+		const cpustat_t *c1 = s1->sts_cpu[i];
+		const cpustat_t *c2 = s2->sts_cpu[i];
+
+		if (c1 == NULL && c2 == NULL)
+			continue;
+
+		if (c1 == NULL || c2 == NULL)
+			return (B_TRUE);
+
+		if (c1->cs_nivecs != c2->cs_nivecs)
+			return (B_TRUE);
+
+		if (c1->cs_nivecs == 0)
+			continue;
+
+		const ivec_t *iv1 = list_head((list_t *)&c1->cs_ivecs);
+		const ivec_t *iv2 = list_head((list_t *)&c2->cs_ivecs);
+
+		while (iv1 != NULL && iv2 != NULL) {
+			if (iv1->ivec_instance != iv2->ivec_instance)
+				return (B_TRUE);
+
+			if (iv1->ivec_ino != iv2->ivec_ino)
+				return (B_TRUE);
+
+			if (strcmp(iv1->ivec_buspath, iv2->ivec_buspath) != 0)
+				return (B_TRUE);
+
+			iv1 = list_next((list_t *)&c1->cs_ivecs, (void *)iv1);
+			iv2 = list_next((list_t *)&c2->cs_ivecs, (void *)iv2);
+		}
+
+		if (iv1 != NULL || iv2 != NULL)
+			return (B_TRUE);
+	}
+
+	return (B_FALSE);
+}
+
+stats_t *
+stats_delta(const stats_t *restrict st, const stats_t *restrict prev)
+{
+	if (st == NULL || prev == NULL)
+		return (NULL);
+
+	/*
+	 * If the kid's match, we should have the same instances, otherwise
+	 * we have to check and see if any of the our instances have changed.
+	 */
+	if (st->sts_kid != prev->sts_kid && stats_differ(st, prev)) {
+		printf("new kid\n");
+		return (NULL);
+	}
+
+	stats_t *delta = stats_dup(st);
+
+	if (cpu_iter(delta, stats_delta_cb, (void *)prev) != INTRD_WALK_DONE) {
+		stats_free(delta);
+		return (NULL);
+	}
+
+	delta->sts_mintime = prev->sts_mintime;
 	delta->sts_maxtime = st->sts_maxtime;
 	return (delta);
+}
 
-fail:
-	stats_free(delta);
-	return (NULL);
+static intrd_walk_ret_t
+stats_sum_cb(stats_t *sum, cpustat_t *cs, void *arg)
+{
+	const stats_t *toadd = arg;
+	const cpustat_t *toaddcs = toadd->sts_cpu[cs->cs_cpuid];
+	boolean_t overflow = B_FALSE;
+
+#define	CS_ADD(_field, _sum, _toadd)					\
+	uint64_add((_sum)->cs_ ## _field, (_toadd)->cs_ ## _field,	\
+	&(_sum)->cs_ ## _field)
+
+	overflow |= CS_ADD(cpu_nsec_idle, cs, toaddcs);
+	overflow |= CS_ADD(cpu_nsec_user, cs, toaddcs);
+	overflow |= CS_ADD(cpu_nsec_kernel, cs, toaddcs);
+	overflow |= CS_ADD(cpu_nsec_dtrace, cs, toaddcs);
+	overflow |= CS_ADD(cpu_nsec_intr, cs, toaddcs);
+#undef	CS_ADD
+
+	/*  XXX: write a message? */
+	if (overflow)
+		return (INTRD_WALK_ERROR);
+
+	list_t *cs_ivecs = &cs->cs_ivecs;
+	list_t *toadd_ivecs = (list_t *)&toaddcs->cs_ivecs;
+	ivec_t *iv = list_head(cs_ivecs);
+	ivec_t *iv_toadd = list_head(toadd_ivecs);
+	while (iv != NULL && iv_toadd != NULL) {
+		if (uint64_add(iv->ivec_time, iv_toadd->ivec_time,
+		    &iv->ivec_time))
+			return (INTRD_WALK_ERROR);
+
+		iv = list_next(cs_ivecs, iv);
+		iv_toadd = list_next(toadd_ivecs, iv_toadd);
+	}
+	VERIFY3P(iv, ==, NULL);
+	VERIFY3P(iv_toadd, ==, NULL);
+
+	return (INTRD_WALK_NEXT);
 }
 
 stats_t *
@@ -830,60 +691,46 @@ stats_sum(stats_t * const *restrict deltas, size_t n, size_t *restrict total)
 	VERIFY3P(deltas[0], !=, NULL);
 
 	stats_t *sum = stats_dup(deltas[0]);
-	boolean_t overflow = B_FALSE;
 
 	*total = 0;
 	for (size_t i = 1; i < n; i++) {
 		const stats_t *d = deltas[i];
 
-		if (stats_differ(sum, d))
+		if (d == NULL || sum->sts_kid != d->sts_kid)
 			continue;
 
-		sum->sts_maxtime = d->sts_maxtime;
+		VERIFY3S(sum->sts_mintime, >, d->sts_mintime);
+		VERIFY3S(sum->sts_maxtime, >, d->sts_maxtime);
 
-#define	CS_ADD(field, a, b) \
-	uint64_add((a)->cs_ ## field, (b)->cs_ ## field, &(a)->cs_ ## field)
+		sum->sts_mintime = d->sts_mintime;
 
-		for (size_t j = 0; i < sum->sts_ncpu; i++) {
-			cpustat_t *sumcs = sum->sts_cpu[j];
-			cpustat_t *dcs = d->sts_cpu[j];
-
-			overflow |= CS_ADD(cpu_nsec_idle, sumcs, dcs);
-			overflow |= CS_ADD(cpu_nsec_user, sumcs, dcs);
-			overflow |= CS_ADD(cpu_nsec_kernel, sumcs, dcs);
-			overflow |= CS_ADD(cpu_nsec_dtrace, sumcs, dcs);
-			overflow |= CS_ADD(cpu_nsec_intr, sumcs, dcs);
-			if (overflow)
-				goto fail;
-
-			list_t *sumivl = &sumcs->cs_ivecs;
-			list_t *sumdl = &dcs->cs_ivecs;
-
-			ivec_t *sumiv = list_head(sumivl);
-			ivec_t *sumd = list_head(sumdl);
-			while (sumiv != NULL && sumd != NULL) {
-				overflow |= uint64_add(sumiv->ivec_time,
-				    sumd->ivec_time, &sumiv->ivec_time);
-
-				if (overflow)
-					goto fail;
-
-				sumiv = list_next(sumivl, sumiv);
-				sumd = list_next(sumdl, sumd);
-			}
-			VERIFY3P(sumiv, ==, NULL);
-			VERIFY3P(sumd, ==, NULL);
+		if (cpu_iter(sum, stats_sum_cb, (void *)d) != INTRD_WALK_DONE) {
+			stats_free(sum);
+			return (NULL);
 		}
 		*total++;
 	}
-#undef CS_ADD
 
 	return (sum);
+}
 
-fail:
-	*total = 0;
-	stats_free(sum);
-	return (NULL);
+static intrd_walk_ret_t
+stats_dup_cb(stats_t *src __unused, cpustat_t *src_cs, void *arg)
+{
+	stats_t *new_st = arg;
+	new_st->sts_cpu[src_cs->cs_cpuid] = cpustat_dup(src_cs);
+	return (INTRD_WALK_NEXT);
+}
+
+static void
+stlgrp_copy(const cpugrp_t *src, cpugrp_t *dst)
+{
+	dst->cg_id = src->cg_id;
+	dst->cg_parent = src->cg_parent;
+	dst->cg_children = xcalloc(src->cg_nchildren, sizeof (lgrp_id_t));
+	bcopy(src->cg_children, dst->cg_children,
+	    src->cg_nchildren * sizeof (lgrp_id_t));
+	dst->cg_nchildren = src->cg_nchildren;
 }
 
 stats_t *
@@ -892,160 +739,129 @@ stats_dup(const stats_t *src)
 	stats_t *stp;
 
 	stp = stats_new();
-	stp->sts_cpu_byid = xcalloc(max_cpu, sizeof (cpustat_t *));
-	stp->sts_cpu = xcalloc(src->sts_ncpu, sizeof (cpustat_t *));
-	stp->sts_ivecs = xcalloc(src->sts_nivecs, sizeof (ivec_t *));
-	stp->sts_lgrp = xcalloc(src->sts_nlgrp, sizeof (cpugrp_t));
-
+	stp->sts_kid = src->sts_kid;
 	stp->sts_mintime = src->sts_mintime;
 	stp->sts_maxtime = src->sts_maxtime;
 
-	for (stp->sts_ncpu = 0; stp->sts_ncpu < src->sts_ncpu;
-	    stp->sts_ncpu++) {
-		cpustat_t *cs = cpustat_dup(src->sts_cpu[stp->sts_ncpu]);
+	VERIFY3S(cpu_iter((stats_t *)src, stats_dup_cb, stp), ==,
+	    INTRD_WALK_DONE);
+	sts->sts_ncpu = src->sts_ncpu;
 
-		stp->sts_cpu_byid[cs->cs_cpuid] = cs;
-		stp->sts_cpu[stp->sts_ncpu] = cs;
-
-		ivec_t *iv;
-		list_t *ivlist = &cs->cs_ivecs;
-
-		for (iv = list_head(ivlist); iv != NULL;
-		    iv = list_next(ivlist, iv)) {
-			stp->sts_ivecs[stp->sts_nivecs++] = iv;
-		}
-	}
-	VERIFY3U(stp->sts_nivecs, ==, src->sts_nivecs);
-
-	for (stp->sts_nlgrp = 0; stp->sts_nlgrp < src->sts_nlgrp;
-	    stp->sts_nlgrp++) {
-		const cpugrp_t *srcgrp = &src->sts_lgrp[stp->sts_nlgrp];
-		cpugrp_t *grp = &stp->sts_lgrp[stp->sts_nlgrp];
-
-		grp->cg_id = srcgrp->cg_id;
-		grp->cg_parent = srcgrp->cg_parent;
-		grp->cg_children = xcalloc(srcgrp->cg_nchildren,
-		    sizeof (lgrp_id_t));
-		bcopy(srcgrp->cg_children, grp->cg_children,
-		    srcgrp->cg_nchildren * sizeof (lgrp_id_t));
-		grp->cg_nchildren = srcgrp->cg_nchildren;
-	}
+	stp->sts_lgrp = xcalloc(src->sts_nlgrp, sizeof (cpugrp_t));
+	for (size_t i = 0; i < src->sts_nlgrp; i++)
+		stlgrp_copy(&src->sts_lgrp[i], &stp->sts_lgrp[i]);
+	stp->sts_nlgrp = src->sts_nlgrp;
 
 	return (stp);
 }
 
-static boolean_t
-stats_differ(const stats_t *s1, const stats_t *s2)
+/*
+ * Like nicenum, but assumes the value is * 10^(-9) units
+ */
+void
+nanonicenum(uint64_t val, char *buf, size_t buflen)
 {
-	if (s1 == NULL || s2 == NULL)
-		return (B_TRUE);
+	static const char units[] = "num KMGTPE";
+	static const size_t index_max = 9;
+	uint64_t divisor = 1;
+	int index = 0;
+	char u;
 
-	if (s1->sts_ncpu != s2->sts_ncpu)
-		return (B_TRUE);
+	while (index < index_max) {
+		uint64_t newdiv = divisor * 1024;
 
-	for (size_t i = 0; i < s1->sts_ncpu; i++) {
-		const cpustat_t *c1 = s1->sts_cpu[i];
-		const cpustat_t *c2 = s2->sts_cpu[i];
+		if (val < newdiv)
+			break;
+		divisor = newdiv;
+		index++;
+	}
+	u = units[index];
 
-		/*
-		 * A new stats_t generated from a kstat snapshot will
-		 * have its cpustat_t's sorted by CPU ID, so both lists
-		 * should be in the same order.
-		 */
-		if (c1->cs_cpuid != c2->cs_cpuid)
-			return (B_TRUE);
-
-		if (c1->cs_nivecs != c2->cs_nivecs)
-			return (B_TRUE);
-
-		list_t *l1 = (list_t *)&c1->cs_ivecs;
-		list_t *l2 = (list_t *)&c2->cs_ivecs;
-
-		const ivec_t *iv1 = list_head(l1);
-		const ivec_t *iv2 = list_head(l2);
-
-		while (iv1 != NULL && iv2 != NULL) {
-			/*
-			 * Similarly to cpustat_t's, ivec_t's are sorted by
-			 * instance id, so l1 and l2 should be in the same
-			 * order.
-			 */
-			if (iv1->ivec_instance != iv2->ivec_instance)
-				return (B_TRUE);
-			if (iv1->ivec_cpuid != iv2->ivec_cpuid)
-				return (B_TRUE);
-			if (iv1->ivec_ino != iv2->ivec_ino)
-				return (B_TRUE);
-			if (strcmp(iv1->ivec_buspath, iv2->ivec_buspath) != 0)
-				return (B_TRUE);
-
-			iv1 = list_next(l1, (ivec_t *)iv1);
-			iv2 = list_next(l2, (ivec_t *)iv2);
+	if (val % divisor == 0) {
+		(void) snprintf(buf, buflen, "%llu%c", val / divisor, u);
+	} else {
+		for (int i = 2; i >= 0; i--) {
+			if (snprintf(buf, buflen, "%.*f%c", i,
+			    (double)val / divisor, u) <= 5)
+				return;
 		}
-		if (iv1 != NULL || iv2 != NULL)
-			return (B_TRUE);
+	}
+}
+
+static intrd_walk_ret_t
+stats_dump_cb(stats_t *stp, cpustat_t *cs, void *dummy __unused)
+{
+	ivec_t *iv;
+	uint64_t total;
+
+	total = cs->cs_cpu_nsec_idle + cs->cs_cpu_nsec_user +
+		cs->cs_cpu_nsec_kernel + cs->cs_cpu_nsec_dtrace +
+		cs->cs_cpu_nsec_intr;
+
+#define	PCT(_v, _t) ((_t) == 0 ? 0.0 : ((((double)(_v) * 100)) / (_t)))
+
+	(void) printf("  CPU %3d idle: %3.1f%% user: %3.1f%% kern: %3.1f%%"
+	    " dtrace: %3.1f%% intr: %3.1f%%\n",
+	    cs->cs_cpuid,
+	    PCT(cs->cs_cpu_nsec_idle, total),
+	    PCT(cs->cs_cpu_nsec_user, total),
+	    PCT(cs->cs_cpu_nsec_kernel, total),
+	    PCT(cs->cs_cpu_nsec_dtrace, total),
+	    PCT(cs->cs_cpu_nsec_intr, total));
+
+	for (iv = list_head(&cs->cs_ivecs); iv != NULL;
+	    iv = list_next(&cs->cs_ivecs, iv)) {
+		char timebuf[NN_NUMBUF_SZ];
+
+		nanonicenum(iv->ivec_time, timebuf, sizeof (timebuf));
+		(void) printf("    %-16s int#%llu pil %llu %6ss (%3.1f%%)\n",
+		    custr_cstr(iv->ivec_name), iv->ivec_ino, iv->ivec_pil,
+		    timebuf, PCT(iv->ivec_time, total));
 	}
 
-	return (B_FALSE);
+	return (INTRD_WALK_NEXT);
 }
 
 void
 stats_dump(const stats_t *stp)
 {
-	(void) printf("Mintime: %lld Maxtime: %lld (%lld)\n",
-	    stp->sts_mintime, stp->sts_maxtime,
-	    stp->sts_maxtime - stp->sts_mintime);
+	char timebuf[NN_NUMBUF_SZ] = { 0 };
 
-	for (size_t i = 0; i < stp->sts_ncpu; i++) {
-		cpustat_t *cs = stp->sts_cpu[i];
-		uint64_t total = cs->cs_cpu_nsec_idle + cs->cs_cpu_nsec_user +
-			cs->cs_cpu_nsec_kernel + cs->cs_cpu_nsec_dtrace +
-			cs->cs_cpu_nsec_intr;
+	VERIFY3S(stp->sts_maxtime, >=, stp->sts_mintime);
 
-		(void) printf("    CPU %d Snaptime: %+lld\n",
-		    cs->cs_cpuid, cs->cs_snaptime - stp->sts_mintime);
-
-		(void) printf("        idle: %3llu%% %llu\n"
-		    "        user: %3llu%% %llu\n"
-		    "      kernel: %3llu%% %llu\n"
-		    "      dtrace: %3llu%% %llu\n"
-		    "        intr: %3llu%% %llu%\n",
-		    cs->cs_cpu_nsec_idle * 100 / total, cs->cs_cpu_nsec_idle,
-		    cs->cs_cpu_nsec_user * 100 / total, cs->cs_cpu_nsec_user,
-		    cs->cs_cpu_nsec_kernel * 100 / total,
-		    cs->cs_cpu_nsec_kernel,
-		    cs->cs_cpu_nsec_dtrace * 100 / total,
-		    cs->cs_cpu_nsec_dtrace,
-		    cs->cs_cpu_nsec_intr * 100 / total, cs->cs_cpu_nsec_intr);
-		(void) printf("       total:      %llu\n", total);
-
-		total = 0;
-
-		ivec_t *iv;
-		for (iv = list_head(&cs->cs_ivecs); iv != NULL;
-		    iv = list_next(&cs->cs_ivecs, iv)) {
-			total += iv->ivec_time;
-			(void) printf("%*s %-16s int#%llu pil %llu %llu\n",
-			    (int)8, "", custr_cstr(iv->ivec_name), iv->ivec_ino,
-			    iv->ivec_pil, iv->ivec_time);
-		}
-		(void) printf("  intr total:      %llu\n", total);
-	}
-
+	nanonicenum(stp->sts_maxtime - stp->sts_mintime, timebuf,
+	    sizeof (timebuf));
+	(void) printf("Interval: %ss\n", timebuf);
+	cpu_iter((stats_t *)stp, stats_dump_cb, NULL);
 	(void) fputc('\n', stdout);
 }
 
-static int
+static intrd_walk_ret_t
 kstat_iter(kstat_ctl_t *restrict kcp, kstat_itercb_t cb, void *restrict arg)
 {
-	int ret = KITER_DONE;
+	intrd_walk_ret_t ret = INTRD_WALK_DONE;
 
 	for (kstat_t *ksp = kcp->kc_chain; ksp != NULL; ksp = ksp->ks_next) {
-		if ((ret = cb(kcp, ksp, arg)) != KITER_NEXT)
+		if ((ret = cb(kcp, ksp, arg)) != INTRD_WALK_NEXT)
 			return (ret);
 	}
 
-	return (ret);
+	return ((ret == INTRD_WALK_NEXT) ? INTRD_WALK_DONE : ret);
+}
+
+intrd_walk_ret_t
+cpu_iter(stats_t *stp, cpu_itercb_t cb, void *arg)
+{
+	intrd_walk_ret_t ret = INTRD_WALK_DONE;
+
+	for (size_t i = 0; i < max_cpu; i++) {
+		if (stp->sts_cpu[i] == NULL)
+			continue;
+
+		if ((ret = cb(stp, stp->sts_cpu[i], arg)) != INTRD_WALK_NEXT)
+			return (ret);
+	}
+	return ((ret == INTRD_WALK_NEXT) ? INTRD_WALK_DONE : ret);
 }
 
 static stats_t *
@@ -1062,19 +878,21 @@ stats_free(stats_t *stp)
 	if (stp == NULL)
 		return;
 
-	for (i = 0; i < stp->sts_ncpu; i++) {
-		cpustat_t *cs = stp->sts_cpu[i];
-		cpustat_free(cs);
+	stp->sts_kid = 0;
+	stp->sts_mintime = INT64_MAX;
+	stp->sts_maxtime = INT64_MIN;
+
+	for (i = 0; i < max_cpu; i++) {
+		cpustat_free(stp->sts_cpu[i]);
+		stp->sts_cpu[i] = NULL;
 	}
-	free(stp->sts_cpu);
-	free(stp->sts_cpu_byid);
-	free(stp->sts_ivecs);
+	stp->sts_ncpu = 0;
 
 	for (i = 0; i < stp->sts_nlgrp; i++)
 		free(stp->sts_lgrp[i].cg_children);
-
-	bzero(stp, sizeof (*stp));
-
+	free(stp->sts_lgrp);
+	stp->sts_lgrp = NULL;
+	stp->sts_nlgrp = 0;
 	umem_cache_free(stats_cache, stp);
 }
 
@@ -1142,6 +960,7 @@ cpustat_free(cpustat_t *cs)
 		ivec_free(iv);
 		cs->cs_nivecs--;
 	}
+	VERIFY3U(cs->cs_nivecs, ==, 0);
 
 	cs->cs_snaptime = 0;
 	cs->cs_cpuid = 0;
@@ -1160,6 +979,7 @@ cpustat_dup(const cpustat_t *src)
 	ivec_t *ivsrc;
 
 	cs->cs_snaptime = src->cs_snaptime;
+	cs->cs_lgrp = src->cs_lgrp;
 	cs->cs_cpuid = src->cs_cpuid;
 	cs->cs_cpu_nsec_idle = src->cs_cpu_nsec_idle;
 	cs->cs_cpu_nsec_user = src->cs_cpu_nsec_user;
@@ -1179,10 +999,22 @@ cpustat_dup(const cpustat_t *src)
 static int
 stats_ctor(void *buf, void *dummy __unused, int flags __unused)
 {
-	stats_t *st = buf;
+	stats_t *stp = buf;
+	size_t len = max_cpu * sizeof (cpustat_t *);
 
-	bzero(st, sizeof (*st));
+	bzero(stp, sizeof (*stp));
+	stp->sts_cpu = umem_zalloc(len, UMEM_NOFAIL);
+	stp->sts_mintime = INT64_MAX;
+	stp->sts_maxtime = INT64_MIN;
 	return (0);
+}
+
+static void
+stats_dtor(void *buf, void *dummy __unused)
+{
+	stats_t *stp = buf;
+	size_t len = max_cpu * sizeof (cpustat_t *);
+	umem_free(stp->sts_cpu, len);
 }
 
 static int
@@ -1244,7 +1076,7 @@ intrd_kstat_init(void)
 	}
 
 	if ((stats_cache = umem_cache_create("stats_t cache",
-	    sizeof (stats_t), 8, stats_ctor, NULL, NULL, NULL, NULL,
+	    sizeof (stats_t), 8, stats_ctor, stats_dtor, NULL, NULL, NULL,
 	    0)) == NULL) {
 		err(EXIT_FAILURE, "unable to create stats cache");
 	}

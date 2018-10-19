@@ -35,6 +35,7 @@ MANIFEST=	intrd.xml
 SVCMETHOD=	svc-intrd
 
 include ../Makefile.cmd
+include ../Makefile.cmd.64
 include ../Makefile.ctf
 
 CSTD=	$(CSTD_GNU99)

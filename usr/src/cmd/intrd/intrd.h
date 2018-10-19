@@ -83,29 +83,23 @@ typedef struct cpugrp {
  * sts_{min,max}time represent the smallest and largest values of
  * kstat_t.ks_crtime of all the individual kstats used to create this snapshot.
  *
- * For coveinence, the per-cpu data is stored two different ways.  sts_cpu_byid
- * is indexed by CPU ID, e.g. the cpustat_t for CPU 7 is sts_cpu_byid[7].  This
- * is allocated to be able to hold CPU IDs in the range
- * (0, _SC_N_PROCESSORS_MAX).  sts_cpu however is just an array of the
- * on-line CPUs in the snapshot in order of CPU ID.  For example, if a system
- * can hold a maximum of 6 CPUs, but only CPUs 3 and 5 are online,
- * sts_cpu_byid would look like {NULL, NULL, NULL, { 3 }, NULL, { 5 }} while
- * sys_cpu would look like {{ 3 }, { 5 }}.
+ * cpustat_t's are indexed by CPU id.  That is, the cpustat_t for CPU 5 is
+ * sts_cpu[5] -- i.e. there may be gaps in this.  It is sized to hold
+ * max_cpu (i.e. _SC_N_PROCESSORS_MAX) cpustat_t *'s.
  */
 typedef struct stats {
+	kid_t		sts_kid;
+
 	hrtime_t	sts_mintime;
 	hrtime_t	sts_maxtime;
 
-	cpustat_t	**sts_cpu_byid;
 	cpustat_t	**sts_cpu;
 	size_t		sts_ncpu;
-
-	ivec_t		**sts_ivecs;
-	size_t		sts_nivecs;
 
 	cpugrp_t	*sts_lgrp;
 	size_t		sts_nlgrp;
 } stats_t;
+#define STATS_CPU(_st, _id) (_st)->sts_cpu[(_id)]
 
 typedef struct load {
 	uint64_t	ld_total;
@@ -122,17 +116,21 @@ typedef struct load {
 
 extern uint_t max_cpu;
 
+typedef enum intrd_walk_ret {
+    INTRD_WALK_ERROR = -1,
+    INTRD_WALK_NEXT = 0,
+    INTRD_WALK_DONE = 1
+} intrd_walk_ret_t;
+
+typedef intrd_walk_ret_t (*cpu_itercb_t)(stats_t *, cpustat_t *, void *);
+intrd_walk_ret_t cpu_iter(stats_t *, cpu_itercb_t, void *);
+
 stats_t *stats_get(const config_t *restrict, kstat_ctl_t *restrict, uint_t);
 stats_t *stats_delta(const stats_t *, const stats_t *);
 stats_t *stats_sum(stats_t * const*, size_t, size_t *);
 stats_t *stats_dup(const stats_t *);
 void stats_free(stats_t *);
 void stats_dump(const stats_t *);
-
-int cpustat_cmp_id(const void *, const void *);
-int ivec_cmp_id(const void *, const void *);
-int ivec_cmp_cpu(const void *, const void *);
-int ivec_cmp_time(const void *, const void *);
 
 cpustat_t *cpustat_new(void);
 cpustat_t *cpustat_dup(const cpustat_t *);
@@ -142,11 +140,11 @@ ivec_t *ivec_new(void);
 ivec_t *ivec_dup(const ivec_t *);
 void ivec_free(ivec_t *);
 
-int ivec_cmp_id(const void *, const void *);
-
 char *xstrdup(const char *);
 void *xcalloc(size_t, size_t);
 void *xreallocarray(void *, size_t, size_t);
+
+void nanonicenum(uint64_t, char *, size_t);
 
 int intrmove(const char *, int, int, int, int);
 

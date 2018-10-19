@@ -18,6 +18,7 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <kstat.h>
+#include <libcmdutils.h>
 #include <libcustr.h>
 #include <limits.h>
 #include <priv.h>
@@ -191,8 +192,6 @@ setup(kstat_ctl_t **restrict kcpp, config_t *restrict cfg)
 	kstat_ctl_t *kcp;
 	long val;
 
-	intrd_kstat_init();
-
 	if ((kcp = kstat_open()) == NULL)
 		err(EXIT_FAILURE, "could not open /dev/kstat");
 	*kcpp = kcp;
@@ -206,7 +205,45 @@ setup(kstat_ctl_t **restrict kcpp, config_t *restrict cfg)
 	}
 	max_cpu = (uint_t)val;
 
+	/*
+	 * This must happen after we've determined max_cpu so that
+	 * stats_t->sts_cpu_byid can be sized correctly.
+	 */
+	intrd_kstat_init();
+
 	// XXX: Initialize cfg
+}
+
+static void
+format_load(lgrp_id_t id, load_t *l, int indent)
+{
+	char buf[NN_NUMBUF_SZ];
+	double pct = 0.0;
+
+	nanonicenum(l->ld_intrtotal, buf, sizeof (buf));
+	if (l->ld_total > 0)
+		pct = (double)(l->ld_intrtotal * 100) / l->ld_total;
+
+	(void) printf("%*sLGRP %2d intr %6ss (%3.1f%%)", indent * 2, "",
+	    id, buf, pct);
+
+	ivec_t *iv = l->ld_bigint;
+
+	if (iv != NULL)
+		(void) printf(" - %s%d int#%d", custr_cstr(iv->ivec_name),
+		    iv->ivec_instance, iv->ivec_ino);
+	(void) fputc('\n', stdout);
+}
+
+static void
+show_load(const cpugrp_t *grp, load_t *load, lgrp_id_t id, int indent)
+{
+	load_t *load_grp = LOAD_LGRP(load, id);
+	const cpugrp_t *lgrp = &grp[id];
+
+	format_load(id, load_grp, indent);
+	for (size_t i = 0; i < lgrp->cg_nchildren; i++)
+		show_load(grp, load, lgrp->cg_children[i], indent + 1);
 }
 
 static void
@@ -236,34 +273,18 @@ loop(const config_t *restrict cfg, kstat_ctl_t *restrict kcp)
 			 * Something changed between the current and previous
 			 * stat collection.  Try again later.
 			 */
-			(void) printf("NULL delta\n");
 			continue;
 		}
 		delta_save(deltas, deltas_sz, delta, cfg->cfg_statslen);
 		sum = stats_sum(deltas, deltas_sz, &ndeltas);
 
+		stats_dump(sum);
+
 		{
 			stats_t *st = (sum != NULL) ? sum : delta;
 			load_t *load = calc_load(st);
 
-			for (size_t i = 0; i < st->sts_ncpu; i++) {
-				load_t *cpuload;
-				int cpuid = st->sts_cpu[i]->cs_cpuid;
-				double pct;
-
-				cpuload = LOAD_CPU(load, cpuid);
-				pct = (double)cpuload->ld_intrtotal /
-				    cpuload->ld_total;
-				(void) printf("CPU %3d %.1f%% intr\n", cpuid,
-				    pct);
-				if (cpuload->ld_bigint == NULL)
-					continue;
-
-				(void) printf("    Big intr: %s int#%llu\n",
-				    custr_cstr(cpuload->ld_bigint->ivec_name),
-				    cpuload->ld_bigint->ivec_ino);
-			}
-
+			show_load(st->sts_lgrp, load, 0, 0);
 			load_free(load);
 		}
 	}
@@ -326,94 +347,39 @@ calc_lgrp_load(cpugrp_t *grp, load_t *ld, lgrp_id_t id)
 
 }
 
+static intrd_walk_ret_t
+calc_load_cb(stats_t *stp, cpustat_t *cs, void *arg)
+{
+	load_t *load = arg;
+	load_t *lcpu = LOAD_CPU(load, cs->cs_cpuid);
+	ivec_t *iv;
+
+	lcpu->ld_total = cs->cs_cpu_nsec_idle + cs->cs_cpu_nsec_user +
+	    cs->cs_cpu_nsec_kernel + cs->cs_cpu_nsec_dtrace +
+	    cs->cs_cpu_nsec_intr;
+
+	for (iv = list_head(&cs->cs_ivecs); iv != NULL;
+	    iv = list_next(&cs->cs_ivecs, iv)) {
+		lcpu->ld_intrtotal += iv->ivec_time;
+		if (LOAD_BIGINT_LOAD(lcpu) < iv->ivec_time)
+			lcpu->ld_bigint = iv;
+	}
+
+	load_t *lgrp = LOAD_LGRP(load, cs->cs_lgrp);
+	lgrp->ld_total += lcpu->ld_total;
+	lgrp->ld_intrtotal += lcpu->ld_intrtotal;
+	lgrp->ld_bigint = LOAD_MAXINT(lgrp, lcpu);
+
+	return (INTRD_WALK_NEXT);
+}
 static load_t *
 calc_load(stats_t *stp)
 {
 	load_t *ld = xcalloc(max_cpu + stp->sts_nlgrp, sizeof (load_t));
-	uint64_t sum, intrsum;
-	ivec_t *bigint;
 
-	for (size_t i = 0; i < stp->sts_ncpu; i++) {
-		cpustat_t *cs = stp->sts_cpu[i];
-		load_t *lcpu = LOAD_CPU(ld, cs->cs_cpuid);
-		load_t *llgrp = LOAD_LGRP(ld, cs->cs_lgrp);
-		ivec_t *iv;
-
-		lcpu->ld_total = cs->cs_cpu_nsec_idle + cs->cs_cpu_nsec_user +
-		    cs->cs_cpu_nsec_kernel + cs->cs_cpu_nsec_dtrace +
-		    cs->cs_cpu_nsec_intr;
-
-		for (iv = list_head(&cs->cs_ivecs); iv != NULL;
-		    iv = list_next(&cs->cs_ivecs, iv)) {
-			lcpu->ld_intrtotal += iv->ivec_time;
-			if (LOAD_BIGINT_LOAD(lcpu) < iv->ivec_time)
-				lcpu->ld_bigint = iv;
-		}
-
-		llgrp->ld_total += lcpu->ld_total;
-		llgrp->ld_intrtotal += lcpu->ld_intrtotal;
-		llgrp->ld_bigint = LOAD_MAXINT(llgrp, lcpu);
-	}
-
+	VERIFY3S(cpu_iter(stp, calc_load_cb, ld), ==, INTRD_WALK_DONE);
 	calc_lgrp_load(stp->sts_lgrp, ld, 0);
-
 	return (ld);
-}
-
-int
-cpustat_cmp_id(const void *a, const void *b)
-{
-	const cpustat_t *l = *((cpustat_t **)a);
-	const cpustat_t *r = *((cpustat_t **)b);
-
-	if (l->cs_cpuid < r->cs_cpuid)
-		return (-1);
-	if (l->cs_cpuid > r->cs_cpuid)
-		return (1);
-
-	return (0);
-}
-
-int
-ivec_cmp_id(const void *a, const void *b)
-{
-	const ivec_t *l = *((ivec_t **)a);
-	const ivec_t *r = *((ivec_t **)b);
-
-	if (l->ivec_instance < r->ivec_instance)
-		return (-1);
-	if (l->ivec_instance > r->ivec_instance)
-		return (1);
-
-	return (0);
-}
-
-int
-ivec_cmp_cpu(const void *a, const void *b)
-{
-	const ivec_t *l = *((ivec_t **)a);
-	const ivec_t *r = *((ivec_t **)b);
-	int ret;
-
-	if (l->ivec_cpuid < r->ivec_cpuid)
-		return (-1);
-	if (l->ivec_cpuid > r->ivec_cpuid)
-		return (1);
-
-	if ((ret = strcmp(l->ivec_buspath, r->ivec_buspath)) != 0)
-		return ((ret != 1) ? -1 : 1);
-
-	if (l->ivec_ino < r->ivec_ino)
-		return (-1);
-	if (l->ivec_ino > r->ivec_ino)
-		return (1);
-
-	if (l->ivec_instance < r->ivec_instance)
-		return (-1);
-	if (l->ivec_instance > r->ivec_instance)
-		return (1);
-
-	return (0);
 }
 
 static void
