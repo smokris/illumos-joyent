@@ -39,7 +39,7 @@ include ../Makefile.cmd.64
 include ../Makefile.ctf
 
 CSTD=	$(CSTD_GNU99)
-LDLIBS +=	-lkstat -lcustr -lcmdutils -llgrp -lumem
+LDLIBS +=	-lkstat -lcmdutils -llgrp -lumem
 
 TARGET=	all
 
