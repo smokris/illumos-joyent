@@ -56,7 +56,22 @@ static boolean_t ivec_shared_intr(const ivec_t *, const ivec_t *);
 static boolean_t ivec_shared_msi(const ivec_t *, const ivec_t *);
 
 static stats_t *stats_new(void);
+static stats_t *stats_dup(const stats_t*);
 
+static cpustat_t *cpustat_new(void);
+static cpustat_t *cpustat_dup(const cpustat_t *);
+static void cpustat_free(cpustat_t *);
+
+static ivec_t *ivec_new(void);
+static ivec_t *ivec_dup(const ivec_t *);
+static void ivec_free(ivec_t *);
+
+/*
+ * Get a kstat snapshot and assemble it into a stats_t.  If the fraction
+ * of the time spent creating the stats_t compared to the polling interval
+ * (interval) is > cfg_tooslow, we return NULL.  If we encounter a non-fatal
+ * error reading the kstats, we asll return NULL.
+ */
 stats_t *
 stats_get(const config_t *restrict cfg, kstat_ctl_t *restrict kcp,
     uint_t interval)
@@ -90,6 +105,7 @@ stats_get(const config_t *restrict cfg, kstat_ctl_t *restrict kcp,
 	}
 
 	if (getstat_tooslow(sts, interval, cfg->cfg_tooslow)) {
+		errno = ETIME;
 		goto fail;
 	}
 
@@ -105,7 +121,6 @@ stats_get(const config_t *restrict cfg, kstat_ctl_t *restrict kcp,
 	return (sts);
 
 fail:
-	printf("%s fail\n", __func__);
 	stats_free(sts);
 	return (NULL);
 }
@@ -189,11 +204,6 @@ fail:
 	return (B_FALSE);
 }
 
-/*
- * Combine ivec_t's for any shared interrupts into a single consolidated
- * entry (since they have to move together).  On X86, also group MSI
- * interrupts for the same device (for similar reasons).
- */
 static int
 ivec_cmp(const void *a, const void *b)
 {
@@ -218,6 +228,11 @@ ivec_cmp(const void *a, const void *b)
 	return (0);
 }
 
+/*
+ * Combine ivec_t's for any shared interrupts into a single consolidated
+ * entry (since they have to move together).  On X86, also group MSI
+ * interrupts for the same device (for similar reasons).
+ */
 static intrd_walk_ret_t
 consolidate_ivec_cb(stats_t *stp, cpustat_t *cs, void *arg)
 {
@@ -229,6 +244,11 @@ consolidate_ivec_cb(stats_t *stp, cpustat_t *cs, void *arg)
 	ivec_t *temp[cs->cs_nivecs];
 	size_t n, i, j;
 
+	/*
+	 * We create an array of pointers to all the ivec_t's on this cpu,
+	 * then sort them so that any potential shared interrupts will
+	 * be adjacent in the array.
+	 */
 	n = 0;
 	for (iv = list_head(ivlist); iv != NULL; iv = list_next(ivlist, iv))
 		temp[n++] = iv;
@@ -236,6 +256,10 @@ consolidate_ivec_cb(stats_t *stp, cpustat_t *cs, void *arg)
 
 	qsort(temp, n, sizeof (ivec_t *), ivec_cmp);
 
+	/*
+	 * For each ivec, look at the next ivec in the array and consolidate
+	 * each successive ivec as long as they are shared.
+	 */
 	for (i = 0; i < n; i = j) {
 		iv = temp[i];
 
@@ -268,6 +292,9 @@ consolidate_ivecs(stats_t *stp)
 static boolean_t
 ivec_shared_intr(const ivec_t *i1, const ivec_t *i2)
 {
+	/*
+	 * XXX This needs to be revisited
+	 */
 #if 0
 	if (i1->ivec_ino != i2->ivec_ino)
 		return (B_FALSE);
@@ -292,6 +319,7 @@ ivec_shared_msi(const ivec_t *i1, const ivec_t *i2)
 #endif
 }
 
+#if 0
 static int
 ivec_cmp_msi(const void *a, const void *b)
 {
@@ -315,6 +343,7 @@ ivec_cmp_msi(const void *a, const void *b)
 		return (0);
 	return ((l->ivec_instance < r->ivec_instance) ? -1 : 1);
 }
+#endif
 
 static intrd_walk_ret_t
 get_cpu(kstat_ctl_t *restrict kcp, kstat_t *restrict ksp, void *restrict arg)
@@ -394,6 +423,9 @@ get_cpu(kstat_ctl_t *restrict kcp, kstat_t *restrict ksp, void *restrict arg)
 static intrd_walk_ret_t
 get_ivecs(kstat_ctl_t *restrict kcp, kstat_t *restrict ksp, void *restrict arg)
 {
+	/*
+	 * Also cache the field indexes for the pci_intrs kstat.
+	 */
 	static int cookie = -1;
 	static int cpu = -1;
 	static int buspath = -1;
@@ -484,8 +516,8 @@ get_ivecs(kstat_ctl_t *restrict kcp, kstat_t *restrict ksp, void *restrict arg)
 }
 
 /*
- * Determine if the amount of time spent collecting our stats, as well as set
- * the min and max timestamp of all the stats collected in stp.
+ * Determine if the ratio of time spent creating stp compared to the polling
+ * interval is > tooslow.
  */
 static boolean_t
 getstat_tooslow(stats_t *stp, uint_t interval, double tooslow)
@@ -499,7 +531,7 @@ getstat_tooslow(stats_t *stp, uint_t interval, double tooslow)
 	diff = stp->sts_maxtime - stp->sts_mintime;
 	nanonicenum(diff, numbuf, sizeof (numbuf));
 
-	portion = (double)diff / (double)(interval * NANOSEC);
+	portion = (double)diff / (double)((uint64_t)interval * NANOSEC);
 
 	syslog(LOG_DEBUG,
 	    "spent %.1f%% of the polling interval collecting stats "
@@ -574,6 +606,10 @@ stats_delta_cb(stats_t *stp, cpustat_t *cs, void *arg)
 	return (INTRD_WALK_NEXT);
 }
 
+/*
+ * If a change in the system configuration (different cpus online, new/deleted
+ * interrupts, etc.) return B_TRUE, otherwise return B_FALSE.
+ */
 static boolean_t
 stats_differ(const stats_t *s1, const stats_t *s2)
 {
@@ -617,6 +653,9 @@ stats_differ(const stats_t *s1, const stats_t *s2)
 	return (B_FALSE);
 }
 
+/*
+ * Compute what is effectively s1 - prev.
+ */
 stats_t *
 stats_delta(const stats_t *restrict st, const stats_t *restrict prev)
 {
@@ -684,6 +723,11 @@ stats_sum_cb(stats_t *sum, cpustat_t *cs, void *arg)
 	return (INTRD_WALK_NEXT);
 }
 
+/*
+ * Given a collection of n deltas, combine them together to represent a larger
+ * time interval, skipping any that don't represent the same configuration.
+ * Sets *total to the number of deltas that were used.
+ */
 stats_t *
 stats_sum(stats_t * const *restrict deltas, size_t n, size_t *restrict total)
 {
@@ -733,7 +777,7 @@ stlgrp_copy(const cpugrp_t *src, cpugrp_t *dst)
 	dst->cg_nchildren = src->cg_nchildren;
 }
 
-stats_t *
+static stats_t *
 stats_dup(const stats_t *src)
 {
 	stats_t *stp;
@@ -753,39 +797,6 @@ stats_dup(const stats_t *src)
 	stp->sts_nlgrp = src->sts_nlgrp;
 
 	return (stp);
-}
-
-/*
- * Like nicenum, but assumes the value is * 10^(-9) units
- */
-void
-nanonicenum(uint64_t val, char *buf, size_t buflen)
-{
-	static const char units[] = "num KMGTPE";
-	static const size_t index_max = 9;
-	uint64_t divisor = 1;
-	int index = 0;
-	char u;
-
-	while (index < index_max) {
-		uint64_t newdiv = divisor * 1024;
-
-		if (val < newdiv)
-			break;
-		divisor = newdiv;
-		index++;
-	}
-	u = units[index];
-
-	if (val % divisor == 0) {
-		(void) snprintf(buf, buflen, "%llu%c", val / divisor, u);
-	} else {
-		for (int i = 2; i >= 0; i--) {
-			if (snprintf(buf, buflen, "%.*f%c", i,
-			    (double)val / divisor, u) <= 5)
-				return;
-		}
-	}
 }
 
 static intrd_walk_ret_t
@@ -896,7 +907,7 @@ stats_free(stats_t *stp)
 	umem_cache_free(stats_cache, stp);
 }
 
-ivec_t *
+static ivec_t *
 ivec_dup(const ivec_t *iv)
 {
 	ivec_t *newiv = ivec_new();
@@ -918,13 +929,13 @@ ivec_dup(const ivec_t *iv)
 	return (newiv);
 }
 
-ivec_t *
+static ivec_t *
 ivec_new(void)
 {
 	return (umem_cache_alloc(ivec_cache, UMEM_NOFAIL));
 }
 
-void
+static void
 ivec_free(ivec_t *iv)
 {
 	if (iv == NULL)
@@ -942,13 +953,13 @@ ivec_free(ivec_t *iv)
 	umem_cache_free(ivec_cache, iv);
 }
 
-cpustat_t *
+static cpustat_t *
 cpustat_new(void)
 {
 	return (umem_cache_alloc(cpustat_cache, UMEM_NOFAIL));
 }
 
-void
+static void
 cpustat_free(cpustat_t *cs)
 {
 	if (cs == NULL)
@@ -971,7 +982,7 @@ cpustat_free(cpustat_t *cs)
 	umem_cache_free(cpustat_cache, cs);
 }
 
-cpustat_t *
+static cpustat_t *
 cpustat_dup(const cpustat_t *src)
 {
 	cpustat_t *cs = cpustat_new();

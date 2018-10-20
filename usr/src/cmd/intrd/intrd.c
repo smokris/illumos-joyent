@@ -47,6 +47,10 @@ static void delta_save(stats_t **, size_t, stats_t *, uint_t);
 static load_t *calc_load(stats_t *);
 static void load_free(load_t *);
 
+uint_t cfg_interval = 10;
+uint_t cfg_retry_interval = 1;
+uint_t cfg_idle_interval = 45;
+
 uint_t max_cpu;
 
 #ifdef DEBUG
@@ -264,8 +268,17 @@ loop(const config_t *restrict cfg, kstat_ctl_t *restrict kcp)
 
 	for (;; sleep(interval)) {
 		stats_free(stats[gen]);
-		if ((stats[gen] = stats_get(cfg, kcp, interval)) == NULL)
+
+		/*
+		 * If there was a temporary error, retry sooner than a
+		 * regular interval.
+		 */
+		if ((stats[gen] = stats_get(cfg, kcp, interval)) == NULL) {
+			interval = cfg_retry_interval;
 			continue;
+		}
+
+		interval = cfg_interval;
 
 		delta = stats_delta(stats[gen], stats[gen ^ 1]);
 		gen ^= 1;
@@ -282,6 +295,7 @@ loop(const config_t *restrict cfg, kstat_ctl_t *restrict kcp)
 
 		stats_dump(sum);
 
+		/*  XXX: temporary just to show the data */
 		{
 			stats_t *st = (sum != NULL) ? sum : delta;
 			load_t *load = calc_load(st);
@@ -292,6 +306,10 @@ loop(const config_t *restrict cfg, kstat_ctl_t *restrict kcp)
 	}
 }
 
+/*
+ * Add newdelta to the front of deltas, and remove any entries in delta
+ * from more than statslen seconds ago.
+ */
 static void
 delta_save(stats_t **deltas, size_t n, stats_t *newdelta, uint_t statslen)
 {
@@ -393,6 +411,39 @@ load_free(load_t *ld)
 	if (ld == NULL)
 		return;
 	free(ld);
+}
+
+/*
+ * Like nicenum, but assumes the value is * 10^(-9) units
+ */
+void
+nanonicenum(uint64_t val, char *buf, size_t buflen)
+{
+	static const char units[] = "num KMGTPE";
+	static const size_t index_max = 9;
+	uint64_t divisor = 1;
+	int index = 0;
+	char u;
+
+	while (index < index_max) {
+		uint64_t newdiv = divisor * 1024;
+
+		if (val < newdiv)
+			break;
+		divisor = newdiv;
+		index++;
+	}
+	u = units[index];
+
+	if (val % divisor == 0) {
+		(void) snprintf(buf, buflen, "%llu%c", val / divisor, u);
+	} else {
+		for (int i = 2; i >= 0; i--) {
+			if (snprintf(buf, buflen, "%.*f%c", i,
+			    (double)val / divisor, u) <= 5)
+				return;
+		}
+	}
 }
 
 char *

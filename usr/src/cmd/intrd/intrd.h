@@ -40,6 +40,9 @@ typedef struct config {
 	double	cfg_mindelta;
 } config_t;
 
+/*
+ * An interrupt vector, corresponding to the data from a pci_intrs kstat.
+ */
 typedef struct ivec {
 	list_node_t	ivec_node;
 	hrtime_t	ivec_snaptime;
@@ -57,6 +60,10 @@ typedef struct ivec {
 	char		ivec_type[16];	/* sizeof kstat_named_t.value.c */
 } ivec_t;
 
+/*
+ * The stats corresponding to the cpu:sys kstat, as well as the locality
+ * group this CPU is in, and all the interrupts assigned to this CPU.
+ */
 typedef struct cpustat {
 	hrtime_t	cs_snaptime;
 	int		cs_cpuid;
@@ -70,6 +77,9 @@ typedef struct cpustat {
 	size_t		cs_nivecs;
 } cpustat_t;
 
+/*
+ * The locality group data.
+ */
 typedef struct cpugrp {
 	lgrp_id_t	cg_id;
 	lgrp_id_t	cg_parent;
@@ -101,6 +111,14 @@ typedef struct stats {
 } stats_t;
 #define STATS_CPU(_st, _id) (_st)->sts_cpu[(_id)]
 
+/*
+ * The calculations used to evaluate the interrupt load on the system are
+ * both the ratio of time spent servicing device interrupts compared to the
+ * total time, as well as the average interrupt time per cpu.  In addition,
+ * we keep a reference to ivec consuming the most time.  A load_t is created
+ * per cpu, as well as per locality group.  The load_t's for lgrps are
+ * aggregated over all the cpus in a given lgrp.
+ */
 typedef struct load {
 	uint64_t	ld_total;
 	uint64_t	ld_intrtotal;
@@ -115,6 +133,9 @@ typedef struct load {
     ((LOAD_BIGINT_LOAD(_l1) > LOAD_BIGINT_LOAD(_l2)) ? \
      (_l1)->ld_bigint : (_l2)->ld_bigint)
 
+extern uint_t cfg_interval;
+extern uint_t cfg_retry_interval;
+extern uint_t cfg_idle_interval;
 extern uint_t max_cpu;
 
 typedef enum intrd_walk_ret {
@@ -129,17 +150,8 @@ intrd_walk_ret_t cpu_iter(stats_t *, cpu_itercb_t, void *);
 stats_t *stats_get(const config_t *restrict, kstat_ctl_t *restrict, uint_t);
 stats_t *stats_delta(const stats_t *, const stats_t *);
 stats_t *stats_sum(stats_t * const*, size_t, size_t *);
-stats_t *stats_dup(const stats_t *);
 void stats_free(stats_t *);
 void stats_dump(const stats_t *);
-
-cpustat_t *cpustat_new(void);
-cpustat_t *cpustat_dup(const cpustat_t *);
-void cpustat_free(cpustat_t *);
-
-ivec_t *ivec_new(void);
-ivec_t *ivec_dup(const ivec_t *);
-void ivec_free(ivec_t *);
 
 char *xstrdup(const char *);
 void *xcalloc(size_t, size_t);
