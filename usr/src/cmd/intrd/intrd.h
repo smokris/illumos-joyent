@@ -105,6 +105,7 @@ typedef struct load {
 	uint64_t	ld_total;
 	uint64_t	ld_intrtotal;
 	ivec_t		*ld_bigint;
+	size_t		ld_ncpu;
 } load_t;
 #define LOAD_LGRP(_load, _id) ((_load) + max_cpu + (_id))
 #define LOAD_CPU(_load, _id) ((_load) + (_id))

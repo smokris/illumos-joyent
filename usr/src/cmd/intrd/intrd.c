@@ -224,14 +224,16 @@ format_load(lgrp_id_t id, load_t *l, int indent)
 	if (l->ld_total > 0)
 		pct = (double)(l->ld_intrtotal * 100) / l->ld_total;
 
-	(void) printf("%*sLGRP %2d intr %6ss (%3.1f%%)", indent * 2, "",
-	    id, buf, pct);
+	(void) printf("%*sLGRP %2d %zu CPUs intr %6ss (%3.1f%%)",
+	    indent * 2, "", id, l->ld_ncpu, buf, pct);
 
 	ivec_t *iv = l->ld_bigint;
 
-	if (iv != NULL)
-		(void) printf(" - %s%d int#%d", custr_cstr(iv->ivec_name),
-		    iv->ivec_instance, iv->ivec_ino);
+	if (iv != NULL) {
+		nanonicenum(iv->ivec_time, buf, sizeof (buf));
+		(void) printf(" - %s int#%d %ss", custr_cstr(iv->ivec_name),
+		    iv->ivec_ino, buf);
+	}
 	(void) fputc('\n', stdout);
 }
 
@@ -343,8 +345,8 @@ calc_lgrp_load(cpugrp_t *grp, load_t *ld, lgrp_id_t id)
 		lgrp->ld_total += lchild->ld_total;
 		lgrp->ld_intrtotal += lchild->ld_intrtotal;
 		lgrp->ld_bigint = LOAD_MAXINT(lgrp, lchild);
+		lgrp->ld_ncpu += lchild->ld_ncpu;
 	}
-
 }
 
 static intrd_walk_ret_t
@@ -357,6 +359,7 @@ calc_load_cb(stats_t *stp, cpustat_t *cs, void *arg)
 	lcpu->ld_total = cs->cs_cpu_nsec_idle + cs->cs_cpu_nsec_user +
 	    cs->cs_cpu_nsec_kernel + cs->cs_cpu_nsec_dtrace +
 	    cs->cs_cpu_nsec_intr;
+	lcpu->ld_ncpu = 1;
 
 	for (iv = list_head(&cs->cs_ivecs); iv != NULL;
 	    iv = list_next(&cs->cs_ivecs, iv)) {
@@ -366,9 +369,11 @@ calc_load_cb(stats_t *stp, cpustat_t *cs, void *arg)
 	}
 
 	load_t *lgrp = LOAD_LGRP(load, cs->cs_lgrp);
+
 	lgrp->ld_total += lcpu->ld_total;
 	lgrp->ld_intrtotal += lcpu->ld_intrtotal;
 	lgrp->ld_bigint = LOAD_MAXINT(lgrp, lcpu);
+	lgrp->ld_ncpu++;
 
 	return (INTRD_WALK_NEXT);
 }

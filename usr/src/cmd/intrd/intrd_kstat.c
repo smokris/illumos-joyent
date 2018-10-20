@@ -745,7 +745,7 @@ stats_dup(const stats_t *src)
 
 	VERIFY3S(cpu_iter((stats_t *)src, stats_dup_cb, stp), ==,
 	    INTRD_WALK_DONE);
-	sts->sts_ncpu = src->sts_ncpu;
+	stp->sts_ncpu = src->sts_ncpu;
 
 	stp->sts_lgrp = xcalloc(src->sts_nlgrp, sizeof (cpugrp_t));
 	for (size_t i = 0; i < src->sts_nlgrp; i++)
