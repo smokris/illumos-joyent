@@ -165,6 +165,9 @@ stats_t *stats_sum(stats_t * const*, size_t, size_t *);
 void stats_free(stats_t *);
 void stats_dump(const stats_t *);
 
+load_t *load_calc(stats_t *);
+void load_free(load_t *);
+
 char *xstrdup(const char *);
 void *xcalloc(size_t, size_t);
 void *xreallocarray(void *, size_t, size_t);

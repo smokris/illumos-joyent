@@ -24,6 +24,11 @@
  * Copyright 2018, Joyent, Inc.
  */
 
+/*
+ * This is pretty much a straight copy of the Intr.pm implementation with a
+ * few minor changes since it doesn't need to interface with perl.
+ */
+
 #include <sys/types.h>
 #include <fcntl.h>
 #include <unistd.h>

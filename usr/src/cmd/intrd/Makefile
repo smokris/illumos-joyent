@@ -28,7 +28,7 @@
 #
 
 PROG=		intrd
-OBJS=		intrd.o intrd_kstat.o intrd_move.o
+OBJS=		intrd.o intrd_kstat.o intrd_move.o intrd_load.o
 SRCS=		$(OBJS:%.o=%.c)
 
 MANIFEST=	intrd.xml
