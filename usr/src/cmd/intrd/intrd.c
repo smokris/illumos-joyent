@@ -218,18 +218,19 @@ setup(kstat_ctl_t **restrict kcpp, config_t *restrict cfg)
 	// XXX: Initialize cfg
 }
 
+/*
+ * Temporary functions to output data during development.  Maybe turn into
+ * debug output later.
+ */
 static void
 format_load(lgrp_id_t id, load_t *l, int indent)
 {
 	char buf[NN_NUMBUF_SZ];
-	double pct = 0.0;
 
 	nanonicenum(l->ld_intrtotal, buf, sizeof (buf));
-	if (l->ld_total > 0)
-		pct = (double)(l->ld_intrtotal * 100) / l->ld_total;
 
 	(void) printf("%*sLGRP %2d %zu CPUs intr %6ss (%3.1f%%)",
-	    indent * 2, "", id, l->ld_ncpu, buf, pct);
+	    indent * 2, "", id, l->ld_ncpu, buf, l->ld_avgload * 100.0);
 
 	ivec_t *iv = l->ld_bigint;
 
@@ -350,12 +351,39 @@ delta_save(stats_t **deltas, size_t n, stats_t *newdelta, uint_t statslen)
 }
 
 static void
+calc_avgs(load_t *ld)
+{
+	double intr = (double)ld->ld_intrtotal;
+
+	if (ld->ld_ncpu == 0) {
+		ld->ld_avgnsec = 0.0;
+		ld->ld_avgload = 0.0;
+		return;
+	}
+
+	ld->ld_avgnsec = intr;
+	ld->ld_avgload = intr / ld->ld_total;
+
+	if (ld->ld_ncpu > 1) {
+		ld->ld_avgnsec /= ld->ld_ncpu;
+		ld->ld_avgload /= ld->ld_ncpu;
+	}
+}
+
+static void
 calc_lgrp_load(cpugrp_t *grp, load_t *ld, lgrp_id_t id)
 {
 	cpugrp_t *cg = grp + id;
 	load_t *lgrp = LOAD_LGRP(ld, id);
 
 	for (size_t i = 0; i < cg->cg_nchildren; i++) {
+		/*
+		 * The values of an lgrp load_t entry are the sums of all
+		 * the children lgrps (for ld_bigint, it is the interrupt
+		 * consuming the most time in any of the child lgrps) of
+		 * this lgrp.  Recursively calculate any children first so
+		 * their values are calculated before we calculate ours.
+		 */
 		calc_lgrp_load(grp, ld, cg->cg_children[i]);
 
 		load_t *lchild = LOAD_LGRP(ld, cg->cg_children[i]);
@@ -365,6 +393,7 @@ calc_lgrp_load(cpugrp_t *grp, load_t *ld, lgrp_id_t id)
 		lgrp->ld_bigint = LOAD_MAXINT(lgrp, lchild);
 		lgrp->ld_ncpu += lchild->ld_ncpu;
 	}
+	calc_avgs(lgrp);
 }
 
 static intrd_walk_ret_t
@@ -385,6 +414,7 @@ calc_load_cb(stats_t *stp, cpustat_t *cs, void *arg)
 		if (LOAD_BIGINT_LOAD(lcpu) < iv->ivec_time)
 			lcpu->ld_bigint = iv;
 	}
+	calc_avgs(lcpu);
 
 	load_t *lgrp = LOAD_LGRP(load, cs->cs_lgrp);
 
@@ -395,11 +425,21 @@ calc_load_cb(stats_t *stp, cpustat_t *cs, void *arg)
 
 	return (INTRD_WALK_NEXT);
 }
+
 static load_t *
 calc_load(stats_t *stp)
 {
 	load_t *ld = xcalloc(max_cpu + stp->sts_nlgrp, sizeof (load_t));
 
+	/*
+	 * Calculate the load_t values for all the CPU entries first.  If one
+	 * thinks of the locality topology as a tree, the leaf lgrps (ones
+	 * without any child lgrps) are the ones that will directly contain
+	 * CPUs (these are also the lgrp_id_t values stored in
+	 * cpustat_t->cs_lgrp).  We also calculate those lgrp leaves at the same
+	 * time we are calculating the per-CPU values in calc_load_cb().
+	 * We can then calculate any parent lgrps in calc_lgrp_load().
+	 */
 	VERIFY3S(cpu_iter(stp, calc_load_cb, ld), ==, INTRD_WALK_DONE);
 	calc_lgrp_load(stp->sts_lgrp, ld, 0);
 	return (ld);

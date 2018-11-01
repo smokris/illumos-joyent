@@ -42,6 +42,8 @@ typedef struct config {
 
 /*
  * An interrupt vector, corresponding to the data from a pci_intrs kstat.
+ * For shared interrupts, this may also represent a consolidated picture of
+ * all of those shared interrupts.
  */
 typedef struct ivec {
 	list_node_t	ivec_node;
@@ -78,7 +80,9 @@ typedef struct cpustat {
 } cpustat_t;
 
 /*
- * The locality group data.
+ * The locality group data.  Since NLGRPS_MAX is only available in the kernel
+ * and not userland, the array holding the IDs of the children of any lgrp
+ * is dynamically allocated.
  */
 typedef struct cpugrp {
 	lgrp_id_t	cg_id;
@@ -93,9 +97,13 @@ typedef struct cpugrp {
  * sts_{min,max}time represent the smallest and largest values of
  * kstat_t.ks_crtime of all the individual kstats used to create this snapshot.
  *
- * cpustat_t's are indexed by CPU id.  That is, the cpustat_t for CPU 5 is
+ * cpustat_t's are indexed by CPU id.  For example, the cpustat_t for CPU 5 is
  * sts_cpu[5] -- i.e. there may be gaps in this.  It is sized to hold
  * max_cpu (i.e. _SC_N_PROCESSORS_MAX) cpustat_t *'s.
+ *
+ * It also includes a snapshot of the locality groups near in time to when
+ * the kstats for this stats_t were read (i.e. we read the kstats, then grab
+ * the lgrp info).
  */
 typedef struct stats {
 	kid_t		sts_kid;
@@ -117,11 +125,15 @@ typedef struct stats {
  * total time, as well as the average interrupt time per cpu.  In addition,
  * we keep a reference to ivec consuming the most time.  A load_t is created
  * per cpu, as well as per locality group.  The load_t's for lgrps are
- * aggregated over all the cpus in a given lgrp.
+ * aggregated over all the cpus in a given lgrp.  The results are stored in
+ * an array of load_t's where the first max_cpu entries represent the load of
+ * the corresponding CPU, followed by the locality groups.
  */
 typedef struct load {
 	uint64_t	ld_total;
 	uint64_t	ld_intrtotal;
+    double      ld_avgnsec;
+    double      ld_avgload;
 	ivec_t		*ld_bigint;
 	size_t		ld_ncpu;
 } load_t;
