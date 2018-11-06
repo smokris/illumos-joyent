@@ -7740,7 +7740,7 @@ zone_dataset_unalias_inzone(const char *alias, char *dataset, size_t sz,
 	 * dataset's system name is the same as the name the zone used
 	 * (ie, assume no aliasing is in effect).
 	 */
-	if (found == B_FALSE) {
+	if (!found) {
 		len = strlen(alias);
 		if (len >= sz - 1)
 			return (ENOSPC);
@@ -7807,7 +7807,7 @@ zone_dataset_alias_inzone(const char *dataset, char *alias, size_t sz,
 		}
 	}
 
-	if (found == B_FALSE)
+	if (!found)
 		return (EINVAL);
 
 	if (zd->zd_alias == NULL) {

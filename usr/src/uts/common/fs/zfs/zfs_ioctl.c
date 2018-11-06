@@ -2136,7 +2136,7 @@ zfs_zone_ds_matches_alias(const char *dataset, zone_dataset_t *zd)
 	if (strlen(dataset) >= len &&
 	    bcmp(dataset, zd->zd_dataset, len) == 0 &&
 	    (dataset[len] == '\0' || dataset[len] == '/' ||
-	    dataset[len] == '@')) {
+	    dataset[len] == '@' || dataset[len] == '#')) {
 		return (B_TRUE);
 	}
 
