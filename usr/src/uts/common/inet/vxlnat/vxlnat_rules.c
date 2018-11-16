@@ -357,10 +357,6 @@ vxlnat_fixed_unlink(vxlnat_fixed_t *fixed)
 		ASSERT(ire->ire_type == IRE_LOCAL);
 		ASSERT3P((void *)ire->ire_dep_sib_next, ==, (void *)fixed);
 
-		/* XXX KEBE SAYS CHEESY HACK. */
-		if (fixed->vxnf_clear_router)
-			ire->ire_ill->ill_flags &= ~ILLF_ROUTER;
-
 		ire->ire_dep_sib_next = NULL;
 		VXNF_REFRELE(fixed);	/* ire's hold on us. */
 		/* Rewire IRE back to normal. */
@@ -488,18 +484,6 @@ vxlnat_fixed_ip(vxn_msg_t *vxnm)
 			ire->ire_recvfn = vxlnat_fixed_ire_recv_v6;
 			ire->ire_sendfn = vxlnat_fixed_ire_send_v6;
 		}
-#if 1	/* Cheesy hack */
-		/*
-		 * XXX KEBE SAYS CHEESY HACK:
-		 */
-		if (!(ire->ire_ill->ill_flags & ILLF_ROUTER)) {
-			fixed->vxnf_clear_router = B_TRUE;
-			ire->ire_ill->ill_flags |= ILLF_ROUTER;
-		} else {
-			/* Just so we're clear... */
-			fixed->vxnf_clear_router = B_FALSE;
-		}
-#endif	/* Cheesy hack */
 	}
 	rw_exit(&vnet->vxnv_fixed_lock);
 

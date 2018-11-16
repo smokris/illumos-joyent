@@ -129,7 +129,6 @@ typedef struct vxlnat_fixed_s {
 	uint8_t vxnf_myether[ETHERADDRL];
 	uint16_t vxnf_vlanid;	/* Stored in network order for quick xmit. */
 	uint32_t vxnf_refcount;
-	boolean_t vxnf_clear_router;	/* XXX KEBE SAYS CHEESY HACK */
 } vxlnat_fixed_t;
 #define	VXNF_REFHOLD(vxnf) {			\
 	atomic_inc_32(&(vxnf)->vxnf_refcount);	\

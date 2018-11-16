@@ -37,7 +37,6 @@ extern "C" {
  */
 typedef struct vxn_msg_s {
 	uint32_t vxnm_type;	/* A bit much, but good alignment this way. */
-	/* XXX KEBE ASKS, can I get away with this? */
 	uint_t vxnm_vnetid:24;	/* Host-order, kernel will normalize. */
 	uint_t	vxnm_prefix:8;	/* Prefix-length for private address. */
 	uint16_t vxnm_vlanid;	/* My VLAN id. */
