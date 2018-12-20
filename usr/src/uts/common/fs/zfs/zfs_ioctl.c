@@ -375,7 +375,7 @@ zfs_unalias_poolname(zfs_cmd_t *zc, nvlist_t **innvl, cred_t *cr)
 	if (zc->zc_name[0] == '\0')
 		return (0);
 
-	zc->zc_action_handle = 0;
+	zc->zc_dataset = 0;
 
 	/*
 	 * First look for any straight-through zone dataset entries that mean
@@ -392,14 +392,7 @@ zfs_unalias_poolname(zfs_cmd_t *zc, nvlist_t **innvl, cred_t *cr)
 			len = (ptr - zd->zd_dataset);
 		if (bcmp(zc->zc_name, zd->zd_dataset, len) == 0 &&
 		    strlen(zc->zc_name) == len) {
-			/*
-			 * Stash the zone_dataset_t that matches in the
-			 * zfs_cmd_t, so that we can pull it back out later in
-			 * zfs_alias_poolname. The zc_action_handle field is
-			 * never used by any pool-related ioctls (only by
-			 * IOC_RECV), so overwriting it should be ok.
-			 */
-			zc->zc_action_handle = (uint64_t)((uintptr_t)zd);
+			zc->zc_dataset = (uint64_t)(uintptr_t)zd;
 			return (0);
 		}
 	}
@@ -412,7 +405,7 @@ zfs_unalias_poolname(zfs_cmd_t *zc, nvlist_t **innvl, cred_t *cr)
 		len = strlen(zd->zd_alias);
 		if (bcmp(zc->zc_name, zd->zd_alias, len) == 0
 		    && strlen(zc->zc_name) == len) {
-			zc->zc_action_handle = (uint64_t)((uintptr_t)zd);
+			zc->zc_dataset = (uint64_t)(uintptr_t)zd;
 			(void) strcpy(zc->zc_name, zd->zd_dataset);
 			ptr = strchr(zc->zc_name, '/');
 			if (ptr != NULL)
@@ -555,15 +548,11 @@ zfs_alias_poolname(zfs_cmd_t *zc, nvlist_t **innvl, nvlist_t **outnvl,
 	if (zc->zc_name[0] == '\0')
 		return (0);
 
-	/*
-	 * We stashed the pointer to the zone_dataset_t in the zc_action_handle
-	 * member back in zfs_unalias_poolname.
-	 */
-	zd = (zone_dataset_t *)((uintptr_t)zc->zc_action_handle);
+	zd = (zone_dataset_t *)(uintptr_t)zc->zc_dataset;
 	VERIFY(zd != NULL);
 
 	/* Zero it so we don't leak the pointer back to userland. */
-	zc->zc_action_handle = 0;
+	zc->zc_dataset = 0;
 
 	if (zd->zd_alias == NULL)
 		return (0);
@@ -2262,11 +2251,7 @@ zfs_ioc_pool_stats(zfs_cmd_t *zc)
 	 * aliases as needed.
 	 */
 	if (config != NULL && !INGLOBALZONE(curproc)) {
-		/*
-		 * We stashed the pointer to the zone_dataset_t in the
-		 * zc_action_handle member back in zfs_unalias_poolname.
-		 */
-		zd = (zone_dataset_t *)((uintptr_t)zc->zc_action_handle);
+		zd = (zone_dataset_t *)(uintptr_t)zc->zc_dataset;
 		if (zd == NULL)
 			return (EINVAL);
 
@@ -3704,11 +3689,7 @@ zfs_ioc_pool_get_props(zfs_cmd_t *zc)
 	    nvlist_lookup_nvlist(nvp, "name", &prop) == 0) {
 		zone_dataset_t *zd;
 
-		/*
-		 * We stashed the pointer to the zone_dataset_t in the
-		 * zc_action_handle member back in zfs_unalias_poolname.
-		 */
-		zd = (zone_dataset_t *)((uintptr_t)zc->zc_action_handle);
+		zd = (zone_dataset_t *)(uintptr_t)zc->zc_dataset;
 		if (zd == NULL)
 			return (EINVAL);
 
@@ -7279,6 +7260,7 @@ zfs_ioctl_init(void)
 
 	zfs_ioctl_register("remap", ZFS_IOC_REMAP,
 	    zfs_ioc_remap, zfs_secpolicy_remap, DATASET_NAME,
+	    zfs_unalias_dsname, zfs_alias_dsname,
 	    POOL_CHECK_SUSPENDED | POOL_CHECK_READONLY, B_FALSE, B_TRUE);
 
 	zfs_ioctl_register("destroy_snaps", ZFS_IOC_DESTROY_SNAPS,
@@ -7321,21 +7303,24 @@ zfs_ioctl_init(void)
 	    POOL_CHECK_SUSPENDED | POOL_CHECK_READONLY, B_TRUE, B_TRUE);
 
 	zfs_ioctl_register("channel_program", ZFS_IOC_CHANNEL_PROGRAM,
-	    zfs_ioc_channel_program, zfs_secpolicy_config,
-	    POOL_NAME, POOL_CHECK_SUSPENDED | POOL_CHECK_READONLY, B_TRUE,
-	    B_TRUE);
+	    zfs_ioc_channel_program, zfs_secpolicy_config, POOL_NAME,
+	    zfs_unalias_poolname, zfs_alias_poolname,
+	    POOL_CHECK_SUSPENDED | POOL_CHECK_READONLY, B_TRUE, B_TRUE);
 
 	zfs_ioctl_register("zpool_checkpoint", ZFS_IOC_POOL_CHECKPOINT,
 	    zfs_ioc_pool_checkpoint, zfs_secpolicy_config, POOL_NAME,
+	    zfs_unalias_poolname, zfs_alias_poolname,
 	    POOL_CHECK_SUSPENDED | POOL_CHECK_READONLY, B_TRUE, B_TRUE);
 
 	zfs_ioctl_register("zpool_discard_checkpoint",
 	    ZFS_IOC_POOL_DISCARD_CHECKPOINT, zfs_ioc_pool_discard_checkpoint,
 	    zfs_secpolicy_config, POOL_NAME,
+	    zfs_unalias_poolname, zfs_alias_poolname,
 	    POOL_CHECK_SUSPENDED | POOL_CHECK_READONLY, B_TRUE, B_TRUE);
 
 	zfs_ioctl_register("initialize", ZFS_IOC_POOL_INITIALIZE,
 	    zfs_ioc_pool_initialize, zfs_secpolicy_config, POOL_NAME,
+	    zfs_unalias_poolname, zfs_alias_poolname,
 	    POOL_CHECK_SUSPENDED | POOL_CHECK_READONLY, B_TRUE, B_TRUE);
 
 	zfs_ioctl_register("trim", ZFS_IOC_POOL_TRIM,

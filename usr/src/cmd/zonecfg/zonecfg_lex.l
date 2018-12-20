@@ -58,7 +58,7 @@ extern void yyerror(char *s);
 static char *create_token(char *s);
 %}
 
-%a 8000
+%a 9000
 %p 5500
 %e 2000
 %n 1000

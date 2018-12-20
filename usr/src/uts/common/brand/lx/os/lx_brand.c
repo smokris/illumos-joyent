@@ -1032,7 +1032,7 @@ lx_zone_get_zvols(zone_t *zone, ldi_handle_t lh, minor_t *emul_minor)
 				    KM_SLEEP);
 
 				rc = zone_dataset_alias_inzone(zc->zc_name,
-				    zv->lzd_name, MAXPATHLEN, zone);
+				    zc->zc_name, MAXPATHLEN, zone);
 				if (rc != 0)
 					continue;
 

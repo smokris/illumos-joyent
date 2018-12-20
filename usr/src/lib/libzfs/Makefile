@@ -22,7 +22,7 @@
 # Copyright 2007 Sun Microsystems, Inc.  All rights reserved.
 # Use is subject to license terms.
 #
-# ident	"%Z%%M%	%I%	%E% SMI"
+# Copyright 2018, Joyent, Inc.
 #
 
 include		../Makefile.lib
@@ -33,6 +33,9 @@ HDRDIR=		common
 
 SUBDIRS=	$(MACH)
 $(BUILD64)SUBDIRS += $(MACH64)
+
+TYPECHECK_LIB=	libzfs.so.1
+TYPELIST=	zfs_cmd_t
 
 all :=		TARGET= all
 clean :=	TARGET= clean
@@ -51,7 +54,7 @@ $(POFILE):	pofile_MSGFILES
 
 install_h: $(ROOTHDRS)
 
-check: $(CHECKHDRS)
+check: $(CHECKHDRS) $(TYPECHECK)
 
 _msg: $(MSGDOMAINPOFILE)
 

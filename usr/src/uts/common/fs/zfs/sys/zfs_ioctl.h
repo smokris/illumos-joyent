@@ -467,6 +467,7 @@ typedef struct zfs_cmd {
 	uint64_t	zc_fromobj;
 	uint64_t	zc_createtxg;
 	zfs_stat_t	zc_stat;
+	uint64_t	zc_dataset;		/* internal to zfs */
 } zfs_cmd_t;
 
 typedef struct zfs_useracct {
