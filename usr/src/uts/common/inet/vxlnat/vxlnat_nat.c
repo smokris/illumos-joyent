@@ -46,8 +46,6 @@
 #include <inet/vxlnat_impl.h>
 
 static boolean_t vxlnat_vxlan_input(ksocket_t, mblk_t *, size_t, int, void *);
-static mblk_t *vxlnat_fixed_fixv4(mblk_t *mp, vxlnat_fixed_t *fixed,
-    boolean_t to_private);
 
 /*
  * Initialized to NULL, read/write protected by vxlnat_mutex.
@@ -450,7 +448,10 @@ vxlnat_verify_natstate(mblk_t *mp, ipha_t *ipha, ip6_t *ip6h,
     vxlnat_flow_t *flow, uint8_t *nexthdr)
 {
 	/* XXX KEBE SAYS FILL ME IN! */
-	return (B_FALSE);
+	/* return (B_TRUE); */
+
+	/* XXX MIKE for testing return TRUE */
+	return (B_TRUE);
 }
 
 /*
@@ -493,7 +494,7 @@ vxlnat_one_vxlan_flow(vxlnat_vnet_t *vnet, mblk_t *mp, ipha_t *ipha,
 		freemsg(mp);
 		return (B_TRUE);
 	}
-	
+
 
 	/*
 	 * XXX KEBE SAYS Eventually put the rw&find in an IPv4-only block,
@@ -511,7 +512,54 @@ vxlnat_one_vxlan_flow(vxlnat_vnet_t *vnet, mblk_t *mp, ipha_t *ipha,
 	if (!vxlnat_verify_natstate(mp, ipha, ip6h, flow, nexthdr)) {
 		freemsg(mp);	/* XXX KEBE SAYS FOR NOW... */
 	} else {
-		/* XXX KEBE SAYS PROCESS... */
+		/* MIKE Process outgoing packets in an established flow */
+		mblk_t *newmp;
+		ire_t *outbound_ire;
+		ip_recv_attr_t iras = { IRAF_IS_IPV4 | IRAF_VERIFIED_SRC };
+
+		if ((newmp = vxlnat_fixv4(mp, NULL, flow, B_FALSE)) == NULL)
+			return (B_TRUE);
+
+		/* XXX MIKE Send the pkt! */
+		/* copy and paste start*/
+		/* the ixa_ire is setup when calling conn_connect */
+		outbound_ire = flow->vxnfl_connp->conn_ixa->ixa_ire;
+		VERIFY3P(outbound_ire, !=, NULL);
+		ire_refhold(outbound_ire);
+		if (outbound_ire->ire_type == IRE_NOROUTE) {
+			/* Bail! */
+			DTRACE_PROBE2(vxlnat__in__drop__mappedire, ipaddr_t,
+			    ipha->ipha_dst, mblk_t *, mp);
+			VXNFL_REFRELE(flow);
+			freemsg(mp);
+			return (B_TRUE);
+		}
+
+		iras.ira_ip_hdr_length = IPH_HDR_LENGTH(ipha);
+		if (iras.ira_ip_hdr_length > sizeof (ipha_t))
+			iras.ira_flags |= IRAF_IPV4_OPTIONS;
+		iras.ira_xmit_hint = 0; /* XXX KEBE SAYS FIX ME! */
+		iras.ira_zoneid = outbound_ire->ire_zoneid;
+		iras.ira_pktlen = ntohs(ipha->ipha_length);
+		iras.ira_protocol = ipha->ipha_protocol;
+		/* XXX KEBE ASKS rifindex & ruifindex ?!? */
+		/*
+		 * NOTE: AT LEAST ira_ill needs ILLF_ROUTER set, as
+		 * well as the ill for the external NIC (where
+		 * off-link destinations live).  For fixed, ira_ill
+		 * should be the ill of the external source.
+		 */
+		iras.ira_rill = vxlnat_underlay_ire->ire_ill;
+		iras.ira_ill = outbound_ire->ire_ill;
+		/* XXX KEBE ASKS cred & cpid ? */
+		iras.ira_verified_src = ipha->ipha_src;
+		/* XXX KEBE SAYS don't sweat IPsec stuff. */
+		/* XXX KEBE SAYS ALSO don't sweat l2src & mhip */
+
+		/* Okay, we're good! Let's pretend we're forwarding. */
+		ire_recv_forward_v4(outbound_ire, mp, ipha, &iras);
+		ire_refrele(outbound_ire);
+		/* copy and paste end*/
 	}
 
 	VXNFL_REFRELE(flow);
@@ -614,7 +662,32 @@ static boolean_t
 vxlnat_verify_initial(mblk_t *mp, ipha_t *ipha, ip6_t *ip6h,
     uint32_t ports, uint8_t protocol, uint8_t *nexthdr)
 {
-	/* XXX KEBE SAYS FILL ME IN! */
+	/*
+	 * vxlnat_grab_transport has verified nexthdr for
+	 * us, so it always needs to be called first
+	 */
+	switch (protocol) {
+	case IPPROTO_TCP: {
+		tcpha_t *tcph = (tcpha_t *)nexthdr;
+
+		/* XXX be more strict about TCP flags? */
+		if (tcph->tha_flags == TH_SYN)
+			return (B_TRUE);
+
+		break;
+	}
+	case IPPROTO_UDP:
+	case IPPROTO_ICMP:
+		/*
+		 * UDP doesn't have anything we can check really.
+		 * ICMP type has already been checked by vxlnat_grab_transport.
+		 */
+		return (B_TRUE);
+	default:
+		break;
+	}
+
+	DTRACE_PROBE1(vxlnat__in__drop__initial, mblk_t *, mp);
 	freemsg(mp);
 	return (B_FALSE);
 }
@@ -695,7 +768,7 @@ vxlnat_one_vxlan_rule(vxlnat_vnet_t *vnet, mblk_t *mp, ipha_t *ipha,
 		return (B_TRUE); /* see above... */
 	if (!vxlnat_verify_initial(mp, ipha, ip6h, ports, protocol, nexthdr))
 		return (B_TRUE);
-	
+
 
 	flow = vxlnat_new_flow(rule, inner_src, dst, ports, protocol);
 	if (flow != NULL) {
@@ -708,8 +781,55 @@ vxlnat_one_vxlan_rule(vxlnat_vnet_t *vnet, mblk_t *mp, ipha_t *ipha,
 		 * need to call vxlnat_verify_natstate()
 		 */
 
-		 /* XXX KEBE SAYS PROCESS... */
-		
+		mblk_t *newmp;
+		ire_t *outbound_ire;
+		ip_recv_attr_t iras = { IRAF_IS_IPV4 | IRAF_VERIFIED_SRC };
+
+		if ((newmp = vxlnat_fixv4(mp, NULL, flow, B_FALSE)) == NULL)
+			return (B_TRUE);
+
+		/* XXX MIKE Send the pkt! */
+		/* copy and paste start*/
+		outbound_ire = ire_route_recursive_dstonly_v4(ipha->ipha_dst,
+		    IRR_ALLOCATE, 0, vxlnat_netstack->netstack_ip);
+		VERIFY3P(outbound_ire, !=, NULL);
+		if (outbound_ire->ire_type == IRE_NOROUTE) {
+			/* Bail! */
+			DTRACE_PROBE2(vxlnat__in__drop__mappedire, ipaddr_t,
+			    ipha->ipha_dst, mblk_t *, mp);
+			VXNFL_REFRELE(flow);
+			freemsg(mp);
+			return (B_TRUE);
+		}
+
+		iras.ira_ip_hdr_length = IPH_HDR_LENGTH(ipha);
+		if (iras.ira_ip_hdr_length > sizeof (ipha_t))
+			iras.ira_flags |= IRAF_IPV4_OPTIONS;
+		iras.ira_xmit_hint = 0; /* XXX KEBE SAYS FIX ME! */
+		iras.ira_zoneid = outbound_ire->ire_zoneid;
+		iras.ira_pktlen = ntohs(ipha->ipha_length);
+		iras.ira_protocol = ipha->ipha_protocol;
+		/* XXX KEBE ASKS rifindex & ruifindex ?!? */
+		/*
+		 * NOTE: AT LEAST ira_ill needs ILLF_ROUTER set, as
+		 * well as the ill for the external NIC (where
+		 * off-link destinations live).  For fixed, ira_ill
+		 * should be the ill of the external source.
+		 */
+		iras.ira_rill = vxlnat_underlay_ire->ire_ill;
+		iras.ira_ill =
+		    flow->vxnfl_connp->conn_ixa->ixa_ire->ire_ill;
+		/* XXX KEBE ASKS cred & cpid ? */
+		iras.ira_verified_src = ipha->ipha_src;
+		/* XXX KEBE SAYS don't sweat IPsec stuff. */
+		/* XXX KEBE SAYS ALSO don't sweat l2src & mhip */
+
+		/* Okay, we're good! Let's pretend we're forwarding. */
+		ire_recv_forward_v4(outbound_ire, mp, ipha, &iras);
+		ire_refrele(outbound_ire);
+		/* copy and paste end*/
+
+
 		VXNFL_REFRELE(flow);
 		return (B_TRUE);
 	}
@@ -760,14 +880,14 @@ vxlnat_one_vxlan_fixed(vxlnat_vnet_t *vnet, mblk_t *mp, ipha_t *ipha,
 	 */
 
 	if (ipha != NULL)
-		newmp = vxlnat_fixed_fixv4(mp, fixed, B_FALSE);
+		newmp = vxlnat_fixv4(mp, fixed, NULL, B_FALSE);
 	else {
 		freemsg(mp); /* XXX handle ip6h */
 		return (B_TRUE);
 	}
 
 	if (newmp == NULL)
-		return (B_TRUE);	/* mp eaten by vxlnat_fixed_fixv4() */
+		return (B_TRUE);	/* mp eaten by vxlnat_fixv4() */
 
 
 	ASSERT3P(ipha, ==, newmp->b_rptr);
@@ -1043,25 +1163,41 @@ vxlnat_fix_icmp_inner_v4(mblk_t *mp, icmph_t *icmph, ipaddr_t old_one,
 }
 
 /*
- * Take a 1-1/fixed IPv4 packet and convert it for transmission out the
- * appropriate end. "to_private" is what it says on the tin.
- * ALWAYS consumes "mp", regardless of return value.
+ * Take a 1-1/fixed or mapped IPv4 packet and convert it for transmission out
+ * the appropriate end. "to_private" is what it says on the tin.  ALWAYS
+ * consumes "mp", regardless of return value.
  */
-static mblk_t *
-vxlnat_fixed_fixv4(mblk_t *mp, vxlnat_fixed_t *fixed, boolean_t to_private)
+mblk_t *
+vxlnat_fixv4(mblk_t *mp, vxlnat_fixed_t *fixed, vxlnat_flow_t *flow,
+    boolean_t to_private)
 {
 	ipaddr_t new_one, old_one;
 	ipaddr_t *new_ones_place;
 	ipha_t *ipha = (ipha_t *)mp->b_rptr;
 	uint8_t *nexthdr, *end_wptr;
 
-	if (to_private) {
-		IN6_V4MAPPED_TO_IPADDR(&fixed->vxnf_addr, new_one);
-		new_ones_place = &ipha->ipha_dst;
+	if (fixed != NULL) {
+		if (to_private) {
+			IN6_V4MAPPED_TO_IPADDR(&fixed->vxnf_addr, new_one);
+			new_ones_place = &ipha->ipha_dst;
+		} else {
+			IN6_V4MAPPED_TO_IPADDR(&fixed->vxnf_pubaddr, new_one);
+			new_ones_place = &ipha->ipha_src;
+		}
 	} else {
-		IN6_V4MAPPED_TO_IPADDR(&fixed->vxnf_pubaddr, new_one);
-		new_ones_place = &ipha->ipha_src;
+		ASSERT3P(flow, !=, NULL);
+
+		if (to_private) {
+			IN6_V4MAPPED_TO_IPADDR(&flow->vxnfl_src,
+			    new_one);
+			new_ones_place = &ipha->ipha_dst;
+		} else {
+			IN6_V4MAPPED_TO_IPADDR(&flow->vxnfl_rule->vxnr_pubaddr,
+			    new_one);
+			new_ones_place = &ipha->ipha_src;
+		}
 	}
+
 
 	old_one = *new_ones_place;
 	*new_ones_place = new_one;
@@ -1098,6 +1234,30 @@ vxlnat_fixed_fixv4(mblk_t *mp, vxlnat_fixed_t *fixed, boolean_t to_private)
 		tcph->tha_sum = vxlnat_cksum_adjust(tcph->tha_sum,
 		    (uint16_t *)&old_one, (uint16_t *)&new_one,
 		    sizeof (ipaddr_t));
+
+		if (flow != NULL) {
+			in_port_t old_port, new_port;
+
+			if (to_private) {
+				old_port = tcph->tha_fport;
+				new_port = VXNFL_SPORT(flow->vxnfl_ports);
+				tcph->tha_fport = new_port;
+				/* XXX MIKE remove debug probe */
+				DTRACE_PROBE1(vxlnat__mike_rx,
+				    in_port_t, new_port);
+			} else {
+				old_port = tcph->tha_lport;
+				new_port = flow->vxnfl_connp->conn_lport;
+				tcph->tha_lport = new_port;
+				/* XXX MIKE remove debug probe */
+				DTRACE_PROBE1(vxlnat__mike_tx,
+				    in_port_t, new_port);
+			}
+			tcph->tha_sum =
+			    vxlnat_cksum_adjust(tcph->tha_sum,
+			    (uint16_t *)&old_port, (uint16_t *)&new_port,
+			    sizeof (in_port_t));
+		}
 		break;	/* Out of switch. */
 	}
 	case IPPROTO_UDP: {
@@ -1113,6 +1273,24 @@ vxlnat_fixed_fixv4(mblk_t *mp, vxlnat_fixed_t *fixed, boolean_t to_private)
 		udph->uha_checksum = vxlnat_cksum_adjust(udph->uha_checksum,
 		    (uint16_t *)&old_one, (uint16_t *)&new_one,
 		    sizeof (ipaddr_t));
+
+		if (flow != NULL) {
+			in_port_t old_port, new_port;
+
+			if (to_private) {
+				old_port = udph->uha_dst_port;
+				new_port = VXNFL_SPORT(flow->vxnfl_ports);
+				udph->uha_dst_port = new_port;
+			} else {
+				old_port = udph->uha_src_port;
+				new_port = flow->vxnfl_connp->conn_lport;
+				udph->uha_src_port = new_port;
+			}
+			udph->uha_checksum =
+			    vxlnat_cksum_adjust(udph->uha_checksum,
+			    (uint16_t *)&old_port, (uint16_t *)&new_port,
+			    sizeof (in_port_t));
+		}
 		break;	/* Out of switch. */
 	}
 	case IPPROTO_ICMP: {
@@ -1252,7 +1430,7 @@ vxlnat_xmit_vxlanv4(mblk_t *mp, in6_addr_t *overlay_dst,
 	/* Address family and other zeroing already done up top. */
 	sin6.sin6_port = htons(IPPORT_VXLAN);
 	sin6.sin6_addr = remote->vxnrem_uaddr;
-	
+
 	/*
 	 * cred_t dance is because we may be getting this straight from
 	 * interrupt context.
@@ -1406,7 +1584,7 @@ vxlnat_fixed_ire_recv_v4(ire_t *ire, mblk_t *mp, void *iph_arg,
 	 * along its merry way (with a ttl decement too) to a VXLAN
 	 * destination.
 	 */
-	mp = vxlnat_fixed_fixv4(mp, fixed, B_TRUE);
+	mp = vxlnat_fixv4(mp, fixed, NULL, B_TRUE);
 	if (mp == NULL)
 		return; /* Assume it's been freed & dtraced already. */
 

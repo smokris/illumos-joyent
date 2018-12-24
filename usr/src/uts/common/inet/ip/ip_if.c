@@ -5228,8 +5228,8 @@ th_trace_ref(const void *obj, ip_stack_t *ipst)
 		th_trace = (th_trace_t *)val;
 	}
 
-	ASSERT(th_trace->th_refcnt >= 0 &&
-	    th_trace->th_refcnt < TR_BUF_MAX - 1);
+	ASSERT3U(th_trace->th_refcnt, >=, 0);
+	ASSERT3U(th_trace->th_refcnt, <, TR_BUF_MAX -1);
 
 	th_trace->th_refcnt++;
 	th_trace_rrecord(th_trace);

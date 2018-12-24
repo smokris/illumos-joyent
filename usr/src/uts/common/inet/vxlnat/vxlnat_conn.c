@@ -30,8 +30,38 @@
 static void
 vxlnat_external_tcp_v4(void *arg, mblk_t *mp, void *arg2, ip_recv_attr_t *ira)
 {
-	/* XXX KEBE SAYS FOR NOW, drop. */
-	freemsg(mp);
+	mblk_t *newmp;
+	in6_addr_t *overlay_dst;
+#ifdef NOTYET
+	vxlnat_remote_t *remote;
+#endif /* NOTYET */
+	uint8_t *myether;
+	vxlnat_vnet_t *vnet;
+	conn_t * connp = (conn_t *)arg;
+	vxlnat_flow_t *flow = (vxlnat_flow_t *)connp->conn_priv;
+
+	if (flow == NULL) {
+		freemsg(mp);
+		return;
+	}
+
+	/* vxlnat_fixv4 will consume mp so don't attempt to free it again */
+	if ((newmp = vxlnat_fixv4(mp, NULL, flow, B_TRUE)) == NULL)
+		return;
+
+#ifdef NOTYET
+	remote = flow->vxnfl_remote;
+#endif /* NOTYET */
+
+	VXNFL_REFHOLD(flow);
+	overlay_dst = &flow->vxnfl_src;
+	myether = flow->vxnfl_rule->vxnr_myether;
+	vnet = flow->vxnfl_rule->vxnr_vnet;
+
+	(void) vxlnat_xmit_vxlanv4(newmp, overlay_dst, NULL,
+	    myether, vnet);
+
+	VXNFL_REFRELE(flow);
 }
 
 static void
@@ -108,7 +138,7 @@ vxlnat_new_conn(vxlnat_flow_t *flow)
 	conn_t *connp;
 	uint16_t new_lport;
 	uint8_t protocol = flow->vxnfl_protocol;
-	int rc, ntries = 3;
+	int rc, error, ntries = 3;
 
 	/*
 	 * XXX KEBE SAYS -- Use KM_NORMALPRI because we're likely in interrupt
@@ -171,6 +201,7 @@ vxlnat_new_conn(vxlnat_flow_t *flow)
 	ASSERT(connp->conn_ref == 1);
 
 	connp->conn_family = flow->vxnfl_isv4 ? AF_INET : AF_INET6;
+	connp->conn_ipversion = flow->vxnfl_isv4 ? IPV4_VERSION : IPV6_VERSION;
 
 	CONN_INC_REF(connp);	/* For the following... */
 	flow->vxnfl_connp = connp;
@@ -179,8 +210,20 @@ vxlnat_new_conn(vxlnat_flow_t *flow)
 	connp->conn_laddr_v6 = flow->vxnfl_rule->vxnr_pubaddr;
 	connp->conn_faddr_v6 = flow->vxnfl_dst;
 
-	/* XXX KEBE SAYS REMAP PORTS HERE ... */
-	connp->conn_ports = flow->vxnfl_ports;
+	/*
+	* NOTE:  conn_ports puts them in foreign/local order. This makes sense
+	* when optimizing for inbound lookup (source-port == first-two-bytes
+	* == foreign on inbound packets).
+	* We create vxnfl_ports from the first OUTBOUND PACKET, because we
+	* optimize for outbound lookup of flows (source-port == first-two-bytes
+	* == LOCAL on outbound packets).
+	*
+	* We therefore need to swap the two ports when populating the conn_t.
+	* (XXX KEBE SAYS we may need to NOT do this for non-TCP/UDP protocols
+	* like ICMP...)
+	*/
+	connp->conn_lport = VXNFL_SPORT(flow->vxnfl_ports);
+	connp->conn_fport = VXNFL_DPORT(flow->vxnfl_ports);
 	connp->conn_proto = protocol;
 
 	/* XXX KEBE ASKS INSERT HERE? */
@@ -281,6 +324,20 @@ vxlnat_new_conn(vxlnat_flow_t *flow)
 		 * trigger destroy.
 		 */
 		flow->vxnfl_connp = NULL;
+		return (B_FALSE);
+	}
+
+	/* conn_connect requires we hold the mutex */
+	mutex_enter(&connp->conn_lock);
+	error = conn_connect(connp, NULL, IPDF_VERIFY_DST);
+	mutex_exit(&connp->conn_lock);
+	if (error != 0) {
+		/*
+		 * XXX MIKE how do we cleanup after this?
+		 * This will store a bad connp in the flow until fixed
+		 */
+		DTRACE_PROBE1(vxlnat__mike__conn__connect__failure,
+		    conn_t *, connp);
 		return (B_FALSE);
 	}
 

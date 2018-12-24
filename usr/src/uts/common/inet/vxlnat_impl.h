@@ -280,6 +280,13 @@ extern int vxlnat_fixed_ire_send_v4(ire_t *, mblk_t *, void *,
 extern int vxlnat_fixed_ire_send_v6(ire_t *, mblk_t *, void *,
     ip_xmit_attr_t *, uint32_t *);
 
+/* helpers to rewrite headers and checksum and to transmit the modifed pkt */
+extern mblk_t *vxlnat_fixv4(mblk_t *mp, vxlnat_fixed_t *fixed,
+    vxlnat_flow_t *flow, boolean_t to_private);
+extern vxlnat_remote_t * vxlnat_xmit_vxlanv4(mblk_t *mp,
+    in6_addr_t *overlay_dst, vxlnat_remote_t *remote, uint8_t *myether,
+    vxlnat_vnet_t *vnet);
+
 extern boolean_t vxlnat_new_conn(vxlnat_flow_t *);
 extern void vxlnat_activate_conn(vxlnat_flow_t *);
 #ifdef notyet
