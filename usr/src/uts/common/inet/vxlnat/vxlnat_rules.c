@@ -646,7 +646,7 @@ vxlnat_state_fini(void)
 {
 	ASSERT(MUTEX_HELD(&vxlnat_mutex));
 	(void) vxlnat_flush(); /* If we fail, we're in bigger trouble anyway. */
-	vxlnat_public_init();
+	vxlnat_public_fini();
 	avl_destroy(&vxlnat_vnets);
 	rw_destroy(&vxlnat_vnet_lock);
 }
