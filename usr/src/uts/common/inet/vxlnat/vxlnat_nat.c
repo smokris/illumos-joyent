@@ -883,11 +883,11 @@ vxlnat_one_vxlan_fixed(vxlnat_vnet_t *vnet, mblk_t *mp, ipha_t *ipha,
 		newmp = vxlnat_fixv4(mp, fixed, NULL, B_FALSE);
 	else {
 		freemsg(mp); /* XXX handle ip6h */
-		return (B_TRUE);
+		goto release_and_return;
 	}
 
 	if (newmp == NULL)
-		return (B_TRUE);	/* mp eaten by vxlnat_fixv4() */
+		goto release_and_return;	/* mp eaten by vxlnat_fixv4() */
 
 
 	ASSERT3P(ipha, ==, newmp->b_rptr);
@@ -900,9 +900,8 @@ vxlnat_one_vxlan_fixed(vxlnat_vnet_t *vnet, mblk_t *mp, ipha_t *ipha,
 		/* Bail! */
 		DTRACE_PROBE2(vxlnat__in__drop__fixedire, ipaddr_t,
 		    ipha->ipha_dst, mblk_t *, mp);
-		VXNF_REFRELE(fixed);
 		freemsg(mp);
-		return (B_TRUE);
+		goto release_and_return;
 	}
 
 	iras.ira_ip_hdr_length = IPH_HDR_LENGTH(ipha);
@@ -930,6 +929,8 @@ vxlnat_one_vxlan_fixed(vxlnat_vnet_t *vnet, mblk_t *mp, ipha_t *ipha,
 	ire_recv_forward_v4(outbound_ire, mp, ipha, &iras);
 	ire_refrele(outbound_ire);
 
+release_and_return:
+	VXNF_REFRELE(fixed);
 	return (B_TRUE);
 }
 

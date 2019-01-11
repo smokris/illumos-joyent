@@ -360,8 +360,14 @@ vxlnat_fixed_unlink(vxlnat_fixed_t *fixed)
 		ire->ire_dep_sib_next = NULL;
 		VXNF_REFRELE(fixed);	/* ire's hold on us. */
 		/* Rewire IRE back to normal. */
-		ire->ire_recvfn = (ire->ire_ipversion == IPV4_VERSION) ?
-		    ire_recv_local_v4 : ire_recv_local_v6;
+		if (ire->ire_ipversion == IPV4_VERSION) {
+			ire->ire_recvfn = ire_recv_local_v4;
+			ire->ire_sendfn = ire_send_local_v4;
+		} else {
+			ASSERT(ire->ire_ipversion == IPV6_VERSION);
+			ire->ire_recvfn = ire_recv_local_v6;
+			ire->ire_sendfn = ire_send_local_v6;
+		}
 		ire_refrele(ire);
 	}
 
