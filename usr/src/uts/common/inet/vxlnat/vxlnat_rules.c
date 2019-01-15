@@ -21,8 +21,11 @@
 #include <sys/ddi.h>
 #include <sys/dtrace.h>
 #include <sys/debug.h>
+#include <sys/ksocket.h>
+#include <sys/strsubr.h>
+#include <inet/ip.h>
+#include <inet/ipclassifier.h>
 #include <inet/vxlnat_impl.h>
-#include <inet/ip_if.h>	/* XXX KEBE SAYS CHEESY HACK */
 
 /*
  * These are all initialized to NULL or 0.
@@ -317,6 +320,7 @@ vxlnat_rule_unlink(vxlnat_rule_t *rule)
 static int
 vxlnat_flush(void)
 {
+	vxlnat_quiesce_traffic();
 	vxlnat_closesock();
 	/* XXX KEBE SAYS DO OTHER STATE FLUSHING TOO. */
 
@@ -331,6 +335,12 @@ vxlnat_flush(void)
 		vxlnat_dumpbuf = NULL;
 		vxlnat_initial = vxlnat_dumpcount = vxlnat_dumpcurrent = 0;
 	}
+
+	/*
+	 * NOTE: No need to call vxlnat_quiesce_traffic ==> no traffic
+	 * sources left!
+	 */
+
 	return (0);
 }
 
@@ -713,4 +723,204 @@ bail:
 
 	mutex_exit(&vxlnat_mutex);
 	return (rc);
+}
+
+
+/* ARGSUSED */
+static boolean_t
+vxlnat_vxlan_input_quiesce(ksocket_t insock, mblk_t *chain, size_t msgsize,
+    int oob, void *ignored)
+{
+	/*
+	 * Return FALSE to keep subsequent packets from coming here at all.
+	 * the vxlnat_enable_traffic() below will have to call
+	 * ksocket_krecv_unblock().  If a new vxlnat_underlay got created,
+	 * the unblock will be a NOP.
+	 */
+	freemsgchain(chain);
+	return (B_FALSE);
+}
+
+/* ARGSUSED */
+static void
+vxlnat_connrecv_drop(void *arg, mblk_t *mp, void *arg2, ip_recv_attr_t *ira)
+{
+	freemsg(mp);
+}
+
+/*
+ * Rewire inbound-to-vxlnat traffic functions.  A NULL function pointer means
+ * DO NOT REPLACE THAT ONE.
+ *
+ * XXX KEBE SAYS: verifyicmp not available at the moment
+ */
+static void
+vxlnat_traffic_setting(pfirerecv_t fixed_recv4, pfiresend_t fixed_send4,
+    pfirerecv_t fixed_recv6, pfiresend_t fixed_send6,
+    edesc_rpf tcp_recv4, edesc_rpf tcp_recvicmp4,
+    edesc_rpf tcp_recv6, edesc_rpf tcp_recvicmp6,
+    edesc_rpf udp_recv4, edesc_rpf udp_recvicmp4,
+    edesc_rpf udp_recv6, edesc_rpf udp_recvicmp6,
+    edesc_rpf icmp_recv4, edesc_rpf icmp_recvicmp4,
+    edesc_rpf icmp_recv6, edesc_rpf icmp_recvicmp6)
+{
+	ASSERT(MUTEX_HELD(&vxlnat_mutex));
+
+	/* Iterate over all the vnets... */
+	rw_enter(&vxlnat_vnet_lock, RW_WRITER);
+	for (vxlnat_vnet_t *vnet = avl_first(&vxlnat_vnets); vnet != NULL;
+	    vnet = AVL_NEXT(&vxlnat_vnets, vnet)) {
+		/* First attack the 1-1s. */
+		rw_enter(&vnet->vxnv_fixed_lock, RW_WRITER);
+		for (vxlnat_fixed_t *fixed = avl_first(&vnet->vxnv_fixed_ips);
+		    fixed != NULL;
+		    fixed = AVL_NEXT(&vnet->vxnv_fixed_ips, fixed)) {
+			ire_t *ire = fixed->vxnf_ire;
+
+			/* Have the IRE functions drop for now. */
+			if (ire->ire_ipversion == IPV4_VERSION) {
+				if (fixed_recv4 != NULL)
+					ire->ire_recvfn = fixed_recv4;
+				if (fixed_send4 != NULL)
+					ire->ire_sendfn = fixed_send4;
+			} else {
+				if (fixed_recv6 != NULL)
+					ire->ire_recvfn = fixed_recv6;
+				if (fixed_send6 != NULL)
+					ire->ire_sendfn = fixed_send6;
+			}
+		}
+		rw_exit(&vnet->vxnv_fixed_lock);
+
+		/* Then attack the NAT flows. */
+		rw_enter(&vnet->vxnv_flowv4_lock, RW_WRITER);
+		for (vxlnat_flow_t *flow = avl_first(&vnet->vxnv_flows_v4);
+		    flow != NULL; flow = AVL_NEXT(&vnet->vxnv_flows_v4, flow)) {
+			conn_t *connp = flow->vxnfl_connp;
+
+			switch (connp->conn_proto) {
+			case IPPROTO_TCP:
+				if (flow->vxnfl_isv4) {
+					if (tcp_recv4 != NULL)
+						connp->conn_recv = tcp_recv4;
+					if (tcp_recvicmp4 != NULL)
+						connp->conn_recvicmp =
+						    tcp_recvicmp4;
+				} else {
+					if (tcp_recv6 != NULL)
+						connp->conn_recv = tcp_recv6;
+					if (tcp_recvicmp6 != NULL)
+						connp->conn_recvicmp =
+						    tcp_recvicmp6;
+				}
+				break;
+			case IPPROTO_UDP:
+				if (flow->vxnfl_isv4) {
+					if (udp_recv4 != NULL)
+						connp->conn_recv = udp_recv4;
+					if (udp_recvicmp4 != NULL)
+						connp->conn_recvicmp =
+						    udp_recvicmp4;
+				} else {
+					if (udp_recv6 != NULL)
+						connp->conn_recv = udp_recv6;
+					if (udp_recvicmp6 != NULL)
+						connp->conn_recvicmp =
+						    udp_recvicmp6;
+				}
+				break;
+			case IPPROTO_ICMP:
+				ASSERT(flow->vxnfl_isv4);
+				if (icmp_recv4 != NULL)
+					connp->conn_recv = icmp_recv4;
+				if (icmp_recvicmp4 != NULL)
+					connp->conn_recvicmp = icmp_recvicmp4;
+				break;
+			case IPPROTO_ICMPV6:
+				ASSERT(!flow->vxnfl_isv4);
+				if (icmp_recv6 != NULL)
+					connp->conn_recv = icmp_recv6;
+				if (icmp_recvicmp6 != NULL)
+					connp->conn_recvicmp = icmp_recvicmp6;
+				break;
+			default:
+				/* XXX KEBE ASKS, panic?!? */
+				ASSERT(B_FALSE);
+				break;
+			}
+
+			/* Have the flow functions drop for now. */
+			flow->vxnfl_connp->conn_recv = vxlnat_connrecv_drop;
+			flow->vxnfl_connp->conn_recvicmp = vxlnat_connrecv_drop;
+		}
+		rw_exit(&vnet->vxnv_flowv4_lock);
+
+	}
+	rw_exit(&vxlnat_vnet_lock);
+}
+
+/*
+ * Make all inbound packets to vxlnat black-hole or cease, to stop races.
+ */
+void
+vxlnat_quiesce_traffic(void)
+{
+	ASSERT(MUTEX_HELD(&vxlnat_mutex));
+
+	if (vxlnat_underlay != NULL) {
+		/*
+		 * First stop the VXLAN socket, as its packets can
+		 * create new flows.
+		 */
+		VERIFY3U(ksocket_krecv_set(vxlnat_underlay,
+		    vxlnat_vxlan_input_quiesce, NULL), ==, 0);
+
+		/* Sleep a little here to allow stragglers through... */
+		delay(drv_usectohz(500000));	/* Half a second... */
+	}
+
+	/* Quiesce all of the conns-for-nat-flows and IRE_LOCALs-for-fixed. */
+	vxlnat_traffic_setting(vxlnat_fixed_recv_drop, vxlnat_fixed_send_drop,
+	    vxlnat_fixed_recv_drop, vxlnat_fixed_send_drop,
+	    vxlnat_connrecv_drop, vxlnat_connrecv_drop, 
+	    vxlnat_connrecv_drop, vxlnat_connrecv_drop, 
+	    vxlnat_connrecv_drop, vxlnat_connrecv_drop, 
+	    vxlnat_connrecv_drop, vxlnat_connrecv_drop, 
+	    vxlnat_connrecv_drop, vxlnat_connrecv_drop, 
+	    vxlnat_connrecv_drop, vxlnat_connrecv_drop);
+
+	/* Sleep a little here to allow stragglers through... */
+	delay(drv_usectohz(500000));	/* Half a second... */
+}
+
+/*
+ * Re-enable packet-processing.
+ */
+void
+vxlnat_enable_traffic(void)
+{
+	ASSERT(MUTEX_HELD(&vxlnat_mutex));
+
+	/* Reactivate public-side (conns and IRE_LOCALs). */
+	vxlnat_traffic_setting(vxlnat_fixed_ire_recv_v4,
+	    vxlnat_fixed_ire_send_v4, vxlnat_fixed_ire_recv_v6,
+	    vxlnat_fixed_ire_send_v6,
+	    vxlnat_external_tcp_v4, vxlnat_external_tcp_icmp_v4,
+	    vxlnat_external_tcp_v6, vxlnat_external_tcp_icmp_v6,
+	    vxlnat_external_udp_v4, vxlnat_external_udp_icmp_v4,
+	    vxlnat_external_udp_v6, vxlnat_external_udp_icmp_v6,
+	    vxlnat_external_icmp_v4, vxlnat_external_icmp_icmp_v4,
+	    /* No ICMPv6 yet... */ NULL, NULL);
+
+	/*
+	 * THEN Activate the VXLAN socket.
+	 *
+	 * NOTE: If this is a newly-created vxlnat_underlay, this should
+	 * be a NOP.
+	 */
+	VERIFY3U(ksocket_krecv_set(vxlnat_underlay, vxlnat_vxlan_input, NULL),
+	    ==, 0);
+
+	/* This too, is a NOP on a newly-created one. */
+	ksocket_krecv_unblock(vxlnat_underlay);
 }

@@ -1,4 +1,4 @@
- /*
+/*
  * This file and its contents are supplied under the terms of the
  * Common Development and Distribution License ("CDDL"), version 1.0.
  * You may only use this file in accordance with the terms of version
@@ -27,7 +27,7 @@
  * so we can exploit ipclassifier for NAT flows.
  */
 
-static void
+void
 vxlnat_external_tcp_v4(void *arg, mblk_t *mp, void *arg2, ip_recv_attr_t *ira)
 {
 	mblk_t *newmp;
@@ -64,14 +64,14 @@ vxlnat_external_tcp_v4(void *arg, mblk_t *mp, void *arg2, ip_recv_attr_t *ira)
 	VXNFL_REFRELE(flow);
 }
 
-static void
+void
 vxlnat_external_tcp_v6(void *arg, mblk_t *mp, void *arg2, ip_recv_attr_t *ira)
 {
 	/* XXX KEBE SAYS FOR NOW, drop. */
 	freemsg(mp);
 }
 
-static void
+void
 vxlnat_external_tcp_icmp_v4(void *arg, mblk_t *mp, void *arg2,
     ip_recv_attr_t *ira)
 {
@@ -79,7 +79,7 @@ vxlnat_external_tcp_icmp_v4(void *arg, mblk_t *mp, void *arg2,
 	freemsg(mp);
 }
 
-static void
+void
 vxlnat_external_tcp_icmp_v6(void *arg, mblk_t *mp, void *arg2,
     ip_recv_attr_t *ira)
 {
@@ -87,21 +87,21 @@ vxlnat_external_tcp_icmp_v6(void *arg, mblk_t *mp, void *arg2,
 	freemsg(mp);
 }
 
-static void
+void
 vxlnat_external_udp_v4(void *arg, mblk_t *mp, void *arg2, ip_recv_attr_t *ira)
 {
 	/* XXX KEBE SAYS FOR NOW, drop. */
 	freemsg(mp);
 }
 
-static void
+void
 vxlnat_external_udp_v6(void *arg, mblk_t *mp, void *arg2, ip_recv_attr_t *ira)
 {
 	/* XXX KEBE SAYS FOR NOW, drop. */
 	freemsg(mp);
 }
 
-static void
+void
 vxlnat_external_udp_icmp_v4(void *arg, mblk_t *mp, void *arg2,
     ip_recv_attr_t *ira)
 {
@@ -109,7 +109,7 @@ vxlnat_external_udp_icmp_v4(void *arg, mblk_t *mp, void *arg2,
 	freemsg(mp);
 }
 
-static void
+void
 vxlnat_external_udp_icmp_v6(void *arg, mblk_t *mp, void *arg2,
     ip_recv_attr_t *ira)
 {
@@ -117,14 +117,14 @@ vxlnat_external_udp_icmp_v6(void *arg, mblk_t *mp, void *arg2,
 	freemsg(mp);
 }
 
-static void
+void
 vxlnat_external_icmp_v4(void *arg, mblk_t *mp, void *arg2, ip_recv_attr_t *ira)
 {
 	/* XXX KEBE SAYS FOR NOW, drop. */
 	freemsg(mp);
 }
 
-static void
+void
 vxlnat_external_icmp_icmp_v4(void *arg, mblk_t *mp, void *arg2,
     ip_recv_attr_t *ira)
 {

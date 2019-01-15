@@ -26,6 +26,7 @@
 #include <sys/list.h>
 #include <sys/byteorder.h>
 #include <sys/vxlan.h>
+#include <sys/ksocket.h>
 
 /*
  * XXX KEBE ASKS --> do we assume port IPPORT_VXLAN all the time?
@@ -256,10 +257,13 @@ extern void vxlnat_vnet_free(vxlnat_vnet_t *);
 
 extern kmutex_t vxlnat_mutex;
 extern netstack_t *vxlnat_netstack;
+extern ksocket_t vxlnat_underlay;
 extern int vxlnat_command(vxn_msg_t *);
 extern int vxlnat_read_dump(struct uio *);
 extern int vxlnat_vxlan_addr(in6_addr_t *);
 extern void vxlnat_closesock(void);
+extern void vxlnat_quiesce_traffic(void);
+extern void vxlnat_enable_traffic(void);
 extern void vxlnat_state_init(void);
 extern void vxlnat_state_fini(void);
 
@@ -270,7 +274,13 @@ extern void vxlnat_public_rele(in6_addr_t *);
 
 extern int vxlnat_tree_plus_in6_cmp(const void *, const void *);
 
+extern boolean_t vxlnat_vxlan_input(ksocket_t, mblk_t *, size_t, int, void *);
+
 /* ire_recvfn & ire_sendfn functions for 1-1/fixed maps. */
+extern void vxlnat_fixed_recv_drop(ire_t *, mblk_t *, void *,
+    ip_recv_attr_t *);
+extern int vxlnat_fixed_send_drop(ire_t *, mblk_t *, void *,
+    ip_xmit_attr_t *, uint32_t *);
 extern void vxlnat_fixed_ire_recv_v4(ire_t *, mblk_t *, void *,
     ip_recv_attr_t *);
 extern void vxlnat_fixed_ire_recv_v6(ire_t *, mblk_t *, void *,
@@ -279,6 +289,28 @@ extern int vxlnat_fixed_ire_send_v4(ire_t *, mblk_t *, void *,
     ip_xmit_attr_t *, uint32_t *);
 extern int vxlnat_fixed_ire_send_v6(ire_t *, mblk_t *, void *,
     ip_xmit_attr_t *, uint32_t *);
+
+/* conn_recv* functions for NAT flows. */
+extern void vxlnat_external_tcp_icmp_v4(void *, mblk_t *, void *,
+    ip_recv_attr_t *);
+extern void vxlnat_external_tcp_v4(void *, mblk_t *, void *,
+    ip_recv_attr_t *);
+extern void vxlnat_external_tcp_icmp_v6(void *, mblk_t *, void *,
+    ip_recv_attr_t *);
+extern void vxlnat_external_tcp_v6(void *, mblk_t *, void *,
+    ip_recv_attr_t *);
+extern void vxlnat_external_udp_icmp_v4(void *, mblk_t *, void *,
+    ip_recv_attr_t *);
+extern void vxlnat_external_udp_v4(void *, mblk_t *, void *,
+    ip_recv_attr_t *);
+extern void vxlnat_external_udp_icmp_v6(void *, mblk_t *, void *,
+    ip_recv_attr_t *);
+extern void vxlnat_external_udp_v6(void *, mblk_t *, void *,
+    ip_recv_attr_t *);
+extern void vxlnat_external_icmp_icmp_v4(void *, mblk_t *, void *,
+    ip_recv_attr_t *);
+extern void vxlnat_external_icmp_v4(void *, mblk_t *, void *,
+    ip_recv_attr_t *);
 
 /* helpers to rewrite headers and checksum and to transmit the modifed pkt */
 extern mblk_t *vxlnat_fixv4(mblk_t *mp, vxlnat_fixed_t *fixed,

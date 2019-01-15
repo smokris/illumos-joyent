@@ -24,6 +24,7 @@
 
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/ddi.h>
 #include <sys/ksynch.h>
 #include <sys/ksocket.h>
 #include <sys/kmem.h>
@@ -45,8 +46,6 @@
 
 #include <inet/vxlnat_impl.h>
 
-static boolean_t vxlnat_vxlan_input(ksocket_t, mblk_t *, size_t, int, void *);
-
 /*
  * Initialized to NULL, read/write protected by vxlnat_mutex.
  * Receive functions shouldn't have to access this directly.
@@ -63,6 +62,10 @@ vxlnat_closesock(void)
 		vxlnat_underlay_ire = NULL;
 	}
 	if (vxlnat_underlay != NULL) {
+		/*
+		 * NOTE: The caller should've also called
+		 * vxlnat_quiesce_traffic() before calling here.
+		 */
 		(void) ksocket_close(vxlnat_underlay, zone_kcred());
 		vxlnat_underlay = NULL;
 	}
@@ -137,8 +140,10 @@ vxlnat_vxlan_addr(in6_addr_t *underlay_ip)
 
 	ASSERT(MUTEX_HELD(&vxlnat_mutex));
 	/* For now, we make this a one-underlay-address-only solution. */
+	vxlnat_quiesce_traffic();
 	vxlnat_closesock();
 	rc = vxlnat_opensock(underlay_ip);
+	vxlnat_enable_traffic();
 	return (rc);
 }
 
@@ -549,6 +554,14 @@ vxlnat_one_vxlan_flow(vxlnat_vnet_t *vnet, mblk_t *mp, ipha_t *ipha,
 		 * off-link destinations live).  For fixed, ira_ill
 		 * should be the ill of the external source.
 		 */
+		if (vxlnat_underlay_ire == NULL) {
+			/* We're mid-quiesce. */
+			DTRACE_PROBE2(vxlnat__in__drop__quiesce, ipaddr_t,
+			    ipha->ipha_dst, mblk_t *, mp);
+			VXNFL_REFRELE(flow);
+			freemsg(mp);
+			return (B_TRUE);
+		}
 		iras.ira_rill = vxlnat_underlay_ire->ire_ill;
 		iras.ira_ill = outbound_ire->ire_ill;
 		/* XXX KEBE ASKS cred & cpid ? */
@@ -816,6 +829,14 @@ vxlnat_one_vxlan_rule(vxlnat_vnet_t *vnet, mblk_t *mp, ipha_t *ipha,
 		 * off-link destinations live).  For fixed, ira_ill
 		 * should be the ill of the external source.
 		 */
+		if (vxlnat_underlay_ire == NULL) {
+			/* We're mid-quiesce. */
+			DTRACE_PROBE2(vxlnat__in__drop__quiesce, ipaddr_t,
+			    ipha->ipha_dst, mblk_t *, mp);
+			VXNFL_REFRELE(flow);
+			freemsg(mp);
+			return (B_TRUE);
+		}
 		iras.ira_rill = vxlnat_underlay_ire->ire_ill;
 		iras.ira_ill =
 		    flow->vxnfl_connp->conn_ixa->ixa_ire->ire_ill;
@@ -848,7 +869,7 @@ vxlnat_one_vxlan_fixed(vxlnat_vnet_t *vnet, mblk_t *mp, ipha_t *ipha,
 {
 	vxlnat_fixed_t *fixed, fsearch;
 	mblk_t *newmp;
-	ire_t *outbound_ire;
+	ire_t *outbound_ire = NULL;
 	/* Use C99's initializers for fun & profit. */
 	ip_recv_attr_t iras = { IRAF_IS_IPV4 | IRAF_VERIFIED_SRC };
 
@@ -918,6 +939,13 @@ vxlnat_one_vxlan_fixed(vxlnat_vnet_t *vnet, mblk_t *mp, ipha_t *ipha,
 	 * off-link destinations live).  For fixed, ira_ill
 	 * should be the ill of the external source.
 	 */
+	if (vxlnat_underlay_ire == NULL) {
+		/* We're mid-quiesce. */
+		DTRACE_PROBE2(vxlnat__in__drop__quiesce, ipaddr_t,
+		    ipha->ipha_dst, mblk_t *, mp);
+		freemsg(mp);
+		goto release_and_return;
+	}
 	iras.ira_rill = vxlnat_underlay_ire->ire_ill;
 	iras.ira_ill = fixed->vxnf_ire->ire_ill;
 	/* XXX KEBE ASKS cred & cpid ? */
@@ -927,9 +955,10 @@ vxlnat_one_vxlan_fixed(vxlnat_vnet_t *vnet, mblk_t *mp, ipha_t *ipha,
 
 	/* Okay, we're good! Let's pretend we're forwarding. */
 	ire_recv_forward_v4(outbound_ire, mp, ipha, &iras);
-	ire_refrele(outbound_ire);
 
 release_and_return:
+	if (outbound_ire != NULL)
+		ire_refrele(outbound_ire);
 	VXNF_REFRELE(fixed);
 	return (B_TRUE);
 }
@@ -1036,7 +1065,7 @@ bail_no_free:
  * ONLY return B_FALSE if we get a packet-clogging event.
  */
 /* ARGSUSED */
-static boolean_t
+boolean_t
 vxlnat_vxlan_input(ksocket_t insock, mblk_t *chain, size_t msgsize, int oob,
     void *ignored)
 {
@@ -1441,20 +1470,49 @@ vxlnat_xmit_vxlanv4(mblk_t *mp, in6_addr_t *overlay_dst,
 		DTRACE_PROBE1(vxlnat__xmit__vxlan4__credfail, 
 		    vxlnat_remote_t *, remote);
 		freemsg(vlan_mp);
+		return (remote);
 	}
-	/*
-	 * Use MSG_DONTWAIT to avoid blocks, esp. if we're getting this
-	 * straight from interrupt context.
-	 */
-	rc = ksocket_sendmblk(vxlnat_underlay, &msghdr, MSG_DONTWAIT, &vlan_mp,
-	    cred);
-	crfree(cred);
-	if (rc != 0) {
-		DTRACE_PROBE2(vxlnat__xmit__vxlan4__sendfail, int, rc,
+
+	if (vxlnat_underlay != NULL) {
+		/*
+		 * Use MSG_DONTWAIT to avoid blocks, esp. if we're getting
+		 * this straight from interrupt context.
+		 */
+		rc = ksocket_sendmblk(vxlnat_underlay, &msghdr, MSG_DONTWAIT,
+		    &vlan_mp, cred);
+		crfree(cred);
+		if (rc != 0) {
+			DTRACE_PROBE2(vxlnat__xmit__vxlan4__sendfail, int, rc,
+			    vxlnat_remote_t *, remote);
+			freemsg(vlan_mp);
+		}
+	} else {
+		DTRACE_PROBE1(vxlnat__xmit__vxlan4__nosocket,
 		    vxlnat_remote_t *, remote);
 		freemsg(vlan_mp);
 	}
+
 	return (remote);
+}
+
+/*
+ * Placeholder functions for just dropping packets.
+ */
+int
+vxlnat_fixed_send_drop(ire_t *ire, mblk_t *mp, void *iph_arg,
+    ip_xmit_attr_t *ixa, uint32_t *identp)
+{
+	/* Free the message and return an appropriate error. */
+	freemsg(mp);
+	return (EOPNOTSUPP);
+}
+
+void
+vxlnat_fixed_recv_drop(ire_t *ire, mblk_t *mp, void *iph_arg,
+    ip_recv_attr_t *ira)
+{
+	/* Free the message, that's it. */
+	freemsg(mp);
 }
 
 /*
@@ -1465,8 +1523,7 @@ vxlnat_fixed_ire_send_v6(ire_t *ire, mblk_t *mp, void *iph_arg,
     ip_xmit_attr_t *ixa, uint32_t *identp)
 {
 	/* XXX KEBE SAYS FILL ME IN, but for now... */
-	freemsg(mp);
-	return (EOPNOTSUPP);
+	return (vxlnat_fixed_send_drop(ire, mp, iph_arg, ixa, identp));
 }
 
 void
@@ -1474,7 +1531,7 @@ vxlnat_fixed_ire_recv_v6(ire_t *ire, mblk_t *mp, void *iph_arg,
     ip_recv_attr_t *ira)
 {
 	/* XXX KEBE SAYS FILL ME IN, but for now... */
-	freemsg(mp);
+	vxlnat_fixed_recv_drop(ire, mp, iph_arg, ira);
 }
 
 /*
@@ -1566,6 +1623,13 @@ vxlnat_fixed_ire_recv_v4(ire_t *ire, mblk_t *mp, void *iph_arg,
 	 * if IPH_DF is set, send an ICMP_NEEDS_FRAGMENTATION back to the
 	 * sender.  Perform the check here BEFORE we NAT the packet.
 	 */
+	if (vxlnat_underlay_ire == NULL) {
+		/* We're mid-quiesce. Eat the packet and bail. */
+		DTRACE_PROBE2(vxlnat__fixed__recv__quiescing, in6_addr_t *,
+		    &fixed->vxnf_addr, uint32_t,
+		    VXLAN_ID_NTOH(vnet->vxnv_vnetid));
+		freemsg(mp);
+	}
 	ASSERT(vxlnat_underlay_ire->ire_ill != NULL);
 	newmtu = vxlnat_underlay_ire->ire_ill->ill_mtu - sizeof (ipha_t) -
 	    sizeof (udpha_t) - sizeof (vxlan_hdr_t) -
@@ -1605,10 +1669,18 @@ vxlnat_fixed_ire_recv_v4(ire_t *ire, mblk_t *mp, void *iph_arg,
 
 detach_ire_and_bail:
 	/* Oh no, something's condemned.  Drop the IRE now. */
-	ire->ire_recvfn = ire_recv_local_v4;
 	ire->ire_dep_sib_next = NULL;
+	/* Rewire IRE back to normal. */
+	if (ire->ire_ipversion == IPV4_VERSION) {
+		ire->ire_recvfn = ire_recv_local_v4;
+		ire->ire_sendfn = ire_send_local_v4;
+	} else {
+		ASSERT(ire->ire_ipversion == IPV6_VERSION);
+		ire->ire_recvfn = ire_recv_local_v6;
+		ire->ire_sendfn = ire_send_local_v6;
+	}
 	VXNF_REFRELE(fixed);
 	/* Pass the packet back... */
-	ire_recv_local_v4(ire, mp, iph_arg, ira);
+	ire->ire_recvfn(ire, mp, iph_arg, ira);
 	return;
 }
