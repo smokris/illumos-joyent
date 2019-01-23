@@ -38,6 +38,7 @@
 #include <sys/tihdr.h>
 #include <netinet/in.h>
 #include <netinet/udp.h>
+#include <inet/arp.h>
 #include <inet/ip.h>
 #include <inet/ip6.h>
 #include <inet/tcp_impl.h>
@@ -214,6 +215,204 @@ vxlnat_get_remote(vxlnat_vnet_t *vnet, in6_addr_t *remote_addr,
 }
 
 /*
+ * Actually transmit an mblk to a VXLAN underlay destination.
+ */
+static void
+vxlnat_sendmblk(mblk_t **send_mp, struct sockaddr_in6 *underlay_dst)
+{
+	struct msghdr msghdr = {NULL};
+	cred_t *cred;
+	int rc;
+
+	msghdr.msg_name = (struct sockaddr_storage *)underlay_dst;
+	msghdr.msg_namelen = sizeof (*underlay_dst);
+
+	/*
+	 * cred_t dance is because we may be getting this straight from
+	 * interrupt context.
+	 */
+	cred = zone_get_kcred(netstack_get_zoneid(vxlnat_netstack));
+	if (cred == NULL) {
+		DTRACE_PROBE1(vxlnat__sendmblk__credfail, 
+		    struct sockaddr_in6 *, underlay_dst);
+		freemsg(*send_mp);
+		return;
+	}
+
+	if (vxlnat_underlay != NULL) {
+		/*
+		 * Use MSG_DONTWAIT to avoid blocks, esp. if we're getting
+		 * this straight from interrupt context.
+		 */
+		rc = ksocket_sendmblk(vxlnat_underlay, &msghdr, MSG_DONTWAIT,
+		    send_mp, cred);
+		crfree(cred);
+		if (rc != 0) {
+			DTRACE_PROBE2(vxlnat__sendmblk__sendfail, int, rc,
+			    struct sockaddr_in6 *, underlay_dst);
+			freemsg(*send_mp);
+		}
+		/* else ksocket_sendmblk() consumed the message. */
+	} else {
+		DTRACE_PROBE1(vxlnat__sendmblk__nosocket,
+		    struct sockaddr_in6 *, underlay_dst);
+		freemsg(*send_mp);
+	}
+}
+
+/*
+ * Parse an ARP request.  We want to handle unicast ARP requests so peers that
+ * use them for liveness detection think we're alive.  In Triton/SDC, this
+ * response is unicast.  Consult the available NAT-rule prefixes to see what
+ * we can answer.
+ *
+ * NOTE:  We receive the packet prior to advancing the ethernet header.
+ *
+ * There will be an IPv6-equivalent dealing with ND_{ROUTER,NEIGHBOR}_SOLICIT.
+ */
+static void
+vxlnat_handle_arp(mblk_t *mp, struct ether_header *eh,
+    struct ether_vlan_header *evh, struct sockaddr_in6 *underlay_src,
+    vxlnat_vnet_t *vnet)
+{
+	arh_t *arh; /* = (arh_t *)mp->b_rptr; */
+	ether_addr_t *macdst = (ether_addr_t *)&eh->ether_dhost;
+	ether_addr_t *macsrc = (ether_addr_t *)&eh->ether_shost;
+	ether_addr_t *arpsendmac, *arptargmac;
+	vxlnat_rule_t *rule;
+	ipaddr_t ruleip, arpsendip, arptargip;
+	uint8_t *arpap; /* = (uint8_t *)(arh + 1); */
+	mblk_t *nextmp;
+	size_t ether_headerlen;
+
+	ASSERT((void *)eh == (void *)evh || evh == NULL);
+	ASSERT3P((uint8_t *)eh, ==, mp->b_rptr);
+
+	ether_headerlen = (evh != NULL) ? sizeof (*evh) : sizeof (*eh);
+
+	/*
+	 * Reality checks. Drop if any fail.
+	 *
+	 * 0.) Must be big enough to hold a proper ARP request.
+	 */
+	if (mp->b_cont != NULL) {
+		nextmp = mp->b_cont;
+		DTRACE_PROBE1(vxlnat__arp__bcont, mblk_t *, mp);
+		if (nextmp->b_cont != NULL) {
+			/* WOW! What a corner-case. pullup here. */
+			DTRACE_PROBE1(vxlnat__arp__bcont2, mblk_t *, nextmp);
+			nextmp = msgpullup(nextmp, -1);
+			if (nextmp == NULL)
+				goto done;	/* Bail! */
+			freemsg(mp->b_cont);
+			mp->b_cont = nextmp;
+		}
+		if ((mp->b_wptr - mp->b_rptr) != ether_headerlen) {
+			/*
+			 * WOW! Someone's being a jerk not splitting right
+			 * after the ethernet header.
+			 */
+			DTRACE_PROBE1(vxlnat__arp__mblksplit, mblk_t *, mp);
+			goto done;
+		}
+		if (nextmp->b_wptr - nextmp->b_rptr < 
+		    sizeof (*arh) + 2 * sizeof (ether_addr_t) +
+		    2 * sizeof (ipaddr_t)) {
+			DTRACE_PROBE1(vxlnat__arp__toosmallsplit, mblk_t *,
+			    nextmp);
+			goto done;
+		}
+		arh = (arh_t *)nextmp->b_rptr;
+	} else {
+		if (mp->b_wptr - mp->b_rptr < ether_headerlen +
+		    sizeof (*arh) + 2 * sizeof (ether_addr_t) +
+		    2 * sizeof (ipaddr_t)) {
+			DTRACE_PROBE1(vxlnat__arp__toosmall, mblk_t *, mp);
+			goto done;
+		}
+		arh = (arh_t *)(mp->b_rptr + ether_headerlen);
+	}
+	arpap = (uint8_t *)(arh + 1);
+
+	arpsendmac = (ether_addr_t *)arpap;
+	arpap += sizeof (ether_addr_t);
+	memcpy(&arpsendip, arpap, sizeof (ipaddr_t));
+	arpap += sizeof (ipaddr_t);
+	arptargmac = (ether_addr_t *)arpap;
+	arpap += sizeof (ether_addr_t);
+	memcpy(&arptargip, arpap, sizeof (ipaddr_t));
+	arpap += sizeof (ipaddr_t);
+
+	/*
+	 * 1.) Must be ARPHDR_ETHER (0x1 in arh_hardware).
+	 * 2.) Must be ETHERTYPE_IP (0x800 in arh_proto).
+	 * 3.) Must be ARP_REQUEST (0x1 in arh_operation).
+	 * 4.) ARP sender HW address must match ARP sender HW address.
+	 */
+	if (arh->arh_hardware[0] != 0 || arh->arh_hardware[1] != 0x1 ||
+	    arh->arh_proto[0] != 0x8 || arh->arh_proto[1] != 0 ||
+	    arh->arh_operation[0] != 0 ||
+	    arh->arh_operation[1] != ARP_REQUEST ||
+	    memcmp(arpsendmac, macsrc, ETHERADDRL) != 0) {
+		goto done;
+	}
+
+	/*
+	 * Okay, we passed the reality checks.  Time to confirm it's me.
+	 * Use the IP address from the ARP packet to search, then compare.
+	 */
+	rule = vxlnat_rule_lookup(vnet, &arptargip, B_TRUE);
+	if (rule == NULL) {
+		DTRACE_PROBE1(vxlnat__arp__unknownaddr, ipaddr_t, arptargip);
+		goto done;
+	}
+	IN6_V4MAPPED_TO_IPADDR(&rule->vxnr_myaddr, ruleip);
+	if (ruleip == arptargip) {
+		mblk_t *vxlan_mp;
+		vxlan_hdr_t *vxh;
+
+		/* Swap sending/target addresses. */
+		memcpy(macdst, macsrc, ETHERADDRL);
+		memcpy(macsrc, rule->vxnr_myether, ETHERADDRL);
+		memcpy(arptargmac, arpsendmac, ETHERADDRL);
+		memcpy(arpsendmac, rule->vxnr_myether, ETHERADDRL);
+		VXNR_REFRELE(rule);
+		memcpy((arptargmac + 1), &arpsendip, sizeof (ipaddr_t));
+		memcpy((arpsendmac + 1), &arptargip, sizeof (ipaddr_t));
+		arh->arh_operation[1] = ARP_RESPONSE;
+
+		if (mp->b_rptr - mp->b_datap->db_base < vxlan_noalloc_min) {
+			vxlan_mp = allocb(vxlan_alloc_size, BPRI_HI);
+			if (vxlan_mp == NULL) {
+				DTRACE_PROBE(vxlnat__arp__allocfail);
+				goto done;
+			}
+			vxlan_mp->b_cont = mp;
+			vxlan_mp->b_wptr = DB_LIM(vxlan_mp);
+			vxlan_mp->b_rptr = vxlan_mp->b_wptr - sizeof (*vxh);
+			vxh = (vxlan_hdr_t *)vxlan_mp->b_rptr;
+		} else {
+			mp->b_rptr -= sizeof (*vxh);
+			vxh = (vxlan_hdr_t *)mp->b_rptr;
+			vxlan_mp = mp;
+		}
+		vxh->vxlan_flags = VXLAN_F_VDI_WIRE;
+		vxh->vxlan_id = vnet->vxnv_vnetid; /* Already in wire-order. */
+
+		underlay_src->sin6_port = htons(IPPORT_VXLAN);
+		vxlnat_sendmblk(&vxlan_mp, underlay_src);
+		return;
+	} else {
+		DTRACE_PROBE2(vxlnat__arp__badaddr, ipaddr_t, arptargip,
+		    ipaddr_t, ruleip);
+		VXNR_REFRELE(rule);
+	}
+
+done:
+	freemsg(mp);
+}
+
+/*
  * Cache inbound packet information in the vnet's remotes section.
  *
  * NOTE: This function assumes a trustworthy underlay network.  If the
@@ -235,6 +434,7 @@ vxlnat_cache_remote(mblk_t *mp, struct sockaddr_in6 *underlay_src,
 	ipha_t *ipha;
 	ip6_t *ip6h;
 	in6_addr_t remote_addr;
+	int advanceby;
 
 	/* Assume (for now) we have at least a VLAN header's worth of data. */
 	if (MBLKL(mp) < sizeof (*evh)) {
@@ -253,17 +453,19 @@ vxlnat_cache_remote(mblk_t *mp, struct sockaddr_in6 *underlay_src,
 		vlan = evh->ether_tci;
 		ethertype = ntohs(evh->ether_type);
 		ASSERT(vlan != 0);
-		mp->b_rptr += sizeof (*evh);
+		advanceby = sizeof (*evh);
 	} else {
 		evh = NULL;
 		vlan = 0;
-		mp->b_rptr += sizeof (*eh);
+		advanceby = sizeof (*eh);
 	}
+	if (ethertype == ETHERTYPE_ARP) {
+		vxlnat_handle_arp(mp, eh, evh, underlay_src, vnet);
+		return (NULL);
+	}
+	mp->b_rptr += advanceby;
 	if (ethertype != ETHERTYPE_IP && ethertype != ETHERTYPE_IPV6) {
-		/*
-		 * XXX KEBE SAYS for now, don't handle non-IP packets.
-		 * This includes ARP.
-		 */
+		/* XXX KEBE SAYS for now, don't handle other non-IP packets. */
 		DTRACE_PROBE1(vxlnat__in__drop__nonip, mblk_t *, mp);
 		freemsg(mp);
 		return (NULL);
@@ -734,36 +936,7 @@ vxlnat_one_vxlan_rule(vxlnat_vnet_t *vnet, mblk_t *mp, ipha_t *ipha,
 	IN6_INADDR_TO_V4MAPPED((struct in_addr *)(&ipha->ipha_src), inner_src);
 	IN6_INADDR_TO_V4MAPPED((struct in_addr *)(&ipha->ipha_dst), dst);
 
-	mutex_enter(&vnet->vxnv_rule_lock);
-	rule = list_head(&vnet->vxnv_rules);
-
-	/*
-	 * search for a match in the nat rules
-	 * XXX investigate perf issues with with respect to list_t size
-	 * XXX KEBE SAYS rewrite when we start doing IPv6 to use "inner_src"
-	 * and "dst". 
-	 */
-	while (rule != NULL) {
-		ipaddr_t ipaddr;
-		uint32_t netmask = 0xffffffff;
-		uint8_t prefix = rule->vxnr_prefix - 96;
-
-		/* calculate the v4 netmask */
-		netmask <<= (32 - prefix);
-		netmask = htonl(netmask);
-
-		IN6_V4MAPPED_TO_IPADDR(&rule->vxnr_myaddr, ipaddr);
-		/* XXX ASSERT vlanid? */
-		if ((ipaddr & netmask) == (ipha->ipha_src & netmask)) {
-			VXNR_REFHOLD(rule);
-			break;
-		}
-
-		rule = list_next(&vnet->vxnv_rules, rule);
-	}
-
-	mutex_exit(&vnet->vxnv_rule_lock);
-
+	rule = vxlnat_rule_lookup(vnet, &ipha->ipha_src, B_TRUE);
 	if (rule == NULL)
 		return (B_FALSE);
 
@@ -1019,6 +1192,7 @@ vxlnat_one_vxlan(mblk_t *mp, struct sockaddr_in6 *underlay_src)
 		mp = mp->b_cont;
 		freeb(oldmp);
 	}
+	/* XXX KEBE ASKS CACHE dst MAC here too for IP? */
 	mp = vxlnat_cache_remote(mp, underlay_src, vnet);
 	if (mp == NULL)
 		goto bail_no_free;
@@ -1039,6 +1213,13 @@ vxlnat_one_vxlan(mblk_t *mp, struct sockaddr_in6 *underlay_src)
 		goto bail_and_free;
 	}
 
+	/*
+	 * XXX KEBE SAYS - if caching dst MAC (see above) make sure we're
+	 * getting the right one up to the processing functions below. This
+	 * lives on either fixed (in struct), flow (via ptr to rule), or rule
+	 * (in struct).
+	 */
+
 	/* 2.) Search 1-1s, process if hit. */
 	if (vxlnat_one_vxlan_fixed(vnet, mp, ipha, ip6h))
 		goto bail_no_free;	/* Success means mp was consumed. */
@@ -1053,7 +1234,7 @@ vxlnat_one_vxlan(mblk_t *mp, struct sockaddr_in6 *underlay_src)
 
 	/* 5.) Nothing, drop the packet. */
 
-	DTRACE_PROBE2(vxlnat__in___drop__nohits, vxlnat_vnet_t *, vnet,
+	DTRACE_PROBE2(vxlnat__in__drop__nohits, vxlnat_vnet_t *, vnet,
 	    mblk_t *, mp);
 
 bail_and_free:
@@ -1395,13 +1576,9 @@ vxlnat_xmit_vxlanv4(mblk_t *mp, in6_addr_t *overlay_dst,
     vxlnat_remote_t *remote, uint8_t *myether, vxlnat_vnet_t *vnet)
 {
 	struct sockaddr_in6 sin6 = {AF_INET6};
-	struct msghdr msghdr = {NULL};
 	mblk_t *vlan_mp;
-	extern uint_t vxlan_alloc_size, vxlan_noalloc_min;
 	vxlan_hdr_t *vxh;
 	struct ether_vlan_header *evh;
-	int rc;
-	cred_t *cred;
 
 	if (remote == NULL || remote->vxnrem_vnet == NULL) {
 		DTRACE_PROBE1(vxlnat__xmit__vxlanv4, vxlnat_remote_t *, remote);
@@ -1455,42 +1632,11 @@ vxlnat_xmit_vxlanv4(mblk_t *mp, in6_addr_t *overlay_dst,
 	evh->ether_tci = remote->vxnrem_vlan;
 	evh->ether_type = htons(ETHERTYPE_IP);
 
-	msghdr.msg_name = (struct sockaddr_storage *)&sin6;
-	msghdr.msg_namelen = sizeof (sin6);
 	/* Address family and other zeroing already done up top. */
 	sin6.sin6_port = htons(IPPORT_VXLAN);
 	sin6.sin6_addr = remote->vxnrem_uaddr;
 
-	/*
-	 * cred_t dance is because we may be getting this straight from
-	 * interrupt context.
-	 */
-	cred = zone_get_kcred(netstack_get_zoneid(vxlnat_netstack));
-	if (cred == NULL) {
-		DTRACE_PROBE1(vxlnat__xmit__vxlan4__credfail, 
-		    vxlnat_remote_t *, remote);
-		freemsg(vlan_mp);
-		return (remote);
-	}
-
-	if (vxlnat_underlay != NULL) {
-		/*
-		 * Use MSG_DONTWAIT to avoid blocks, esp. if we're getting
-		 * this straight from interrupt context.
-		 */
-		rc = ksocket_sendmblk(vxlnat_underlay, &msghdr, MSG_DONTWAIT,
-		    &vlan_mp, cred);
-		crfree(cred);
-		if (rc != 0) {
-			DTRACE_PROBE2(vxlnat__xmit__vxlan4__sendfail, int, rc,
-			    vxlnat_remote_t *, remote);
-			freemsg(vlan_mp);
-		}
-	} else {
-		DTRACE_PROBE1(vxlnat__xmit__vxlan4__nosocket,
-		    vxlnat_remote_t *, remote);
-		freemsg(vlan_mp);
-	}
+	vxlnat_sendmblk(&vlan_mp, &sin6);
 
 	return (remote);
 }

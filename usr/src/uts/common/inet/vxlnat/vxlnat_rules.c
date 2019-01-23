@@ -197,13 +197,13 @@ vxlnat_vnet_unlink_locked(vxlnat_vnet_t *vnet)
 	/* XXX KEBE ASKS --> Mark as condemned? */
 	
 	/* Unlink all NAT rules */
-	mutex_enter(&vnet->vxnv_rule_lock);
+	rw_enter(&vnet->vxnv_rule_lock, RW_WRITER);
 	while (!list_is_empty(&vnet->vxnv_rules)) {
 		/* Will decrement vnet's refcount too. */
 		vxlnat_rule_unlink(
 		    (vxlnat_rule_t *)list_head(&vnet->vxnv_rules));
 	}
-	mutex_exit(&vnet->vxnv_rule_lock);
+	rw_exit(&vnet->vxnv_rule_lock);
 	/* XXX KEBE SAYS unlink all 1-1 mappings */
 	rw_enter(&vnet->vxnv_fixed_lock, RW_WRITER);
 	while (!avl_is_empty(&vnet->vxnv_fixed_ips)) {
@@ -273,7 +273,11 @@ vxlnat_nat_rule(vxn_msg_t *vxnm)
 	rule = kmem_alloc(sizeof (*rule), KM_SLEEP);
 	/* KM_SLEEP means non-NULL guaranteed. */
 	rule->vxnr_vnet = vnet;	/* vnet already refheld, remember?. */
-	/* XXX KEBE ASKS, check the vxnm more carefully? */
+	/*
+	 * XXX KEBE ASKS, check the vxnm more carefully?
+	 * Possible checks include:
+	 * - 
+	 */
 	rule->vxnr_myaddr = vxnm->vxnm_private;
 	rule->vxnr_pubaddr = vxnm->vxnm_public;
 	rule->vxnr_prefix = vxnm->vxnm_prefix;
@@ -284,10 +288,10 @@ vxlnat_nat_rule(vxn_msg_t *vxnm)
 	list_link_init(&rule->vxnr_link);
 
 	/* Put rule into vnet. */
-	mutex_enter(&vnet->vxnv_rule_lock);
+	rw_enter(&vnet->vxnv_rule_lock, RW_WRITER);
 	/* XXX KEBE ASKS --> Check for collisions?!? */
 	list_insert_tail(&vnet->vxnv_rules, rule);
-	mutex_exit(&vnet->vxnv_rule_lock);
+	rw_exit(&vnet->vxnv_rule_lock);
 
 	return (0);
 }
@@ -309,12 +313,57 @@ vxlnat_rule_unlink(vxlnat_rule_t *rule)
 	vxlnat_vnet_t *vnet = rule->vxnr_vnet;
 
 	ASSERT3P(vnet, !=, NULL);
-	ASSERT(MUTEX_HELD(&vnet->vxnv_rule_lock));
+	ASSERT(RW_WRITE_HELD(&vnet->vxnv_rule_lock));
 
 	list_remove(&vnet->vxnv_rules, rule);
 	VXNV_REFRELE(vnet);
 	rule->vxnr_vnet = NULL;	/* This condemns this rule. */
 	VXNR_REFRELE(rule);
+}
+
+/*
+ * Find a NAT rule based on an IP address.
+ */
+vxlnat_rule_t *
+vxlnat_rule_lookup(vxlnat_vnet_t *vnet, uint32_t *addr, boolean_t isv4)
+{
+	vxlnat_rule_t *rule;
+
+	/* No IPv6 support for now... */
+	if (!isv4)
+		return (NULL);
+
+	rw_enter(&vnet->vxnv_rule_lock, RW_READER);
+	rule = list_head(&vnet->vxnv_rules);
+
+	/*
+	 * search for a match in the nat rules
+	 * XXX investigate perf issues with with respect to list_t size
+	 * XXX KEBE SAYS rewhack when we start doing IPv6 to use
+	 * IN6_ARE_PREFIXEDADDR_EQUAL() and a local-variable IPv6 "ipaddr".
+	 */
+	while (rule != NULL) {
+		ipaddr_t ipaddr;
+		uint32_t netmask = 0xffffffff;
+		uint8_t prefix = rule->vxnr_prefix - 96;
+
+		/* calculate the v4 netmask */
+		netmask <<= (32 - prefix);
+		netmask = htonl(netmask);
+
+		IN6_V4MAPPED_TO_IPADDR(&rule->vxnr_myaddr, ipaddr);
+		/* XXX ASSERT vlanid? */
+		if ((ipaddr & netmask) == (*addr & netmask)) {
+			VXNR_REFHOLD(rule);
+			break;
+		}
+
+		rule = list_next(&vnet->vxnv_rules, rule);
+	}
+
+	rw_exit(&vnet->vxnv_rule_lock);
+
+	return (rule);
 }
 
 static int
@@ -401,7 +450,9 @@ vxlnat_fixed_ip(vxn_msg_t *vxnm)
 {
 	vxlnat_vnet_t *vnet;
 	vxlnat_fixed_t *fixed;
-	uint32_t vnetid;
+	vxlnat_rule_t *rule;
+	uint32_t vnetid, *addrptr;
+	boolean_t private_isv4;
 	avl_index_t where;
 	int rc;
 	ire_t *ire;
@@ -422,14 +473,37 @@ vxlnat_fixed_ip(vxn_msg_t *vxnm)
 		goto fail;
 	}
 
+	/*
+	 * Cannot add a fixed IP until we have a general NAT-prefix rule,
+	 * otherwise there's no default router for the prefix.
+	 */
+	if (IN6_IS_ADDR_V4MAPPED(&vxnm->vxnm_private)) {
+		addrptr = &vxnm->vxnm_private.s6_addr32[3];
+		private_isv4 = B_TRUE;
+	} else {
+		addrptr = &vxnm->vxnm_private.s6_addr32[0];
+		private_isv4 = B_FALSE;
+	}
+	rule = vxlnat_rule_lookup(vnet, addrptr, private_isv4);
+	if (rule == NULL) {
+		VXNV_REFRELE(vnet);
+		rc = EINVAL;
+		goto fail;
+	}
+	/*
+	 * Okay, we have confirmation there's an existing NAT prefix and
+	 * default-router for the private-side of the fixed entry.
+	 */
+
 	fixed = kmem_zalloc(sizeof (*fixed), KM_SLEEP);
+	bcopy(&rule->vxnr_myether, &fixed->vxnf_myether, ETHERADDRL);
+	VXNR_REFRELE(rule);
 	/* KM_SLEEP means non-NULL guaranteed. */
 	fixed->vxnf_vnet = vnet; /* vnet already refheld, remember? */
 	/* XXX KEBE ASKS, check the vxnm more carefully? */
 	fixed->vxnf_addr = vxnm->vxnm_private;
 	fixed->vxnf_pubaddr = vxnm->vxnm_public;
 	fixed->vxnf_refcount = 1;	/* Internment reference. */
-	bcopy(&vxnm->vxnm_ether_addr, &fixed->vxnf_myether, ETHERADDRL);
 	fixed->vxnf_vlanid = htons(vxnm->vxnm_vlanid);
 
 	/*
@@ -571,7 +645,7 @@ vxlnat_dump(void)
 	    vnet = AVL_NEXT(&vxlnat_vnets, vnet)) {
 		rw_enter(&vnet->vxnv_fixed_lock, RW_READER);
 		entries += avl_numnodes(&vnet->vxnv_fixed_ips);
-		mutex_enter(&vnet->vxnv_rule_lock);
+		rw_enter(&vnet->vxnv_rule_lock, RW_READER);
 		/* Let's hope this isn't a big number... */
 		for (rule = list_head(&vnet->vxnv_rules); rule != NULL;
 		    rule = list_next(&vnet->vxnv_rules, rule)) {
@@ -599,7 +673,7 @@ vxlnat_dump(void)
 				current++;
 			}
 		}
-		mutex_exit(&vnet->vxnv_rule_lock);
+		rw_exit(&vnet->vxnv_rule_lock);
 		for (fixed = avl_first(&vnet->vxnv_fixed_ips); fixed != NULL;
 		    fixed = AVL_NEXT(&vnet->vxnv_fixed_ips, fixed)) {
 			if (rc == 0) {

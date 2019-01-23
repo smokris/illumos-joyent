@@ -174,8 +174,7 @@ static vxn_msg_t *
 parse_fixedentry(char *line)
 {
 	char *tok;
-	int vnetid;
-	uint8_t ether[ETHERADDRL];
+	int vnetid, vlanid;
 	struct in6_addr priv, pub;
 	vxn_msg_t *vxnm;
 
@@ -200,9 +199,17 @@ parse_fixedentry(char *line)
 	if ((tok = strtok(NULL, " \t\n")) == NULL)
 		return (NULL);
 
-	/* check for ether */
-	if (!str2mac(tok, ether))
-		return (NULL);
+	/* check for vlanid */
+	errno = 0;
+	if ((vlanid = atoi(tok)) == 0) {
+		if (errno != 0 || vlanid < 0 || vlanid > 4096) {
+			(void) bunyan_error(vxlnatd_bunyan,
+			    "bad vlanid",
+			    BUNYAN_T_STRING, "vlanid", tok,
+			    BUNYAN_T_END);
+			return (NULL);
+		}
+	}
 
 	if ((tok = strtok(NULL, " \t\n")) == NULL)
 		return (NULL);
@@ -222,9 +229,9 @@ parse_fixedentry(char *line)
 
 	vxnm->vxnm_type = VXNM_FIXEDIP;
 	vxnm->vxnm_vnetid = vnetid;
+	vxnm->vxnm_vlanid = vlanid;
 	vxnm->vxnm_public = pub;
 	vxnm->vxnm_private = priv;
-	bcopy(ether, vxnm->vxnm_ether_addr, sizeof (ether));
 
 	return (vxnm);
 }
@@ -232,7 +239,6 @@ parse_fixedentry(char *line)
 static vxn_msg_t *
 parse_mapentry(char *line)
 {
-	/* type, pfx, vnetid, pub, priv, eth, vlanid */
 	char *tok;
 	int vnetid, vlanid, prefix, version;
 	struct in6_addr priv, pub;
@@ -476,7 +482,12 @@ vxlnatd_initconf()
 		entries++;
 	}
 
-	// send VXNM_VXLAN_ADDR
+	/*
+	 * XXX KEBE ASKS --> sort entries such that we never add a
+	 * fixed rule before adding any NAT mappings?
+	 */
+
+	/* send VXNM_VXLAN_ADDR */
 	for (i = 0; i < entries; i++) {
 		(void) log_vxnm("writing vxn_msg_t to vxlnat device", msgs[i]);
 		if ((write(vxlnat_fd, msgs[i],

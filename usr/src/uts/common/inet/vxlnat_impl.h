@@ -50,7 +50,7 @@ typedef struct vxlnat_rule_s {
 	list_node_t vxnr_link;
 	/* refheld link, or if NULL, this rule is "condemned" and no good. */
 	struct vxlnat_vnet_s *vxnr_vnet;
-	in6_addr_t vxnr_myaddr;
+	in6_addr_t vxnr_myaddr;	/* NOTE: Is our "router" IP address. */
 	in6_addr_t vxnr_pubaddr;
 	/* XXX KEBE ASKS, ire? */
 	uint8_t vxnr_myether[ETHERADDRL];
@@ -198,7 +198,7 @@ typedef struct vxlnat_vnet_s {
 	avl_tree_t vxnv_flows_v4;
 
 	/* NAT rules. (3rd lookup for an in-to-out packet.) */
-	kmutex_t vxnv_rule_lock;
+	krwlock_t vxnv_rule_lock;
 	list_t vxnv_rules;
 
 	/*
@@ -255,6 +255,9 @@ extern void vxlnat_vnet_free(vxlnat_vnet_t *);
 #endif	/* _BIG_ENDIAN */
 #define	VXLAN_FLAGS_WIRE32(flags) ((flags) & VXLAN_F_VDI_WIRE)
 
+/* From the overlay module's VXLAN plugin... */
+extern uint_t vxlan_alloc_size, vxlan_noalloc_min;
+
 extern kmutex_t vxlnat_mutex;
 extern netstack_t *vxlnat_netstack;
 extern ksocket_t vxlnat_underlay;
@@ -275,6 +278,9 @@ extern void vxlnat_public_rele(in6_addr_t *);
 extern int vxlnat_tree_plus_in6_cmp(const void *, const void *);
 
 extern boolean_t vxlnat_vxlan_input(ksocket_t, mblk_t *, size_t, int, void *);
+
+extern vxlnat_rule_t *vxlnat_rule_lookup(vxlnat_vnet_t *, uint32_t *,
+    boolean_t);
 
 /* ire_recvfn & ire_sendfn functions for 1-1/fixed maps. */
 extern void vxlnat_fixed_recv_drop(ire_t *, mblk_t *, void *,
