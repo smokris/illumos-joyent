@@ -144,7 +144,9 @@ vxlnat_vxlan_addr(in6_addr_t *underlay_ip)
 	vxlnat_quiesce_traffic();
 	vxlnat_closesock();
 	rc = vxlnat_opensock(underlay_ip);
-	vxlnat_enable_traffic();
+	if (rc == 0)
+		vxlnat_enable_traffic();
+	ASSERT(rc == 0 || vxlnat_underlay == NULL);
 	return (rc);
 }
 
