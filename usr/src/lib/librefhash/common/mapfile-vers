@@ -10,7 +10,7 @@
 #
 
 #
-# Copyright (c) 2014 Joyent, Inc.  All rights reserved.
+# Copyright (c) 2019 Joyent, Inc.  All rights reserved.
 #
 
 #
@@ -31,8 +31,10 @@ $mapfile_version 2
 
 SYMBOL_VERSION ILLUMOSprivate {
     global:
+	refhash_alloc;
 	refhash_create;
 	refhash_destroy;
+	refhash_free;
 	refhash_insert;
 	refhash_remove;
 	refhash_lookup;
@@ -42,6 +44,7 @@ SYMBOL_VERSION ILLUMOSprivate {
 	refhash_first;
 	refhash_next;
 	refhash_obj_valid;
+	refhash_zalloc;
     local:
         *;
 };

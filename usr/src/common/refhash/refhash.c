@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright (c) 2018, Joyent, Inc.
+ * Copyright (c) 2019, Joyent, Inc.
  */
 
 #include <sys/refhash.h>
@@ -27,26 +27,43 @@
 #define	REFHASH_FREE	kmem_free
 #else
 #include <stddef.h>
-#include <umem.h>
-#define	REFHASH_ALLOC	umem_alloc
-#define	REFHASH_ZALLOC	umem_zalloc
-#define	REFHASH_FREE	umem_free
+#include <stdlib.h>
+#include <string.h>
+
+extern void *refhash_alloc(size_t, int);
+extern void *refhash_zalloc(size_t, int);
+extern void refhash_free(void *, size_t);
+
+/*
+ * We use weak symbols to an application can supply its own
+ * versions of these (e.g. to be able to use umem_alloc(..., UMEM_NOFAIL)).
+ *
+ * While ideally we would simply create a hard dependency on libumem, this would
+ * preclude the use of librefhash by libraries that are linked into aribitrary
+ * programs where forcing the use of libumem may not be desirable.
+ */
+#pragma weak refhash_alloc = _refhash_alloc
+static void *_refhash_alloc(size_t, int);
+
+#pragma weak refhash_zalloc = _refhash_zalloc
+static void *_refhash_zalloc(size_t, int);
+
+#pragma weak refhash_free = _refhash_free
+static void _refhash_free(void *, size_t);
+
+#define	REFHASH_ALLOC	refhash_alloc
+#define	REFHASH_ZALLOC	refhash_zalloc
+#define	REFHASH_FREE	refhash_free
 #endif
 
 #define	RHL_F_DEAD	0x01
 
-#ifdef lint
-extern refhash_link_t *obj_to_link(refhash_t *, void *);
-extern void *link_to_obj(refhash_t *, refhash_link_t *);
-extern void *obj_to_tag(refhash_t *, void *);
-#else
 #define	obj_to_link(_h, _o)	\
 	((refhash_link_t *)(((char *)(_o)) + (_h)->rh_link_off))
 #define	link_to_obj(_h, _l)	\
 	((void *)(((char *)(_l)) - (_h)->rh_link_off))
 #define	obj_to_tag(_h, _o)	\
 	((void *)(((char *)(_o)) + (_h)->rh_tag_off))
-#endif
 
 refhash_t *
 refhash_create(uint_t bucket_count, refhash_hash_f hash,
@@ -229,3 +246,25 @@ refhash_obj_valid(refhash_t *hp, const void *op)
 
 	return ((lp->rhl_flags & RHL_F_DEAD) != 0);
 }
+
+#ifndef _KERNEL
+
+void *
+_refhash_alloc(size_t len, int flag __unused)
+{
+	return (malloc(len));
+}
+
+void *
+_refhash_zalloc(size_t len, int flag __unused)
+{
+	return (calloc(1, len));
+}
+
+void
+_refhash_free(void *ptr, size_t len __unused)
+{
+	free(ptr);
+}
+
+#endif
