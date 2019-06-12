@@ -77,9 +77,7 @@ stats_get(const config_t *restrict cfg, kstat_ctl_t *restrict kcp,
     uint_t interval)
 {
 	stats_t *sts = NULL;
-	kstat_t *ksp;
 	kid_t kid;
-	size_t i, j;
 
 	if ((kid = kstat_chain_update(kcp)) == -1) {
 		if (errno == EAGAIN)
