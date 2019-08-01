@@ -154,6 +154,7 @@
 	<device match="sppp" ip-type="exclusive" />
 	<device match="sppptun" ip-type="exclusive" />
 	<device match="vni" ip-type="exclusive" />
+	<device match="vxlnat" ip-type="exclusive" />
 
 	<!-- Renamed devices to create under /dev -->
 	<device match="zcons/%z/zoneconsole" name="zconsole" />
