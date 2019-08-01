@@ -51,7 +51,7 @@ static void mac2str(uint8_t *mac, char *buf);
 static void
 usage(FILE *s)
 {
-	fprintf(s,
+	(void) fprintf(s,
 	    "Usage: vxlnatd [-dfh]\n"
 	    "\n"
 	    "vxlnatd preforms NAT translation for a vxlan network\n"
@@ -514,7 +514,7 @@ static void
 vxlnatd_cleanup()
 {
 	if (vxlnat_fd > 0) {
-		close(vxlnat_fd);
+		(void) close(vxlnat_fd);
 	}
 	vxlnatd_bunyan_fini();
 }
