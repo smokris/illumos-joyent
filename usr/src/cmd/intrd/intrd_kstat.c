@@ -547,7 +547,8 @@ getstat_tooslow(stats_t *stp, uint_t interval, double tooslow)
 static inline boolean_t
 uint64_add(uint64_t a, uint64_t b, uint64_t *res)
 {
-#ifdef HAS_ADD_OVERFLOW
+	/* smatch barfs on the builtin */
+#if defined(HAS_ADD_OVERFLOW) && !defined(__CHECKER__)
 	if (__builtin_uaddl_overflow(a, b, res))
 		return (B_TRUE);
 #else
