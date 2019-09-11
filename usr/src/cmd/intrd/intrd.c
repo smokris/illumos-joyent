@@ -39,8 +39,11 @@
 
 #include "intrd.h"
 
+#if 0
 static int intrd_daemonize(void);
 static void intrd_dfatal(int, const char *, ...);
+#endif
+
 static void setup(kstat_ctl_t **restrict, config_t *restrict);
 static void loop(const config_t *restrict, kstat_ctl_t *restrict);
 static void delta_save(stats_t **, size_t, stats_t *, uint_t);
@@ -84,7 +87,9 @@ main(int argc, char **argv)
 		.cfg_statslen = 120,
 		.cfg_tooslow = 0.05
 	};
+#if 0
 	int dfd, status;
+#endif
 
 	umem_nofail_callback(nomem);
 
@@ -102,10 +107,11 @@ main(int argc, char **argv)
 
 	loop(&cfg, kcp);
 
-	kstat_close(kcp);
+	(void) kstat_close(kcp);
 	return (0);
 }
 
+#if 0
 static int
 intrd_daemonize(void)
 {
@@ -187,6 +193,7 @@ intrd_daemonize(void)
 
 	return (pfds[1]);
 }
+#endif
 
 static void
 setup(kstat_ctl_t **restrict kcpp, config_t *restrict cfg)
@@ -265,7 +272,7 @@ loop(const config_t *restrict cfg, kstat_ctl_t *restrict kcp)
 
 	deltas = xcalloc(deltas_sz, sizeof (stats_t *));
 
-	for (;; sleep(interval)) {
+	for (;; (void) sleep(interval)) {
 		stats_free(stats[gen]);
 
 		/*
@@ -411,6 +418,7 @@ xreallocarray(void *p, size_t n, size_t elsize)
 	return (newp);
 }
 
+#if 0
 static void
 intrd_dfatal(int dfd, const char *fmt, ...)
 {
@@ -424,3 +432,4 @@ intrd_dfatal(int dfd, const char *fmt, ...)
 	(void) write(dfd, &status, sizeof (status));
 	exit(status);
 }
+#endif

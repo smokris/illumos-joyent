@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2018, Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  */
 
 #ifndef _INTRD_H
@@ -132,8 +132,8 @@ typedef struct stats {
 typedef struct load {
 	uint64_t	ld_total;
 	uint64_t	ld_intrtotal;
-    double      ld_avgnsec;
-    double      ld_avgload;
+	double		ld_avgnsec;
+	double		ld_avgload;
 	ivec_t		*ld_bigint;
 	size_t		ld_ncpu;
 } load_t;
@@ -151,9 +151,9 @@ extern uint_t cfg_idle_interval;
 extern uint_t max_cpu;
 
 typedef enum intrd_walk_ret {
-    INTRD_WALK_ERROR = -1,
-    INTRD_WALK_NEXT = 0,
-    INTRD_WALK_DONE = 1
+	INTRD_WALK_ERROR = -1,
+	INTRD_WALK_NEXT = 0,
+	INTRD_WALK_DONE = 1
 } intrd_walk_ret_t;
 
 typedef intrd_walk_ret_t (*cpu_itercb_t)(stats_t *, cpustat_t *, void *);

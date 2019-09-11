@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2018, Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  */
 #include <err.h>
 #include <errno.h>
@@ -33,6 +33,10 @@
 
 #include "intrd.h"
 
+#if __GNUC__ >= 5 || defined(__clang__)
+#define	HAS_ADD_OVERFLOW
+#endif
+
 static umem_cache_t *ivec_cache;
 static umem_cache_t *cpustat_cache;
 static umem_cache_t *stats_cache;
@@ -49,11 +53,12 @@ static intrd_walk_ret_t get_ivecs(kstat_ctl_t *restrict, kstat_t *restrict,
 static boolean_t build_lgrp_tree(stats_t *);
 
 static void consolidate_ivecs(stats_t *);
-static void set_timerange(stats_t *, cpustat_t **, size_t, ivec_t **, size_t);
 static boolean_t getstat_tooslow(stats_t *, uint_t, double);
 
 static boolean_t ivec_shared_intr(const ivec_t *, const ivec_t *);
+#if 0
 static boolean_t ivec_shared_msi(const ivec_t *, const ivec_t *);
+#endif
 
 static stats_t *stats_new(void);
 static stats_t *stats_dup(const stats_t*);
@@ -194,11 +199,11 @@ build_lgrp_tree(stats_t *st)
 		}
 	}
 
-	lgrp_fini(cookie);
+	VERIFY0(lgrp_fini(cookie));
 	return (B_TRUE);
 
 fail:
-	lgrp_fini(cookie);
+	VERIFY0(lgrp_fini(cookie));
 	return (B_FALSE);
 }
 
@@ -284,7 +289,7 @@ consolidate_ivec_cb(stats_t *stp, cpustat_t *cs, void *arg)
 static void
 consolidate_ivecs(stats_t *stp)
 {
-	cpu_iter(stp, consolidate_ivec_cb, NULL);
+	(void) cpu_iter(stp, consolidate_ivec_cb, NULL);
 }
 
 static boolean_t
@@ -305,17 +310,15 @@ ivec_shared_intr(const ivec_t *i1, const ivec_t *i2)
 #endif
 }
 
+#if 0
 static boolean_t
 ivec_shared_msi(const ivec_t *i1, const ivec_t *i2)
 {
-#if 0
 	if (strcmp(custr_cstr(i1->ivec_name), custr_cstr(i2->ivec_name)) != 0)
 		return (B_FALSE);
 	return (B_TRUE);
-#else
-	return (B_FALSE);
-#endif
 }
+#endif
 
 #if 0
 static int
@@ -535,8 +538,8 @@ getstat_tooslow(stats_t *stp, uint_t interval, double tooslow)
 	    "spent %.1f%% of the polling interval collecting stats "
 	    "(max: %.1f%%)", portion * 100.0, tooslow * 100.0);
 
-	(void) printf("spent %ss %.1f%% of the polling interval collecting stats "
-	    "(max: %.1f%%)\n", numbuf, portion * 100.0, tooslow * 100.0);
+	(void) printf("spent %ss %.1f%% of the polling interval collecting "
+	    "stats (max: %.1f%%)\n", numbuf, portion * 100.0, tooslow * 100.0);
 
 	return ((portion < tooslow) ? B_FALSE : B_TRUE);
 }
@@ -544,8 +547,8 @@ getstat_tooslow(stats_t *stp, uint_t interval, double tooslow)
 static inline boolean_t
 uint64_add(uint64_t a, uint64_t b, uint64_t *res)
 {
-#if 0
-	if (__builtin_uaddll_overflow(a, b, res))
+#ifdef HAS_ADD_OVERFLOW
+	if (__builtin_uaddl_overflow(a, b, res))
 		return (B_TRUE);
 #else
 	*res = a + b;
@@ -750,7 +753,15 @@ stats_sum(stats_t * const *restrict deltas, size_t n, size_t *restrict total)
 			stats_free(sum);
 			return (NULL);
 		}
+
+		/*
+		 * We want to return the total, but GCC currently flags this
+		 * as an unused variable error.
+		 */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-value"
 		*total++;
+#pragma GCC diagnostic pop
 	}
 
 	return (sum);
@@ -841,7 +852,7 @@ stats_dump(const stats_t *stp)
 	nanonicenum(stp->sts_maxtime - stp->sts_mintime, timebuf,
 	    sizeof (timebuf));
 	(void) printf("Interval: %ss\n", timebuf);
-	cpu_iter((stats_t *)stp, stats_dump_cb, NULL);
+	(void) cpu_iter((stats_t *)stp, stats_dump_cb, NULL);
 	(void) fputc('\n', stdout);
 }
 
