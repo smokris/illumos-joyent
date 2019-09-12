@@ -10,8 +10,9 @@
  */
 
 /*
- * Copyright 2018, Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  */
+
 #define __EXTENSIONS__
 
 #include <err.h>
@@ -39,8 +40,8 @@
 
 #include "intrd.h"
 
-#if 0
 static int intrd_daemonize(void);
+#if 0
 static void intrd_dfatal(int, const char *, ...);
 #endif
 
@@ -53,6 +54,8 @@ uint_t cfg_retry_interval = 1;
 uint_t cfg_idle_interval = 45;
 
 uint_t max_cpu;
+
+extern const char *__progname;
 
 #ifdef DEBUG
 const char *
@@ -75,6 +78,16 @@ nomem(void)
 	return (UMEM_CALLBACK_EXIT(255));
 }
 
+static void __NORETURN
+usage(void)
+{
+	(void) fprintf(stderr,
+	    "Usage: %s [-d]\n"
+	    "\t-d don't fork in the background\n",
+	    __progname);
+	exit(EXIT_FAILURE);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -87,23 +100,35 @@ main(int argc, char **argv)
 		.cfg_statslen = 120,
 		.cfg_tooslow = 0.05
 	};
-#if 0
+	int c;
+	boolean_t opt_d = B_FALSE;
+
+	while ((c = getopt(argc, argv, "d")) != -1) {
+		switch (c) {
+		case 'd':
+			opt_d = B_TRUE;
+			break;
+		case '?':
+			(void) fprintf(stderr, "Unrecognized option -%c\n",
+			    optopt);
+			usage();
+		}
+	}
+
 	int dfd, status;
-#endif
 
 	umem_nofail_callback(nomem);
 
-#if 0
-	dfd = intrd_daemonize();
-#endif
+	if (!opt_d)
+		dfd = intrd_daemonize();
 
 	setup(&kcp, &cfg);
 
-#if 0
-	status = 0;
-	(void) write(dfd, &status, sizeof (status));
-	(void) close(dfd);
-#endif
+	if (!opt_d) {
+		status = 0;
+		(void) write(dfd, &status, sizeof (status));
+		(void) close(dfd);
+	}
 
 	loop(&cfg, kcp);
 
@@ -111,7 +136,6 @@ main(int argc, char **argv)
 	return (0);
 }
 
-#if 0
 static int
 intrd_daemonize(void)
 {
@@ -193,7 +217,6 @@ intrd_daemonize(void)
 
 	return (pfds[1]);
 }
-#endif
 
 static void
 setup(kstat_ctl_t **restrict kcpp, config_t *restrict cfg)

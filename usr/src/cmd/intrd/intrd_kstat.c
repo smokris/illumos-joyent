@@ -272,6 +272,14 @@ consolidate_ivec_cb(stats_t *stp, cpustat_t *cs, void *arg)
 			if (!ivec_shared_intr(iv, ivnext))
 				break;
 
+			(void) printf("combining:\n"
+			    "    %s %s %llu\n"
+			    "    %s %s %llu\n\n",
+			    custr_cstr(iv->ivec_name), iv->ivec_buspath,
+			    iv->ivec_ino,
+			    custr_cstr(ivnext->ivec_name), ivnext->ivec_buspath,
+			    ivnext->ivec_ino);
+
 			iv->ivec_nshared++;
 			iv->ivec_time += ivnext->ivec_time;
 			VERIFY0(custr_appendc(iv->ivec_name, '/'));
@@ -279,6 +287,7 @@ consolidate_ivec_cb(stats_t *stp, cpustat_t *cs, void *arg)
 			    custr_cstr(ivnext->ivec_name)));
 
 			list_remove(ivlist, ivnext);
+			cs->cs_nivecs--;
 			ivec_free(ivnext);
 		}
 	}
@@ -295,19 +304,12 @@ consolidate_ivecs(stats_t *stp)
 static boolean_t
 ivec_shared_intr(const ivec_t *i1, const ivec_t *i2)
 {
-	/*
-	 * XXX This needs to be revisited
-	 */
-#if 0
 	if (i1->ivec_ino != i2->ivec_ino)
 		return (B_FALSE);
 	if (strcmp(i1->ivec_buspath, i2->ivec_buspath) != 0)
 		return (B_FALSE);
 
 	return (B_TRUE);
-#else
-	return (B_FALSE);
-#endif
 }
 
 #if 0
