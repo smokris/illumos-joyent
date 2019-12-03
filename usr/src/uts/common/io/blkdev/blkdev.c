@@ -25,6 +25,7 @@
  * Copyright 2016 Nexenta Systems, Inc.  All rights reserved.
  * Copyright 2017 The MathWorks, Inc.  All rights reserved.
  * Copyright 2019 Western Digital Corporation.
+ * Copyright 2019 Joyent, Inc.
  */
 
 #include <sys/types.h>
@@ -44,6 +45,7 @@
 #include <sys/list.h>
 #include <sys/sysmacros.h>
 #include <sys/dkio.h>
+#include <sys/dkioc_free_util.h>
 #include <sys/vtoc.h>
 #include <sys/scsi/scsi.h>	/* for DTYPE_DIRECT */
 #include <sys/kstat.h>
@@ -94,6 +96,7 @@
  *
  * o_write:	 Write data as described by bd_xfer_t argument.
  *
+ * o_free_space: Free the space described by bd_xfer_t argument (optional).
  *
  * Queues
  * ------
@@ -219,7 +222,10 @@ struct bd_queue {
 #define	i_blkno		i_public.x_blkno
 #define	i_flags		i_public.x_flags
 #define	i_qnum		i_public.x_qnum
+#define	i_dfl		i_public.x_dfl
 
+#define	CAN_FREESPACE(bd) \
+	(((bd)->d_ops.o_free_space == NULL) ? B_FALSE : B_TRUE)
 
 /*
  * Private prototypes.
@@ -259,6 +265,7 @@ static void bd_update_state(bd_t *);
 static int bd_check_state(bd_t *, enum dkio_state *);
 static int bd_flush_write_cache(bd_t *, struct dk_callback *);
 static int bd_check_uio(dev_t, struct uio *);
+static int bd_free_space(bd_t *, dkioc_free_list_t *);
 
 struct cmlb_tg_ops bd_tg_ops = {
 	TG_DK_OPS_VERSION_1,
@@ -999,6 +1006,10 @@ bd_xfer_free(bd_xfer_impl_t *xi)
 	if (xi->i_dmah) {
 		(void) ddi_dma_unbind_handle(xi->i_dmah);
 	}
+	if (xi->i_dfl != NULL) {
+		dfl_free(xi->i_dfl);
+		xi->i_dfl = NULL;
+	}
 	kmem_cache_free(xi->i_bd->d_cache, xi);
 }
 
@@ -1527,6 +1538,35 @@ bd_ioctl(dev_t dev, int cmd, intptr_t arg, int flag, cred_t *credp, int *rvalp)
 		rv = bd_flush_write_cache(bd, dkc);
 		return (rv);
 	}
+	case DKIOCFREE: {
+		dkioc_free_list_t *dfl = NULL;
+
+		/*
+		 * Check free space support early to avoid copyin/allocation
+		 * when unnecessary.
+		 */
+		if (!CAN_FREESPACE(bd))
+			return (ENOTSUP);
+
+		rv = dfl_copyin(ptr, &dfl, flag, KM_SLEEP);
+		if (rv != 0)
+			return (rv);
+
+		/* bd_xfer_done() frees dfl via bd_xfer_free() */
+		rv = bd_free_space(bd, dfl);
+		return (rv);
+	}
+
+	case DKIOC_CANFREE: {
+		boolean_t supported = CAN_FREESPACE(bd);
+
+		if (ddi_copyout(&supported, (void *)arg, sizeof (supported),
+		    flag) != 0) {
+			return (EFAULT);
+		}
+
+		return (0);
+	}
 
 	default:
 		break;
@@ -1920,6 +1960,45 @@ bd_flush_write_cache(bd_t *bd, struct dk_callback *dkc)
 	return (rv);
 }
 
+static int
+bd_free_space_done(struct buf *bp)
+{
+	freerbuf(bp);
+	return (0);
+}
+
+static int
+bd_free_space(bd_t *bd, dkioc_free_list_t *dfl)
+{
+	buf_t			*bp = NULL;
+	bd_xfer_impl_t		*xi = NULL;
+	int			rv = 0;
+	boolean_t		sync = (dfl->dfl_flags & DF_WAIT_SYNC) != 0 ?
+	    B_TRUE : B_FALSE;
+
+	bp = getrbuf(KM_SLEEP);
+	bp->b_resid = 0;
+	bp->b_bcount = 0;
+	bp->b_lblkno = 0;
+
+	xi = bd_xfer_alloc(bd, bp, bd->d_ops.o_free_space, KM_SLEEP);
+	xi->i_dfl = dfl;
+
+	if (!sync) {
+		bp->b_iodone = bd_free_space_done;
+		bd_submit(bd, xi);
+		return (0);
+	}
+
+	bd_submit(bd, xi);
+
+	(void) biowait(bp);
+	rv = geterror(bp);
+	freerbuf(bp);
+
+	return (rv);
+}
+
 /*
  * Nexus support.
  */
@@ -1968,6 +2047,7 @@ bd_alloc_handle(void *private, bd_ops_t *ops, ddi_dma_attr_t *dma, int kmflag)
 	 */
 	switch (ops->o_version) {
 	case BD_OPS_VERSION_0:
+	case BD_OPS_VERSION_1:
 	case BD_OPS_CURRENT_VERSION:
 		break;
 
@@ -1976,11 +2056,29 @@ bd_alloc_handle(void *private, bd_ops_t *ops, ddi_dma_attr_t *dma, int kmflag)
 	}
 
 	hdl = kmem_zalloc(sizeof (*hdl), kmflag);
-	if (hdl != NULL) {
-		hdl->h_ops = *ops;
-		hdl->h_dma = dma;
-		hdl->h_private = private;
+	if (hdl == NULL) {
+		return (NULL);
 	}
+
+	/* XXX: handle older versions */
+
+	switch (ops->o_version) {
+	case BD_OPS_CURRENT_VERSION:
+		hdl->h_ops.o_free_space = ops->o_free_space;
+		/*FALLTHRU*/
+	case BD_OPS_VERSION_1:
+	case BD_OPS_VERSION_0:
+		hdl->h_ops.o_drive_info = ops->o_drive_info;
+		hdl->h_ops.o_media_info = ops->o_media_info;
+		hdl->h_ops.o_devid_init = ops->o_devid_init;
+		hdl->h_ops.o_sync_cache = ops->o_sync_cache;
+		hdl->h_ops.o_read = ops->o_read;
+		hdl->h_ops.o_write = ops->o_write;
+		break;
+	}
+
+	hdl->h_dma = dma;
+	hdl->h_private = private;
 
 	return (hdl);
 }

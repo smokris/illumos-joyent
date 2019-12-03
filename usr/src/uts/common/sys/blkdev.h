@@ -23,6 +23,7 @@
  * Copyright 2016 Nexenta Systems, Inc.  All rights reserved.
  * Copyright (c) 2009, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright 2019 Western Digital Corporation.
+ * Copyright 2019 Joyent, Inc.
  */
 
 #ifndef	_SYS_BLKDEV_H
@@ -81,6 +82,7 @@ typedef struct bd_drive bd_drive_t;
 typedef struct bd_media bd_media_t;
 typedef struct bd_ops bd_ops_t;
 
+struct dkioc_free_list_s;
 
 struct bd_xfer {
 	/*
@@ -95,6 +97,7 @@ struct bd_xfer {
 	caddr_t			x_kaddr;
 	unsigned		x_flags;
 	unsigned		x_qnum;
+	struct dkioc_free_list_s *x_dfl;
 };
 
 #define	BD_XFER_POLL		(1U << 0)	/* no interrupts (dump) */
@@ -153,6 +156,7 @@ struct bd_media {
  */
 typedef enum {
 	BD_OPS_VERSION_0 = 0,
+	BD_OPS_VERSION_1 = 1,
 	BD_OPS_CURRENT_VERSION
 } bd_version_t;
 
@@ -164,6 +168,7 @@ struct bd_ops {
 	int		(*o_sync_cache)(void *, bd_xfer_t *);
 	int		(*o_read)(void *, bd_xfer_t *);
 	int		(*o_write)(void *, bd_xfer_t *);
+	int		(*o_free_space)(void *, bd_xfer_t *);
 };
 
 struct bd_errstats {

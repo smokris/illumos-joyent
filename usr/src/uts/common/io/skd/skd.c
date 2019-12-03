@@ -23,7 +23,7 @@
 /*
  * Copyright 2013 STEC, Inc.  All rights reserved.
  * Copyright 2015 Nexenta Systems, Inc.  All rights reserved.
- * Copyright (c) 2018, Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  * Copyright 2019 Western Digital Corporation.
  */
 
@@ -137,6 +137,7 @@ static bd_ops_t skd_bd_ops = {
 	NULL,			/* sync_cache */
 	skd_bd_read,
 	skd_bd_write,
+	NULL			/* free_space */
 };
 
 static ddi_device_acc_attr_t	dev_acc_attr = {

@@ -933,6 +933,7 @@ vioblk_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 		.o_sync_cache =		vioblk_bd_flush,
 		.o_read =		vioblk_bd_read,
 		.o_write =		vioblk_bd_write,
+		.o_free_space = 	NULL,
 	};
 	if (!virtio_feature_present(vio, VIRTIO_BLK_F_FLUSH)) {
 		vioblk_bd_ops.o_sync_cache = NULL;
