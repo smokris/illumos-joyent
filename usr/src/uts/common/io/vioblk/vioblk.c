@@ -87,6 +87,7 @@
 #include <sys/containerof.h>
 #include <sys/ctype.h>
 #include <sys/sysmacros.h>
+#include <sys/dkioc_free_util.h>
 
 #include "virtio.h"
 #include "vioblk.h"
@@ -612,6 +613,105 @@ vioblk_bd_devid(void *arg, dev_info_t *dip, ddi_devid_t *devid)
 	    devid));
 }
 
+struct vioblk_freesp_arg {
+	vioblk_t	*vfpa_vioblk;
+	bd_xfer_t	*vfpa_xfer;
+};
+
+static int
+vioblk_free_exts(const dkioc_free_list_ext_t *exts, size_t n_exts,
+    boolean_t last, void *arg)
+{
+	struct vioblk_freesp_arg *args = arg;
+	vioblk_t *vib = args->vfpa_vioblk;
+	virtio_dma_t *dma = NULL;
+	virtio_chain_t *vic = NULL;
+	vioblk_req_t *vbr = NULL;
+	struct vioblk_discard_write_zeroes *wzp = NULL;
+	size_t i;
+	int r = 0;
+
+	dma = virtio_dma_alloc(vib->vib_virtio, n_exts * sizeof (*wzp),
+	    &vioblk_dma_attr, DDI_DMA_CONSISTENT | DDI_DMA_WRITE, KM_SLEEP);
+	if (dma == NULL)
+		return (ENOMEM);
+
+	wzp = virtio_dma_va(dma, 0);
+
+	for (i = 0; i < n_exts; i++, exts++, wzp++) {
+		struct vioblk_discard_write_zeroes vdwz = {
+			.vdwz_sector = exts->dfle_start,
+			.vdwz_num_sectors = exts->dfle_length,
+		};
+
+		bcopy(&vdwz, wzp, sizeof (*wzp));
+	}
+
+	mutex_enter(&vib->vib_mutex);
+
+	vic = vioblk_common_start(vib, VIRTIO_BLK_T_DISCARD, 0, B_FALSE);
+	if (vic == NULL) {
+		mutex_exit(&vib->vib_mutex);
+		virtio_dma_free(dma);
+		return (ENOMEM);
+	}
+
+	vbr = virtio_chain_data(vic);
+	if (virtio_chain_append(vic,
+	    virtio_dma_cookie_pa(dma, 0),
+	    virtio_dma_cookie_size(dma, 0),
+	    VIRTIO_DIR_DEVICE_READS) != DDI_SUCCESS) {
+		vioblk_req_free(vib, vbr);
+		virtio_chain_free(vic);
+		mutex_exit(&vib->vib_mutex);
+		return (ENOMEM);
+	}
+
+	if (last) {
+		/*
+		 * We attach xfer to the final vioblk request we submit.
+		 * This will allow the vioblk_complete() to handle any
+		 * notifications (e.g. a synchronous request) and
+		 * dispose of xfer afterwards.
+		 */
+		vbr->vbr_xfer = args->vfpa_xfer;
+		args->vfpa_xfer = NULL;
+	}
+
+	r = vioblk_common_submit(vib, vic);
+	mutex_exit(&vib->vib_mutex);
+	return (r);
+}
+
+static int
+vioblk_bd_free_space(void *arg, bd_xfer_t *xfer)
+{
+	vioblk_t *vib = arg;
+	dkioc_free_align_t align = {
+		.dfa_bsize = DEV_BSIZE,
+		.dfa_max_ext = vib->vib_max_discard_seg,
+		.dfa_max_blocks = vib->vib_max_discard_sectors,
+		.dfa_align = vib->vib_discard_sector_align
+	};
+	struct vioblk_freesp_arg sp_arg = {
+		.vfpa_vioblk = vib,
+		.vfpa_xfer = xfer
+	};
+	int r = dfl_iter(xfer->x_dfl, &align, vioblk_free_exts, &sp_arg,
+	    KM_SLEEP, 0);
+
+	/*
+	 * If we didn't include xfer as part of the final request, we
+	 * need to clean it up now.
+	 */
+	if (sp_arg.vfpa_xfer != NULL) {
+		VERIFY3S(r, !=, 0);
+		bd_xfer_done(sp_arg.vfpa_xfer, r);
+	}
+
+	return (r);
+}
+
 /*
  * As the device completes processing of a request, it returns the chain for
  * that request to our I/O queue.  This routine is called in two contexts:
@@ -804,6 +904,15 @@ vioblk_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 		}
 	}
 
+	if (virtio_feature_present(vio, VIRTIO_BLK_F_DISCARD)) {
+		vib->vib_max_discard_sectors = virtio_dev_get32(vio,
+		    VIRTIO_BLK_CONFIG_MAX_DISCARD_SECT);
+		vib->vib_max_discard_seg = virtio_dev_get32(vio,
+		    VIRTIO_BLK_CONFIG_MAX_DISCARD_SEG);
+		vib->vib_discard_sector_align = virtio_dev_get32(vio,
+		    VIRTIO_BLK_CONFIG_DISCARD_ALIGN);
+	}
+
 	/*
 	 * When allocating the request queue, we include two additional
 	 * descriptors (beyond those required for request data) to account for
@@ -933,10 +1042,13 @@ vioblk_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 		.o_sync_cache =		vioblk_bd_flush,
 		.o_read =		vioblk_bd_read,
 		.o_write =		vioblk_bd_write,
-		.o_free_space = 	NULL,
+		.o_free_space = 	vioblk_bd_free_space,
 	};
 	if (!virtio_feature_present(vio, VIRTIO_BLK_F_FLUSH)) {
 		vioblk_bd_ops.o_sync_cache = NULL;
+	}
+	if (!virtio_feature_present(vio, VIRTIO_BLK_F_DISCARD)) {
+		vioblk_bd_ops.o_free_space = NULL;
 	}
 
 	vib->vib_bd_h = bd_alloc_handle(vib, &vioblk_bd_ops,
