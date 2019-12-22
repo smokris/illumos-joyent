@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2018 Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  */
 
 /*
@@ -277,7 +277,10 @@ periodic_fire(periodic_handle_t *perh)
 			refhash_remove(perh->ph_refhash, p);
 		} else if ((p->peri_flags & PERIODIC_F_DESTROY) == 0) {
 			VERIFY3S((p->peri_flags & PERIODIC_F_ONESHOT), ==, 0);
-			VERIFY(LLONG_MAX - p->peri_expire > p->peri_value);
+#ifndef __CHECKER__
+			VERIFY3S(p->peri_expire, >, 0);
+			VERIFY3S(LLONG_MAX - p->peri_expire, >, p->peri_value);
+#endif
 			p->peri_expire += p->peri_value;
 			avl_add(&perh->ph_tree, p);
 		} else {
