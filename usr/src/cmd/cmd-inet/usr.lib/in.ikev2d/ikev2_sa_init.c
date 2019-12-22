@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright (c) 2017 Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  */
 
 #include <bunyan.h>
@@ -367,7 +367,7 @@ ikev2_sa_init_init_resp(ikev2_sa_t *restrict sa, pkt_t *restrict pkt,
 	ikev2_save_nonce(sa_args, pkt);
 
 	/* And the responder IKE_SA_INIT packet */
-	ikev2_save_init_pkt(sa_args, pkt);
+	(void) ikev2_save_init_pkt(sa_args, pkt);
 
 	/*
 	 * The generated keys use the initiator/responder SPI values from

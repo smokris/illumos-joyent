@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2018, Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  */
 
 #include <bunyan.h>
@@ -394,7 +394,7 @@ worker_log_lifetime(boolean_t start)
 	if (worker_state != WS_RUNNING && worker_state != WS_QUITTING)
 		level = BUNYAN_L_INFO;
 
-	getlog(level)(log, msg, BUNYAN_T_END);
+	(void) getlog(level)(log, msg, BUNYAN_T_END);
 }
 
 static void *

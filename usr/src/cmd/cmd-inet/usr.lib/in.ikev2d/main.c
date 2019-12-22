@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright (c) 2017, Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  */
 
 #include <bunyan.h>
@@ -148,7 +148,7 @@ nofail_cb(void)
 	 * checks -- e.g. that we're not allowing a remote peer to get us
 	 * to allocate 1Tb of ram, etc.).
 	 */
-	assfail("Out of memory", __FILE__, __LINE__);
+	(void) assfail("Out of memory", __FILE__, __LINE__);
 	/*NOTREACHED*/
 	return (UMEM_CALLBACK_EXIT(EXIT_FAILURE));
 }

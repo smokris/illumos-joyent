@@ -24,7 +24,7 @@
  * Use is subject to license terms.
  *
  * Copyright 2017 Jason King.
- * Copyright (c) 2017, Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  */
 #include <arpa/inet.h>
 #include <atomic.h>
@@ -1675,7 +1675,7 @@ sadb_log(bunyan_level_t level, const char *restrict msg,
 		ext = (sadb_ext_t *)((uint64_t *)ext + ext->sadb_ext_len);
 	}
 
-	logf(log, msg,
+	(void) logf(log, msg,
 	    BUNYAN_T_STRING, "msg_type",
 	    pfkey_op_str(samsg->sadb_msg_type),
 	    BUNYAN_T_STRING, "sa_type",

@@ -24,7 +24,7 @@
  * Use is subject to license terms.
  *
  * Copyright 2017 Jason King.
- * Copyright (c) 2017, Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  */
 
 /*
@@ -1264,7 +1264,7 @@ i2sa_rspi_cmp(const void *larg, const void *rarg)
 
 	if (ni_l_len < ni_r_len)
 		return (-1);
-	if (ni_r_len > ni_r_len)
+	if (ni_l_len > ni_r_len)
 		return (1);
 	return (0);
 }

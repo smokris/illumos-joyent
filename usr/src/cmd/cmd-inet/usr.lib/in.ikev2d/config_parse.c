@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2018, Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  */
 #include <arpa/inet.h>
 #include <bunyan.h>
@@ -850,8 +850,6 @@ parse_encrbits(input_cursor_t *restrict ic, config_xf_t *restrict xf)
 
 	if (!parse_int(t->t_str, &val))
 		goto invalid;
-	if (val > SIZE_MAX)
-		goto toobig;
 	xf->xf_minbits = (size_t)val;
 	tok_free(t);
 
@@ -870,8 +868,6 @@ parse_encrbits(input_cursor_t *restrict ic, config_xf_t *restrict xf)
 		goto truncated;
 	if (!parse_int(t->t_str, &val))
 		goto invalid;
-	if (val > SIZE_MAX)
-		goto toobig;
 	xf->xf_maxbits = val;
 
 	if (xf->xf_maxbits < xf->xf_minbits) {
@@ -907,15 +903,6 @@ unexpected:
 invalid:
 	(void) bunyan_error(log, "Invalid key bitlength",
 	    BUNYAN_T_STRING, "bitlength", t->t_str,
-	    BUNYAN_T_UINT32, "line", t->t_line,
-	    BUNYAN_T_UINT32, "col", t->t_col,
-	    BUNYAN_T_END);
-	tok_free(t);
-	return (B_FALSE);
-
-toobig:
-	(void) bunyan_error(log, "Keysize is too large",
-	    BUNYAN_T_UINT64, "keysize", val,
 	    BUNYAN_T_UINT32, "line", t->t_line,
 	    BUNYAN_T_UINT32, "col", t->t_col,
 	    BUNYAN_T_END);
@@ -1539,7 +1526,7 @@ tok_log(const token_t *restrict t, bunyan_level_t level, const char *msg,
 
 	(void) strlcpy(linecpy, t->t_linep, len);
 
-	getlog(level)(log, msg,
+	(void) getlog(level)(log, msg,
 	    BUNYAN_T_STRING, "line", linecpy,
 	    BUNYAN_T_UINT32, "lineno", t->t_line + 1,
 	    BUNYAN_T_UINT32, "col", t->t_col + 1,

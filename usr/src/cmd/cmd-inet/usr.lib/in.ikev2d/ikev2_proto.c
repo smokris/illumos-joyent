@@ -24,12 +24,12 @@
  * Use is subject to license terms.
  *
  * Copyright 2017 Jason King.
- * Copyright 2018, Joyent, Inc
+ * Copyright 2019 Joyent, Inc
  */
 
 #include <errno.h>
 #include <ipsec_util.h>
-#include <libcmdutils.h>
+#include <libcustr.h>
 #include <libperiodic.h>
 #include <note.h>
 #include <string.h>

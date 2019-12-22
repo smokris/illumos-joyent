@@ -11,7 +11,7 @@
 
 /*
  * Copyright 2017 Jason King.
- * Copyright 2018 Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  */
 #include <stddef.h>
 #include <assert.h>
@@ -143,7 +143,7 @@ pkt_check_payloads(uint8_t first, const uint8_t *buf, size_t buflen,
 			    BUNYAN_T_UINT32, "paytype", (uint32_t)type,
 			    BUNYAN_T_UINT32, "paylen", (uint32_t)paylen,
 			    BUNYAN_T_END);
-				return (B_FALSE);
+			return (B_FALSE);
 		}
 
 		if (!cb(type, ptr + sizeof (*pay), paylen - sizeof (*pay)))

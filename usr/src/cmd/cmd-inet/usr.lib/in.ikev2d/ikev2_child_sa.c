@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2018 Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  */
 
 #include <ipsec_util.h>
@@ -783,8 +783,8 @@ remote_fail:
 		pfkey_send_error(pmsg->pmsg_samsg, EINVAL);
 }
 
-static void ikev2_hard_expire_reply(ikev2_sa_t *restrict, pkt_t *restrict,
-    void *restrict);
+// XXX static void ikev2_hard_expire_reply(ikev2_sa_t *restrict, pkt_t *restrict,
+// XXX    void *restrict);
 
 void
 ikev2_hard_expire(ikev2_sa_t *restrict i2sa, parsedmsg_t *pmsg)
@@ -2101,7 +2101,7 @@ ikev2_get_rekey_csa(ikev2_sa_t *restrict i2sa, pkt_t *restrict req,
     pkt_t *restrict resp, ikev2_child_sa_t *restrict *csap)
 {
 	pkt_notify_t *rekey_n = pkt_get_notify(req, IKEV2_N_REKEY_SA, NULL);
-	uint8_t *spiptr = rekey_n->pn_ptr;
+	// XXX: uint8_t *spiptr = rekey_n->pn_ptr;
 	uint32_t spi = 0;
 
 	VERIFY(!I2P_RESPONSE(req));

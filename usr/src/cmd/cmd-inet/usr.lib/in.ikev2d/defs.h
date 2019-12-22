@@ -24,7 +24,7 @@
  * Use is subject to license terms.
  *
  * Copyright 2017 Jason King.
- * Copyright (c) 2017, Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  */
 
 #ifndef _DEFS_H
@@ -136,7 +136,8 @@ typedef struct algindex {
 
 #define	SSTOSA(ss) ((struct sockaddr *)(ss))
 
-#define	INVALID(var) assfail("Invalid value of " # var, __FILE__, __LINE__)
+#define	INVALID(var) \
+    (void) assfail("Invalid value of " # var, __FILE__, __LINE__)
 
 #ifndef ARRAY_SIZE
 #define	ARRAY_SIZE(x) (sizeof (x) / sizeof (x[0]))

@@ -11,7 +11,7 @@
 
 /*
  * Copyright 2017 Jason King.
- * Copyright 2018, Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  */
 
 #include <stddef.h>
@@ -21,7 +21,7 @@
 #include <string.h>
 #include <strings.h>
 #include <errno.h>
-#include <libcmdutils.h> /* for custr_ */
+#include <libcustr.h>
 #include <netinet/in.h>
 #include <security/cryptoki.h>
 #include <errno.h>
@@ -1275,7 +1275,7 @@ ikev2_pkt_log(pkt_t *restrict pkt, bunyan_level_t level, const char *msg)
 		(void) strlcat(flag, ">", sizeof (flag));
 	}
 
-	getlog(level)(log, msg,
+	(void) getlog(level)(log, msg,
 	    BUNYAN_T_POINTER, "pkt", pkt,
 	    BUNYAN_T_STRING, "initiator_spi", ispi,
 	    BUNYAN_T_STRING, "responder_spi", rspi,

@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2018, Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  */
 
 #include <sys/stat.h>
@@ -36,7 +36,7 @@ send_error(ike_svccmd_t cmd, uint32_t ike_err, uint32_t unix_err)
 		.ike_err_unix = unix_err
 	};
 
-	door_return((char *)&ierr, sizeof (ierr), NULL, 0);
+	(void) door_return((char *)&ierr, sizeof (ierr), NULL, 0);
 }
 
 static void
@@ -108,6 +108,9 @@ ikev2_door_init(const char *path)
 	oldmask = umask(0);
 	fd = open(path, O_RDWR | O_CREAT | O_EXCL, 0644);
 	(void) umask(oldmask);
+
+	if (fd >= 0)
+		(void) close(fd);
 
 	if (fattach(door_fd, path) < 0) {
 		if ((errno != EBUSY) || fdetach(path) < 0 ||
