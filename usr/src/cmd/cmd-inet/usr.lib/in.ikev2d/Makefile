@@ -23,7 +23,7 @@
 # Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
 # Use is subject to license terms.
 #
-# Copyright 2018, Joyent, Inc.
+# Copyright 2019 Joyent, Inc.
 #
 
 PROG= in.ikev2d
@@ -62,22 +62,19 @@ include $(SRC)/cmd/Makefile.cmd
 include $(SRC)/cmd/Makefile.cmd.64
 include $(SRC)/cmd/Makefile.ctf
 
-# Lint doesn't like ## __VA_ARGS__ macros
-LINTFLAGS += $(C99LMODE) -D_XOPEN_SOURCE=600 -erroff=E_ARGUMENT_MISMATCH
-
 CSTD = $(CSTD_GNU99)
 CFLAGS += $(CCVERBOSE)
-CPPFLAGS += -D_REENTRANT -D_POSIX_PTHREAD_SEMANTICS -D__EXTENSIONS__
 
-# Use X/Open sockets for fromto.c so we can use control messages for
-# source address selection
-fromto.o :=	CPPFLAGS += -D_XOPEN_SOURCE=600
-
-# ... but as a consequence, you have to disable a few lint checks.
-LINTFLAGS += -erroff=E_INSONS_ARG_DECL2 -errorr=E_INCONS_VAL_TYPE_DECL2
+# Use X/Open sockets so we can use control messages for source
+# address selection
+CPPFLAGS +=	-D_REENTRANT \
+		-D_POSIX_PTHREAD_SEMANTICS \
+		-D_XOPEN_SOURCE=600 \
+		-D__EXTENSIONS__ \
 
 LDLIBS += -lbunyan \
 	-lcmdutils \
+	-lcustr \
 	-lcryptoutil \
 	-linetutil \
 	-lipsecutil \
@@ -104,9 +101,6 @@ all:	$(PROG)
 
 clean:
 	-$(RM) $(CLEANFILES)
-
-# XXX: Disable lint for the moment
-lint: #lint_SRCS
 
 $(PROG): $(OBJS)
 	$(LINK.c) -o $@ $(OBJS) $(LDLIBS)

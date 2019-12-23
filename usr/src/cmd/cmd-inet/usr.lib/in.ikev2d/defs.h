@@ -194,21 +194,13 @@ extern uint32_t category;
 /* END CSTYLED */
 
 
-#ifdef lint
 /*
- * Currently, we cannot have both __EXTENSIONS__ and XTI sockets enabled
- * (sigh...).  We need XTI sockets for fromto.c, but it also means we
- * have to use _B_{TRUE,FALSE} which is confusing (as everyone expects
- * B_{TRUE,FALSE}.
- *
- * We fix this during build by only defining XOPEN_SOURCE=600
- * when building fromto.c, however that makes our old friend lint quite irate.
- * So we pull the wool over lints eyes to make it happy.  We do this here
- * since everything pulls this file in.
+ * We want XTI sockets, which requires setting _XOPEN_SOURCE, but then
+ * we get the annoying _B_TRUE and _B_FALSE versions of boolean_t,
+ * so we define the more traditional values here.
  */
 #define	B_TRUE _B_TRUE
 #define	B_FALSE _B_FALSE
-#endif
 
 typedef enum event {
 	EVENT_NONE,
