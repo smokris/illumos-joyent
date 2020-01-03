@@ -205,7 +205,7 @@ main(int argc, char **argv)
 		switch (c) {
 		case 'd':
 			debug_mode = B_TRUE;
-			log_level = BUNYAN_L_DEBUG;
+			//log_level = BUNYAN_L_DEBUG;
 			break;
 		case 'c':
 			check_cfg = B_TRUE;

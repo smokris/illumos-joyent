@@ -1804,7 +1804,10 @@ get_resp_policy(pkt_t *restrict pkt, boolean_t transport_mode,
 	VERIFY(!I2P_RESPONSE(pkt));
 
 	ts_first(ts_ip, &ts_i);
+	ts_log(log, BUNYAN_L_TRACE, "Found TSi", &ts_i);
+
 	ts_first(ts_rp, &ts_r);
+	ts_log(log, BUNYAN_L_TRACE, "Found TSr", &ts_r);
 
 	if (transport_mode) {
 		if (pfkey_inverse_acquire(&ts_r, &ts_i, NULL, NULL,
