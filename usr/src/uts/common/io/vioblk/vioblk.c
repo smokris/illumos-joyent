@@ -92,7 +92,6 @@
 #include "virtio.h"
 #include "vioblk.h"
 
-
 static void vioblk_get_id(vioblk_t *);
 uint_t vioblk_int_handler(caddr_t, caddr_t);
 static uint_t vioblk_poll(vioblk_t *);
@@ -640,8 +639,8 @@ vioblk_free_exts(const dkioc_free_list_ext_t *exts, size_t n_exts,
 
 	for (i = 0; i < n_exts; i++, exts++, wzp++) {
 		struct vioblk_discard_write_zeroes vdwz = {
-			.vdwz_sector = exts->dfle_start,
-			.vdwz_num_sectors = exts->dfle_length,
+			.vdwz_sector = exts->dfle_start >> DEV_BSHIFT,
+			.vdwz_num_sectors = exts->dfle_length >> DEV_BSHIFT,
 		};
 
 		bcopy(&vdwz, wzp, sizeof (*wzp));

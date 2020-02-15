@@ -11,7 +11,7 @@
 
 /*
  * Copyright 2017 Nexenta Inc.  All rights reserved.
- * Copyright 2019 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 /* needed when building libzpool */
@@ -198,9 +198,11 @@ dfl_iter(const dkioc_free_list_t *dfl, const dkioc_free_align_t *dfa,
 	earg.ea_exts = exts;
 
 	/*
-	 * Run through all the extents, calling func as the limits for
-	 * each request are reached. The final request remains queued
-	 * when ext_iter() returns.
+	 * Iterate through all the extents. process_exts() will group the
+	 * exts into acceptable chunks for 'func' and then call 'func'
+	 * and increment earg.ea_exts. The final chunk of earg.ea_exts
+	 * will _not_ be processed when ext_iter returns, so we call
+	 * process_exts() on final time after ext_iter() returns.
 	 */
 	r = ext_iter(dfl, dfa, bshift, process_exts, &earg);
 	if (r != 0)
@@ -259,13 +261,13 @@ process_exts(const dkioc_free_list_ext_t *ext, boolean_t newreq, void *arg)
 }
 
 /*
- * Translate the byte offset and lengths in ext into block offsets and
- * lengths, with the offset aligned per dfla.
+ * Set *startp and *lengthp to the actual _byte_ offset and lengths
+ * after adjusting for dfl->dfl_offset, the starting alignment, and
+ * the block size requirements.
  */
 static int
 ext_xlate(const dkioc_free_list_t *dfl, const dkioc_free_list_ext_t *ext,
-    const dkioc_free_align_t *dfa, uint_t bshift, uint64_t *startp,
-    uint64_t *lengthp)
+    const dkioc_free_align_t *dfa, uint64_t *startp, uint64_t *lengthp)
 {
 	uint64_t start = dfl->dfl_offset + ext->dfle_start;
 	uint64_t end = start + ext->dfle_length;
@@ -275,8 +277,8 @@ ext_xlate(const dkioc_free_list_t *dfl, const dkioc_free_list_ext_t *ext,
 	if (end < start || end < ext->dfle_length)
 		return (SET_ERROR(EOVERFLOW));
 
-	start = P2ROUNDUP(start, dfa->dfa_align) >> bshift;
-	end = P2ALIGN(end, dfa->dfa_bsize) >> bshift;
+	start = P2ROUNDUP(start, dfa->dfa_align);
+	end = P2ALIGN(end, dfa->dfa_bsize);
 
 	*startp = start;
 	*lengthp = (end > start) ? end - start : 0;
@@ -303,7 +305,7 @@ ext_iter(const dkioc_free_list_t *dfl, const dkioc_free_align_t *dfa,
 		uint64_t start, length;
 		int r;
 
-		r = ext_xlate(dfl, ext, dfa, bshift, &start, &length);
+		r = ext_xlate(dfl, ext, dfa, &start, &length);
 		if (r != 0)
 			return (r);
 
@@ -312,6 +314,7 @@ ext_iter(const dkioc_free_list_t *dfl, const dkioc_free_align_t *dfa,
 				.dfle_start = start,
 				.dfle_length = length
 			};
+			uint64_t len_blk = length >> bshift;
 
 			if (dfa->dfa_max_ext > 0 &&
 			    n_exts + 1 > dfa->dfa_max_ext) {
@@ -326,7 +329,7 @@ ext_iter(const dkioc_free_list_t *dfl, const dkioc_free_align_t *dfa,
 			}
 
 			if (dfa->dfa_max_blocks > 0 &&
-			    n_blk + length > dfa->dfa_max_blocks) {
+			    n_blk + len_blk > dfa->dfa_max_blocks) {
 				/*
 				 * This extent puts us over the max # of
 				 * blocks in a request. If this isn't a
@@ -349,7 +352,7 @@ ext_iter(const dkioc_free_list_t *dfl, const dkioc_free_align_t *dfa,
 				 */
 				blk_ext.dfle_length =
 				    P2ALIGN(dfa->dfa_max_blocks,
-				    dfa->dfa_align >> bshift);
+				    dfa->dfa_align);
 			}
 
 			r = fn(&blk_ext, newreq, arg);
@@ -359,7 +362,7 @@ ext_iter(const dkioc_free_list_t *dfl, const dkioc_free_align_t *dfa,
 			newreq = B_FALSE;
 
 			n_exts++;
-			n_blk += blk_ext.dfle_length;
+			n_blk += len_blk;
 
 			length -= blk_ext.dfle_length;
 			start += blk_ext.dfle_length;
