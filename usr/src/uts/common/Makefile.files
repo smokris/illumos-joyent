@@ -129,6 +129,7 @@ GENUNIX_OBJS +=	\
 		cladm.o		\
 		class.o		\
 		clock.o		\
+		clock_cpu.o	\
 		clock_highres.o	\
 		clock_realtime.o\
 		close.o		\

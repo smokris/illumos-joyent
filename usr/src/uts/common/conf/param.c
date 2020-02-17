@@ -22,8 +22,8 @@
 /*
  * Copyright 2014 Nexenta Systems, Inc.  All rights reserved.
  * Copyright (c) 1983, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright 2017, Joyent, Inc.
  * Copyright 2012 Milan Jurik. All rights reserved.
+ * Copyright 2020, Joyent, Inc.
  */
 
 #include <sys/types.h>
@@ -220,6 +220,7 @@ extern void clock_timer_init(void);
 extern void clock_realtime_init(void);
 extern void clock_highres_init(void);
 extern void clock_tick_mp_init(void);
+extern void clock_cpu_init(void);
 extern void cu_init(void);
 extern void callout_mp_init(void);
 extern void cpu_seq_tbl_init(void);
@@ -247,6 +248,7 @@ void	(*init_tbl[])(void) = {
 	clock_timer_init,
 	clock_realtime_init,
 	clock_highres_init,
+	clock_cpu_init,
 	0
 };
 
