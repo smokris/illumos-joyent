@@ -111,11 +111,6 @@ SYSCTL_INT(_hw_vmm_svm, OID_AUTO, vmcb_clean, CTLFLAG_RDTUN, &vmcb_clean,
 static MALLOC_DEFINE(M_SVM, "svm", "svm");
 static MALLOC_DEFINE(M_SVM_VLAPIC, "svm-vlapic", "svm-vlapic");
 
-#ifdef __FreeBSD__
-/* Per-CPU context area. */
-extern struct pcpu __pcpu[];
-#endif
-
 static uint32_t svm_feature = ~0U;	/* AMD SVM features. */
 SYSCTL_UINT(_hw_vmm_svm, OID_AUTO, features, CTLFLAG_RDTUN, &svm_feature, 0,
     "SVM features advertised by CPUID.8000000AH:EDX");
@@ -2162,11 +2157,7 @@ svm_vmrun(void *arg, int vcpu, register_t rip, pmap_t pmap,
 		/* Launch Virtual Machine. */
 		VCPU_CTR1(vm, vcpu, "Resume execution at %#lx", state->rip);
 		svm_dr_enter_guest(gctx);
-#ifdef __FreeBSD__
 		svm_launch(vmcb_pa, gctx, get_pcpu());
-#else
-		svm_launch(vmcb_pa, gctx, CPU);
-#endif
 		svm_dr_leave_guest(gctx);
 
 		CPU_CLR_ATOMIC(curcpu, &pmap->pm_active);

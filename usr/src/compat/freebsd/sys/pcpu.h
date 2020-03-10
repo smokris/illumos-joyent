@@ -18,4 +18,6 @@
 
 #define	curcpu	(CPU->cpu_id)
 
+#define get_pcpu() CPU
+
 #endif	/* _COMPAT_FREEBSD_SYS_PCPU_H_ */
