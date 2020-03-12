@@ -22,7 +22,7 @@
  * Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright 2011 Nexenta Systems, Inc. All rights reserved.
  * Copyright (c) 2011, 2018 by Delphix. All rights reserved.
- * Copyright 2019 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 /* Portions Copyright 2010 Robert Milkowski */
@@ -1006,13 +1006,17 @@ abuf_find_cb(uintptr_t addr, const void *unknown, void *arg)
 	return (WALK_NEXT);
 }
 
+typedef struct mdb_arc_state {
+	uintptr_t	arcs_list[ARC_BUFC_NUMTYPES];
+} mdb_arc_state_t;
+
 /* ARGSUSED */
 static int
 abuf_find(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 {
 	abuf_find_data_t data;
 	GElf_Sym sym;
-	int i;
+	int i, j;
 	const char *syms[] = {
 		"ARC_mru",
 		"ARC_mru_ghost",
@@ -1042,14 +1046,30 @@ abuf_find(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 	}
 
 	for (i = 0; i < sizeof (syms) / sizeof (syms[0]); i++) {
+		mdb_arc_state_t mas;
+
 		if (mdb_lookup_by_obj(ZFS_OBJ_NAME, syms[i], &sym)) {
 			mdb_warn("can't find symbol %s", syms[i]);
 			return (DCMD_ERR);
 		}
 
-		if (mdb_pwalk("list", abuf_find_cb, &data, sym.st_value) != 0) {
-			mdb_warn("can't walk %s", syms[i]);
+		if (mdb_ctf_vread(&mas, "arc_state_t", "mdb_arc_state_t",
+		    sym.st_value, 0) != 0) {
+			mdb_warn("can't read arcs_list of %s", syms[i]);
 			return (DCMD_ERR);
+		}
+
+		for (j = 0; j < ARC_BUFC_NUMTYPES; j++) {
+			uintptr_t addr = mas.arcs_list[j];
+
+			if (addr == 0)
+				continue;
+
+			if (mdb_pwalk("multilist", abuf_find_cb, &data,
+			    addr) != 0) {
+				mdb_warn("can't walk %s", syms[i]);
+				return (DCMD_ERR);
+			}
 		}
 	}
 
@@ -2869,61 +2889,57 @@ typedef struct mdb_multilist {
 	uintptr_t ml_sublists;
 } mdb_multilist_t;
 
-typedef struct multilist_walk_data {
-	uint64_t mwd_idx;
-	mdb_multilist_t mwd_ml;
-} multilist_walk_data_t;
-
-/* ARGSUSED */
-static int
-multilist_print_cb(uintptr_t addr, const void *unknown, void *arg)
-{
-	mdb_printf("%#lr\n", addr);
-	return (WALK_NEXT);
-}
-
 static int
 multilist_walk_step(mdb_walk_state_t *wsp)
 {
-	multilist_walk_data_t *mwd = wsp->walk_data;
-
-	if (mwd->mwd_idx >= mwd->mwd_ml.ml_num_sublists)
-		return (WALK_DONE);
-
-	wsp->walk_addr = mwd->mwd_ml.ml_sublists +
-	    mdb_ctf_sizeof_by_name("multilist_sublist_t") * mwd->mwd_idx +
-	    mdb_ctf_offsetof_by_name("multilist_sublist_t", "mls_list");
-
-	mdb_pwalk("list", multilist_print_cb, (void*)NULL, wsp->walk_addr);
-	mwd->mwd_idx++;
-
-	return (WALK_NEXT);
+	return (wsp->walk_callback(wsp->walk_addr, wsp->walk_layer,
+	    wsp->walk_cbdata));
 }
 
 static int
 multilist_walk_init(mdb_walk_state_t *wsp)
 {
-	multilist_walk_data_t *mwd;
+	mdb_multilist_t ml;
+	ssize_t sublist_sz;
+	int list_offset;
+	size_t i;
 
 	if (wsp->walk_addr == 0) {
 		mdb_warn("must supply address of multilist_t\n");
 		return (WALK_ERR);
 	}
 
-	mwd = mdb_zalloc(sizeof (multilist_walk_data_t), UM_SLEEP | UM_GC);
-	if (mdb_ctf_vread(&mwd->mwd_ml, "multilist_t", "mdb_multilist_t",
+	if (mdb_ctf_vread(&ml, "multilist_t", "mdb_multilist_t",
 	    wsp->walk_addr, 0) == -1) {
 		return (WALK_ERR);
 	}
 
-	if (mwd->mwd_ml.ml_num_sublists == 0 ||
-	    mwd->mwd_ml.ml_sublists == 0) {
+	if (ml.ml_num_sublists == 0 || ml.ml_sublists == 0) {
 		mdb_warn("invalid or uninitialized multilist at %#lx\n",
 		    wsp->walk_addr);
 		return (WALK_ERR);
 	}
 
-	wsp->walk_data = mwd;
+	/* mdb_ctf_sizeof_by_name() will print an error for us */
+	sublist_sz = mdb_ctf_sizeof_by_name("multilist_sublist_t");
+	if (sublist_sz == -1)
+		return (WALK_ERR);
+
+	/* mdb_ctf_offsetof_by_name will print an error for us */
+	list_offset = mdb_ctf_offsetof_by_name("multilist_sublist_t",
+	    "mls_list");
+	if (list_offset == -1)
+		return (WALK_ERR);
+
+	for (i = 0; i < ml.ml_num_sublists; i++) {
+		wsp->walk_addr = ml.ml_sublists + i * sublist_sz + list_offset;
+
+		if (mdb_layered_walk("list", wsp) == -1) {
+			mdb_warn("can't walk multilist sublist");
+			return (WALK_ERR);
+		}
+	}
+
 	return (WALK_NEXT);
 }
 
@@ -4050,6 +4066,8 @@ typedef struct arc_compression_stats_data {
 	uint64_t *all_bufs;	/* histogram of buffer counts in all states  */
 	int arc_cflags;		/* arc compression flags, specified by user */
 	int hist_nbuckets;	/* number of buckets in each histogram */
+
+	ulong_t l1hdr_off;	/* offset of b_l1hdr in arc_buf_hdr_t */
 } arc_compression_stats_data_t;
 
 int
@@ -4085,13 +4103,51 @@ static int
 arc_compression_stats_cb(uintptr_t addr, const void *unknown, void *arg)
 {
 	arc_compression_stats_data_t *data = arg;
+	arc_flags_t flags;
 	mdb_arc_buf_hdr_t hdr;
 	int cbucket, ubucket, bufcnt;
 
-	if (mdb_ctf_vread(&hdr, "arc_buf_hdr_t", "mdb_arc_buf_hdr_t",
-	    addr, 0) == -1) {
+	/*
+	 * mdb_ctf_vread() uses the sizeof the target type (e.g.
+	 * sizeof (arc_buf_hdr_t) in the target) to read in the entire contents
+	 * of the target type into a buffer and then copy the values of the
+	 * desired members from the mdb typename (e.g. mdb_arc_buf_hdr_t) from
+	 * this buffer. Unfortunately, the way arc_buf_hdr_t is used by zfs,
+	 * the actual size allocated by the kernel for arc_buf_hdr_t is often
+	 * smaller than `sizeof (arc_buf_hdr_t)` (see the definitions of
+	 * l1arc_buf_hdr_t and arc_buf_hdr_t in
+	 * usr/src/uts/common/fs/zfs/arc.c). Attempting to read the entire
+	 * contents of arc_buf_hdr_t from the target (as mdb_ctf_vread() does)
+	 * can cause an error if the allocated size is indeed smaller--it's
+	 * possible that the 'missing' trailing members of arc_buf_hdr_t
+	 * (l1arc_buf_hdr_t and/or arc_buf_hdr_crypt_t) may fall into unmapped
+	 * memory.
+	 *
+	 * We use the GETMEMB macro instead which performs an mdb_vread()
+	 * but only reads enough of the target to retrieve the desired struct
+	 * member instead of the entire struct.
+	 */
+	if (GETMEMB(addr, "arc_buf_hdr", b_flags, flags) == -1)
 		return (WALK_ERR);
-	}
+
+	/*
+	 * We only count headers that have data loaded in the kernel.
+	 * This means an L1 header must be present as well as the data
+	 * that corresponds to the L1 header. If there's no L1 header,
+	 * we can skip the arc_buf_hdr_t completely. If it's present, we
+	 * must look at the ARC state (b_l1hdr.b_state) to determine if
+	 * the data is present.
+	 */
+	if ((flags & ARC_FLAG_HAS_L1HDR) == 0)
+		return (WALK_NEXT);
+
+	if (GETMEMB(addr, "arc_buf_hdr", b_psize, hdr.b_psize) == -1 ||
+	    GETMEMB(addr, "arc_buf_hdr", b_lsize, hdr.b_lsize) == -1 ||
+	    GETMEMB(addr + data->l1hdr_off, "l1arc_buf_hdr", b_bufcnt,
+	    hdr.b_l1hdr.b_bufcnt) == -1 ||
+	    GETMEMB(addr + data->l1hdr_off, "l1arc_buf_hdr", b_state,
+	    hdr.b_l1hdr.b_state) == -1)
+		return (WALK_ERR);
 
 	/*
 	 * Headers in the ghost states, or the l2c_only state don't have
@@ -4196,6 +4252,7 @@ arc_compression_stats(uintptr_t addr, uint_t flags, int argc,
 	unsigned int hist_size;
 	char range[32];
 	int rc = DCMD_OK;
+	int off;
 
 	if (mdb_getopts(argc, argv,
 	    'v', MDB_OPT_SETBITS, ARC_CFLAG_VERBOSE, &data.arc_cflags,
@@ -4247,6 +4304,14 @@ arc_compression_stats(uintptr_t addr, uint_t flags, int argc,
 	data.all_c_hist = mdb_zalloc(hist_size, UM_SLEEP);
 	data.all_u_hist = mdb_zalloc(hist_size, UM_SLEEP);
 	data.all_bufs = mdb_zalloc(hist_size, UM_SLEEP);
+
+	if ((off = mdb_ctf_offsetof_by_name(ZFS_STRUCT "arc_buf_hdr",
+	    "b_l1hdr")) == -1) {
+		mdb_warn("could not get offset of b_l1hdr from arc_buf_hdr_t");
+		rc = DCMD_ERR;
+		goto out;
+	}
+	data.l1hdr_off = off;
 
 	if (mdb_walk("arc_buf_hdr_t_full", arc_compression_stats_cb,
 	    &data) != 0) {

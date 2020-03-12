@@ -226,14 +226,6 @@ typedef enum {
 	SES_DUP_SUBCHASSIS	= 0x8
 } ses_chassis_type_e;
 
-
-static const topo_pgroup_info_t storage_pgroup = {
-	TOPO_PGROUP_STORAGE,
-	TOPO_STABILITY_PRIVATE,
-	TOPO_STABILITY_PRIVATE,
-	1
-};
-
 static const topo_pgroup_info_t smp_pgroup = {
 	TOPO_PGROUP_SMP,
 	TOPO_STABILITY_PRIVATE,
