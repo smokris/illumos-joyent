@@ -11,7 +11,7 @@
 
 #
 # Copyright (c) 2012, 2016 by Delphix. All rights reserved.
-# Copyright 2019 Joyent, Inc.
+# Copyright 2020 Joyent, Inc.
 #
 
 SUBDIRS_i386 = i386 imc
@@ -19,6 +19,7 @@ SUBDIRS_i386 = i386 imc
 SUBDIRS =       \
 		ddi_ufm \
 		file-locking \
+		libtopo \
 		pf_key \
 		poll \
 		sdevfs \

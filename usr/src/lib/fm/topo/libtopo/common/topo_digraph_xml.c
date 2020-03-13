@@ -1063,7 +1063,8 @@ deserialize_nvpair(topo_hdl_t *thp, topo_mod_t *mod, nvlist_t *nvl,
 
 		for (xmlNodePtr cn = xn->xmlChildrenNode; cn != NULL;
 		    cn = cn->next) {
-			if (xmlStrcmp(cn->name, (xmlChar *)TDG_XML_NVLIST) != 0)
+			if (xmlStrcmp(cn->name, (xmlChar *)TDG_XML_NVLIST) !=
+			    0)
 				continue;
 
 			if (topo_hdl_nvalloc(thp, &nvlarr[i],
@@ -1091,6 +1092,137 @@ deserialize_nvpair(topo_hdl_t *thp, topo_mod_t *mod, nvlist_t *nvl,
 			goto fail;
 		}
 		free_nvlist_array(thp, nvlarr, nelem);
+	} else if (xmlStrcmp(type, (xmlChar *)TDG_XML_UINT32_ARR) == 0) {
+		uint64_t nelem;
+		uint32_t *arr = NULL;
+		uint_t i = 0;
+
+		if (xmlattr_to_int(mod, xn, TDG_XML_NELEM, &nelem) != 0) {
+			goto fail;
+		}
+		if ((arr = topo_hdl_zalloc(thp,
+		    (nelem * sizeof (uint32_t)))) == NULL) {
+			goto fail;
+		}
+
+		for (xmlNodePtr cn = xn->xmlChildrenNode; cn != NULL;
+		    cn = cn->next) {
+			if (xmlStrcmp(cn->name, (xmlChar *)TDG_XML_NVPAIR) != 0)
+				continue;
+
+			if (xmlattr_to_int(mod, cn, TDG_XML_VALUE, &val) != 0) {
+				topo_hdl_free(thp, arr,
+				    (nelem * sizeof (uint32_t)));
+				goto fail;
+			}
+
+			arr[i] = val;
+			i++;
+		}
+		if (nvlist_add_uint32_array(nvl, (char *)name, arr,
+		    nelem) != 0) {
+			topo_hdl_free(thp, arr, (nelem * sizeof (uint32_t)));
+			goto fail;
+		}
+		topo_hdl_free(thp, arr, (nelem * sizeof (uint32_t)));
+	} else if (xmlStrcmp(type, (xmlChar *)TDG_XML_INT32_ARR) == 0) {
+		uint64_t nelem;
+		int32_t *arr = NULL;
+		uint_t i = 0;
+
+		if (xmlattr_to_int(mod, xn, TDG_XML_NELEM, &nelem) != 0) {
+			goto fail;
+		}
+		if ((arr = topo_hdl_zalloc(thp,
+		    (nelem * sizeof (uint32_t)))) == NULL) {
+			goto fail;
+		}
+
+		for (xmlNodePtr cn = xn->xmlChildrenNode; cn != NULL;
+		    cn = cn->next) {
+			if (xmlStrcmp(cn->name, (xmlChar *)TDG_XML_NVPAIR) != 0)
+				continue;
+
+			if (xmlattr_to_int(mod, cn, TDG_XML_VALUE, &val) != 0) {
+				topo_hdl_free(thp, arr,
+				    (nelem * sizeof (int32_t)));
+				goto fail;
+			}
+
+			arr[i] = val;
+			i++;
+		}
+		if (nvlist_add_int32_array(nvl, (char *)name, arr,
+		    nelem) != 0) {
+			topo_hdl_free(thp, arr, (nelem * sizeof (int32_t)));
+			goto fail;
+		}
+		topo_hdl_free(thp, arr, (nelem * sizeof (int32_t)));
+	} else if (xmlStrcmp(type, (xmlChar *)TDG_XML_UINT64_ARR) == 0) {
+		uint64_t nelem, *arr = NULL;
+		uint_t i = 0;
+
+		if (xmlattr_to_int(mod, xn, TDG_XML_NELEM, &nelem) != 0) {
+			goto fail;
+		}
+		if ((arr = topo_hdl_zalloc(thp,
+		    (nelem * sizeof (uint64_t)))) == NULL) {
+			goto fail;
+		}
+
+		for (xmlNodePtr cn = xn->xmlChildrenNode; cn != NULL;
+		    cn = cn->next) {
+			if (xmlStrcmp(cn->name, (xmlChar *)TDG_XML_NVPAIR) != 0)
+				continue;
+
+			if (xmlattr_to_int(mod, cn, TDG_XML_VALUE, &val) != 0) {
+				topo_hdl_free(thp, arr,
+				    (nelem * sizeof (uint64_t)));
+				goto fail;
+			}
+
+			arr[i] = val;
+			i++;
+		}
+		if (nvlist_add_uint64_array(nvl, (char *)name, arr,
+		    nelem) != 0) {
+			topo_hdl_free(thp, arr, (nelem * sizeof (uint64_t)));
+			goto fail;
+		}
+		topo_hdl_free(thp, arr, (nelem * sizeof (uint64_t)));
+	} else if (xmlStrcmp(type, (xmlChar *)TDG_XML_INT64_ARR) == 0) {
+		uint64_t nelem;
+		int64_t *arr = NULL;
+		uint_t i = 0;
+
+		if (xmlattr_to_int(mod, xn, TDG_XML_NELEM, &nelem) != 0) {
+			goto fail;
+		}
+		if ((arr = topo_hdl_zalloc(thp,
+		    (nelem * sizeof (uint64_t)))) == NULL) {
+			goto fail;
+		}
+
+		for (xmlNodePtr cn = xn->xmlChildrenNode; cn != NULL;
+		    cn = cn->next) {
+			if (xmlStrcmp(cn->name, (xmlChar *)TDG_XML_NVPAIR) != 0)
+				continue;
+
+			if (xmlattr_to_int(mod, cn, TDG_XML_VALUE, &val) != 0) {
+				topo_hdl_free(thp, arr,
+				    (nelem * sizeof (int64_t)));
+				goto fail;
+			}
+
+			arr[i] = val;
+			i++;
+		}
+		if (nvlist_add_int64_array(nvl, (char *)name, arr,
+		    nelem) != 0) {
+			topo_hdl_free(thp, arr, (nelem * sizeof (int64_t)));
+			goto fail;
+		}
+		topo_hdl_free(thp, arr, (nelem * sizeof (int64_t)));
 	}
 	ret = 0;
 fail:
@@ -1215,19 +1347,28 @@ topo_digraph_deserialize(topo_hdl_t *thp, const char *xml, size_t sz)
 	}
 
 	/*
-	 * Load the topo module associated with this FMRI scheme and then get a
-	 * pointer to its empty digraph.
+	 * Load the topo module associated with this FMRI scheme.
 	 */
 	if ((mod = topo_mod_lookup(thp, (const char *)scheme, 1)) == NULL) {
 		topo_dprintf(thp, TOPO_DBG_XML, "failed to load %s module",
 		    scheme);
 		goto fail;
 	}
-	if ((tdg = topo_digraph_get(mod->tm_hdl, mod->tm_info->tmi_scheme)) ==
-	    NULL) {
-		topo_dprintf(thp, TOPO_DBG_XML, "unsupported FMRI scheme: %s",
-		    scheme);
-		goto fail;
+	/*
+	 * If we have a builtin module for this scheme, then there will
+	 * already be an empty digraph attached to the handle.  Otherwise,
+	 * create a new empty digraph and attach it to the handle.
+	 */
+	tdg = topo_digraph_get(mod->tm_hdl, mod->tm_info->tmi_scheme);
+	if (tdg == NULL) {
+		if ((tdg = topo_digraph_new(thp, mod, (const char *)scheme)) ==
+		    NULL) {
+			topo_dprintf(thp, TOPO_DBG_XML, "failed to create new "
+			    "digraph");
+			goto fail;
+		} else {
+			topo_list_append(&thp->th_digraphs, tdg);
+		}
 	}
 
 	/*

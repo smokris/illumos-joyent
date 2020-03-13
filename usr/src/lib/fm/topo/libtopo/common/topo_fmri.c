@@ -34,6 +34,7 @@
 #include <fm/fmd_fmri.h>
 #include <sys/fm/protocol.h>
 #include <topo_alloc.h>
+#include <topo_digraph.h>
 #include <topo_error.h>
 #include <topo_hc.h>
 #include <topo_method.h>
@@ -138,16 +139,18 @@ topo_fmri_str2nvl(topo_hdl_t *thp, const char *fmristr, nvlist_t **fmri,
 	char *f, buf[PATH_MAX], *method = TOPO_METH_STR2NVL;
 	nvlist_t *out = NULL, *in = NULL;
 	tnode_t *rnode;
+	boolean_t is_path = B_FALSE;
 
 	/*
 	 * For path FMRI's the scheme is encoded in the authority portion of
 	 * the FMRI - e.g.
-	 * 
+	 *
 	 * path://scheme=<scheme>/...
 	 */
 	if (strncmp(fmristr, "path://", 7) == 0) {
 		char *scheme_start, *scheme_end;
 
+		is_path = B_TRUE;
 		method = TOPO_METH_PATH_STR2NVL;
 
 		if ((scheme_start = strchr(fmristr, '=')) == NULL) {
@@ -171,9 +174,18 @@ topo_fmri_str2nvl(topo_hdl_t *thp, const char *fmristr, nvlist_t **fmri,
 		*f = '\0'; /* strip trailing FMRI path */
 	}
 
-	if ((rnode = topo_hdl_root(thp, buf)) == NULL)
+	if (is_path) {
+		topo_digraph_t *tdg;
+
+		if ((tdg = topo_digraph_get(thp, buf)) == NULL) {
+			return (set_error(thp, ETOPO_METHOD_NOTSUP, err,
+			    TOPO_METH_STR2NVL, in));
+		}
+		rnode = tdg->tdg_rootnode;
+	} else if ((rnode = topo_hdl_root(thp, buf)) == NULL) {
 		return (set_error(thp, ETOPO_METHOD_NOTSUP, err,
 		    TOPO_METH_STR2NVL, in));
+	}
 
 	if (topo_hdl_nvalloc(thp, &in, NV_UNIQUE_NAME) != 0)
 		return (set_error(thp, ETOPO_FMRI_NVL, err, TOPO_METH_STR2NVL,
@@ -815,17 +827,17 @@ topo_fmri_next_auth(const char *auth)
  * List of authority information we care about.  Note that we explicitly ignore
  * things that are properties of the chassis and not the resource itself:
  *
- * 	FM_FMRI_AUTH_PRODUCT_SN		"product-sn"
- * 	FM_FMRI_AUTH_PRODUCT		"product-id"
- * 	FM_FMRI_AUTH_DOMAIN		"domain-id"
- * 	FM_FMRI_AUTH_SERVER		"server-id"
- *	FM_FMRI_AUTH_HOST		"host-id"
+ *      FM_FMRI_AUTH_PRODUCT_SN         "product-sn"
+ *      FM_FMRI_AUTH_PRODUCT            "product-id"
+ *      FM_FMRI_AUTH_DOMAIN             "domain-id"
+ *      FM_FMRI_AUTH_SERVER             "server-id"
+ *	FM_FMRI_AUTH_HOST               "host-id"
  *
  * We also ignore the "revision" authority member, as that typically indicates
  * the firmware revision and is not a static property of the FRU.  This leaves
  * the following interesting members:
  *
- * 	FM_FMRI_AUTH_CHASSIS		"chassis-id"
+ *      FM_FMRI_AUTH_CHASSIS            "chassis-id"
  *	FM_FMRI_HC_SERIAL_ID		"serial"
  *	FM_FMRI_HC_PART			"part"
  */
