@@ -33,15 +33,23 @@ struct ext_arg {
 	dkioc_free_list_ext_t *ea_exts;
 };
 
+typedef enum ext_iter_flags {
+	EIF_NONE = 0,
+	EIF_FIRST =	(1 << 0),
+	EIF_LAST =	(1 << 1),
+	EIF_NEWREQ =	(1 << 2)
+} ext_iter_flags_t;
+
 typedef int (*ext_iter_fn_t)(const dkioc_free_list_ext_t *,
-    boolean_t, void *);
+    ext_iter_flags_t, void *);
 
 static int ext_iter(const dkioc_free_list_t *, const dkioc_free_align_t *,
     uint_t, ext_iter_fn_t, void *);
 static int ext_xlate(const dkioc_free_list_t *, const dkioc_free_list_ext_t *,
-    const dkioc_free_align_t *, uint_t, uint64_t *, uint64_t *);
-static int count_exts(const dkioc_free_list_ext_t *, boolean_t, void *);
-static int process_exts(const dkioc_free_list_ext_t *, boolean_t, void *);
+    const dkioc_free_align_t *, uint64_t *, uint64_t *);
+static int count_exts(const dkioc_free_list_ext_t *, ext_iter_flags_t, void *);
+static int process_exts(const dkioc_free_list_ext_t *, ext_iter_flags_t,
+    void *);
 
 /*
  * Copy-in convenience function for variable-length dkioc_free_list_t
@@ -98,31 +106,56 @@ dfl_free(dkioc_free_list_t *dfl)
 }
 
 /*
- * Convenience function to iterate through the array of extents in dfl while
- * respecting segmentation and alignment of the extents.
+ * Convenience function to resize and segment the array of extents in
+ * a DKIOCFREE request as required by a driver.
  *
- * Some devices that implement DKIOCFREE (e.g. nvme and vioblk) have limits
+ * Some devices that implement DKIOCFREE (e.g. vioblk) have limits
  * on either the number of extents that can be submitted in a single request,
  * or the total number of blocks that can be submitted in a single request.
  * In addition, devices may have alignment requirements on the starting
  * address stricter than the device block size.
  *
- * Since there is currently no way for callers of DKIOCFREE to discover
- * any alignment or segmentation requirements, the driver itself may choose
- * to adjust the actual extent start and length that is freed (never freeing
- * outside the original unmodified extent boundaries), split extents into
- * multiple smaller extents, or split a single request into multiple requests
- * to the underlying hardware. dfl_iter() frees the driver from having to
- * deal with such complexity/tedium.
+ * Since there is currently no mechanism for callers of DKIOCFREE to discover
+ * any alignment, segmentation, or size requirements for DKIOCFREE requests
+ * for a particular driver (or instance of a particular driver), dfl_iter()
+ * allows drivers to tranform the dkioc_free_list_t from a DKIOCFREE request
+ * into groups of dkioc_free_ext_ts that conform to the driver's alignment,
+ * segmentation, or size requirements. The transformation done by dfl_iter()
+ * may involve modifications such as splitting a list of extents into smaller
+ * groups, splitting extents into multiple smaller extents, increasing the
+ * start address of an extent to conform to alignments, or reducing the size
+ * of an extent so that the resulting size is a multiple of the device block
+ * size. In all instances, the resultant set is either identical to the
+ * original set of extents, or a subset -- that is we _never_ transform a
+ * a range into a range that exceeds the original boundaries of the original
+ * extents.
  *
- * The original request is passed in dfl and the alignment requirements are
- * given in dkfa. dfl_iter() will do the necessary adjustments and then
- * call func with an array of extents, number of extents, as well as a flag
- * that is set upon the last invocation of func for the original request, as
- * well as the void * arg passed to dfl_iter().
+ * The transformed extents are grouped per the driver's requirements described
+ * by the constraints contained in the 'dfa' parameter, and the 'func'
+ * callback is invoked for each group of transformed extents. An optional
+ * opaque (to dfl_iter()) 'arg' parameter is passed through to 'func' as well.
+ * In addition, on the final group, the 'last' argument of 'func' is set
+ * to B_TRUE (for all other groups of extents passed to 'func', 'func' is
+ * called with 'last' set to B_FALSE). Indicating the final group of extents
+ * allows a driver to mark a request as complete or implement synchronous
+ * semantics as required.
  *
- * func should return 0 on success or an error value. An error may result
- * in partial completion of the request, sorry.
+ * Unfortunately, the DKIOCFREE ioctl provides no method for communicating
+ * any sort of partial completion -- either it returns success (0) or
+ * an error. As such, there's little benefit to providing more detailed
+ * error semantics beyond what DKIOCFREE can handle (if that ever changes, it
+ * would be worth revisiting this). As a result, we take a somewhat simplistic
+ * approach -- we stop processing the request on the first error encountered
+ * and return the error.  Otherwise dfl_iter() returns 0.
+ *
+ * Note that transformed extents that result in a range too small to be
+ * processed by the driver (e.g. a 4k block size with a request to free
+ * starting at offset 512 and a length of 1024) aren't considered an error and
+ * are silently ignored. This means it is possible (though hopefully unlikely)
+ * a request to a driver may result in no freed extents. When this happens,
+ * 'func' is still called, but with a NULL list of extents, an extent count
+ * of 0, and with last set to B_TRUE to allow for cleanup (calling done
+ * routines, etc.).
  *
  * Currently no flags are defined, and should always be zero.
  */
@@ -140,7 +173,7 @@ dfl_iter(const dkioc_free_list_t *dfl, const dkioc_free_align_t *dfa,
 		return (SET_ERROR(EINVAL));
 
 	/* Block size must be at least 1 and a power of two */
-	if (dfa->dfa_bsize == 0 || !ISP2(dfa->dba_bsize))
+	if (dfa->dfa_bsize == 0 || !ISP2(dfa->dfa_bsize))
 		return (SET_ERROR(EINVAL));
 
 	/* Offset alignment must also be at least 1 and a power of two */
@@ -151,7 +184,10 @@ dfl_iter(const dkioc_free_list_t *dfl, const dkioc_free_align_t *dfa,
 	if (dfa->dfa_align < dfa->dfa_bsize)
 		return (SET_ERROR(EINVAL));
 
-	/* Since dfa_bsize != 0, ddi_ffsll() _must_ return a value > 1 */
+	/*
+	 * Since dfa_bsize != 0 (see above), ddi_ffsll() _must_ return a
+	 * value > 1
+	 */
 	bshift = ddi_ffsll((long long)dfa->dfa_bsize) - 1;
 
 	/*
@@ -166,9 +202,16 @@ dfl_iter(const dkioc_free_list_t *dfl, const dkioc_free_align_t *dfa,
 		return (SET_ERROR(EINVAL));
 
 	/*
-	 * Determine the total number of extents needed. Due to alignment
-	 * and segmentation requirements, this may be different than
-	 * the initial number of segments.
+	 * The general approach is that we walk the array of extents twice
+	 * using ext_iter(). For each extent, ext_iter() will invoke the
+	 * given callback function 0 or more times (based on the requirements
+	 * in dfa), and then invoke the callback function with a NULL extent.
+	 *
+	 * This first walk is used to count the total number of extents
+	 * after applying the driver requirements in 'dfa'. This may be
+	 * different from the initial number of extents due to splitting
+	 * extents or discarding extents that do not conform to alignment
+	 * requirements (and may even be 0).
 	 */
 	r = ext_iter(dfl, dfa, bshift, count_exts, &n_exts);
 	if (r != 0)
@@ -190,7 +233,7 @@ dfl_iter(const dkioc_free_list_t *dfl, const dkioc_free_align_t *dfa,
 	n_exts = earg.ea_ext_cnt;
 	exts = kmem_zalloc(n_exts * sizeof (*exts), kmflag);
 	if (exts == NULL)	
-		return (SET_ERROR(EOVERFLOW));
+		return (SET_ERROR(ENOMEM));
 
 	earg.ea_ext_cnt = n_exts;
 	earg.ea_fn = func;
@@ -198,62 +241,81 @@ dfl_iter(const dkioc_free_list_t *dfl, const dkioc_free_align_t *dfa,
 	earg.ea_exts = exts;
 
 	/*
-	 * Iterate through all the extents. process_exts() will group the
-	 * exts into acceptable chunks for 'func' and then call 'func'
-	 * and increment earg.ea_exts. The final chunk of earg.ea_exts
-	 * will _not_ be processed when ext_iter returns, so we call
-	 * process_exts() on final time after ext_iter() returns.
+	 * We've allocated enough space to hold all the transformed extents
+	 * in 'exts'. Now walk the original list of extents a second time
+	 * and do the work.  process_exts() will accumulate the transformed
+	 * extents and invoke 'func' (the callback passed into dfl_iter()) to
+	 * perform the free request with the accumulated extents, repeating
+	 * as necessary.
 	 */
 	r = ext_iter(dfl, dfa, bshift, process_exts, &earg);
-	if (r != 0)
-		goto done;
-
-	/* Process the final request */
-	r = process_exts(NULL, B_TRUE, &earg);
-
-done:
 	kmem_free(exts, n_exts * sizeof (*exts));
 	return (r);
 }
 
 static int
-count_exts(const dkioc_free_list_ext_t *ext, boolean_t newreq __unused,
+count_exts(const dkioc_free_list_ext_t *ext, ext_iter_flags_t flags __unused,
     void *arg)
 {
 	size_t *np = arg;
 
-	(*np)++;
+	if (ext != NULL)
+		(*np)++;
+
 	return (0);
 }
 
 static int
-process_exts(const dkioc_free_list_ext_t *ext, boolean_t newreq, void *arg)
+process_exts(const dkioc_free_list_ext_t *ext, ext_iter_flags_t flags,
+    void *arg)
 {
 	struct ext_arg *args = arg;
+	dkioc_free_list_ext_t *ext_list = args->ea_exts;
+	boolean_t flush = B_FALSE;
+	boolean_t last = ((flags & EIF_LAST) != 0) ? B_TRUE : B_FALSE;
 
-	if (newreq && args->ea_ext_cnt > 0) {
+	if (last) {
 		/*
-		 * A new request, and are extents from the previous request
-		 * ready to dispatch.
+		 * The very last call should be with ext set to NULL to
+		 * flush any accumulated extents since the last start of
+		 * a new group.
 		 */
+		VERIFY3P(ext, ==, NULL);
+		flush = B_TRUE;
+
+		/*
+		 * A corner case -- we never had any extents that could
+		 * be passed to the callback. Do a final call with the
+		 * extent list as NULL (and a count of 0).
+		 */
+		if (args->ea_ext_cnt == 0)
+			ext_list = NULL;
+	} else if ((flags & EIF_NEWREQ) != 0 && (flags & EIF_FIRST) == 0) {
+		/*
+		 * A new request that isn't the very first request will flush
+		 * what we've accumulated (and then start accumulating for
+		 * the next grouping). We should always have at least one
+		 * extent to flush at this point -- the 'no extents'
+		 * case was handled earlier.
+		 */
+		VERIFY3U(args->ea_ext_cnt, >, 0);
+		flush = B_TRUE;
+	}
+
+	if (flush) {
 		int r;
-		boolean_t last = (ext == NULL) ? B_TRUE : B_FALSE;
 
-		r = args->ea_fn(args->ea_exts, args->ea_ext_cnt, last,
-		    args->ea_arg);
-
+		r = args->ea_fn(ext_list, args->ea_ext_cnt, last, args->ea_arg);
 		if (r != 0)
 			return (r);
 
+		/*
+		 * A bit simplistic, but we just keep appending to the
+		 * original array allocated by dfl_iter(), but just update
+		 * our starting position (args->ex_exts) for the next group.
+		 */
 		args->ea_exts += args->ea_ext_cnt;
 		args->ea_ext_cnt = 0;
-
-		/*
-		 * After the last request, we are called with a NULL ext
-		 * and a new request to process the final request.
-		 */
-		if (ext == NULL)
-			return (0);
 	}
 
 	args->ea_exts[args->ea_ext_cnt++] = *ext;
@@ -299,7 +361,7 @@ ext_iter(const dkioc_free_list_t *dfl, const dkioc_free_align_t *dfa,
 	uint64_t n_exts = 0;
 	uint64_t n_blk = 0;
 	size_t i;
-	boolean_t newreq = B_TRUE;
+	ext_iter_flags_t flags = EIF_FIRST|EIF_NEWREQ;
 
 	for (i = 0, ext = dfl->dfl_exts; i < dfl->dfl_num_exts; i++, ext++) {
 		uint64_t start, length;
@@ -320,9 +382,9 @@ ext_iter(const dkioc_free_list_t *dfl, const dkioc_free_align_t *dfa,
 			    n_exts + 1 > dfa->dfa_max_ext) {
 				/*
 				 * Reached the max # of extents, start a new
-				 * request.
+				 * request and retry.
 				 */
-				newreq = B_TRUE;
+				flags |= EIF_NEWREQ;
 				n_exts = 0;
 				n_blk = 0;
 				continue;
@@ -335,8 +397,8 @@ ext_iter(const dkioc_free_list_t *dfl, const dkioc_free_align_t *dfa,
 				 * blocks in a request. If this isn't a
 				 * new request, start a new request,
 				 */
-				if (!newreq) {
-					newreq = B_TRUE;
+				if ((flags & EIF_NEWREQ) == 0) {
+					flags |= EIF_NEWREQ;
 					n_exts = 0;
 					n_blk = 0;
 					continue;
@@ -355,19 +417,23 @@ ext_iter(const dkioc_free_list_t *dfl, const dkioc_free_align_t *dfa,
 				    dfa->dfa_align);
 			}
 
-			r = fn(&blk_ext, newreq, arg);
+			r = fn(&blk_ext, flags, arg);
 			if (r != 0)
 				return (r);
-
-			newreq = B_FALSE;
 
 			n_exts++;
 			n_blk += len_blk;
 
 			length -= blk_ext.dfle_length;
 			start += blk_ext.dfle_length;
+
+			flags &= ~(EIF_FIRST);
 		}
 	}
 
-	return (0);
+	/*
+	 * Invoke the callback one last time w/ a NULL array of extents and
+	 * newreq == B_TRUE to signal completion.
+	 */
+	return (fn(NULL, flags|EIF_LAST, arg));
 }

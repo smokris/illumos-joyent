@@ -11,7 +11,7 @@
 
 /*
  * Copyright 2017 Nexenta Inc.  All rights reserved.
- * Copyright 2019 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #ifndef _SYS_DKIOC_FREE_UTIL_H
@@ -26,10 +26,23 @@ extern "C" {
 #define	DFL_COPYIN_MAX_EXTS	(1024 * 1024)
 
 typedef struct dkioc_free_align {
-	size_t	dfa_bsize;		/* device block size in bytes */
-	size_t	dfa_max_ext;		/* max # of extents in a single req */
-	size_t	dfa_max_blocks;		/* max # of blocks in a single req */
-	size_t	dfa_align;		/* alignment for starting addresses */
+	/* Device block size in bytes. Must be > 0, and must be a power of 2 */
+	size_t	dfa_bsize;
+
+	/* Maximum number of extents in a single request. 0 == no limit */
+	size_t	dfa_max_ext;
+
+	/*
+	 * Maximum number of blocks (in units of dfa_bsize) in a single request.
+	 * 0 == no limit.
+	 */
+	size_t	dfa_max_blocks;
+
+	/*
+	 * Minimum alignment for extent offsets in bytes (e.g. 512, 4096,
+	 * etc). Must be >= dfa_bsize, and must be a power of 2.
+	 */
+	size_t	dfa_align;
 } dkioc_free_align_t;
 
 typedef int (*dfl_iter_fn_t)(const dkioc_free_list_ext_t *exts, size_t n_ext,

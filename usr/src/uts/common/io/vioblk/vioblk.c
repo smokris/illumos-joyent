@@ -629,6 +629,57 @@ vioblk_free_exts(const dkioc_free_list_ext_t *exts, size_t n_exts,
 	struct vioblk_discard_write_zeroes *wzp = NULL;
 	size_t i;
 	int r = 0;
+	boolean_t polled;
+
+	/*
+	 * Corner case -- we had a DKIOCFREE request, but none of the
+	 * extents conformed to the host's alignment requirements. We
+	 * just complete the I/O with no actual work done.
+	 */
+	if (n_exts == 0) {
+		VERIFY(last);
+		VERIFY3P(exts, ==, NULL);
+		bd_xfer_done(args->vfpa_xfer, 0);
+		return (0);
+	}
+
+	/*
+	 * If last is false, dfl_iter() had to segment or split the
+	 * original DKIOCFREE request into multiple requests for us (if last
+	 * is B_FALSE, it implies more extents are coming). While the blkdev
+	 * framework handles implementing the necessary sync/not sync semantics
+	 * for a DKIOCFREE request, that is in terms of the entire original
+	 * request. If dfl_iter() had to break things up, we always treat
+	 * the non-final calls to vioblk_free_extents() as synchronous (polled).
+	 *
+	 * This is a conscious choice -- we could always just issue the
+	 * resulting requests and let the host deal with it without waiting for
+	 * the results, but since it's common for TRIM/UNMAP/DELETE requests
+	 * to physical devices to be slow enough that users such as zfs go to
+	 * great lengths to control the rate at which it issues them, it
+	 * seems reasonable to at minimum issue the broken up bits of the
+	 * original request one at a time (until the final request) to avoid
+	 * causing problems.
+	 *
+	 * Ideally, we'd have a way for DKIOCFREE issuers (e.g. zfs) to
+	 * discover the underlying device requirements so that it always issues
+	 * requests that don't require any special handling by the driver,
+	 * however, that's not possible today, so we're faced with either
+	 * ignoring a non-conforming request (too big, too many extents, etc.)
+	 * completely, only processing as much of the request as possible
+	 * in a single request to the host (with no way to inform the caller),
+	 * or try to honor the request by issuing multiple requests to the
+	 * host.
+	 *
+	 * We've currently opted for the third option. By far the single
+	 * most common user of this is almost certainly going to be zfs
+	 * and zfs today will only issue a single DKIOCFREE request with
+	 * a single extent at a time, so this seems reasonable for the
+	 * initial implementation. Nothing here should prevent us from
+	 * implementing alternate strategies in the future if the need
+	 * arises.
+	 */
+	polled = !!last;
 
 	dma = virtio_dma_alloc(vib->vib_virtio, n_exts * sizeof (*wzp),
 	    &vioblk_dma_attr, DDI_DMA_CONSISTENT | DDI_DMA_WRITE, KM_SLEEP);
@@ -648,7 +699,7 @@ vioblk_free_exts(const dkioc_free_list_ext_t *exts, size_t n_exts,
 
 	mutex_enter(&vib->vib_mutex);
 
-	vic = vioblk_common_start(vib, VIRTIO_BLK_T_DISCARD, 0, B_FALSE);
+	vic = vioblk_common_start(vib, VIRTIO_BLK_T_DISCARD, 0, polled);
 	if (vic == NULL) {
 		mutex_exit(&vib->vib_mutex);
 		virtio_dma_free(dma);
