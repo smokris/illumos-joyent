@@ -66,6 +66,8 @@ dboot_panic(char *fmt, ...)
 	}
 	outb(0x64, 0xfe);	/* this resets the system, see pc_reset() */
 	dboot_halt();		/* just in case */
+	for (;;)
+		;
 }
 
 /*

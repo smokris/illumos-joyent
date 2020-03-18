@@ -45,9 +45,8 @@ extern void dboot_printf(char *fmt, ...)
  * Primitive version of panic, prints a message, waits for a keystroke,
  * then resets the system
  */
-/*PRINTFLIKE1*/
 extern void dboot_panic(char *fmt, ...)
-    __KPRINTFLIKE(1);
+    __NORETURN __KPRINTFLIKE(1);
 
 
 #ifdef	__cplusplus
