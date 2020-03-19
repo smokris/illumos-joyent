@@ -75,6 +75,8 @@ extern int have_cpuid(void);
 
 #define	SHA1_ASCII_LENGTH	(SHA1_DIGEST_LENGTH * 2)
 
+#define	ULL(v) ((u_longlong_t)(v))
+
 static void *page_alloc(void);
 
 /*
@@ -302,8 +304,16 @@ sort_physinstall(void)
 	if (prom_debug) {
 		dboot_printf("\nFinal memlists:\n");
 		for (i = 0; i < memlists_used; ++i) {
-			dboot_printf("\t%d: addr=%" PRIx64 " size=%"
-			    PRIx64 "\n", i, memlists[i].addr, memlists[i].size);
+			dboot_printf("\t%d: 0x%llx-0x%llx size=0x%llx\n",
+			    i, ULL(memlists[i].addr), ULL(memlists[i].addr +
+			    memlists[i].size), ULL(memlists[i].size));
+		}
+
+		dboot_printf("\nBoot modules:\n");
+		for (i = 0; i < bi->bi_module_cnt; i++) {
+			dboot_printf("\t%d: 0x%llx-0x%llx size=0x%llx\n",
+			    i, ULL(modules[i].bm_addr), ULL(modules[i].bm_addr +
+			    modules[i].bm_size), ULL(modules[i].bm_size));
 		}
 	}
 
@@ -2032,7 +2042,7 @@ dboot_alloc(uint32_t size, uint32_t align)
 	alloc_addr = start + size;
 
 	if (map_debug) {
-		dboot_printf("%s(0x%x, 0x%x) = 0x%x", __func__, size,
+		dboot_printf("%s(0x%x, 0x%x) = 0x%x\n", __func__, size,
 		    align, start);
 	}
 
