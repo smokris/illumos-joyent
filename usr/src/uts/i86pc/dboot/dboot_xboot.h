@@ -61,7 +61,7 @@ extern uint_t prom_debug;
 	    __func__, #x, (uint64_t)(x));		\
 	} } while (0)
 
-extern void dboot_halt(void);
+extern void dboot_halt(void) __NORETURN;
 
 #define	RNDUP(x, y)	((x) + ((y) - 1ul) & ~((y) - 1ul))
 

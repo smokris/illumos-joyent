@@ -117,6 +117,11 @@ static uint64_t target_kernel_text;	/* value to use for KERNEL_TEXT */
 char stack_space[STACK_SIZE];
 
 /*
+ * The highest address we build page tables for.
+ */
+static paddr_t boot_map_end;
+
+/*
  * The dboot allocator. This is a small area we use for allocating the
  * kernel nucleus and pages for the identity page tables we build here.
  */
@@ -350,6 +355,8 @@ dboot_halt(void)
 	while (--i)
 		(void) HYPERVISOR_yield();
 	(void) HYPERVISOR_shutdown(SHUTDOWN_poweroff);
+	for (;;)
+		;
 }
 
 /*
@@ -891,16 +898,13 @@ build_pcimemlists(void)
 }
 
 #if defined(__xpv)
-/*
- * Initialize memory allocator stuff from hypervisor-supplied start info.
- */
 static void
-init_mem_alloc(void)
+init_dboot_alloc(void)
 {
 	int	local;	/* variables needed to find start region */
 	xen_memory_map_t map;
 
-	DBG_MSG("Entered init_mem_alloc()\n");
+	DBG_MSG("Entered init_dboot_alloc()\n");
 
 	/*
 	 * Free memory follows the stack. There's at least 512KB of scratch
@@ -1675,22 +1679,29 @@ dboot_multiboot_highest_addr(void)
 }
 
 static void
-init_mem_alloc(void)
+init_dboot_alloc(void)
 {
 	extern char _end[];
 
-	DBG_MSG("Entered init_mem_alloc()\n");
+	DBG_MSG("Entered init_dboot_alloc()\n");
 
 	dboot_process_modules();
 	dboot_process_mmap();
-	dboot_multiboot_highest_addr();
+
+	size_t align = FOUR_MEG;
 
 	/*
-	 * We need enough alloc space for the nucleus memory and 512Kb scratch
-	 * for page tables.
+	 * We need enough alloc space for the nucleus memory...
 	 */
-	size_t align = FOUR_MEG;
-	size_t size = RNDUP(512 * 1024, align) + RNDUP(ksize, align);
+	size_t size = RNDUP(ksize, align);
+
+	/*
+	 * And enough page table pages to cover potentially 4Gb. Each leaf PT
+	 * covers 2Mb, so we need a maximum of 2048 pages for those. Next level
+	 * up each covers 1Gb, and so on, so we'll just add a little slop (which
+	 * gets aligned up anyway).
+	 */
+	size += RNDUP(MMU_PAGESIZE * (2048 + 256), align);
 
 	/*
 	 * We're looking for a place in the memlists that is below 4Gb (as we're
@@ -2001,11 +2012,11 @@ print_efi64(EFI_SYSTEM_TABLE64 *efi)
 
 /*
  * Simple memory allocator for aligned physical memory from the area provided by
- * init_mem_alloc().  This is a simple bump-and-alloc allocator, and it's never
- * directly freed by dboot.
+ * init_dboot_alloc().  This is a simple bump allocator, and it's never directly
+ * freed by dboot.
  */
 static void *
-mem_alloc(uint32_t size, uint32_t align)
+dboot_alloc(uint32_t size, uint32_t align)
 {
 	uint32_t start = RNDUP(alloc_addr, align);
 
@@ -2014,10 +2025,16 @@ mem_alloc(uint32_t size, uint32_t align)
 	if (start + size > alloc_end) {
 		dboot_panic("%s: couldn't allocate 0x%x bytes aligned 0x%x "
 		    "alloc_addr = 0x%llx, alloc_end = 0x%llx", __func__,
-		    size, align, alloc_addr, alloc_end);
+		    size, align, (u_longlong_t)alloc_addr,
+		    (u_longlong_t)alloc_end);
 	}
 
 	alloc_addr = start + size;
+
+	if (map_debug) {
+		dboot_printf("%s(0x%x, 0x%x) = 0x%x", __func__, size,
+		    align, start);
+	}
 
 	(void) memset((void *)(uintptr_t)start, 0, size);
 	return ((void *)(uintptr_t)start);
@@ -2026,7 +2043,7 @@ mem_alloc(uint32_t size, uint32_t align)
 static void *
 page_alloc(void)
 {
-	return (mem_alloc(MMU_PAGESIZE, MMU_PAGESIZE));
+	return (dboot_alloc(MMU_PAGESIZE, MMU_PAGESIZE));
 }
 
 /*
@@ -2054,6 +2071,9 @@ find_kalloc_start(void)
 		    P2ALIGN(mod_end, MMU_PAGESIZE));
 	}
 
+	boot_map_end = kalloc_start;
+	DBG(boot_map_end);
+
 	for (i = 0; i < memlists_used; i++) {
 		uint64_t ml_start = memlists[i].addr;
 		uint64_t ml_end = memlists[i].addr + memlists[i].size;
@@ -2068,7 +2088,7 @@ find_kalloc_start(void)
 
 	if (i == memlists_used) {
 		dboot_panic("fell off the end of memlists finding a "
-		    "kalloc_start value > 0x%llx", kalloc_start);
+		    "kalloc_start value > 0x%llx", (u_longlong_t)kalloc_start);
 	}
 
 	DBG(kalloc_start);
@@ -2080,7 +2100,7 @@ find_kalloc_start(void)
  * Build page tables to map all of memory used so far as well as the kernel.
  */
 static void
-build_page_tables(paddr_t kalloc_start)
+build_page_tables(void)
 {
 	uint32_t psize;
 	uint32_t level;
@@ -2165,7 +2185,8 @@ build_page_tables(paddr_t kalloc_start)
 #if !defined(__xpv)
 
 	/*
-	 * Map every valid memlist address up until kalloc_start.
+	 * Map every valid memlist address up until boot_map_end: this will
+	 * cover at least our alloc region and all boot modules.
 	 */
 	for (i = 0; i < memlists_used; ++i) {
 		start = memlists[i].addr;
@@ -2174,11 +2195,11 @@ build_page_tables(paddr_t kalloc_start)
 		if (map_debug)
 			dboot_printf("1:1 map pa=%" PRIx64 "..%" PRIx64 "\n",
 			    start, end);
-		while (start < end && start < kalloc_start) {
+		while (start < end && start < boot_map_end) {
 			map_pa_at_va(start, start, 0);
 			start += MMU_PAGESIZE;
 		}
-		if (start >= kalloc_start)
+		if (start >= boot_map_end)
 			break;
 	}
 
@@ -2602,7 +2623,7 @@ startup_kernel(void)
 	/*
 	 * initialize the simple memory allocator
 	 */
-	init_mem_alloc();
+	init_dboot_alloc();
 
 #if !defined(__xpv) && !defined(_BOOT_TARGET_amd64)
 	/*
@@ -2656,7 +2677,7 @@ startup_kernel(void)
 	 * For grub, copy kernel bits from the ELF64 file to final place.
 	 */
 	DBG_MSG("\nAllocating nucleus pages.\n");
-	ktext_phys = (uintptr_t)mem_alloc(ksize, FOUR_MEG);
+	ktext_phys = (uintptr_t)dboot_alloc(ksize, FOUR_MEG);
 
 	if (ktext_phys == 0)
 		dboot_panic("failed to allocate aligned kernel memory");
@@ -2672,7 +2693,7 @@ startup_kernel(void)
 	/*
 	 * Allocate page tables.
 	 */
-	build_page_tables(kalloc_start);
+	build_page_tables();
 
 	/*
 	 * return to assembly code to switch to running kernel
