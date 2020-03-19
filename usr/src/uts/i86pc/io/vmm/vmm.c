@@ -38,7 +38,7 @@
  * http://www.illumos.org/license/CDDL.
  *
  * Copyright 2015 Pluribus Networks Inc.
- * Copyright 2018 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  * Copyright 2020 Oxide Computer Company
  */
 
@@ -319,6 +319,10 @@ typedef struct vm_thread_ctx {
 	int		vtc_vcpuid;
 	uint_t		vtc_status;
 } vm_thread_ctx_t;
+
+extern void arc_virt_machine_reserve(uint64_t);
+extern void arc_virt_machine_release(uint64_t);
+
 #endif /* __FreeBSD__ */
 
 #ifdef KTR
@@ -765,6 +769,7 @@ vm_alloc_memseg(struct vm *vm, int ident, size_t len, bool sysmem)
 	vm_object_t obj;
 
 #ifndef __FreeBSD__
+	size_t pages = len >> PAGE_SHIFT;
 	extern pgcnt_t get_max_page_get(void);
 #endif
 
@@ -787,9 +792,13 @@ vm_alloc_memseg(struct vm *vm, int ident, size_t len, bool sysmem)
 			return (EINVAL);
 	}
 
-	obj = vm_object_allocate(OBJT_DEFAULT, len >> PAGE_SHIFT);
-	if (obj == NULL)
+	arc_virt_machine_reserve(pages);
+
+	obj = vm_object_allocate(OBJT_DEFAULT, pages);
+	if (obj == NULL) {
+		arc_virt_machine_release(pages);
 		return (ENOMEM);
+	}
 
 	seg->len = len;
 	seg->object = obj;
@@ -843,6 +852,7 @@ vm_free_memseg(struct vm *vm, int ident)
 	seg = &vm->mem_segs[ident];
 	if (seg->object != NULL) {
 		vm_object_deallocate(seg->object);
+		arc_virt_machine_release(seg->len >> PAGE_SHIFT);
 		bzero(seg, sizeof(struct mem_seg));
 	}
 }

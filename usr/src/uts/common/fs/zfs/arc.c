@@ -20,7 +20,7 @@
  */
 /*
  * Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2019, Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  * Copyright (c) 2011, 2018 by Delphix. All rights reserved.
  * Copyright (c) 2014 by Saso Kiselkov. All rights reserved.
  * Copyright 2017 Nexenta Systems, Inc.  All rights reserved.
@@ -4795,6 +4795,7 @@ typedef enum free_memory_reason_t {
 	FMR_PAGES_PP_MAXIMUM,
 	FMR_HEAP_ARENA,
 	FMR_ZIO_ARENA,
+	FMR_VIRT_MACHINE,	/* 'VM' seems ambiguous in this context */
 } free_memory_reason_t;
 
 int64_t last_free_memory;
@@ -4809,6 +4810,23 @@ int64_t arc_pages_pp_reserve = 64;
  * Additional reserve of pages for swapfs.
  */
 int64_t arc_swapfs_reserve = 64;
+
+static volatile uint64_t arc_virt_machine_reserved;
+
+void
+arc_virt_machine_reserve(uint64_t pages)
+{
+	VERIFY3U(pages, <, INT64_MAX);
+	atomic_add_64(&arc_virt_machine_reserved, pages);
+	/* XXX: kick off stuff */
+}
+
+void
+arc_virt_machine_release(uint64_t pages)
+{
+	VERIFY3U(pages, <, INT64_MAX);
+	atomic_add_64(&arc_virt_machine_reserved, -(int64_t)pages);
+}
 
 /*
  * Return the amount of memory that can be consumed before reclaim will be
@@ -4871,6 +4889,17 @@ arc_available_memory(void)
 	if (n < lowest) {
 		lowest = n;
 		r = FMR_PAGES_PP_MAXIMUM;
+	}
+
+	/*
+	 * Check that we have enough memory for any virtual machines that
+	 * are running or starting. We add desfree to keep us out of
+	 * particularly dire circumstances.
+	 */
+	n = PAGESIZE * (availrmem - arc_virt_machine_reserved - desfree);
+	if (n < lowest) {
+		lowest = n;
+		r = FMR_VIRT_MACHINE;
 	}
 
 #if defined(__i386)
