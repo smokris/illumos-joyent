@@ -1833,6 +1833,15 @@ vm_wrlock_cycle(struct vmctx *ctx)
 	}
 	return (0);
 }
+
+int
+vm_arc_resv(struct vmctx *ctx, size_t len)
+{
+	if (ioctl(ctx->fd, VM_ARC_RESV, len) != 0) {
+		return (errno);
+	}
+	return (0);
+}
 #endif /* __FreeBSD__ */
 
 #ifdef __FreeBSD__

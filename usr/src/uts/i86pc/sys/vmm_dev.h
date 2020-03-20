@@ -38,7 +38,7 @@
  * http://www.illumos.org/license/CDDL.
  *
  * Copyright 2015 Pluribus Networks Inc.
- * Copyright 2019 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #ifndef	_VMM_DEV_H_

@@ -38,7 +38,7 @@
  * http://www.illumos.org/license/CDDL.
  *
  * Copyright 2015 Pluribus Networks Inc.
- * Copyright 2019 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #ifndef _VMMAPI_H_
@@ -302,6 +302,7 @@ int	vm_get_topology(struct vmctx *ctx, uint16_t *sockets, uint16_t *cores,
 #ifndef	__FreeBSD__
 /* illumos-specific APIs */
 int	vm_wrlock_cycle(struct vmctx *ctx);
+int	vm_arc_resv(struct vmctx *ctx, size_t);
 #endif	/* __FreeBSD__ */
 
 #ifdef	__FreeBSD__

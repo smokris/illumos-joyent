@@ -200,6 +200,7 @@ struct vm {
 	uint16_t	maxcpus;		/* (o) max pluggable cpus */
 #ifndef __FreeBSD__
 	list_t		ioport_hooks;
+	size_t		arc_resv;
 #endif /* __FreeBSD__ */
 	bool		sipi_req;		/* (i) SIPI requested */
 	int		sipi_req_vcpu;		/* (i) SIPI destination */
@@ -302,6 +303,9 @@ static void vcpu_notify_event_locked(struct vcpu *vcpu, bool lapic_intr);
 #ifndef __FreeBSD__
 static void vm_clear_memseg(struct vm *, int);
 
+extern void arc_virt_machine_reserve(size_t);
+extern void arc_virt_machine_release(size_t);
+
 typedef struct vm_ioport_hook {
 	list_node_t	vmih_node;
 	uint_t		vmih_ioport;
@@ -319,9 +323,6 @@ typedef struct vm_thread_ctx {
 	int		vtc_vcpuid;
 	uint_t		vtc_status;
 } vm_thread_ctx_t;
-
-extern void arc_virt_machine_reserve(uint64_t);
-extern void arc_virt_machine_release(uint64_t);
 
 #endif /* __FreeBSD__ */
 
@@ -668,6 +669,12 @@ vm_cleanup(struct vm *vm, bool destroy)
 
 		VMSPACE_FREE(vm->vmspace);
 		vm->vmspace = NULL;
+
+#ifndef __FreeBSD__
+		arc_virt_machine_release(vm->arc_resv >> PAGE_SHIFT);
+		vm->arc_resv = 0;
+#endif
+
 	}
 #ifndef __FreeBSD__
 	else {
@@ -769,7 +776,6 @@ vm_alloc_memseg(struct vm *vm, int ident, size_t len, bool sysmem)
 	vm_object_t obj;
 
 #ifndef __FreeBSD__
-	size_t pages = len >> PAGE_SHIFT;
 	extern pgcnt_t get_max_page_get(void);
 #endif
 
@@ -792,13 +798,9 @@ vm_alloc_memseg(struct vm *vm, int ident, size_t len, bool sysmem)
 			return (EINVAL);
 	}
 
-	arc_virt_machine_reserve(pages);
-
-	obj = vm_object_allocate(OBJT_DEFAULT, pages);
-	if (obj == NULL) {
-		arc_virt_machine_release(pages);
+	obj = vm_object_allocate(OBJT_DEFAULT, len >> PAGE_SHIFT);
+	if (obj == NULL)
 		return (ENOMEM);
-	}
 
 	seg->len = len;
 	seg->object = obj;
@@ -852,7 +854,6 @@ vm_free_memseg(struct vm *vm, int ident)
 	seg = &vm->mem_segs[ident];
 	if (seg->object != NULL) {
 		vm_object_deallocate(seg->object);
-		arc_virt_machine_release(seg->len >> PAGE_SHIFT);
 		bzero(seg, sizeof(struct mem_seg));
 	}
 }
@@ -3472,5 +3473,10 @@ vm_ioport_handle_hook(struct vm *vm, int cpuid, bool in, int port, int bytes,
 	return (err);
 }
 
-
+void
+vm_arc_resv(struct vm *vm, size_t len)
+{
+	arc_virt_machine_reserve(len >> PAGE_SHIFT);
+	vm->arc_resv += len;
+}
 #endif /* __FreeBSD__ */

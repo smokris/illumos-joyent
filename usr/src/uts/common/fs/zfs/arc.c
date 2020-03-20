@@ -4813,18 +4813,23 @@ int64_t arc_swapfs_reserve = 64;
 
 static volatile uint64_t arc_virt_machine_reserved;
 
+/*
+ * XXX: A possible concern is that we allow arc_virt_machine_reserved to
+ * get so large that we cause the arc to perform a lot of additional
+ * work to keep the arc extremely small. We may want to set limits to
+ * the size of arc_virt_machine_reserved and disallow reservations
+ * beyond that limit.
+ */
 void
-arc_virt_machine_reserve(uint64_t pages)
+arc_virt_machine_reserve(size_t pages)
 {
-	VERIFY3U(pages, <, INT64_MAX);
 	atomic_add_64(&arc_virt_machine_reserved, pages);
-	/* XXX: kick off stuff */
+	zthr_wakeup(arc_reap_zthr);
 }
 
 void
-arc_virt_machine_release(uint64_t pages)
+arc_virt_machine_release(size_t pages)
 {
-	VERIFY3U(pages, <, INT64_MAX);
 	atomic_add_64(&arc_virt_machine_reserved, -(int64_t)pages);
 }
 
