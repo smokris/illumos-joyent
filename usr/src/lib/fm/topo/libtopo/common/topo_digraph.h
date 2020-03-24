@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2019 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #ifndef _TOPO_DIGRAPH_H
@@ -33,8 +33,7 @@
 extern "C" {
 #endif
 
-struct topo_digraph
-{
+struct topo_digraph {
 	topo_list_t	tdg_list;		/* next/prev pointers */
 	pthread_mutex_t	tdg_lock;
 	const char	*tdg_scheme;		/* FMRI scheme */
@@ -45,8 +44,7 @@ struct topo_digraph
 	uint_t		tdg_nedges;		/* total num of edges */
 };
 
-struct topo_vertex
-{
+struct topo_vertex {
 	topo_list_t	tvt_list;		/* next/prev pointers */
 	tnode_t		*tvt_node;
 	topo_list_t	tvt_incoming;
@@ -55,8 +53,7 @@ struct topo_vertex
 	uint_t		tvt_noutgoing;		/* total num outgoing edges */
 };
 
-struct topo_edge
-{
+struct topo_edge {
 	topo_list_t	tve_list;		/* next/prev pointers */
 	topo_vertex_t	*tve_vertex;
 };

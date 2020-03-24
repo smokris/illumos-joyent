@@ -20,7 +20,7 @@
  */
 /*
  * Copyright (c) 2006, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright 2019 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #include <pthread.h>
@@ -138,22 +138,7 @@ topo_builtin_create(topo_hdl_t *thp, const char *rootdir)
 			}
 			topo_list_append(&thp->th_trees, tp);
 
-			/*
-			 * Call the enumerator on the root of the tree, with the
-			 * scheme name as the name to enumerate.  This will
-			 * establish methods on the root node.
-			 */
 			rnode = tp->tt_root;
-			if (topo_mod_enumerate(mod, rnode, mod->tm_name,
-			    rnode->tn_name, rnode->tn_instance,
-			    rnode->tn_instance, NULL) < 0) {
-				/*
-				 * If we see a failure, note it in the handle
-				 * and drive on
-				 */
-				(void) topo_hdl_seterrno(thp,
-				    ETOPO_ENUM_PARTIAL);
-			}
 			break;
 		case TOPO_BLTIN_TYPE_DIGRAPH:
 			if ((tdg = topo_digraph_new(thp, mod, bp->bltin_name))
@@ -164,23 +149,21 @@ topo_builtin_create(topo_hdl_t *thp, const char *rootdir)
 				return (-1);
 			}
 			topo_list_append(&thp->th_digraphs, tdg);
-			topo_mod_enter(mod);
-			if (mod->tm_info->tmi_ops->tmo_enum(mod,
-			    tdg->tdg_rootnode, NULL, 0, 0, mod->tm_priv,
-			    NULL) != 0) {
-				/*
-				 * If we see a failure, note it in the handle
-				 * and drive on
-				 */
-				(void) topo_hdl_seterrno(thp,
-				    ETOPO_ENUM_PARTIAL);
-			}
-			topo_mod_exit(mod);
+
+			rnode = tdg->tdg_rootnode;
 			break;
 		default:
 			topo_dprintf(thp, TOPO_DBG_ERR, "unexpected topology "
 			    "type: %u", bp->bltin_type);
 			return (-1);
+		}
+		if (topo_mod_enumerate(mod, rnode, mod->tm_name, rnode->tn_name,
+		    rnode->tn_instance, rnode->tn_instance, NULL) < 0) {
+			/*
+			 * If we see a failure, note it in the handle and drive
+			 * on.
+			 */
+			(void) topo_hdl_seterrno(thp, ETOPO_ENUM_PARTIAL);
 		}
 	}
 

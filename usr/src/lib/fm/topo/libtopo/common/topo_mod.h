@@ -298,6 +298,7 @@ typedef enum topo_mod_errno {
     EMOD_NONCANON,		/* non-canonical component name requested */
     EMOD_MOD_NOENT,		/* module lookup failed */
     EMOD_UKNOWN_ENUM,		/* unknown enumeration error */
+    EMOD_DIGRAPH_MAXSZ,		/* max digraph size exceeded */
     EMOD_END			/* end of mod errno list (to ease auto-merge) */
 } topo_mod_errno_t;
 

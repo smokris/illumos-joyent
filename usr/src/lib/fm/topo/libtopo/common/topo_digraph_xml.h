@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2019 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #ifndef _TOPO_DIGRAPH_XML_H
@@ -46,7 +46,6 @@ extern "C" {
 #define	TDG_XML_FMRI		"fmri"
 #define	TDG_XML_SCHEME		"fmri-scheme"
 #define	TDG_XML_NAME		"name"
-#define	TDG_XML_NELEM		"nelem"
 #define	TDG_XML_NVLIST		"nvlist"
 #define	TDG_XML_NVLIST_ARR	"nvlist-array"
 #define	TDG_XML_NVPAIR		"nvpair"

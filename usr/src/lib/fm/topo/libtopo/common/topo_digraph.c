@@ -19,8 +19,8 @@
  * client API and module API.
  *
  * The client API can be used by libtopo consumers for traversing an existing
- * digraph topology.  The module API is can be used by topo plugins to create
- * or destroy a digraph topology.
+ * digraph topology.  The module API can be used by topo plugins to create or
+ * destroy a digraph topology.
  *
  * client API
  * ----------
@@ -45,7 +45,7 @@
  * wrappers around topo node (tnode_t) structures.  In addition to holding
  * a pointer to the underlyng topo node, the topo_vertex_t maintains a list
  * of incoming and outgoing edges and a pointer to the next and previous
- * vertices in digraph's adjecently list.
+ * vertices in digraph's adjecency list.
  *
  * path scheme FMRIs
  * -----------------
@@ -150,6 +150,11 @@ topo_digraph_new(topo_hdl_t *thp, topo_mod_t *mod, const char *scheme)
 	if ((tn = topo_mod_zalloc(mod, sizeof (tnode_t))) == NULL)
 		goto err;
 
+	/*
+	 * Adding the TOPO_NODE_ROOT state to the node has the effect of
+	 * preventing topo_node_destroy() from trying to clean up the parent
+	 * node's node hash, which is only necessary in tree topologies.
+	 */
 	tn->tn_state = TOPO_NODE_ROOT | TOPO_NODE_INIT;
 	tn->tn_name = (char *)scheme;
 	tn->tn_instance = 0;
@@ -186,6 +191,7 @@ topo_digraph_destroy(topo_digraph_t *tdg)
 		return;
 
 	mod = tdg->tdg_mod;
+	topo_method_unregister_all(mod, tdg->tdg_rootnode);
 	(void) pthread_mutex_destroy(&tdg->tdg_lock);
 	topo_mod_strfree(mod, (char *)tdg->tdg_scheme);
 	topo_mod_free(mod, tdg->tdg_rootnode, sizeof (tnode_t));
@@ -214,6 +220,8 @@ topo_vertex_new(topo_mod_t *mod, const char *name, topo_instance_t inst)
 
 	topo_mod_dprintf(mod, "Creating vertex %s=%" PRIx64 "", name, inst);
 	if ((tdg = find_digraph(mod)) == NULL) {
+		topo_mod_dprintf(mod, "%s faild: no existing digraph for FMRI "
+		    " scheme %s", __func__, mod->tm_info->tmi_scheme);
 		return (NULL);
 	}
 	if ((vtx = topo_mod_zalloc(mod, sizeof (topo_vertex_t))) == NULL ||
@@ -242,16 +250,28 @@ topo_vertex_new(topo_mod_t *mod, const char *name, topo_instance_t inst)
 	topo_mod_hold(mod);
 
 	(void) pthread_mutex_lock(&tdg->tdg_lock);
-	topo_list_append(&tdg->tdg_vertices, vtx);
+	if (tdg->tdg_nvertices == UINT32_MAX) {
+		(void) pthread_mutex_unlock(&tdg->tdg_lock);
+		topo_mod_dprintf(mod, "Max vertices reached!");
+		(void) topo_mod_seterrno(mod, EMOD_DIGRAPH_MAXSZ);
+		topo_mod_rele(mod);
+		goto err;
+	}
 	tdg->tdg_nvertices++;
+	topo_list_append(&tdg->tdg_vertices, vtx);
 	(void) pthread_mutex_unlock(&tdg->tdg_lock);
 
 	return (vtx);
 err:
 	topo_mod_dprintf(mod, "failed to add create vertex %s=%" PRIx64 "(%s)",
 	    name, inst, topo_strerror(topo_mod_errno(mod)));
-	topo_mod_free(mod, tn, sizeof (tnode_t));
-	topo_mod_free(mod, vtx, sizeof (topo_vertex_t));
+	if (tn != NULL) {
+		topo_mod_strfree(mod, tn->tn_name);
+		topo_mod_free(mod, tn, sizeof (tnode_t));
+	}
+	if (vtx != NULL)
+		topo_mod_free(mod, vtx, sizeof (topo_vertex_t));
+
 	return (NULL);
 }
 
@@ -266,11 +286,15 @@ topo_vertex_node(topo_vertex_t *vtx)
 
 /*
  * Convenience interface for deallocating a topo_vertex_t
+ * This function is a NOP if NULL is passed in.
  */
 void
 topo_vertex_destroy(topo_mod_t *mod, topo_vertex_t *vtx)
 {
 	topo_edge_t *edge;
+
+	if (vtx == NULL)
+		return;
 
 	topo_node_unbind(vtx->tvt_node);
 
@@ -320,12 +344,11 @@ topo_vertex_iter(topo_hdl_t *thp, topo_digraph_t *tdg,
 		ret = func(thp, vtx, last_vtx, arg);
 
 		switch (ret) {
-		case (TOPO_WALK_NEXT):
+		case TOPO_WALK_NEXT:
 			continue;
-		case (TOPO_WALK_TERMINATE):
+		case TOPO_WALK_TERMINATE:
 			goto out;
-		case (TOPO_WALK_ERR):
-			/* FALLTHRU */
+		case TOPO_WALK_ERR:
 		default:
 			return (-1);
 		}
@@ -353,18 +376,28 @@ topo_edge_new(topo_mod_t *mod, topo_vertex_t *from, topo_vertex_t *to)
 	    topo_node_name(to->tvt_node), topo_node_instance(to->tvt_node));
 
 	if ((tdg = find_digraph(mod)) == NULL) {
-		return (-1);
+		topo_mod_dprintf(mod, "Digraph lookup failed");
+		return (topo_mod_seterrno(mod, EMOD_UNKNOWN));
+	}
+	(void) pthread_mutex_lock(&tdg->tdg_lock);
+	if (from->tvt_noutgoing == UINT32_MAX ||
+	    to->tvt_nincoming == UINT32_MAX ||
+	    tdg->tdg_nedges == UINT32_MAX) {
+		topo_mod_dprintf(mod, "Max edges reached!");
+		(void) pthread_mutex_unlock(&tdg->tdg_lock);
+		return (topo_mod_seterrno(mod, EMOD_DIGRAPH_MAXSZ));
+
 	}
 	if ((e_from = topo_mod_zalloc(mod, sizeof (topo_edge_t))) == NULL ||
 	    (e_to = topo_mod_zalloc(mod, sizeof (topo_edge_t))) == NULL) {
 		topo_mod_free(mod, e_from, sizeof (topo_edge_t));
 		topo_mod_free(mod, e_to, sizeof (topo_edge_t));
+		(void) pthread_mutex_unlock(&tdg->tdg_lock);
 		return (topo_mod_seterrno(mod, EMOD_NOMEM));
 	}
 	e_from->tve_vertex = from;
 	e_to->tve_vertex = to;
 
-	(void) pthread_mutex_lock(&tdg->tdg_lock);
 	topo_list_append(&from->tvt_outgoing, e_to);
 	from->tvt_noutgoing++;
 	topo_list_append(&to->tvt_incoming, e_from);
@@ -402,12 +435,11 @@ topo_edge_iter(topo_hdl_t *thp, topo_vertex_t *vtx,
 		ret = func(thp, edge, last_edge, arg);
 
 		switch (ret) {
-		case (TOPO_WALK_NEXT):
+		case TOPO_WALK_NEXT:
 			continue;
-		case (TOPO_WALK_TERMINATE):
+		case TOPO_WALK_TERMINATE:
 			break;
-		case (TOPO_WALK_ERR):
-			/* FALLTHRU */
+		case TOPO_WALK_ERR:
 		default:
 			return (-1);
 		}
@@ -417,6 +449,7 @@ topo_edge_iter(topo_hdl_t *thp, topo_vertex_t *vtx,
 
 /*
  * Convenience interface for deallocating a topo_path_t
+ * This function is a NOP if NULL is passed in.
  */
 void
 topo_path_destroy(topo_hdl_t *thp, topo_path_t *path)
@@ -444,17 +477,28 @@ topo_path_destroy(topo_hdl_t *thp, topo_path_t *path)
  * This just wraps topo_path_t so that visit_vertex() can build a linked list
  * of paths.
  */
-struct digraph_path
-{
+struct digraph_path {
 	topo_list_t	dgp_link;
 	topo_path_t	*dgp_path;
 };
 
-/* Helper function for topo_digraph_paths() */
+/*
+ * This is a callback function for the vertex iteration that gets initiated by
+ * topo_digraph_paths().
+ *
+ * This is used to implement a depth-first search for all paths that lead to
+ * the vertex pointed to by the "to" parameter.  As we walk the graph we
+ * maintain a linked list of the components (vertices) in the in-progress path
+ * as well as the string form of the current path being walked.  Whenever we
+ * eoncounter the "to" vertex, we save the current path to the all_paths list
+ * (which keeps track of all the paths we've found to the "to" vertex) and
+ * increment npaths (which keeps track of the number of paths we've found to
+ * the "to" vertex).
+ */
 static int
 visit_vertex(topo_hdl_t *thp, topo_vertex_t *vtx, topo_vertex_t *to,
-    topo_list_t *all_paths, char *curr_path, topo_list_t *curr_path_comps,
-    uint_t *npaths)
+    topo_list_t *all_paths, const char *curr_path,
+    topo_list_t *curr_path_comps, uint_t *npaths)
 {
 	struct digraph_path *pathnode = NULL;
 	topo_path_t *path = NULL;
@@ -463,10 +507,27 @@ visit_vertex(topo_hdl_t *thp, topo_vertex_t *vtx, topo_vertex_t *to,
 	char *pathstr;
 	int err;
 
-	(void) asprintf(&pathstr, "%s/%s=%" PRIx64"",
+	if (asprintf(&pathstr, "%s/%s=%" PRIx64"",
 	    curr_path,
 	    topo_node_name(vtx->tvt_node),
-	    topo_node_instance(vtx->tvt_node));
+	    topo_node_instance(vtx->tvt_node)) < 0) {
+		return (topo_hdl_seterrno(thp, ETOPO_NOMEM));
+	}
+
+	/*
+	 * Check if this vertex is in the list of vertices in the
+	 * curr_path_comps list.  If it is, then we've encountered a cycle
+	 * and need to turn back.
+	 */
+	for (topo_path_component_t *pc = topo_list_next(curr_path_comps);
+	    pc != NULL; pc = topo_list_next(pc)) {
+		if (pc->tspc_vertex == vtx) {
+			topo_dprintf(thp, TOPO_DBG_WALK, "Cycle detected: %s",
+			    pathstr);
+			free(pathstr);
+			return (0);
+		}
+	}
 
 	if ((pathcomp = topo_hdl_zalloc(thp, sizeof (topo_path_component_t)))
 	    == NULL) {
@@ -501,6 +562,8 @@ visit_vertex(topo_hdl_t *thp, topo_vertex_t *vtx, topo_vertex_t *to,
 
 		topo_list_append(all_paths, pathnode);
 		free(pathstr);
+		topo_list_delete(curr_path_comps, pathcomp);
+		topo_hdl_free(thp, pathcomp, sizeof (topo_path_component_t));
 		return (0);
 	}
 
@@ -518,6 +581,7 @@ visit_vertex(topo_hdl_t *thp, topo_vertex_t *vtx, topo_vertex_t *to,
 	return (0);
 
 err:
+	free(pathstr);
 	topo_hdl_free(thp, pathnode, sizeof (struct digraph_path));
 	topo_path_destroy(thp, path);
 	return (-1);
@@ -544,10 +608,12 @@ topo_digraph_paths(topo_hdl_t *thp, topo_digraph_t *tdg, topo_vertex_t *from,
 	uint_t i, npaths = 0;
 	int ret;
 
-	ret = asprintf(&curr_path, "%s://%s=%s/%s=%" PRIx64"",
+	if (asprintf(&curr_path, "%s://%s=%s/%s=%" PRIx64"",
 	    FM_FMRI_SCHEME_PATH, FM_FMRI_SCHEME, tdg->tdg_scheme,
 	    topo_node_name(from->tvt_node),
-	    topo_node_instance(from->tvt_node));
+	    topo_node_instance(from->tvt_node)) < 1) {
+		return (topo_hdl_seterrno(thp, ETOPO_NOMEM));
+	}
 
 	if ((pathcomp = topo_hdl_zalloc(thp, sizeof (topo_path_component_t)))
 	    == NULL) {
@@ -557,9 +623,6 @@ topo_digraph_paths(topo_hdl_t *thp, topo_digraph_t *tdg, topo_vertex_t *from,
 	pathcomp->tspc_vertex = from;
 	topo_list_append(&curr_path_comps, pathcomp);
 
-	if (ret == -1)
-		return (topo_hdl_seterrno(thp, ETOPO_NOMEM));
-
 	for (topo_edge_t *edge = topo_list_next(&from->tvt_outgoing);
 	    edge != NULL; edge = topo_list_next(edge)) {
 
@@ -567,19 +630,19 @@ topo_digraph_paths(topo_hdl_t *thp, topo_digraph_t *tdg, topo_vertex_t *from,
 		    curr_path, &curr_path_comps, &npaths);
 		if (ret != 0) {
 			/* errno set */
-			free(curr_path);
 			goto err;
 		}
 	}
-	free(curr_path);
 	topo_hdl_free(thp, pathcomp, sizeof (topo_path_component_t));
 
 	/*
 	 * No paths were found between the "from" and "to" vertices, so
 	 * we're done here.
 	 */
-	if (npaths == 0)
+	if (npaths == 0) {
+		free(curr_path);
 		return (0);
+	}
 
 	*paths = topo_hdl_zalloc(thp, npaths * sizeof (topo_path_t *));
 	if (*paths == NULL) {
@@ -600,9 +663,11 @@ topo_digraph_paths(topo_hdl_t *thp, topo_digraph_t *tdg, topo_vertex_t *from,
 		path = topo_list_next(path);
 		topo_hdl_free(thp, tmp, sizeof (struct digraph_path));
 	}
+	free(curr_path);
 	return (npaths);
 
 err:
+	free(curr_path);
 	path = topo_list_next(&all_paths);
 	while (path != NULL) {
 		struct digraph_path *tmp = path;
@@ -623,7 +688,8 @@ fmri_bufsz(nvlist_t *nvl)
 	char *dg_scheme = NULL;
 	nvlist_t **hops, *auth;
 	uint_t nhops;
-	ssize_t bufsz = 0;
+	ssize_t bufsz = 1;
+	int ret;
 
 	if (nvlist_lookup_nvlist(nvl, FM_FMRI_AUTHORITY, &auth) != 0 ||
 	    nvlist_lookup_string(auth, FM_FMRI_PATH_DIGRAPH_SCHEME,
@@ -631,8 +697,11 @@ fmri_bufsz(nvlist_t *nvl)
 		return (0);
 	}
 
-	bufsz += snprintf(NULL, 0, "%s://%s=%s", FM_FMRI_SCHEME_PATH,
-	    FM_FMRI_SCHEME, dg_scheme);
+	if ((ret = snprintf(NULL, 0, "%s://%s=%s", FM_FMRI_SCHEME_PATH,
+	    FM_FMRI_SCHEME, dg_scheme)) < 0) {
+		return (-1);
+	}
+	bufsz += ret;
 
 	if (nvlist_lookup_nvlist_array(nvl, FM_FMRI_PATH, &hops, &nhops) !=
 	    0) {
@@ -644,14 +713,18 @@ fmri_bufsz(nvlist_t *nvl)
 		uint64_t inst;
 
 		if (nvlist_lookup_string(hops[i], FM_FMRI_PATH_NAME, &name) !=
-		    0||
+		    0 ||
 		    nvlist_lookup_uint64(hops[i], FM_FMRI_PATH_INST, &inst) !=
 		    0) {
 			return (0);
 		}
-		bufsz += snprintf(NULL, 0, "/%s=%" PRIx64 "", name, inst);
+		if ((ret = snprintf(NULL, 0, "/%s=%" PRIx64 "", name, inst)) <
+		    0) {
+			return (-1);
+		}
+		bufsz += ret;
 	}
-	return (bufsz + 1);
+	return (bufsz);
 }
 
 int
@@ -664,12 +737,16 @@ path_fmri_nvl2str(topo_mod_t *mod, tnode_t *node, topo_version_t version,
 	uint_t nelem;
 	ssize_t bufsz, end = 0;
 	char *buf, *dg_scheme;
+	int ret;
 
 	if (version > TOPO_METH_NVL2STR_VERSION)
 		return (topo_mod_seterrno(mod, EMOD_VER_NEW));
 
-	if (nvlist_lookup_uint8(in, FM_FMRI_PATH_VERSION, &scheme_vers) != 0 ||
-	    scheme_vers != FM_PATH_SCHEME_VERSION) {
+	if (nvlist_lookup_uint8(in, FM_FMRI_PATH_VERSION, &scheme_vers) != 0) {
+		return (topo_mod_seterrno(mod, EMOD_NOMEM));
+	}
+
+	if (scheme_vers != FM_PATH_SCHEME_VERSION) {
 		return (topo_mod_seterrno(mod, EMOD_FMRI_NVL));
 	}
 
@@ -677,8 +754,11 @@ path_fmri_nvl2str(topo_mod_t *mod, tnode_t *node, topo_version_t version,
 	 * Get size of buffer needed to hold the string representation of the
 	 * FMRI.
 	 */
-	if ((bufsz = fmri_bufsz(in)) == 0) {
+	bufsz = fmri_bufsz(in);
+	if (bufsz == 0) {
 		return (topo_mod_seterrno(mod, EMOD_FMRI_MALFORM));
+	} else if (bufsz < 1) {
+		return (topo_mod_seterrno(mod, EMOD_UNKNOWN));
 	}
 
 	if ((buf = topo_mod_zalloc(mod, bufsz)) == NULL) {
@@ -694,8 +774,12 @@ path_fmri_nvl2str(topo_mod_t *mod, tnode_t *node, topo_version_t version,
 	    &dg_scheme);
 	(void) nvlist_lookup_nvlist_array(in, FM_FMRI_PATH, &paths,
 	    &nelem);
-	end += snprintf(buf, bufsz, "%s://%s=%s", FM_FMRI_SCHEME_PATH,
-	    FM_FMRI_SCHEME, dg_scheme);
+	if ((ret = snprintf(buf, bufsz, "%s://%s=%s", FM_FMRI_SCHEME_PATH,
+	    FM_FMRI_SCHEME, dg_scheme)) < 0) {
+		topo_mod_free(mod, buf, bufsz);
+		return (topo_mod_seterrno(mod, EMOD_UNKNOWN));
+	}
+	end += ret;
 
 	for (uint_t i = 0; i < nelem; i++) {
 		char *pathname;
@@ -705,8 +789,13 @@ path_fmri_nvl2str(topo_mod_t *mod, tnode_t *node, topo_version_t version,
 		    &pathname);
 		(void) nvlist_lookup_uint64(paths[i], FM_FMRI_PATH_INST,
 		    &pathinst);
-		end += snprintf(buf + end, (bufsz - end), "/%s=%" PRIx64 "",
-		    pathname, pathinst);
+
+		if ((ret = snprintf(buf + end, (bufsz - end), "/%s=%" PRIx64 "",
+		    pathname, pathinst)) < 0) {
+			topo_mod_free(mod, buf, bufsz);
+			return (topo_mod_seterrno(mod, EMOD_UNKNOWN));
+		}
+		end += ret;
 	}
 
 	if (topo_mod_nvalloc(mod, &outnvl, NV_UNIQUE_NAME) != 0) {
@@ -789,6 +878,11 @@ path_fmri_str2nvl(topo_mod_t *mod, tnode_t *node, topo_version_t version,
 	while (strtok_r(NULL, "=", &lastpair) != NULL)
 		npairs++;
 
+	if (npairs == 0) {
+		(void) topo_mod_seterrno(mod, EMOD_FMRI_MALFORM);
+		goto err;
+	}
+
 	if ((path = topo_mod_zalloc(mod, npairs * sizeof (nvlist_t *))) ==
 	    NULL) {
 		(void) topo_mod_seterrno(mod, EMOD_NOMEM);
@@ -815,7 +909,8 @@ path_fmri_str2nvl(topo_mod_t *mod, tnode_t *node, topo_version_t version,
 	if (nvlist_add_string(auth, FM_FMRI_PATH_DIGRAPH_SCHEME, dg_scheme) !=
 	    0 ||
 	    nvlist_add_nvlist(fmri, FM_FMRI_AUTHORITY, auth) != 0) {
-
+		(void) topo_mod_seterrno(mod, EMOD_NOMEM);
+		goto err;
 	}
 
 	while (i < npairs) {
