@@ -303,7 +303,7 @@ static void vcpu_notify_event_locked(struct vcpu *vcpu, bool lapic_intr);
 #ifndef __FreeBSD__
 static void vm_clear_memseg(struct vm *, int);
 
-extern void arc_virt_machine_reserve(size_t);
+extern int arc_virt_machine_reserve(size_t);
 extern void arc_virt_machine_release(size_t);
 
 typedef struct vm_ioport_hook {
@@ -3473,10 +3473,16 @@ vm_ioport_handle_hook(struct vm *vm, int cpuid, bool in, int port, int bytes,
 	return (err);
 }
 
-void
+int
 vm_arc_resv(struct vm *vm, size_t len)
 {
-	arc_virt_machine_reserve(len >> PAGE_SHIFT);
+	int err = 0;
+
+	err = arc_virt_machine_reserve(len >> PAGE_SHIFT);
+	if (err != 0)
+		return (err);
+
 	vm->arc_resv += len;
+	return (0);
 }
 #endif /* __FreeBSD__ */

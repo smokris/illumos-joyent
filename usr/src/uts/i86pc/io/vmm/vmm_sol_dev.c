@@ -1336,7 +1336,7 @@ vmmdev_do_ioctl(vmm_softc_t *sc, int cmd, intptr_t arg, int md,
 			break;
 		}
 
-		vm_arc_resv(sc->vmm_vm, len);
+		error = vm_arc_resv(sc->vmm_vm, len);
 		break;
 	}
 #endif
