@@ -3474,11 +3474,11 @@ vm_ioport_handle_hook(struct vm *vm, int cpuid, bool in, int port, int bytes,
 }
 
 int
-vm_arc_resv(struct vm *vm, size_t len)
+vm_arc_resv(struct vm *vm, uint64_t len)
 {
 	int err = 0;
 
-	err = arc_virt_machine_reserve(len >> PAGE_SHIFT);
+	err = arc_virt_machine_reserve((size_t)(len >> PAGE_SHIFT));
 	if (err != 0)
 		return (err);
 

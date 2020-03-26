@@ -1328,17 +1328,9 @@ vmmdev_do_ioctl(vmm_softc_t *sc, int cmd, intptr_t arg, int md,
 		 */
 		break;
 	}
-	case VM_ARC_RESV: {
-		size_t len;
-
-		if (ddi_copyin(datap, &len, sizeof (len), md) != 0) {
-			error = EFAULT;
-			break;
-		}
-
-		error = vm_arc_resv(sc->vmm_vm, len);
+	case VM_ARC_RESV:
+		error = vm_arc_resv(sc->vmm_vm, (uint64_t)arg);
 		break;
-	}
 #endif
 	default:
 		error = ENOTTY;

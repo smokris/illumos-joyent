@@ -1837,7 +1837,7 @@ vm_wrlock_cycle(struct vmctx *ctx)
 int
 vm_arc_resv(struct vmctx *ctx, size_t len)
 {
-	if (ioctl(ctx->fd, VM_ARC_RESV, len) != 0) {
+	if (ioctl(ctx->fd, VM_ARC_RESV, (uint64_t)len) != 0) {
 		return (errno);
 	}
 	return (0);
