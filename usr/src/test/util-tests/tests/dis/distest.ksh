@@ -150,7 +150,6 @@ handle_failure()
 	    "64.vaes.s" "64.gfni.s" "64.avx512_vpclmulqdq.s")
 	testname=$(basename $source)
 	printf '%s\n' ${xfails[@]} | grep "^$testname$" >/dev/null
-	xfail=$?
 
 	if [[ $? -eq 0 ]]; then
 		printf "%s " "expected fail "
