@@ -741,7 +741,7 @@ vioblk_bd_free_space(void *arg, bd_xfer_t *xfer)
 		.dfa_bsize = DEV_BSIZE,
 		.dfa_max_ext = vib->vib_max_discard_seg,
 		.dfa_max_blocks = vib->vib_max_discard_sectors,
-		.dfa_align = vib->vib_discard_sector_align
+		.dfa_align = vib->vib_discard_sector_align * DEV_BSIZE
 	};
 	struct vioblk_freesp_arg sp_arg = {
 		.vfpa_vioblk = vib,
@@ -752,12 +752,10 @@ vioblk_bd_free_space(void *arg, bd_xfer_t *xfer)
 
 	/*
 	 * If we didn't include xfer as part of the final request, we
-	 * need to clean it up now.
+	 * should return failure so that bd_sched() will free xfer.
 	 */
-	if (sp_arg.vfpa_xfer != NULL) {
+	if (sp_arg.vfpa_xfer != NULL)
 		VERIFY3S(r, !=, 0);
-		bd_xfer_done(sp_arg.vfpa_xfer, r);
-	}
 
 	return (r);
 }
