@@ -193,12 +193,12 @@ dfl_iter(const dkioc_free_list_t *dfl, const dkioc_free_align_t *dfa,
 	/*
 	 * If a limit on the total number of blocks is given, it must be
 	 * greater than the offset alignment. E.g. if the block size is 512
-	 * bytes, the offset alignment is 4096 (8 blocks), the device must
+	 * bytes and the offset alignment is 4096 (8 blocks), the device must
 	 * allow extent sizes at least 8 blocks long (otherwise it is not
 	 * possible to free the entire device).
 	 */
 	if (dfa->dfa_max_blocks > 0 &&
-	    (dfa->dfa_max_blocks >> bshift) < dfa->dfa_align)
+	    (dfa->dfa_max_blocks << bshift) < dfa->dfa_align)
 		return (SET_ERROR(EINVAL));
 
 	/*
@@ -230,12 +230,11 @@ dfl_iter(const dkioc_free_list_t *dfl, const dkioc_free_align_t *dfa,
 	if (n_exts == 0)
 		return (0);
 
-	n_exts = earg.ea_ext_cnt;
 	exts = kmem_zalloc(n_exts * sizeof (*exts), kmflag);
 	if (exts == NULL)	
 		return (SET_ERROR(ENOMEM));
 
-	earg.ea_ext_cnt = n_exts;
+	earg.ea_ext_cnt = 0;
 	earg.ea_fn = func;
 	earg.ea_arg = arg;
 	earg.ea_exts = exts;
@@ -318,7 +317,8 @@ process_exts(const dkioc_free_list_ext_t *ext, ext_iter_flags_t flags,
 		args->ea_ext_cnt = 0;
 	}
 
-	args->ea_exts[args->ea_ext_cnt++] = *ext;
+	if (ext != NULL)
+		args->ea_exts[args->ea_ext_cnt++] = *ext;
 	return (0);
 }
 
@@ -427,7 +427,7 @@ ext_iter(const dkioc_free_list_t *dfl, const dkioc_free_align_t *dfa,
 			length -= blk_ext.dfle_length;
 			start += blk_ext.dfle_length;
 
-			flags &= ~(EIF_FIRST);
+			flags = EIF_NONE;
 		}
 	}
 
