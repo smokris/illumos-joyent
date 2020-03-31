@@ -1730,6 +1730,14 @@ lxpr_read_pid_limits(lxpr_node_t *lxpnp, lxpr_uiobuf_t *uiobuf)
 				break;
 			}
 		}
+		/*
+		 * If "Max open files" is still set to RLIM_INFINITY, make it
+		 * match the max value so that we do not ouput "unlimited".
+		 */
+		if (strcmp(lxpr_rlimtab[i].rlim_name, "Max open files") == 0 &&
+		    cur[i] == RLIM_INFINITY)
+		    cur[i] = max[i];
+
 	}
 	lxpr_unlock(p);
 
