@@ -109,7 +109,10 @@ x86pte_t pte_bits = PT_VALID | PT_REF | PT_WRITABLE | PT_MOD | PT_NOCONSIST;
  * virtual address.
  */
 paddr_t ktext_phys;
-uint32_t ksize = 2 * FOUR_MEG;	/* kernel nucleus is 8Meg */
+/*
+ * Nucleus size is 8Mb, including text, data, and BSS.
+ */
+uint32_t ksize = 2 * FOUR_MEG;
 
 static uint64_t target_kernel_text;	/* value to use for KERNEL_TEXT */
 
@@ -1688,6 +1691,46 @@ dboot_multiboot_highest_addr(void)
 	}
 }
 
+/*
+ * With the memlist ending at "end", check we can fit in without intersecting
+ * with any boot modules.  Brute force, but it's simple.  Note that we already
+ * checked that *startp > ->ml_start.
+ */
+static boolean_t
+check_for_modules(paddr_t ml_end, paddr_t *startp, paddr_t *endp, size_t stride)
+{
+	while (*endp <= ml_end) {
+		uint_t i;
+
+		for (i = 0; i < bi->bi_module_cnt; i++) {
+			native_ptr_t mod_start = modules[i].bm_addr;
+			native_ptr_t mod_end = modules[i].bm_addr +
+			    modules[i].bm_size;
+
+			if (ranges_intersect(mod_start, mod_end,
+			    *startp, *endp)) {
+				if (map_debug) {
+					dboot_printf("0x%llx-0x%llx covered by "
+					    "module %d (0x%llx-0x%llx)\n",
+					    ULL(*startp), ULL(*endp),
+					    i, ULL(mod_start), ULL(mod_end));
+				}
+				break;
+			}
+		}
+
+		if (i == bi->bi_module_cnt)
+			return (B_TRUE);
+
+		*startp += stride;
+		*endp += stride;
+	}
+
+	return (B_FALSE);
+}
+
+int high_alloc = 1;
+
 static void
 init_dboot_alloc(void)
 {
@@ -1724,6 +1767,22 @@ init_dboot_alloc(void)
 	    (paddr_t)(uintptr_t)&_end);
 	start = RNDUP(start, align);
 
+
+	/*
+	 * FIXME: this is sufficient to avoid the corruption when loading modules later
+	 * on: as long as we're finding an alloc region past the last boot module, we
+	 * won't die. Need to see if this is just due to kalloc_start bumping?? Is it
+	 * just the nucleus allocation - what if we force that up in ghigh mem? Or page
+	 * table allocs too?
+	 */
+	if (high_alloc) {
+		for (uint_t i = 0; i < bi->bi_module_cnt; i++) {
+			native_ptr_t mod_end = modules[i].bm_addr + modules[i].bm_size;
+
+			start = MAX(start, RNDUP(mod_end, MMU_PAGESIZE));
+		}
+	}
+
 	uint64_t end = start + size;
 
 	DBG(start);
@@ -1746,38 +1805,16 @@ init_dboot_alloc(void)
 			dboot_panic("couldn't find alloc space below 4Gb");
 		}
 
-		/*
-		 * We have a possible memlist, but we need to avoid any boot
-		 * modules still.  This is brute force, but it's simple.
-		 */
-		while (end <= ml_end) {
-			uint_t j;
-
-			for (j = 0; j < bi->bi_module_cnt; j++) {
-				native_ptr_t mod_start = modules[j].bm_addr;
-				native_ptr_t mod_end = modules[j].bm_addr +
-				    modules[j].bm_size;
-
-				if (ranges_intersect(mod_start, mod_end,
-				    start, end))
-					break;
-			}
-
-			if (j == bi->bi_module_cnt)
-				goto success;
-
-			start += align;
-			end += align;
+		if (check_for_modules(ml_end, &start, &end, align)) {
+			alloc_addr = start;
+			alloc_end = end;
+			DBG(alloc_addr);
+			DBG(alloc_end);
+			return;
 		}
 	}
 
 	dboot_panic("couldn't find alloc space in memlists");
-
-success:
-	alloc_addr = start;
-	alloc_end = end;
-	DBG(alloc_addr);
-	DBG(alloc_end);
 }
 
 static int
@@ -2077,8 +2114,7 @@ find_kalloc_start(void)
 	for (i = 0; i < bi->bi_module_cnt; i++) {
 		native_ptr_t mod_end = modules[i].bm_addr + modules[i].bm_size;
 
-		kalloc_start = MAX(kalloc_start,
-		    P2ALIGN(mod_end, MMU_PAGESIZE));
+		kalloc_start = MAX(kalloc_start, RNDUP(mod_end, MMU_PAGESIZE));
 	}
 
 	boot_map_end = kalloc_start;
