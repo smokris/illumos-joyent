@@ -704,6 +704,7 @@ f kernel/drv/amd64/log 0755 root sys
 f kernel/drv/amd64/lsimega 0755 root sys
 f kernel/drv/amd64/marvell88sx 0755 root sys
 f kernel/drv/amd64/mega_sas 0755 root sys
+f kernel/drv/amd64/mlxcx 0755 root sys
 f kernel/drv/amd64/mm 0755 root sys
 f kernel/drv/amd64/mpt 0755 root sys
 f kernel/drv/amd64/mpt_sas 0755 root sys
@@ -872,6 +873,7 @@ f kernel/drv/lofi.conf 0644 root sys
 f kernel/drv/log.conf 0644 root sys
 f kernel/drv/lsimega.conf 0644 root sys
 f kernel/drv/mega_sas.conf 0644 root sys
+f kernel/drv/mlxcx.conf 0644 root sys
 f kernel/drv/mm.conf 0644 root sys
 f kernel/drv/mpt.conf 0644 root sys
 f kernel/drv/mpt_sas.conf 0644 root sys
@@ -1264,6 +1266,8 @@ f lib/amd64/libdevid.so.1 0755 root bin
 s lib/amd64/libdevid.so=libdevid.so.1
 f lib/amd64/libdevinfo.so.1 0755 root bin
 s lib/amd64/libdevinfo.so=libdevinfo.so.1
+f lib/amd64/libdhcpagent.so.1 0755 root bin
+s lib/amd64/libdhcpagent.so=libdhcpagent.so.1
 f lib/amd64/libdl.so.1 0755 root bin
 s lib/amd64/libdl.so=libdl.so.1
 f lib/amd64/libdladm.so.1 0755 root bin
@@ -1379,6 +1383,8 @@ f lib/amd64/libzfs.so.1 0755 root bin
 s lib/amd64/libzfs.so=libzfs.so.1
 s lib/amd64/libzfs_core.so.1=../../usr/lib/amd64/libzfs_core.so.1
 s lib/amd64/libzfs_core.so=../../usr/lib/amd64/libzfs_core.so
+f lib/amd64/libzutil.so.1 0755 root bin
+s lib/amd64/libzutil.so=libzutil.so.1
 f lib/amd64/nss_compat.so.1 0755 root bin
 f lib/amd64/nss_dns.so.1 0755 root bin
 f lib/amd64/nss_files.so.1 0755 root bin
@@ -1584,6 +1590,8 @@ f lib/libzfs.so.1 0755 root bin
 s lib/libzfs.so=libzfs.so.1
 s lib/libzfs_core.so.1=../usr/lib/libzfs_core.so
 s lib/libzfs_core.so=../usr/lib/libzfs_core.so
+f lib/libzutil.so.1 0755 root bin
+s lib/libzutil.so=libzutil.so.1
 d lib/mpxio 0755 root bin
 f lib/mpxio/stmsboot_util 0555 root bin
 f lib/nss_compat.so.1 0755 root bin
@@ -2526,6 +2534,7 @@ f usr/bin/date 0555 root bin
 f usr/bin/dc 0555 root bin
 f usr/bin/dd 0555 root bin
 h usr/bin/decrypt=usr/lib/isaexec
+f usr/bin/demangle 0555 root bin
 f usr/bin/deroff 0555 root bin
 f usr/bin/devattr 0555 root bin
 f usr/bin/devfree 0555 root bin
@@ -4780,6 +4789,9 @@ d usr/include/sys/usb 0755 root bin
 d usr/include/sys/usb/clients 0755 root bin
 d usr/include/sys/usb/clients/audio 0755 root bin
 f usr/include/sys/usb/clients/audio/usb_audio.h 0644 root bin
+d usr/include/sys/usb/clients/ccid 0755 root bin
+f usr/include/sys/usb/clients/ccid/ccid.h 0644 root bin
+f usr/include/sys/usb/clients/ccid/uccid.h 0644 root bin
 d usr/include/sys/usb/clients/hid 0755 root bin
 f usr/include/sys/usb/clients/hid/hid.h 0644 root bin
 d usr/include/sys/usb/clients/mass_storage 0755 root bin
@@ -4924,6 +4936,8 @@ f usr/include/wchar.h 0644 root bin
 f usr/include/wchar_impl.h 0644 root bin
 f usr/include/wctype.h 0644 root bin
 f usr/include/widec.h 0644 root bin
+f usr/include/winscard.h 0644 root bin
+f usr/include/wintypes.h 0644 root bin
 f usr/include/wordexp.h 0644 root bin
 f usr/include/xlocale.h 0644 root bin
 f usr/include/xti.h 0644 root bin
@@ -5284,6 +5298,7 @@ f usr/lib/amd64/libpanel.so.1 0755 root bin
 s usr/lib/amd64/libpanel.so=libpanel.so.1
 f usr/lib/amd64/libpcidb.so.1 0755 root bin
 f usr/lib/amd64/libpcsc.so.1 0755 root bin
+s usr/lib/amd64/libpcsc.so=libpcsc.so.1
 f usr/lib/amd64/libpctx.so.1 0755 root bin
 s usr/lib/amd64/libpctx.so=libpctx.so.1
 f usr/lib/amd64/libpicl.so.1 0755 root bin
@@ -5430,6 +5445,8 @@ f usr/lib/amd64/libzonecfg.so.1 0755 root bin
 s usr/lib/amd64/libzonecfg.so=libzonecfg.so.1
 f usr/lib/amd64/libzpool.so.1 0755 root bin
 s usr/lib/amd64/libzpool.so=libzpool.so.1
+s usr/lib/amd64/libzutil.so.1=../../../lib/amd64/libzutil.so.1
+s usr/lib/amd64/libzutil.so=../../../lib/amd64/libzutil.so.1
 f usr/lib/amd64/lx_brand.so.1 0755 root sys
 f usr/lib/amd64/madv.so.1 0755 root bin
 f usr/lib/amd64/mpss.so.1 0755 root bin
@@ -5554,7 +5571,6 @@ f usr/lib/brand/shared/query 0755 root bin
 f usr/lib/brand/shared/uninstall.ksh 0444 root bin
 f usr/lib/bridged 0555 root bin
 d usr/lib/ccid 0755 root bin
-f usr/lib/ccid/ccidadm 0555 root bin
 d usr/lib/cfgadm 0755 root bin
 d usr/lib/cfgadm/amd64 0755 root bin
 f usr/lib/cfgadm/amd64/ccid.so.1 0755 root bin
@@ -5724,6 +5740,7 @@ f usr/lib/fm/dict/FMD.dict 0444 root bin
 f usr/lib/fm/dict/FMNOTIFY.dict 0444 root bin
 f usr/lib/fm/dict/GMCA.dict 0444 root bin
 f usr/lib/fm/dict/INTEL.dict 0444 root bin
+f usr/lib/fm/dict/NIC.dict 0444 root bin
 f usr/lib/fm/dict/NXGE.dict 0444 root bin
 f usr/lib/fm/dict/PCI.dict 0444 root bin
 f usr/lib/fm/dict/PCIEX.dict 0444 root bin
@@ -5739,6 +5756,7 @@ d usr/lib/fm/eft 0755 root bin
 f usr/lib/fm/eft/disk.eft 0444 root bin
 f usr/lib/fm/eft/neptune_xaui.eft 0444 root bin
 f usr/lib/fm/eft/neptune_xfp.eft 0444 root bin
+f usr/lib/fm/eft/nic.eft 0444 root bin
 f usr/lib/fm/eft/pci.eft 0444 root bin
 f usr/lib/fm/eft/pciex.eft 0444 root bin
 f usr/lib/fm/eft/pciexrc.eft 0444 root bin
@@ -6797,6 +6815,7 @@ f usr/lib/libpanel.so.1 0755 root bin
 s usr/lib/libpanel.so=libpanel.so.1
 f usr/lib/libpcidb.so.1 0755 root bin
 f usr/lib/libpcsc.so.1 0755 root bin
+s usr/lib/libpcsc.so=libpcsc.so.1
 f usr/lib/libpctx.so.1 0755 root bin
 s usr/lib/libpctx.so=libpctx.so.1
 f usr/lib/libpicl.so.1 0755 root bin
@@ -6958,6 +6977,8 @@ f usr/lib/libzoneinfo.so.1 0755 root bin
 s usr/lib/libzoneinfo.so=libzoneinfo.so.1
 f usr/lib/libzpool.so.1 0755 root bin
 s usr/lib/libzpool.so=libzpool.so.1
+s usr/lib/libzutil.so.1=../../lib/libzutil.so.1
+s usr/lib/libzutil.so=../../lib/libzutil.so.1
 d usr/lib/link_audit 0755 root bin
 s usr/lib/link_audit/32=.
 s usr/lib/link_audit/64=amd64
@@ -6993,6 +7014,8 @@ f usr/lib/locale/C/LC_MESSAGES/GMCA.mo 0444 root bin
 f usr/lib/locale/C/LC_MESSAGES/GMCA.po 0644 root bin
 f usr/lib/locale/C/LC_MESSAGES/INTEL.mo 0444 root bin
 f usr/lib/locale/C/LC_MESSAGES/INTEL.po 0644 root bin
+f usr/lib/locale/C/LC_MESSAGES/NIC.mo 0444 root bin
+f usr/lib/locale/C/LC_MESSAGES/NIC.po 0644 root bin
 f usr/lib/locale/C/LC_MESSAGES/NXGE.mo 0444 root bin
 f usr/lib/locale/C/LC_MESSAGES/NXGE.po 0644 root bin
 f usr/lib/locale/C/LC_MESSAGES/PCI.mo 0444 root bin
@@ -10128,6 +10151,9 @@ f usr/lib/netsvc/yp/ypxfr_2perday 0555 root sys
 f usr/lib/netsvc/yp/ypxfrd 0555 root sys
 f usr/lib/newsyslog 0555 root sys
 d usr/lib/nfs 0755 root sys
+d usr/lib/nfs/dtrace 0755 root sys
+f usr/lib/nfs/dtrace/nfs-time.d 0555 root bin
+f usr/lib/nfs/dtrace/nfs-trace.d 0555 root bin
 f usr/lib/nfs/libmapid.so.1 0755 root bin
 s usr/lib/nfs/libmapid.so=libmapid.so.1
 f usr/lib/nfs/lockd 0555 root bin
@@ -10616,6 +10642,9 @@ f usr/platform/i86pc/lib/fm/topo/maps/SSG-6049P-E1CR60L-JI006-hc-topology.xml 04
 f usr/platform/i86pc/lib/fm/topo/maps/SSG-6049P-E1CR60L-JI006-ses-hc-topology.xml 0444 root sys
 f usr/platform/i86pc/lib/fm/topo/maps/SSG-6049P-E1CR60L-JI006-slot-hc-topology.xml 0444 root sys
 f usr/platform/i86pc/lib/fm/topo/maps/SSG-6049P-E1CR60L-JI006-usb.usbtopo 0444 root sys
+f usr/platform/i86pc/lib/fm/topo/maps/SYS-2028U-E1CNRT+-chassis-hc-topology.xml 0444 root sys
+f usr/platform/i86pc/lib/fm/topo/maps/SYS-2028U-E1CNRT+-hc-topology.xml 0444 root sys
+f usr/platform/i86pc/lib/fm/topo/maps/SYS-2028U-E1CNRT+-usb.usbtopo 0444 root sys
 f usr/platform/i86pc/lib/fm/topo/maps/chassis-hc-topology.xml 0444 root sys
 f usr/platform/i86pc/lib/fm/topo/maps/chip-hc-topology.xml 0444 root sys
 f usr/platform/i86pc/lib/fm/topo/maps/fan-hc-topology.xml 0444 root sys
@@ -10736,6 +10765,7 @@ s usr/sbin/automount=../lib/fs/autofs/automount
 s usr/sbin/autopush=../../sbin/autopush
 f usr/sbin/bhyve 0555 root sys
 f usr/sbin/bhyvectl 0555 root sys
+f usr/sbin/ccidadm 0555 root bin
 f usr/sbin/cfgadm 0555 root bin
 f usr/sbin/check-hostname 0555 root mail
 f usr/sbin/check-permissions 0555 root mail
@@ -11937,6 +11967,7 @@ f usr/share/man/man1/date.1 0444 root bin
 f usr/share/man/man1/dc.1 0444 root bin
 f usr/share/man/man1/deallocate.1 0444 root bin
 s usr/share/man/man1/decrypt.1=encrypt.1
+f usr/share/man/man1/demangle.1 0444 root bin
 f usr/share/man/man1/deroff.1 0444 root bin
 f usr/share/man/man1/dhcpinfo.1 0444 root bin
 f usr/share/man/man1/diff.1 0444 root bin
@@ -12283,6 +12314,7 @@ f usr/share/man/man1/ypwhich.1 0444 root bin
 s usr/share/man/man1/zcat.1=compress.1
 f usr/share/man/man1/zlogin.1 0444 root bin
 f usr/share/man/man1/zonename.1 0444 root bin
+f usr/share/man/man1/zonestat.1 0444 root bin
 d usr/share/man/man1b 0755 root bin
 f usr/share/man/man1b/df.1b 0444 root bin
 f usr/share/man/man1b/ps.1b 0444 root bin
@@ -12411,6 +12443,7 @@ f usr/share/man/man1m/gsscred.1m 0444 root bin
 f usr/share/man/man1m/gssd.1m 0444 root bin
 f usr/share/man/man1m/halt.1m 0444 root bin
 f usr/share/man/man1m/hostconfig.1m 0444 root bin
+f usr/share/man/man1m/hotplug.1m 0444 root bin
 f usr/share/man/man1m/id.1m 0444 root bin
 f usr/share/man/man1m/idmap.1m 0444 root bin
 f usr/share/man/man1m/idmapd.1m 0444 root bin
@@ -12649,6 +12682,7 @@ f usr/share/man/man1m/trapstat.1m 0444 root bin
 f usr/share/man/man1m/ttyadm.1m 0444 root bin
 f usr/share/man/man1m/ttymon.1m 0444 root bin
 f usr/share/man/man1m/tunefs.1m 0444 root bin
+f usr/share/man/man1m/tzreload.1m 0444 root bin
 f usr/share/man/man1m/tzselect.1m 0444 root bin
 f usr/share/man/man1m/uadmin.1m 0444 root bin
 f usr/share/man/man1m/ucodeadm.1m 0444 root bin
@@ -12686,6 +12720,7 @@ f usr/share/man/man1m/zic.1m 0444 root bin
 f usr/share/man/man1m/zoneadm.1m 0444 root bin
 f usr/share/man/man1m/zoneadmd.1m 0444 root bin
 f usr/share/man/man1m/zonecfg.1m 0444 root bin
+f usr/share/man/man1m/zonestatd.1m 0444 root bin
 f usr/share/man/man1m/zpool.1m 0444 root bin
 f usr/share/man/man1m/zstreamdump.1m 0444 root bin
 f usr/share/man/man1m/ztest.1m 0444 root bin
@@ -13363,6 +13398,7 @@ f usr/share/man/man3c/flockfile.3c 0444 root bin
 s usr/share/man/man3c/fls.3c=ffs.3c
 s usr/share/man/man3c/flsl.3c=ffs.3c
 s usr/share/man/man3c/flsll.3c=ffs.3c
+f usr/share/man/man3c/fmemopen.3c 0444 root bin
 f usr/share/man/man3c/fmtmsg.3c 0444 root bin
 f usr/share/man/man3c/fnmatch.3c 0444 root bin
 f usr/share/man/man3c/fopen.3c 0444 root bin
@@ -13734,6 +13770,8 @@ s usr/share/man/man3c/ntohs.3c=byteorder.3c
 f usr/share/man/man3c/offsetof.3c 0444 root bin
 f usr/share/man/man3c/opendir.3c 0444 root bin
 s usr/share/man/man3c/openlog.3c=syslog.3c
+f usr/share/man/man3c/open_memstream.3c 0444 root bin
+s usr/share/man/man3c/open_wmemstream.3c=open_memstream.3c
 s usr/share/man/man3c/pclose.3c=popen.3c
 f usr/share/man/man3c/perror.3c 0444 root bin
 f usr/share/man/man3c/pfmt.3c 0444 root bin
@@ -16362,6 +16400,7 @@ f usr/share/man/man3lib/libkstat.3lib 0444 root bin
 f usr/share/man/man3lib/libkvm.3lib 0444 root bin
 f usr/share/man/man3lib/libl.3lib 0444 root bin
 f usr/share/man/man3lib/liblgrp.3lib 0444 root bin
+f usr/share/man/man3lib/libm.3lib 0444 root bin
 f usr/share/man/man3lib/libmail.3lib 0444 root bin
 f usr/share/man/man3lib/libmalloc.3lib 0444 root bin
 f usr/share/man/man3lib/libmapmalloc.3lib 0444 root bin
@@ -16371,6 +16410,7 @@ f usr/share/man/man3lib/libmenu.3lib 0444 root bin
 f usr/share/man/man3lib/libmp.3lib 0444 root bin
 s usr/share/man/man3lib/libmpapi.3lib=libMPAPI.3lib
 f usr/share/man/man3lib/libmtmalloc.3lib 0444 root bin
+f usr/share/man/man3lib/libmvec.3lib 0444 root bin
 f usr/share/man/man3lib/libnls.3lib 0444 root bin
 f usr/share/man/man3lib/libnsl.3lib 0444 root bin
 f usr/share/man/man3lib/libnvpair.3lib 0444 root bin
@@ -16749,6 +16789,7 @@ s usr/share/man/man3malloc/umem_cache_free.3malloc=umem_cache_create.3malloc
 f usr/share/man/man3malloc/umem_debug.3malloc 0444 root bin
 s usr/share/man/man3malloc/umem_free.3malloc=umem_alloc.3malloc
 s usr/share/man/man3malloc/umem_nofail_callback.3malloc=umem_alloc.3malloc
+f usr/share/man/man3malloc/umem_setmtbf.3malloc 0444 root bin
 s usr/share/man/man3malloc/umem_zalloc.3malloc=umem_alloc.3malloc
 s usr/share/man/man3malloc/valloc.3malloc=malloc.3malloc
 f usr/share/man/man3malloc/watchmalloc.3malloc 0444 root bin
@@ -17605,6 +17646,7 @@ s usr/share/man/man3proc/proc_arg_xgrab.3proc=proc_arg_grab.3proc
 s usr/share/man/man3proc/proc_arg_xpsinfo.3proc=proc_arg_psinfo.3proc
 f usr/share/man/man3proc/proc_content2str.3proc 0444 root bin
 s usr/share/man/man3proc/proc_dmodelname.3proc=proc_fltname.3proc
+f usr/share/man/man3proc/proc_fdinfo_free.3proc 0444 root bin
 f usr/share/man/man3proc/proc_fdinfo_misc.3proc 0444 root bin
 f usr/share/man/man3proc/proc_fdinfowalk.3proc 0444 root bin
 f usr/share/man/man3proc/proc_fdwalk.3proc 0444 root bin
@@ -19495,6 +19537,7 @@ f usr/share/man/man7d/devinfo.7d 0444 root bin
 f usr/share/man/man7d/dmfe.7d 0444 root bin
 f usr/share/man/man7d/dnet.7d 0444 root bin
 f usr/share/man/man7d/dtrace.7d 0444 root bin
+f usr/share/man/man7d/e1000g.7d 0444 root bin
 f usr/share/man/man7d/ehci.7d 0444 root bin
 f usr/share/man/man7d/fasttrap.7d 0444 root bin
 f usr/share/man/man7d/fbt.7d 0444 root bin
@@ -19532,6 +19575,7 @@ f usr/share/man/man7d/lofi.7d 0444 root bin
 f usr/share/man/man7d/log.7d 0444 root bin
 f usr/share/man/man7d/mega_sas.7d 0444 root bin
 f usr/share/man/man7d/mem.7d 0444 root bin
+f usr/share/man/man7d/mlxcx.7d 0444 root bin
 f usr/share/man/man7d/mpt_sas.7d 0444 root bin
 f usr/share/man/man7d/mr_sas.7d 0444 root bin
 f usr/share/man/man7d/msglog.7d 0444 root bin
@@ -20170,11 +20214,15 @@ f usr/share/man/man9f/ddi_dma_addr_bind_handle.9f 0444 root bin
 f usr/share/man/man9f/ddi_dma_alloc_handle.9f 0444 root bin
 f usr/share/man/man9f/ddi_dma_buf_bind_handle.9f 0444 root bin
 f usr/share/man/man9f/ddi_dma_burstsizes.9f 0444 root bin
+f usr/share/man/man9f/ddi_dma_cookie_iter.9f 0444 root bin
+s usr/share/man/man9f/ddi_dma_cookie_get.9f=ddi_dma_cookie_iter.9f
+s usr/share/man/man9f/ddi_dma_cookie_one.9f=ddi_dma_cookie_iter.9f
 f usr/share/man/man9f/ddi_dma_free_handle.9f 0444 root bin
 f usr/share/man/man9f/ddi_dma_getwin.9f 0444 root bin
 f usr/share/man/man9f/ddi_dma_mem_alloc.9f 0444 root bin
 f usr/share/man/man9f/ddi_dma_mem_free.9f 0444 root bin
-f usr/share/man/man9f/ddi_dma_nextcookie.9f 0444 root bin
+s usr/share/man/man9f/ddi_dma_ncookies.9f=ddi_dma_cookie_iter.9f
+s usr/share/man/man9f/ddi_dma_nextcookie.9f=ddi_dma_cookie_iter.9f
 f usr/share/man/man9f/ddi_dma_numwin.9f 0444 root bin
 f usr/share/man/man9f/ddi_dma_set_sbus64.9f 0444 root bin
 f usr/share/man/man9f/ddi_dma_sync.9f 0444 root bin

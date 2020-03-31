@@ -63,6 +63,12 @@ SKIP		^usr/platform/.*/libpsvcpolicy_psr\.so\.1
 SKIP		^usr/platform/.*/libpsvcpolicy\.so\.1
 SKIP		^usr/lib/sysevent/modules/picl_slm.so$
 
+#
+# The stdio tests all link against libumem to interpose on libc's
+# malloc; however, they do not actually reference the object.
+#
+SKIP		^opt/libc-tests/tests/stdio/
+
 # Objects that are allowed to have executable data segments
 EXEC_DATA	^MACH(lib)/ld\.so\.1$
 EXEC_DATA	^lib/libc\.so\.1$	# 6524709, 32-bit, needed for x86 only
@@ -156,7 +162,7 @@ UNREF_OBJ	/lib.*\ of\ .*libpq\.so\.4
 UNREF_OBJ	/lib.*\ of\ .*libpython2\.4\.so\.1\.0
 UNREF_OBJ	/lib.*\ of\ .*libpython2\.6\.so\.1\.0
 UNREF_OBJ	/lib.*\ of\ .*libpython2\.7\.so\.1\.0
-UNREF_OBJ	/lib.*\ of\ .*libpython3\.[567]m?\.so\.1\.0
+UNREF_OBJ	/lib.*\ of\ .*libpython3\.[5678]m?\.so\.1\.0
 UNREF_OBJ	/libgcc_s.*\ of\ .*libstdc\+\+\.so\.6
 UNREF_OBJ	/libgcc_s.*\ of\ .*libgmodule-2\.0\.so\.0
 

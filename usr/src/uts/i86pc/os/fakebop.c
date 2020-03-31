@@ -101,7 +101,7 @@ struct bsys_mem bm;
 
 /*
  * Boot info from "glue" code in low memory. xbootp is used by:
- *	do_bop_phys_alloc(), do_bsys_alloc() and boot_prop_finish().
+ *	do_bop_phys_alloc(), do_bsys_alloc() and read_bootenvrc().
  */
 static struct xboot_info *xbootp;
 static uintptr_t next_virt;	/* next available virtual address */
@@ -670,7 +670,7 @@ boot_prop_display(char *buffer)
  * we do single character I/O since this is really just looking at memory
  */
 void
-boot_prop_finish(void)
+read_bootenvrc(void)
 {
 	int fd;
 	char *line;
@@ -778,16 +778,31 @@ boot_prop_finish(void)
 
 		/*
 		 * If a property was explicitly set on the command line
-		 * it will override a setting in bootenv.rc
+		 * it will override a setting in bootenv.rc. We make an
+		 * exception for a property from the bootloader such as:
+		 *
+		 * console="text,ttya,ttyb,ttyc,ttyd"
+		 *
+		 * In such a case, picking the first value here (as
+		 * lookup_console_devices() does) is at best a guess; if
+		 * bootenv.rc has a value, it's probably better.
 		 */
-		if (do_bsys_getproplen(NULL, name) >= 0)
-			continue;
+		if (strcmp(name, "console") == 0) {
+			char propval[BP_MAX_STRLEN] = "";
 
-		bsetprops(name, value);
+			if (do_bsys_getprop(NULL, name, propval) == -1 ||
+			    strchr(propval, ',') != NULL)
+				bsetprops(name, value);
+			continue;
+		}
+
+		if (do_bsys_getproplen(NULL, name) == -1)
+			bsetprops(name, value);
 	}
 done:
 	if (fd >= 0)
 		(void) BRD_CLOSE(bfs_ops, fd);
+
 
 	/*
 	 * Check if we have to limit the boot time allocator
@@ -843,7 +858,7 @@ done:
 			v_len = 0;
 		}
 		consoledev[v_len] = 0;
-		bcons_init2(inputdev, outputdev, consoledev);
+		bcons_post_bootenvrc(inputdev, outputdev, consoledev);
 	} else {
 		/*
 		 * Ensure console property exists
@@ -853,7 +868,7 @@ done:
 		if (v_len < 0)
 			bsetprops("console", "hypervisor");
 		inputdev = outputdev = consoledev = "hypervisor";
-		bcons_init2(inputdev, outputdev, consoledev);
+		bcons_post_bootenvrc(inputdev, outputdev, consoledev);
 	}
 
 	if (find_boot_prop("prom_debug") || kbm_debug)
@@ -1024,6 +1039,7 @@ xen_vbdroot_props(char *s)
 	short minor;
 	long addr = 0;
 
+	mi = '\0';
 	pnp = vbdpath + strlen(vbdpath);
 	prop_p = s + strlen(lnamefix);
 	while ((*prop_p != '\0') && (*prop_p != 's') && (*prop_p != 'p'))
@@ -2396,6 +2412,7 @@ find_fw_table(ACPI_TABLE_RSDP *rsdp, char *signature)
 	 * use the XSDT.  If the XSDT address is 0, though, fall back to
 	 * revision 1 and use the RSDT.
 	 */
+	xsdt_addr = 0;
 	if (revision == 0) {
 		if (rsdp == NULL)
 			return (NULL);
@@ -2911,8 +2928,10 @@ build_firmware_properties(struct xboot_info *xbp)
 	tp = find_fw_table(rsdp, ACPI_SIG_MCFG);
 #else /* __xpv */
 	enumerate_xen_cpus();
-	if (DOMAIN_IS_INITDOMAIN(xen_info))
+	if (DOMAIN_IS_INITDOMAIN(xen_info)) {
+		rsdp = find_rsdp(xbp);
 		tp = find_fw_table(rsdp, ACPI_SIG_MCFG);
+	}
 #endif /* __xpv */
 	if (tp != NULL)
 		process_mcfg((ACPI_TABLE_MCFG *)tp);

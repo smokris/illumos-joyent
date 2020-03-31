@@ -11,7 +11,7 @@
 
 #
 # Copyright (c) 2012, 2016 by Delphix. All rights reserved.
-# Copyright 2019 Joyent, Inc.
+# Copyright 2020 Joyent, Inc.
 #
 
 SUBDIRS_i386 = i386 imc
@@ -33,18 +33,28 @@ SUBDIRS =       \
 		$(SUBDIRS_$(MACH))
 
 PROGS = \
-	OS-6097
+	odirectory \
+	OS-6097 \
+	writev
 
+CPPFLAGS += -D_REENTRANT
 PROGS32 = $(PROGS:%=%.32)
 PROGS64 = $(PROGS:%=%.64)
-
-OS-6097.32 :=	LDLIBS += -ldlpi
-OS-6097.64 :=	LDLIBS64 += -ldlpi
 
 ROOTOPTDIR = $(ROOT)/opt/os-tests/tests
 ROOTOPTPROGS = $(PROGS32:%=$(ROOTOPTDIR)/%) \
 	$(PROGS64:%=$(ROOTOPTDIR)/%) \
 	$(SCRIPTS:%=$(ROOTOPTDIR)/%)
+
+odirectory.32 :=	LDLIBS += -lsocket
+odirectory.64 :=	LDLIBS64 += -lsocket
+
+OS-6097.32 :=	LDLIBS += -ldlpi
+OS-6097.64 :=	LDLIBS64 += -ldlpi
+
+writev.32 :=		CPPFLAGS += -D_FILE_OFFSET_BITS=64
+writev.32 :=		CSTD = $(CSTD_GNU99)
+writev.64 :=		CSTD = $(CSTD_GNU99)
 
 include $(SRC)/cmd/Makefile.cmd
 
@@ -52,7 +62,6 @@ all     :=      TARGET = all
 install :=      TARGET = install
 clean   :=      TARGET = clean
 clobber :=      TARGET = clobber
-lint    :=      TARGET = lint
 
 .KEEP_STATE:
 
@@ -60,7 +69,7 @@ install: $(SUBDIRS) $(ROOTOPTPROGS)
 
 all: $(SUBDIRS) $(PROGS32) $(PROGS64)
 
-clean lint: $(SUBDIRS)
+clean: $(SUBDIRS)
 
 $(ROOTOPTPROGS): $(PROGS32) $(PROGS64) $(ROOTOPTDIR)
 

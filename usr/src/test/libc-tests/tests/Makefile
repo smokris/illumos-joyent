@@ -24,6 +24,7 @@ SUBDIRS = \
 	random \
 	regex \
 	select \
+	stdio \
 	strerror \
 	symbols \
 	threads \
@@ -57,9 +58,6 @@ SCRIPTS = \
 	psignal
 
 CPPFLAGS += -D_REENTRANT
-
-# needs work
-SMOFF += all_func_returns,snprintf_overflow,unreachable
 
 PROGS32 = $(PROGS:%=%.32)
 PROGS64 = \

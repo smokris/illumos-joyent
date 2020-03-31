@@ -658,6 +658,7 @@ PORTSTDIO=			\
 	_filbuf.o		\
 	_findbuf.o		\
 	_flsbuf.o		\
+	_stdio_flags.o		\
 	_wrtchk.o		\
 	clearerr.o		\
 	ctermid.o		\
@@ -673,6 +674,7 @@ PORTSTDIO=			\
 	fileno.o		\
 	flockf.o		\
 	flush.o			\
+	fmemopen.o		\
 	fopen.o			\
 	fpos.o			\
 	fputc.o			\
@@ -689,6 +691,9 @@ PORTSTDIO=			\
 	getpass.o		\
 	gets.o			\
 	getw.o			\
+	mse.o			\
+	open_memstream.o	\
+	open_wmemstream.o	\
 	popen.o			\
 	putc.o			\
 	putchar.o		\
@@ -704,7 +709,6 @@ PORTSTDIO=			\
 	tmpfile.o		\
 	tmpnam_r.o		\
 	ungetc.o		\
-	mse.o			\
 	vscanf.o		\
 	vwscanf.o		\
 	wscanf.o
@@ -1282,6 +1286,17 @@ $(ASSYMDEP_OBJS:%=pics/%): assym.h
 assym.h := CFLAGS64 += $(CCGDEBUG)
 
 GENASSYM_C = $(LIBCDIR)/$(MACH)/genassym.c
+LDFLAGS.native = $(LDASSERTS) $(ZASSERTDEFLIB)=libc.so $(BDIRECT)
+
+genassym: $(GENASSYM_C)
+	$(NATIVECC) $(NATIVE_CFLAGS) -I$(LIBCBASE)/inc -I$(LIBCDIR)/inc \
+		$(CPPFLAGS.native) $(LDFLAGS.native) -o $@ $(GENASSYM_C)
+
+OFFSETS = $(LIBCDIR)/$(MACH)/offsets.in
+
+assym.h: $(OFFSETS) genassym
+	$(OFFSETS_CREATE) <$(OFFSETS) >$@
+	./genassym >>$@
 
 # derived C source and related explicit dependencies
 $(LIBCDIR)/port/gen/new_list.c: $(LIBCDIR)/port/gen/errlist $(LIBCDIR)/port/gen/errlist.awk
