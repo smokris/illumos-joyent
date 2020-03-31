@@ -1692,45 +1692,27 @@ dboot_multiboot_highest_addr(void)
 }
 
 /*
- * With the memlist ending at "end", check we can fit in without intersecting
- * with any boot modules.  Brute force, but it's simple.  Note that we already
- * checked that *startp > ->ml_start.
+ * Set up our simple physical memory allocator.  This is used to allocate both
+ * the kernel nucleus (ksize) and our page table pages.
+ *
+ * We need to find a contiguous region in the memlists that is below 4Gb (as
+ * we're 32-bit and need to use the addresses), and isn't otherwise in use, b
+ * dboot, multiboot allocations, or boot modules. The memlist is sorted and
+ * merged by this point.
+ *
+ * Historically, this code always did the allocations past the end of the
+ * highest used address, even if there was space below.  For reasons unclear, if
+ * we don't do this, then we get massive corruption during early kernel boot.
+ *
+ * Note that find_kalloc_start() starts its search at the end of this
+ * allocation.
+ *
+ * This all falls apart horribly on some EFI systems booting under iPXE, where
+ * we end up with boot module allocation such that there is no room between the
+ * highest used address and our 4Gb limit. To that end, we have an iPXE hack
+ * that limits the maximum address used by its allocations in an attempt to give
+ * us room.
  */
-static boolean_t
-check_for_modules(paddr_t ml_end, paddr_t *startp, paddr_t *endp, size_t stride)
-{
-	while (*endp <= ml_end) {
-		uint_t i;
-
-		for (i = 0; i < bi->bi_module_cnt; i++) {
-			native_ptr_t mod_start = modules[i].bm_addr;
-			native_ptr_t mod_end = modules[i].bm_addr +
-			    modules[i].bm_size;
-
-			if (ranges_intersect(mod_start, mod_end,
-			    *startp, *endp)) {
-				if (map_debug) {
-					dboot_printf("0x%llx-0x%llx covered by "
-					    "module %d (0x%llx-0x%llx)\n",
-					    ULL(*startp), ULL(*endp),
-					    i, ULL(mod_start), ULL(mod_end));
-				}
-				break;
-			}
-		}
-
-		if (i == bi->bi_module_cnt)
-			return (B_TRUE);
-
-		*startp += stride;
-		*endp += stride;
-	}
-
-	return (B_FALSE);
-}
-
-int high_alloc = 1;
-
 static void
 init_dboot_alloc(void)
 {
@@ -1759,28 +1741,19 @@ init_dboot_alloc(void)
 	/*
 	 * We're looking for a place in the memlists that is below 4Gb (as we're
 	 * 32-bit and need to use the addresses), and isn't otherwise in use, by
-	 * dboot, multiboot allocations, or boot modules. The memlist is sorted
-	 * and merged by this point.
 	 */
 
 	uint64_t start = MAX(dboot_multiboot_highest_addr(),
 	    (paddr_t)(uintptr_t)&_end);
 	start = RNDUP(start, align);
 
-
 	/*
-	 * FIXME: this is sufficient to avoid the corruption when loading modules later
-	 * on: as long as we're finding an alloc region past the last boot module, we
-	 * won't die. Need to see if this is just due to kalloc_start bumping?? Is it
-	 * just the nucleus allocation - what if we force that up in ghigh mem? Or page
-	 * table allocs too?
+	 * As mentioned above, only start our search after all the boot modules.
 	 */
-	if (high_alloc) {
-		for (uint_t i = 0; i < bi->bi_module_cnt; i++) {
-			native_ptr_t mod_end = modules[i].bm_addr + modules[i].bm_size;
+	for (uint_t i = 0; i < bi->bi_module_cnt; i++) {
+		native_ptr_t mod_end = modules[i].bm_addr + modules[i].bm_size;
 
-			start = MAX(start, RNDUP(mod_end, MMU_PAGESIZE));
-		}
+		start = MAX(start, RNDUP(mod_end, MMU_PAGESIZE));
 	}
 
 	uint64_t end = start + size;
@@ -1805,7 +1778,7 @@ init_dboot_alloc(void)
 			dboot_panic("couldn't find alloc space below 4Gb");
 		}
 
-		if (check_for_modules(ml_end, &start, &end, align)) {
+		if (end < ml_end) {
 			alloc_addr = start;
 			alloc_end = end;
 			DBG(alloc_addr);
@@ -2102,8 +2075,8 @@ page_alloc(void)
  * along to the next one.
  *
  * This is making the massive assumption that there is a suitably large area for
- * kernel allocations past the end of the last boot module. Worse, we don't have
- * a simple way to assert that is so.
+ * kernel allocations past the end of the last boot module and the dboot
+ * allocated region. Worse, we don't have a simple way to assert that is so.
  */
 static paddr_t
 find_kalloc_start(void)
