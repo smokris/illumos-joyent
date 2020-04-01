@@ -265,7 +265,7 @@ static void bd_update_state(bd_t *);
 static int bd_check_state(bd_t *, enum dkio_state *);
 static int bd_flush_write_cache(bd_t *, struct dk_callback *);
 static int bd_check_uio(dev_t, struct uio *);
-static int bd_free_space(bd_t *, dkioc_free_list_t *);
+static int bd_free_space(dev_t, bd_t *, dkioc_free_list_t *);
 
 struct cmlb_tg_ops bd_tg_ops = {
 	TG_DK_OPS_VERSION_1,
@@ -1553,7 +1553,7 @@ bd_ioctl(dev_t dev, int cmd, intptr_t arg, int flag, cred_t *credp, int *rvalp)
 			return (rv);
 
 		/* bd_xfer_done() frees dfl via bd_xfer_free() */
-		rv = bd_free_space(bd, dfl);
+		rv = bd_free_space(dev, bd, dfl);
 		return (rv);
 	}
 
@@ -1967,14 +1967,75 @@ bd_free_space_done(struct buf *bp)
 	return (0);
 }
 
+/*
+ * Adjust extents to be relative to start of the device. When DKIOCFREE
+ * is called on a blkdev instance, the extents are relative to the start of
+ * the partition for a given blkdev instance. We adjust the extent
+ * starting addresses (by adding the partition start offset to dfl_offset)
+ * and truncate any extents that extend beyond the end of the partition.
+ */
 static int
-bd_free_space(bd_t *bd, dkioc_free_list_t *dfl)
+bd_adjust_extents(dev_t dev, bd_t *bd, dkioc_free_list_t *dfl)
+{
+	dkioc_free_list_ext_t	*ext;
+	minor_t			part;
+	diskaddr_t		p_lba;
+	diskaddr_t		p_nblks;
+	uint64_t		offset;
+	uint64_t		length;
+	size_t			i;
+	uint32_t		shift = bd->d_blkshift;
+
+	part = BDPART(dev);
+
+	if (cmlb_partinfo(bd->d_cmlbh, part, &p_nblks, &p_lba,
+	    NULL, NULL, 0) != 0) {
+		return (ENXIO);
+	}
+
+	offset = (uint64_t)p_lba << shift;
+	length = (uint64_t)p_nblks << shift;
+
+	dfl->dfl_offset += offset;
+	if (dfl->dfl_offset < offset)
+		return (EOVERFLOW); /* XXX: or EINVAL? */
+
+	for (ext = dfl->dfl_exts, i = 0; i < dfl->dfl_num_exts; i++, ext++) {
+		if (ext->dfle_start > length) {
+			ext->dfle_length = 0;
+			continue;
+		}
+
+		uint64_t end = ext->dfle_start + ext->dfle_length;
+
+		if (end < ext->dfle_start)
+			return (EOVERFLOW); /* XXX: or EINVAL? */
+
+		if (end > length)
+			ext->dfle_length = length - ext->dfle_start;
+	}
+
+	return (0);
+}
+
+static int
+bd_free_space(dev_t dev, bd_t *bd, dkioc_free_list_t *dfl)
 {
 	buf_t			*bp = NULL;
 	bd_xfer_impl_t		*xi = NULL;
 	int			rv = 0;
 	boolean_t		sync = (dfl->dfl_flags & DF_WAIT_SYNC) != 0 ?
 	    B_TRUE : B_FALSE;
+
+	/*
+	 * bd_ioctl created our own copy of dfl, so we can modify as
+	 * necessary
+	 */
+	rv = bd_adjust_extents(dev, bd, dfl);
+	if (rv != 0) {
+		dfl_free(dfl);
+		return (rv);
+	}
 
 	bp = getrbuf(KM_SLEEP);
 	bp->b_resid = 0;
