@@ -10,7 +10,7 @@
  source.  A copy of the CDDL is also available via the Internet at
  http://www.illumos.org/license/CDDL.
 
- Copyright (c) 2019, Joyent, Inc.
+ Copyright 2020 Joyent, Inc.
 -->
 
 <topology name='i86pc' scheme='hc'>
@@ -94,7 +94,7 @@
        <range name='fan' min='0' max='100'>
           <enum-method name='ipmi' version='1' />
        </range>
-       <range name='bay' min='0' max='1'>
+       <range name='bay' min='0' max='3'>
           <propmap name='SSG-6049P-E1CR60L-JI006-disk' />
        </range>
       <range name='usb-chassis' min='0' max='256'>

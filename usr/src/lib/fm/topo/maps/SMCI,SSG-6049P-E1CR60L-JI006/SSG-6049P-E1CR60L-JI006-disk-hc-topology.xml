@@ -11,12 +11,15 @@
  source.  A copy of the CDDL is also available via the Internet at
  http://www.illumos.org/license/CDDL.
 
- Copyright (c) 2019, Joyent, Inc.
+ Copyright 2020 Joyent, Inc.
 
 -->
 
 <topology name='disk' scheme='hc'>
-  <range name='bay' min='0' max='1'>
+  <range name='bay' min='0' max='3'>
+   <!--
+     There are two, rear-facing SFF SATA bays on this platform.
+   -->
     <node instance='0'>
       <facility name='fail' type='indicator' provider='fac_prov_ahci' >
         <propgroup name='facility' version='1' name-stability='Private'
@@ -53,6 +56,11 @@
           value='/devices/pci@0,0/pci15d9,99d@17:devctl' />
         <propval name='port' type='uint32' value='4' />
       </propgroup>
+      <dependents grouping='children'>
+      <range name='disk' min='0' max='0'>
+        <enum-method name='disk' version='1' />
+      </range>
+      </dependents>
     </node>
     <node instance='1'>
       <facility name='fail' type='indicator' provider='fac_prov_ahci' >
@@ -90,11 +98,60 @@
           value='/devices/pci@0,0/pci15d9,99d@17:devctl' />
         <propval name='port' type='uint32' value='5' />
       </propgroup>
-    </node>
-    <dependents grouping='children'>
+      <dependents grouping='children'>
       <range name='disk' min='0' max='0'>
         <enum-method name='disk' version='1' />
       </range>
-    </dependents>
-   </range>
+      </dependents>
+    </node>
+
+   <!--
+     There are actually 6 U.2 NVME bays on this platform.  But
+     because we don't have a unit with all six bays populated we're
+     not able to determine what their parent devices would be.  We
+     could guess because we know the parent would be a PCI express
+     root port, but we wouldn't know which root ports are associated
+     with which physical bays without actually populating the bays.
+
+     For now we add the data for the first two bays, which are the
+     only ones that would be populated accoridng to our BOM
+     specification.
+   -->
+    <node instance='2'>
+      <propgroup name='protocol' version='1' name-stability='Private'
+        data-stability='Private'>
+        <propval name='label' type='string' value='NVME 0' />
+      </propgroup>
+          <propgroup name='binding' version='1'
+              name-stability='Private' data-stability='Private' >
+              <propval name='driver' type='string' value='nvme' />
+              <propval name='parent-device' type='string'
+                value='/pci@14,0/pci8086,2030@0' />
+      </propgroup>
+      <dependents grouping='children'>
+      <range name='nvme' min='0' max='0'>
+          <enum-method name='disk' version='1' />
+        </range>
+      </dependents>
+    </node>
+
+    <node instance='3'>
+      <propgroup name='protocol' version='1' name-stability='Private'
+        data-stability='Private'>
+        <propval name='label' type='string' value='NVME 1' />
+      </propgroup>
+          <propgroup name='binding' version='1'
+              name-stability='Private' data-stability='Private' >
+              <propval name='driver' type='string' value='nvme' />
+              <propval name='parent-device' type='string'
+                value='/pci@14,0/pci8086,2031@1' />
+      </propgroup>
+      <dependents grouping='children'>
+        <range name='nvme' min='0' max='0'>
+          <enum-method name='disk' version='1' />
+        </range>
+      </dependents>
+    </node>
+
+  </range>  <!-- bay -->
 </topology>

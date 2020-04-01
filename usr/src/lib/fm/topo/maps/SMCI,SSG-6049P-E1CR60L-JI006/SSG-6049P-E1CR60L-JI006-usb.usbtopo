@@ -10,19 +10,22 @@
 #
 
 #
-# Copyright (c) 2018, Joyent, Inc.
+# Copyright 2020 Joyent, Inc.
 #
 
 #
 # This file describes the USB topology for the SuperMicro
-# SSG-6049P-E1CR36L product. For more information on the format see
-# topo_usb_file.c.
+# SSG-6049P-E1CR36L product, which uses the Super X11DSC+ motherboard.  The
+# board contains two type-A USB 3.0 ports that are exposed externally.  It also
+# has an internal type-A USB 3.0 port on the motherboard.
+#
+# For more information on the format see topo_usb_metadata.c.
 #
 
 enable-acpi-match
 port
 	label
-		Rear Upper Left USB
+		Rear Upper USB
 	chassis
 	external
 	port-type
@@ -35,7 +38,7 @@ end-port
 
 port
 	label
-		Rear Lower Left USB
+		Rear Lower USB
 	chassis
 	external
 	port-type
@@ -48,38 +51,13 @@ end-port
 
 port
 	label
-		Rear Upper Right USB
-	chassis
-	external
-	port-type
-		0x3
-	acpi-path
-		\_SB_.PC00.XHCI.RHUB.HS04
-	acpi-path
-		\_SB_.PC00.XHCI.RHUB.SS04
-end-port
+		Internal USB
 
-port
-	label
-		Rear Lower Right USB
-	chassis
-	external
+	internal
 	port-type
 		0x3
 	acpi-path
 		\_SB_.PC00.XHCI.RHUB.HS03
 	acpi-path
 		\_SB_.PC00.XHCI.RHUB.SS03
-end-port
-
-port
-	label
-		Internal USB
-	internal
-	port-type
-		0x3
-	acpi-path
-		\_SB_.PC00.XHCI.RHUB.HS10
-	acpi-path
-		\_SB_.PC00.XHCI.RHUB.SS07
 end-port
