@@ -148,6 +148,12 @@ static const ddi_dma_attr_t vioblk_dma_attr = {
 	.dma_attr_flags =		0
 };
 
+/*
+ * Break up DISCARD requests into smaller pieces if the request exceeds
+ * the limits given by the host. If 0, requests may be truncated if
+ * they exceed the host limits.
+ */
+static int vioblk_split_discard = 0;
 
 static vioblk_req_t *
 vioblk_req_alloc(vioblk_t *vib)
@@ -692,6 +698,7 @@ vioblk_free_exts(const dkioc_free_list_ext_t *exts, size_t n_exts,
 		struct vioblk_discard_write_zeroes vdwz = {
 			.vdwz_sector = exts->dfle_start >> DEV_BSHIFT,
 			.vdwz_num_sectors = exts->dfle_length >> DEV_BSHIFT,
+			.vdwz_flags = 0
 		};
 
 		bcopy(&vdwz, wzp, sizeof (*wzp));
@@ -737,25 +744,60 @@ static int
 vioblk_bd_free_space(void *arg, bd_xfer_t *xfer)
 {
 	vioblk_t *vib = arg;
-	dkioc_free_align_t align = {
-		.dfa_bsize = DEV_BSIZE,
-		.dfa_max_ext = vib->vib_max_discard_seg,
-		.dfa_max_blocks = vib->vib_max_discard_sectors,
-		.dfa_align = vib->vib_discard_sector_align * DEV_BSIZE
-	};
 	struct vioblk_freesp_arg sp_arg = {
 		.vfpa_vioblk = vib,
 		.vfpa_xfer = xfer
 	};
-	int r = dfl_iter(xfer->x_dfl, &align, vioblk_free_exts, &sp_arg,
-	    KM_SLEEP, 0);
+	dkioc_free_list_t *dfl = xfer->x_dfl;
+	int r = 0;
 
-	/*
-	 * If we didn't include xfer as part of the final request, we
-	 * should return failure so that bd_sched() will free xfer.
-	 */
-	if (sp_arg.vfpa_xfer != NULL)
-		VERIFY3S(r, !=, 0);
+	if (dfl->dfl_num_exts == 0) {
+		bd_xfer_done(xfer, 0);
+		return (0);
+	}
+
+	if (vioblk_split_discard) {
+		dkioc_free_align_t align = {
+			.dfa_bsize = DEV_BSIZE,
+			.dfa_max_ext = vib->vib_max_discard_seg,
+			.dfa_max_blocks = vib->vib_max_discard_sectors,
+			.dfa_align = vib->vib_discard_sector_align * DEV_BSIZE
+		};
+
+		r = dfl_iter(dfl, &align, vioblk_free_exts, &sp_arg,
+		    KM_SLEEP, 0);
+
+		/*
+		 * If we didn't include xfer as part of the final request, we
+		 * should return failure so that bd_sched() will free xfer.
+		 */
+		if (sp_arg.vfpa_xfer != NULL)
+			VERIFY3S(r, !=, 0);
+	} else {
+		uint64_t start = dfl->dfl_offset + dfl->dfl_exts[0].dfle_start;
+		uint64_t end = start + dfl->dfl_exts[0].dfle_length;
+		uint64_t align = vib->vib_discard_sector_align * DEV_BSIZE;
+		uint64_t maxend = start +
+		    vib->vib_max_discard_sectors * DEV_BSIZE;
+
+		if (end > maxend)
+			end = maxend;
+
+		start = P2ROUNDUP(start, align);
+		end = P2ALIGN(end, DEV_BSIZE);
+
+		if (start == end) {
+			bd_xfer_done(xfer, 0);
+			return (0);
+		}
+
+		dkioc_free_list_ext_t ext = {
+			.dfle_start = start,
+			.dfle_length = end - start
+		};
+
+		r = vioblk_free_exts(&ext, 1, B_TRUE, &sp_arg);
+	}
 
 	return (r);
 }
