@@ -1409,9 +1409,9 @@ lx_socket_create(int domain, int type, int protocol, int options, file_t **fpp,
 	 *
 	 * This can be removed if we ever implement SOCK_DGRAM + IPPROTO_ICMP.
 	 */
-	if (type == SOCK_DGRAM && (protocol == IPPROTO_ICMP
-	    || protocol == IPPROTO_ICMPV6))
-	    return (EACCES);
+	if (type == SOCK_DGRAM && (protocol == IPPROTO_ICMP ||
+	    protocol == IPPROTO_ICMPV6))
+		return (EACCES);
 
 	/* logic cloned from so_socket */
 	so = socket_create(domain, type, protocol, NULL, NULL, SOCKET_SLEEP,
