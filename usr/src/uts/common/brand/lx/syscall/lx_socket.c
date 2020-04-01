@@ -1403,12 +1403,11 @@ lx_socket_create(int domain, int type, int protocol, int options, file_t **fpp,
 	int err, fd;
 
 	/*
-	 * EACCES is returned in linux when the user isn't allowed to use a
+	 * EACCES is returned in Linux when the user isn't allowed to use a
 	 * "ping socket". EACCES is also used by the iputils-ping userland
 	 * application to determine if fallback to SOCK_RAW is necessary.
 	 *
 	 * This can be removed if we ever implement SOCK_DGRAM + IPPROTO_ICMP.
-	 * See linux commit c319b4d76b9e583a5d88d6bf190e079c4e43213d.
 	 */
 	if (type == SOCK_DGRAM && (protocol == IPPROTO_ICMP
 	    || protocol == IPPROTO_ICMPV6))
