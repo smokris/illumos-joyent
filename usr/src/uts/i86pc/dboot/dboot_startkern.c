@@ -1696,7 +1696,7 @@ dboot_multiboot_highest_addr(void)
  * the kernel nucleus (ksize) and our page table pages.
  *
  * We need to find a contiguous region in the memlists that is below 4Gb (as
- * we're 32-bit and need to use the addresses), and isn't otherwise in use, b
+ * we're 32-bit and need to use the addresses), and isn't otherwise in use by
  * dboot, multiboot allocations, or boot modules. The memlist is sorted and
  * merged by this point.
  *
@@ -1737,11 +1737,6 @@ init_dboot_alloc(void)
 	 * gets aligned up anyway).
 	 */
 	size += RNDUP(MMU_PAGESIZE * (2048 + 256), align);
-
-	/*
-	 * We're looking for a place in the memlists that is below 4Gb (as we're
-	 * 32-bit and need to use the addresses), and isn't otherwise in use, by
-	 */
 
 	uint64_t start = MAX(dboot_multiboot_highest_addr(),
 	    (paddr_t)(uintptr_t)&_end);
