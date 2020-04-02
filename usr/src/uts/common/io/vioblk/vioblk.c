@@ -638,14 +638,15 @@ vioblk_free_exts(const dkioc_free_list_ext_t *exts, size_t n_exts,
 	boolean_t polled;
 
 	/*
-	 * Corner case -- we had a DKIOCFREE request, but none of the
-	 * extents conformed to the host's alignment requirements. We
-	 * just complete the I/O with no actual work done.
+	 * While rare, it's possible we might get called with a list of
+	 * zero extents. In that case, just return success.
 	 */
 	if (n_exts == 0) {
-		VERIFY(last);
-		VERIFY3P(exts, ==, NULL);
-		bd_xfer_done(args->vfpa_xfer, 0);
+		if (last) {
+			bd_xfer_done(args->vfpa_xfer, 0);
+			args->vfpa_xfer = NULL;
+		}
+
 		return (0);
 	}
 
@@ -656,34 +657,23 @@ vioblk_free_exts(const dkioc_free_list_ext_t *exts, size_t n_exts,
 	 * framework handles implementing the necessary sync/not sync semantics
 	 * for a DKIOCFREE request, that is in terms of the entire original
 	 * request. If dfl_iter() had to break things up, we always treat
-	 * the non-final calls to vioblk_free_extents() as synchronous (polled).
+	 * the non-final (last == B_FALSE) calls to vioblk_free_extents() as
+	 * synchronous (polled).
 	 *
-	 * This is a conscious choice -- we could always just issue the
-	 * resulting requests and let the host deal with it without waiting for
-	 * the results, but since it's common for TRIM/UNMAP/DELETE requests
-	 * to physical devices to be slow enough that users such as zfs go to
-	 * great lengths to control the rate at which it issues them, it
-	 * seems reasonable to at minimum issue the broken up bits of the
-	 * original request one at a time (until the final request) to avoid
-	 * causing problems.
+	 * The assumption is that if the host is placing limits on a
+	 * DISCARD request, issuing multiple requests to the same device
+	 * asynchronously is likely to have undesirable results (or else why
+	 * wouldn't the host expose larger limits to prevent segmentation?),
+	 * so we issue one at a time (at least until the final group).
 	 *
-	 * Ideally, we'd have a way for DKIOCFREE issuers (e.g. zfs) to
-	 * discover the underlying device requirements so that it always issues
-	 * requests that don't require any special handling by the driver,
-	 * however, that's not possible today, so we're faced with either
-	 * ignoring a non-conforming request (too big, too many extents, etc.)
-	 * completely, only processing as much of the request as possible
-	 * in a single request to the host (with no way to inform the caller),
-	 * or try to honor the request by issuing multiple requests to the
-	 * host.
+	 * The vioblk_split_discard tunable can be set to 0 to disable this
+	 * behavior -- in that case, any extents that exceed the host limits
+	 * are just discarded.
 	 *
-	 * We've currently opted for the third option. By far the single
-	 * most common user of this is almost certainly going to be zfs
-	 * and zfs today will only issue a single DKIOCFREE request with
-	 * a single extent at a time, so this seems reasonable for the
-	 * initial implementation. Nothing here should prevent us from
-	 * implementing alternate strategies in the future if the need
-	 * arises.
+	 * Unfortunately, there isn't currently a way to report partial
+	 * results, so the choices are to fail the request if any extent in
+	 * the request doesn't meet the device requirements or to break
+	 * as much of the request as is possible 
 	 */
 	polled = !!last;
 
@@ -696,8 +686,8 @@ vioblk_free_exts(const dkioc_free_list_ext_t *exts, size_t n_exts,
 
 	for (i = 0; i < n_exts; i++, exts++, wzp++) {
 		struct vioblk_discard_write_zeroes vdwz = {
-			.vdwz_sector = exts->dfle_start >> DEV_BSHIFT,
-			.vdwz_num_sectors = exts->dfle_length >> DEV_BSHIFT,
+			.vdwz_sector = exts->dfle_start,
+			.vdwz_num_sectors = exts->dfle_length,
 			.vdwz_flags = 0
 		};
 
@@ -744,60 +734,31 @@ static int
 vioblk_bd_free_space(void *arg, bd_xfer_t *xfer)
 {
 	vioblk_t *vib = arg;
+	dkioc_free_align_t align = {
+		.dfa_bsize = DEV_BSIZE,
+		.dfa_max_ext = vib->vib_max_discard_seg,
+		.dfa_max_blocks = vib->vib_max_discard_sectors,
+		.dfa_align = vib->vib_discard_sector_align,
+		.dfa_gran = 1,
+	};
 	struct vioblk_freesp_arg sp_arg = {
 		.vfpa_vioblk = vib,
 		.vfpa_xfer = xfer
 	};
 	dkioc_free_list_t *dfl = xfer->x_dfl;
+	dkioc_iter_flags_t iter_flags =
+	    (vioblk_split_discard == 0) ? DIF_NOSPLIT : DIF_NONE;
 	int r = 0;
 
-	if (dfl->dfl_num_exts == 0) {
-		bd_xfer_done(xfer, 0);
-		return (0);
-	}
+	r = dfl_iter(dfl, &align, vioblk_free_exts, &sp_arg, KM_SLEEP,
+	    iter_flags);
 
-	if (vioblk_split_discard) {
-		dkioc_free_align_t align = {
-			.dfa_bsize = DEV_BSIZE,
-			.dfa_max_ext = vib->vib_max_discard_seg,
-			.dfa_max_blocks = vib->vib_max_discard_sectors,
-			.dfa_align = vib->vib_discard_sector_align * DEV_BSIZE
-		};
-
-		r = dfl_iter(dfl, &align, vioblk_free_exts, &sp_arg,
-		    KM_SLEEP, 0);
-
-		/*
-		 * If we didn't include xfer as part of the final request, we
-		 * should return failure so that bd_sched() will free xfer.
-		 */
-		if (sp_arg.vfpa_xfer != NULL)
-			VERIFY3S(r, !=, 0);
-	} else {
-		uint64_t start = dfl->dfl_offset + dfl->dfl_exts[0].dfle_start;
-		uint64_t end = start + dfl->dfl_exts[0].dfle_length;
-		uint64_t align = vib->vib_discard_sector_align * DEV_BSIZE;
-		uint64_t maxend = start +
-		    vib->vib_max_discard_sectors * DEV_BSIZE;
-
-		if (end > maxend)
-			end = maxend;
-
-		start = P2ROUNDUP(start, align);
-		end = P2ALIGN(end, DEV_BSIZE);
-
-		if (start == end) {
-			bd_xfer_done(xfer, 0);
-			return (0);
-		}
-
-		dkioc_free_list_ext_t ext = {
-			.dfle_start = start,
-			.dfle_length = end - start
-		};
-
-		r = vioblk_free_exts(&ext, 1, B_TRUE, &sp_arg);
-	}
+	/*
+	 * If we didn't include xfer as part of the final request
+	 * (sp_arg.vfpa_xfer is still set), we should be returning failure
+	 * so that bd_sched() will free xfer.
+	 */
+	IMPLY(sp_arg.vfpa_xfer != NULL, r != 0);
 
 	return (r);
 }

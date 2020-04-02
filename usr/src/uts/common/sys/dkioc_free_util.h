@@ -39,11 +39,22 @@ typedef struct dkioc_free_align {
 	size_t	dfa_max_blocks;
 
 	/*
-	 * Minimum alignment for extent offsets in bytes (e.g. 512, 4096,
-	 * etc). Must be >= dfa_bsize, and must be a power of 2.
+	 * Minimum alignment for extent offsets in units of blocks (dfa_bsize).
+	 * etc). Must be > 0, and a power of two.
 	 */
 	size_t	dfa_align;
+
+	/*
+	 * Minimum granularity for length in units of blocks (dfa_bsize).
+	 * Must be > 0, and a power of two.
+	 */
+	size_t dfa_gran;
 } dkioc_free_align_t;
+
+typedef enum dkioc_iter_flags {
+	DIF_NONE	= 0,
+	DIF_NOSPLIT	= (1 << 1)
+} dkioc_iter_flags_t;
 
 typedef int (*dfl_iter_fn_t)(const dkioc_free_list_ext_t *exts, size_t n_ext,
     boolean_t last, void *arg);
@@ -51,7 +62,7 @@ typedef int (*dfl_iter_fn_t)(const dkioc_free_list_ext_t *exts, size_t n_ext,
 int dfl_copyin(void *arg, dkioc_free_list_t **out, int ddi_flags, int kmflags);
 void dfl_free(dkioc_free_list_t *dfl);
 int dfl_iter(const dkioc_free_list_t *dfl, const dkioc_free_align_t *align,
-    dfl_iter_fn_t fn, void *arg, int kmflag, uint32_t flags);
+    dfl_iter_fn_t fn, void *arg, int kmflag, dkioc_iter_flags_t);
 
 #ifdef	__cplusplus
 }

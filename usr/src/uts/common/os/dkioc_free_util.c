@@ -27,30 +27,35 @@
 #include <sys/sdt.h>
 
 struct ext_arg {
-	uint64_t	ea_ext_cnt;
-	dfl_iter_fn_t	ea_fn;
-	void		*ea_arg;
-	dkioc_free_list_ext_t *ea_exts;
+	uint64_t		ea_ext_cnt;
+	dfl_iter_fn_t		ea_fn;
+	void			*ea_arg;
+	dkioc_free_list_ext_t	*ea_exts;
+	size_t			ea_nreq;
+	dkioc_iter_flags_t	ea_flags;
 };
 
-typedef enum ext_iter_flags {
-	EIF_NONE = 0,
-	EIF_FIRST =	(1 << 0),
-	EIF_LAST =	(1 << 1),
-	EIF_NEWREQ =	(1 << 2)
-} ext_iter_flags_t;
-
 typedef int (*ext_iter_fn_t)(const dkioc_free_list_ext_t *,
-    ext_iter_flags_t, void *);
+    boolean_t, void *);
 
 static int ext_iter(const dkioc_free_list_t *, const dkioc_free_align_t *,
     uint_t, ext_iter_fn_t, void *);
-static int ext_xlate(const dkioc_free_list_t *, const dkioc_free_list_ext_t *,
-    const dkioc_free_align_t *, uint64_t *, uint64_t *);
-static int count_exts(const dkioc_free_list_ext_t *, ext_iter_flags_t, void *);
-static int process_exts(const dkioc_free_list_ext_t *, ext_iter_flags_t,
-    void *);
+static int ext_xlate(dkioc_free_list_ext_t *, uint64_t, uint64_t, uint64_t,
+    uint_t);
+static int count_exts(const dkioc_free_list_ext_t *, boolean_t, void *);
+static int process_exts(const dkioc_free_list_ext_t *, boolean_t, void *);
 
+#if __GNUC__ > 4 || __GNU_C_MINOR__ >= 8
+#define	uadd64_overflow(a, b, c) __builtin_uaddl_overflow(a, b, c)
+#else
+static bool
+uadd64_overflow(uint64_t a, uint64_t b, uint64_t *res)
+{
+	*res = a + b;
+	return ((*res < a || *res < b) ? true : false);
+}
+#endif
+	
 /*
  * Copy-in convenience function for variable-length dkioc_free_list_t
  * structures. The pointer to be copied from is in `arg' (may be a pointer
@@ -161,7 +166,7 @@ dfl_free(dkioc_free_list_t *dfl)
  */
 int
 dfl_iter(const dkioc_free_list_t *dfl, const dkioc_free_align_t *dfa,
-    dfl_iter_fn_t func, void *arg, int kmflag, uint32_t dfl_flag)
+    dfl_iter_fn_t func, void *arg, int kmflag, dkioc_iter_flags_t flags)
 {
 	dkioc_free_list_ext_t *exts;
 	uint64_t n_exts = 0;
@@ -169,7 +174,7 @@ dfl_iter(const dkioc_free_list_t *dfl, const dkioc_free_align_t *dfa,
 	uint_t bshift;
 	int r = 0;
 
-	if (dfl_flag != 0)
+	if ((flags & ~(DIF_NONE|DIF_NOSPLIT)) != 0)
 		return (SET_ERROR(EINVAL));
 
 	/* Block size must be at least 1 and a power of two */
@@ -180,8 +185,8 @@ dfl_iter(const dkioc_free_list_t *dfl, const dkioc_free_align_t *dfa,
 	if (dfa->dfa_align == 0 || !ISP2(dfa->dfa_align))
 		return (SET_ERROR(EINVAL));
 
-	/* The offset alignment must be at least as large as the block size */	
-	if (dfa->dfa_align < dfa->dfa_bsize)
+	/* Length granularity must be at least 1 and a power of two */
+	if (dfa->dfa_gran == 0 || !ISP2(dfa->dfa_gran))
 		return (SET_ERROR(EINVAL));
 
 	/*
@@ -194,11 +199,10 @@ dfl_iter(const dkioc_free_list_t *dfl, const dkioc_free_align_t *dfa,
 	 * If a limit on the total number of blocks is given, it must be
 	 * greater than the offset alignment. E.g. if the block size is 512
 	 * bytes and the offset alignment is 4096 (8 blocks), the device must
-	 * allow extent sizes at least 8 blocks long (otherwise it is not
-	 * possible to free the entire device).
+	 * allow extent sizes at least 8 blocks long (otherwise there will be
+	 * device addresses that cannot be contained within an extent).
 	 */
-	if (dfa->dfa_max_blocks > 0 &&
-	    (dfa->dfa_max_blocks << bshift) < dfa->dfa_align)
+	if (dfa->dfa_max_blocks > 0 && dfa->dfa_max_blocks < dfa->dfa_align)
 		return (SET_ERROR(EINVAL));
 
 	/*
@@ -220,15 +224,17 @@ dfl_iter(const dkioc_free_list_t *dfl, const dkioc_free_align_t *dfa,
 	/*
 	 * It's possible that some extents do not conform to the alignment
 	 * requirements, nor do they have a conforming subset. For example,
-	 * with a minimum alignment of 8 blocks, an extent starting at
-	 * offset 2 and a length of 5 is such a case. Since there is no way
-	 * to report partial results, such extents are silently skipped.
-	 * It is then possible that a request could consist of nothing but
-	 * ineligible extents, and so such a request is also silently
-	 * ignored.
+	 * a device with a block size of 512 bytes, and a starting alignment
+	 * of 4096 bytes would not be able to free extent with a starting
+	 * offset of 512 and a length of 1024. Such extents are ignored
+	 * (we have no good way to report back partial results). While unlikely,
+	 * it is possible a request consists of nothing but non-conforming
+	 * extents. In this case, we invoke the callback with a NULL list
+	 * of extents and with last set so it can perform any necessary
+	 * cleanup, completion tasks.
 	 */
 	if (n_exts == 0)
-		return (0);
+		return (func(NULL, 0, B_TRUE, arg));
 
 	exts = kmem_zalloc(n_exts * sizeof (*exts), kmflag);
 	if (exts == NULL)	
@@ -238,6 +244,8 @@ dfl_iter(const dkioc_free_list_t *dfl, const dkioc_free_align_t *dfa,
 	earg.ea_fn = func;
 	earg.ea_arg = arg;
 	earg.ea_exts = exts;
+	earg.ea_nreq = 0;
+	earg.ea_flags = flags;
 
 	/*
 	 * We've allocated enough space to hold all the transformed extents
@@ -253,34 +261,30 @@ dfl_iter(const dkioc_free_list_t *dfl, const dkioc_free_align_t *dfa,
 }
 
 static int
-count_exts(const dkioc_free_list_ext_t *ext, ext_iter_flags_t flags __unused,
+count_exts(const dkioc_free_list_ext_t *ext, boolean_t newreq __unused,
     void *arg)
 {
 	size_t *np = arg;
 
-	if (ext != NULL)
+	if (ext != NULL && ext->dfle_length > 0)
 		(*np)++;
 
 	return (0);
 }
 
 static int
-process_exts(const dkioc_free_list_ext_t *ext, ext_iter_flags_t flags,
-    void *arg)
+process_exts(const dkioc_free_list_ext_t *ext, boolean_t newreq, void *arg)
 {
 	struct ext_arg *args = arg;
 	dkioc_free_list_ext_t *ext_list = args->ea_exts;
-	boolean_t flush = B_FALSE;
-	boolean_t last = ((flags & EIF_LAST) != 0) ? B_TRUE : B_FALSE;
 
-	if (last) {
+	if (ext == NULL) {
 		/*
 		 * The very last call should be with ext set to NULL to
 		 * flush any accumulated extents since the last start of
 		 * a new group.
 		 */
-		VERIFY3P(ext, ==, NULL);
-		flush = B_TRUE;
+		VERIFY(newreq);
 
 		/*
 		 * A corner case -- we never had any extents that could
@@ -289,22 +293,24 @@ process_exts(const dkioc_free_list_ext_t *ext, ext_iter_flags_t flags,
 		 */
 		if (args->ea_ext_cnt == 0)
 			ext_list = NULL;
-	} else if ((flags & EIF_NEWREQ) != 0 && (flags & EIF_FIRST) == 0) {
-		/*
-		 * A new request that isn't the very first request will flush
-		 * what we've accumulated (and then start accumulating for
-		 * the next grouping). We should always have at least one
-		 * extent to flush at this point -- the 'no extents'
-		 * case was handled earlier.
-		 */
-		VERIFY3U(args->ea_ext_cnt, >, 0);
-		flush = B_TRUE;
+
+		args->ea_nreq++;
+
+		return (args->ea_fn(ext_list, args->ea_ext_cnt, B_TRUE,
+		    args->ea_arg));
 	}
 
-	if (flush) {
+	/*
+	 * Starting a new request, and we have accumulated extents to
+	 * flush.
+	 */
+	if (newreq && args->ea_ext_cnt > 0) {
 		int r;
 
-		r = args->ea_fn(ext_list, args->ea_ext_cnt, last, args->ea_arg);
+		args->ea_nreq++;
+
+		r = args->ea_fn(ext_list, args->ea_ext_cnt, B_FALSE,
+		    args->ea_arg);
 		if (r != 0)
 			return (r);
 
@@ -317,33 +323,37 @@ process_exts(const dkioc_free_list_ext_t *ext, ext_iter_flags_t flags,
 		args->ea_ext_cnt = 0;
 	}
 
-	if (ext != NULL)
+	/* Skip any extents that end up with zero length after aligning. */
+	if (ext->dfle_length > 0)
 		args->ea_exts[args->ea_ext_cnt++] = *ext;
+
 	return (0);
 }
 
 /*
- * Set *startp and *lengthp to the actual _byte_ offset and lengths
- * after adjusting for dfl->dfl_offset, the starting alignment, and
- * the block size requirements.
+ * Translate the ext from byte-based units to units of
+ * (1 << bshift) sized blocks, with the start and length values adjusted to
+ * the align and gran values (align and gran are in units of bytes).
+ *
+ * Returns 0 on success, or an error value.
  */
 static int
-ext_xlate(const dkioc_free_list_t *dfl, const dkioc_free_list_ext_t *ext,
-    const dkioc_free_align_t *dfa, uint64_t *startp, uint64_t *lengthp)
+ext_xlate(dkioc_free_list_ext_t *ext, uint64_t offset, uint64_t align,
+    uint64_t gran, uint_t bshift)
 {
-	uint64_t start = dfl->dfl_offset + ext->dfle_start;
-	uint64_t end = start + ext->dfle_length;
+	uint64_t start, end;
 
-	if (start < dfl->dfl_offset || start < ext->dfle_start)
-		return (SET_ERROR(EOVERFLOW));
-	if (end < start || end < ext->dfle_length)
+	if (uadd64_overflow(offset, ext->dfle_start, &start))
 		return (SET_ERROR(EOVERFLOW));
 
-	start = P2ROUNDUP(start, dfa->dfa_align);
-	end = P2ALIGN(end, dfa->dfa_bsize);
+	if (uadd64_overflow(start, ext->dfle_length, &end))
+		return (SET_ERROR(EOVERFLOW));
+	
+	start = P2ROUNDUP(start, align);
+	end = P2ALIGN(end, gran);
 
-	*startp = start;
-	*lengthp = (end > start) ? end - start : 0;
+	ext->dfle_start = start >> bshift;
+	ext->dfle_length = (end > start) ? (end - start) >> bshift : 0;
 	return (0);
 }
 
@@ -357,50 +367,55 @@ static int
 ext_iter(const dkioc_free_list_t *dfl, const dkioc_free_align_t *dfa,
     uint_t bshift, ext_iter_fn_t fn, void *arg)
 {
-	const dkioc_free_list_ext_t *ext;
+	const dkioc_free_list_ext_t *src = dfl->dfl_exts;
 	uint64_t n_exts = 0;
-	uint64_t n_blk = 0;
+	uint64_t n_blks = 0;
+	uint64_t align = dfa->dfa_align << bshift;
+	uint64_t gran = dfa->dfa_gran << bshift;
 	size_t i;
-	ext_iter_flags_t flags = EIF_FIRST|EIF_NEWREQ;
+	boolean_t newreq = B_TRUE;
 
-	for (i = 0, ext = dfl->dfl_exts; i < dfl->dfl_num_exts; i++, ext++) {
-		uint64_t start, length;
+	for (i = 0; i < dfl->dfl_num_exts; i++, src++) {
+		dkioc_free_list_ext_t ext = *src;
 		int r;
 
-		r = ext_xlate(dfl, ext, dfa, &start, &length);
+		r = ext_xlate(&ext, dfl->dfl_offset, align, gran, bshift);
 		if (r != 0)
 			return (r);
 
-		while (length > 0) {
-			dkioc_free_list_ext_t blk_ext = {
-				.dfle_start = start,
-				.dfle_length = length
-			};
-			uint64_t len_blk = length >> bshift;
+		while (ext.dfle_length > 0) {
+			dkioc_free_list_ext_t seg = ext;
 
 			if (dfa->dfa_max_ext > 0 &&
 			    n_exts + 1 > dfa->dfa_max_ext) {
 				/*
 				 * Reached the max # of extents, start a new
-				 * request and retry.
+				 * request, and retry.
 				 */
-				flags |= EIF_NEWREQ;
+				newreq = B_TRUE;
 				n_exts = 0;
-				n_blk = 0;
+				n_blks = 0;
 				continue;
 			}
 
 			if (dfa->dfa_max_blocks > 0 &&
-			    n_blk + len_blk > dfa->dfa_max_blocks) {
+			    n_blks + seg.dfle_length > dfa->dfa_max_blocks) {
 				/*
 				 * This extent puts us over the max # of
-				 * blocks in a request. If this isn't a
-				 * new request, start a new request,
+				 * blocks in a request.
 				 */
-				if ((flags & EIF_NEWREQ) == 0) {
-					flags |= EIF_NEWREQ;
+				if (!newreq) {
+					/*
+					 * If we haven't started a new request,
+					 * start one, and retry as a new
+					 * request in case it can fit on
+					 * its own. If not, we'll skip
+					 * this block and split it in the
+					 * code below.
+					 */
+					newreq = B_TRUE;
 					n_exts = 0;
-					n_blk = 0;
+					n_blks = 0;
 					continue;
 				}
 
@@ -410,30 +425,38 @@ ext_iter(const dkioc_free_list_t *dfl, const dkioc_free_align_t *dfa,
 				 * the largest multiple of dfa_align
 				 * equal to or less than dfa_max_blocks
 				 * so the next starting address has the
-				 * correct alignment.
+				 * correct alignment, splitting the request.
 				 */
-				blk_ext.dfle_length =
-				    P2ALIGN(dfa->dfa_max_blocks,
-				    dfa->dfa_align);
+				seg.dfle_length = P2ALIGN(dfa->dfa_max_blocks,
+				    align);
+
+				/*
+				 * Our sanity checks on the alignment
+				 * requirements mean we should be able to
+				 * free at least part of the extent.
+				 */
+				ASSERT3U(seg.dfle_length, >, 0);
 			}
 
-			r = fn(&blk_ext, flags, arg);
+			r = fn(&seg, newreq, arg);
 			if (r != 0)
 				return (r);
 
 			n_exts++;
-			n_blk += len_blk;
+			n_blks += seg.dfle_length;
 
-			length -= blk_ext.dfle_length;
-			start += blk_ext.dfle_length;
+			ASSERT3U(ext.dfle_length, >=, seg.dfle_length);
 
-			flags = EIF_NONE;
+			ext.dfle_length -= seg.dfle_length;
+			ext.dfle_start += seg.dfle_length;
+			newreq = B_FALSE;
 		}
 	}
 
 	/*
 	 * Invoke the callback one last time w/ a NULL array of extents and
-	 * newreq == B_TRUE to signal completion.
+	 * newreq == B_TRUE to signal completion (and flush any accumulated
+	 * extents).
 	 */
-	return (fn(NULL, flags|EIF_LAST, arg));
+	return (fn(NULL, B_TRUE, arg));
 }
