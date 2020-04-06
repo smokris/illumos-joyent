@@ -11246,6 +11246,7 @@ d usr/share/lib/xml 0755 root sys
 d usr/share/lib/xml/dtd 0755 root sys
 f usr/share/lib/xml/dtd/adt_record.dtd.1 0444 root bin
 f usr/share/lib/xml/dtd/brand.dtd.1 0644 root bin
+f usr/share/lib/xml/dtd/digraph-topology.dtd.1 0644 root bin
 f usr/share/lib/xml/dtd/kmfpolicy.dtd 0444 root bin
 f usr/share/lib/xml/dtd/rm_pool.dtd.1 0444 root bin
 f usr/share/lib/xml/dtd/service_bundle.dtd.1 0444 root sys
