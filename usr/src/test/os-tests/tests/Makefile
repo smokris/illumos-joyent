@@ -35,7 +35,8 @@ SUBDIRS =       \
 
 PROGS = \
 	odirectory \
-	OS-6097
+	OS-6097 \
+	writev
 
 CPPFLAGS += -D_REENTRANT
 PROGS32 = $(PROGS:%=%.32)
@@ -51,6 +52,10 @@ odirectory.64 :=	LDLIBS64 += -lsocket
 
 OS-6097.32 :=	LDLIBS += -ldlpi
 OS-6097.64 :=	LDLIBS64 += -ldlpi
+
+writev.32 :=		CPPFLAGS += -D_FILE_OFFSET_BITS=64
+writev.32 :=		CSTD = $(CSTD_GNU99)
+writev.64 :=		CSTD = $(CSTD_GNU99)
 
 include $(SRC)/cmd/Makefile.cmd
 

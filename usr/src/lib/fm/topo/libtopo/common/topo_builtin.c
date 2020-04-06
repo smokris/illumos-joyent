@@ -157,11 +157,12 @@ topo_builtin_create(topo_hdl_t *thp, const char *rootdir)
 			    "type: %u", bp->bltin_type);
 			return (-1);
 		}
-		if (topo_mod_enumerate(mod, rnode, mod->tm_name, rnode->tn_name,
-		    rnode->tn_instance, rnode->tn_instance, NULL) < 0) {
+		if (topo_mod_enumerate(mod, rnode, mod->tm_name,
+		    rnode->tn_name, rnode->tn_instance, rnode->tn_instance,
+		    NULL) < 0) {
 			/*
 			 * If we see a failure, note it in the handle and drive
-			 * on.
+			 * on
 			 */
 			(void) topo_hdl_seterrno(thp, ETOPO_ENUM_PARTIAL);
 		}

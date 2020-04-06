@@ -35,7 +35,8 @@
 #include <inttypes.h>
 
 extern int xmlattr_to_int(topo_mod_t *, xmlNodePtr, const char *, uint64_t *);
-static int serialize_nvpair(FILE *, uint_t, const char *, nvpair_t *);
+static int serialize_nvpair(topo_hdl_t *thp, FILE *, uint_t, const char *,
+    nvpair_t *);
 
 static void
 tdg_xml_nvstring(FILE *fp, uint_t pad, const char *name, const char *value)
@@ -192,7 +193,8 @@ tdg_xml_nvuint64arr(FILE *fp, uint_t pad, const char *name, uint64_t *val,
 }
 
 static int
-serialize_nvpair_nvlist(FILE *fp, uint_t pad, const char *name, nvlist_t *nvl)
+serialize_nvpair_nvlist(topo_hdl_t *thp, FILE *fp, uint_t pad,
+    const char *name, nvlist_t *nvl)
 {
 	nvpair_t *elem = NULL;
 
@@ -203,7 +205,8 @@ serialize_nvpair_nvlist(FILE *fp, uint_t pad, const char *name, nvlist_t *nvl)
 	while ((elem = nvlist_next_nvpair(nvl, elem)) != NULL) {
 		char *nvname = nvpair_name(elem);
 
-		if (serialize_nvpair(fp, (pad + 2), nvname, elem) != 0) {
+		if (serialize_nvpair(thp, fp, (pad + 2), nvname, elem) != 0) {
+			/* errno set */
 			return (-1);
 		}
 	}
@@ -216,7 +219,8 @@ serialize_nvpair_nvlist(FILE *fp, uint_t pad, const char *name, nvlist_t *nvl)
 }
 
 static int
-serialize_nvpair(FILE *fp, uint_t pad, const char *pname, nvpair_t *nvp)
+serialize_nvpair(topo_hdl_t *thp, FILE *fp, uint_t pad, const char *pname,
+    nvpair_t *nvp)
 {
 	data_type_t type = nvpair_type(nvp);
 
@@ -225,7 +229,7 @@ serialize_nvpair(FILE *fp, uint_t pad, const char *pname, nvpair_t *nvp)
 			int8_t val;
 
 			if (nvpair_value_int8(nvp, &val) != 0)
-				return (-1);
+				return (topo_hdl_seterrno(thp, ETOPO_UNKNOWN));
 
 			tdg_xml_nvint8(fp, pad, pname, val);
 			break;
@@ -234,7 +238,7 @@ serialize_nvpair(FILE *fp, uint_t pad, const char *pname, nvpair_t *nvp)
 			uint8_t val;
 
 			if (nvpair_value_uint8(nvp, &val) != 0)
-				return (-1);
+				return (topo_hdl_seterrno(thp, ETOPO_UNKNOWN));
 
 			tdg_xml_nvuint8(fp, pad, pname, val);
 			break;
@@ -243,7 +247,7 @@ serialize_nvpair(FILE *fp, uint_t pad, const char *pname, nvpair_t *nvp)
 			int16_t val;
 
 			if (nvpair_value_int16(nvp, &val) != 0)
-				return (-1);
+				return (topo_hdl_seterrno(thp, ETOPO_UNKNOWN));
 
 			tdg_xml_nvint16(fp, pad, pname, val);
 			break;
@@ -252,7 +256,7 @@ serialize_nvpair(FILE *fp, uint_t pad, const char *pname, nvpair_t *nvp)
 			uint16_t val;
 
 			if (nvpair_value_uint16(nvp, &val) != 0)
-				return (-1);
+				return (topo_hdl_seterrno(thp, ETOPO_UNKNOWN));
 
 			tdg_xml_nvuint16(fp, pad, pname, val);
 			break;
@@ -261,7 +265,7 @@ serialize_nvpair(FILE *fp, uint_t pad, const char *pname, nvpair_t *nvp)
 			int32_t val;
 
 			if (nvpair_value_int32(nvp, &val) != 0)
-				return (-1);
+				return (topo_hdl_seterrno(thp, ETOPO_UNKNOWN));
 
 			tdg_xml_nvint32(fp, pad, pname, val);
 			break;
@@ -270,7 +274,7 @@ serialize_nvpair(FILE *fp, uint_t pad, const char *pname, nvpair_t *nvp)
 			uint32_t val;
 
 			if (nvpair_value_uint32(nvp, &val) != 0)
-				return (-1);
+				return (topo_hdl_seterrno(thp, ETOPO_UNKNOWN));
 
 			tdg_xml_nvuint32(fp, pad, pname, val);
 			break;
@@ -279,7 +283,7 @@ serialize_nvpair(FILE *fp, uint_t pad, const char *pname, nvpair_t *nvp)
 			int64_t val;
 
 			if (nvpair_value_int64(nvp, &val) != 0)
-				return (-1);
+				return (topo_hdl_seterrno(thp, ETOPO_UNKNOWN));
 
 			tdg_xml_nvint64(fp, pad, pname, val);
 			break;
@@ -288,7 +292,7 @@ serialize_nvpair(FILE *fp, uint_t pad, const char *pname, nvpair_t *nvp)
 			uint64_t val;
 
 			if (nvpair_value_uint64(nvp, &val) != 0)
-				return (-1);
+				return (topo_hdl_seterrno(thp, ETOPO_UNKNOWN));
 
 			tdg_xml_nvuint64(fp, pad, pname, val);
 			break;
@@ -297,7 +301,7 @@ serialize_nvpair(FILE *fp, uint_t pad, const char *pname, nvpair_t *nvp)
 			double val;
 
 			if (nvpair_value_double(nvp, &val) != 0)
-				return (-1);
+				return (topo_hdl_seterrno(thp, ETOPO_UNKNOWN));
 
 			tdg_xml_nvdbl(fp, pad, pname, val);
 			break;
@@ -306,7 +310,7 @@ serialize_nvpair(FILE *fp, uint_t pad, const char *pname, nvpair_t *nvp)
 			char *val;
 
 			if (nvpair_value_string(nvp, &val) != 0)
-				return (-1);
+				return (topo_hdl_seterrno(thp, ETOPO_UNKNOWN));
 
 			tdg_xml_nvstring(fp, pad, pname, val);
 			break;
@@ -315,11 +319,11 @@ serialize_nvpair(FILE *fp, uint_t pad, const char *pname, nvpair_t *nvp)
 			nvlist_t *nvl;
 
 			if (nvpair_value_nvlist(nvp, &nvl) != 0)
-				return (-1);
+				return (topo_hdl_seterrno(thp, ETOPO_UNKNOWN));
 
-			if (serialize_nvpair_nvlist(fp, pad + 2, pname, nvl) !=
-			    0) {
-				return (-1);
+			if (serialize_nvpair_nvlist(thp, fp, pad + 2, pname,
+			    nvl) != 0) {
+				return (topo_hdl_seterrno(thp, ETOPO_UNKNOWN));
 			}
 			break;
 		}
@@ -328,7 +332,7 @@ serialize_nvpair(FILE *fp, uint_t pad, const char *pname, nvpair_t *nvp)
 			int32_t *val;
 
 			if (nvpair_value_int32_array(nvp, &val, &nelems) != 0)
-				return (-1);
+				return (topo_hdl_seterrno(thp, ETOPO_UNKNOWN));
 
 			tdg_xml_nvint32arr(fp, pad + 2, pname, val, nelems);
 
@@ -339,7 +343,7 @@ serialize_nvpair(FILE *fp, uint_t pad, const char *pname, nvpair_t *nvp)
 			uint32_t *val;
 
 			if (nvpair_value_uint32_array(nvp, &val, &nelems) != 0)
-				return (-1);
+				return (topo_hdl_seterrno(thp, ETOPO_UNKNOWN));
 
 			tdg_xml_nvuint32arr(fp, pad + 2, pname,  val, nelems);
 
@@ -350,7 +354,7 @@ serialize_nvpair(FILE *fp, uint_t pad, const char *pname, nvpair_t *nvp)
 			int64_t *val;
 
 			if (nvpair_value_int64_array(nvp, &val, &nelems) != 0)
-				return (-1);
+				return (topo_hdl_seterrno(thp, ETOPO_UNKNOWN));
 
 			tdg_xml_nvint64arr(fp, pad + 2, pname,  val, nelems);
 
@@ -361,7 +365,7 @@ serialize_nvpair(FILE *fp, uint_t pad, const char *pname, nvpair_t *nvp)
 			uint64_t *val;
 
 			if (nvpair_value_uint64_array(nvp, &val, &nelems) != 0)
-				return (-1);
+				return (topo_hdl_seterrno(thp, ETOPO_UNKNOWN));
 
 			tdg_xml_nvuint64arr(fp, pad + 2, pname,  val, nelems);
 
@@ -372,7 +376,7 @@ serialize_nvpair(FILE *fp, uint_t pad, const char *pname, nvpair_t *nvp)
 			char **val;
 
 			if (nvpair_value_string_array(nvp, &val, &nelems) != 0)
-				return (-1);
+				return (topo_hdl_seterrno(thp, ETOPO_UNKNOWN));
 
 			tdg_xml_nvarray(fp, pad, pname, TDG_XML_STRING_ARR);
 			for (uint_t i = 0; i < nelems; i++) {
@@ -390,7 +394,7 @@ serialize_nvpair(FILE *fp, uint_t pad, const char *pname, nvpair_t *nvp)
 			nvlist_t **val;
 
 			if (nvpair_value_nvlist_array(nvp, &val, &nelems) != 0)
-				return (-1);
+				return (topo_hdl_seterrno(thp, ETOPO_UNKNOWN));
 
 			tdg_xml_nvarray(fp, pad, pname, TDG_XML_NVLIST_ARR);
 			for (uint_t i = 0; i < nelems; i++) {
@@ -403,8 +407,9 @@ serialize_nvpair(FILE *fp, uint_t pad, const char *pname, nvpair_t *nvp)
 				    elem)) != NULL) {
 					char *nvname = nvpair_name(elem);
 
-					if (serialize_nvpair(fp, (pad + 4),
-					    nvname, elem) != 0) {
+					if (serialize_nvpair(thp, fp,
+					    (pad + 4), nvname, elem) != 0) {
+						/* errno set */
 						return (-1);
 					}
 				}
@@ -418,8 +423,9 @@ serialize_nvpair(FILE *fp, uint_t pad, const char *pname, nvpair_t *nvp)
 			break;
 		}
 		default:
-			(void) fprintf(fp, "Invalid nvpair data type: %d\n",
-			    type);
+			topo_dprintf(thp, TOPO_DBG_XML, "Invalid nvpair data "
+			    "type: %d\n", type);
+			(void) topo_hdl_seterrno(thp, ETOPO_MOD_XENUM);
 			return (-1);
 	}
 	return (0);
@@ -438,6 +444,7 @@ serialize_edge(topo_hdl_t *thp, topo_edge_t *edge, boolean_t last_edge,
 	tn = topo_vertex_node(edge->tve_vertex);
 	if (topo_node_resource(tn, &fmri, &err) != 0 ||
 	    topo_fmri_nvl2str(thp, fmri, &fmristr, &err) != 0) {
+		/* errno set */
 		nvlist_free(fmri);
 		return (TOPO_WALK_ERR);
 	}
@@ -525,8 +532,8 @@ serialize_property(topo_hdl_t *thp, FILE *fp, uint_t pad, tnode_t *tn,
 			    &err) != 0)
 				return (-1);
 
-			if (serialize_nvpair_nvlist(fp, pad + 2, name, nvl) !=
-			    0) {
+			if (serialize_nvpair_nvlist(thp, fp, pad + 2, name,
+			    nvl) != 0) {
 				nvlist_free(nvl);
 				return (-1);
 			}
@@ -583,8 +590,9 @@ serialize_property(topo_hdl_t *thp, FILE *fp, uint_t pad, tnode_t *tn,
 			break;
 		}
 		default:
-			(void) fprintf(fp, "Invalid nvpair data type: %d\n",
-			    type);
+			topo_dprintf(thp, TOPO_DBG_XML, "Invalid nvpair data "
+			    "type: %d\n", type);
+			(void) topo_hdl_seterrno(thp, ETOPO_MOD_XENUM);
 			return (-1);
 	}
 	return (0);
@@ -633,6 +641,7 @@ serialize_pgroups(topo_hdl_t *thp, FILE *fp, tnode_t *tn)
 
 			if (serialize_property(thp, fp, 10, tn, pv,
 			    pg->tpg_info->tpi_name) != 0) {
+				/* errno set */
 				return (-1);
 			}
 			(void) fprintf(fp, "%*s</%s>\n", 8, "",
@@ -662,6 +671,7 @@ serialize_vertex(topo_hdl_t *thp, topo_vertex_t *vtx, boolean_t last_vtx,
 	tn = topo_vertex_node(vtx);
 	if (topo_node_resource(tn, &fmri, &err) != 0 ||
 	    topo_fmri_nvl2str(thp, fmri, &fmristr, &err) != 0) {
+		/* errno set */
 		nvlist_free(fmri);
 		return (TOPO_WALK_ERR);
 	}
@@ -674,16 +684,19 @@ serialize_vertex(topo_hdl_t *thp, topo_vertex_t *vtx, boolean_t last_vtx,
 
 	topo_hdl_strfree(thp, fmristr);
 
-	if (serialize_pgroups(thp, fp, tn) != 0)
+	if (serialize_pgroups(thp, fp, tn) != 0) {
+		/* errno set */
 		return (TOPO_WALK_ERR);
+	}
 
 	if (vtx->tvt_noutgoing != 0) {
 		(void) fprintf(fp, "  <%s>\n", TDG_XML_OUTEDGES);
 
 		if (topo_edge_iter(thp, vtx, serialize_edge, fp) != 0) {
-			(void) fprintf(fp, "\nfailed to iterate edges on %s=%"
-			    PRIx64 "\n", topo_node_name(tn),
+			topo_dprintf(thp, TOPO_DBG_XML, "failed to iterate "
+			    "edges on %s=%" PRIx64 "\n", topo_node_name(tn),
 			    topo_node_instance(tn));
+			/* errno set */
 			return (TOPO_WALK_ERR);
 		}
 		(void) fprintf(fp, "  </%s>\n", TDG_XML_OUTEDGES);
@@ -709,20 +722,31 @@ topo_digraph_serialize(topo_hdl_t *thp, topo_digraph_t *tdg, FILE *fp)
 {
 	struct utsname uts = { 0 };
 	time_t utc_time;
-	char tstamp[25];
+	char tstamp[64];
 	int ret;
 
 	if ((ret = uname(&uts)) < 0) {
-		(void) fprintf(fp, "uname failed (ret = %d)\n", ret);
-		return (-1);
+		topo_dprintf(thp, TOPO_DBG_XML, "uname failed (ret = %d)\n",
+		    ret);
+		return (topo_hdl_seterrno(thp, ETOPO_UNKNOWN));
 	}
 
 	if (time(&utc_time) < 0) {
-		(void) fprintf(fp, "uname failed (%s)\n", strerror(errno));
-		return (-1);
+		topo_dprintf(thp, TOPO_DBG_XML, "uname failed (%s)\n",
+		    strerror(errno));
+		return (topo_hdl_seterrno(thp, ETOPO_UNKNOWN));
 	}
-	(void) strftime(tstamp, sizeof (tstamp), "%Y-%m-%dT%H:%M:%SZ",
-	    gmtime(&utc_time));
+
+	/*
+	 * strftime returns 0 if the size of the result is larger than the
+	 * buffer size passed in to it.  We've sized tstamp to be pretty
+	 * large, so this really shouldn't happen.
+	 */
+	if (strftime(tstamp, sizeof (tstamp), "%Y-%m-%dT%H:%M:%SZ",
+	    gmtime(&utc_time)) == 0) {
+		topo_dprintf(thp, TOPO_DBG_XML, "strftime failed\n");
+		return (topo_hdl_seterrno(thp, ETOPO_UNKNOWN));
+	}
 
 	(void) fprintf(fp, "<?xml version=\"1.0\"?>\n");
 	(void) fprintf(fp, "<!DOCTYPE topology SYSTEM \"%s\">\n", TDG_DTD);
@@ -733,13 +757,20 @@ topo_digraph_serialize(topo_hdl_t *thp, topo_digraph_t *tdg, FILE *fp)
 	(void) fprintf(fp, "<%s>\n", TDG_XML_VERTICES);
 
 	if (topo_vertex_iter(thp, tdg, serialize_vertex, fp) != 0) {
-		(void) fprintf(fp, "\nfailed to iterate vertices\n");
+		topo_dprintf(thp, TOPO_DBG_XML, "\nfailed to iterate "
+		    "vertices\n");
+		/* errno set */
 		return (-1);
 	}
 
 	(void) fprintf(fp, "</%s>\n", TDG_XML_VERTICES);
 	(void) fprintf(fp, "</%s>\n", TDG_XML_TOPO_DIGRAPH);
 
+	if (ferror(fp) != 0) {
+		topo_dprintf(thp, TOPO_DBG_XML, "An unknown error ocurrred "
+		    "while writing out the serialize topology.");
+		return (topo_hdl_seterrno(thp, ETOPO_UNKNOWN));
+	}
 	return (0);
 }
 
@@ -952,6 +983,16 @@ free_nvlist_array(topo_hdl_t *thp, nvlist_t **nvlarr, uint_t nelems)
 	topo_hdl_free(thp, nvlarr, nelems * sizeof (nvlist_t *));
 }
 
+static boolean_t
+is_overflow(topo_hdl_t *thp, uint64_t val, uint_t nbits)
+{
+	if ((val >> nbits) != 0) {
+		topo_dprintf(thp, TOPO_DBG_XML, "value exceeds %u bits", nbits);
+		return (B_TRUE);
+	}
+	return (B_FALSE);
+}
+
 /*
  * Recursive function for parsing nvpair XML elements, which can contain
  * nested nvlist and nvpair elements.
@@ -1003,16 +1044,19 @@ deserialize_nvpair(topo_hdl_t *thp, topo_mod_t *mod, nvlist_t *nvl,
 		}
 	} else if (xmlStrcmp(type, (xmlChar *)TDG_XML_INT8) == 0) {
 		if (xmlattr_to_int(mod, xn, TDG_XML_VALUE, &val) != 0 ||
+		    is_overflow(thp, val, 8) ||
 		    nvlist_add_int8(nvl, (char *)name, (int8_t)val) != 0) {
 			goto fail;
 		}
 	} else if (xmlStrcmp(type, (xmlChar *)TDG_XML_INT16) == 0) {
 		if (xmlattr_to_int(mod, xn, TDG_XML_VALUE, &val) != 0 ||
+		    is_overflow(thp, val, 16) ||
 		    nvlist_add_int16(nvl, (char *)name, (int16_t)val) != 0) {
 			goto fail;
 		}
 	} else if (xmlStrcmp(type, (xmlChar *)TDG_XML_INT32) == 0) {
 		if (xmlattr_to_int(mod, xn, TDG_XML_VALUE, &val) != 0 ||
+		    is_overflow(thp, val, 32) ||
 		    nvlist_add_int32(nvl, (char *)name, (int32_t)val) != 0) {
 			goto fail;
 		}
@@ -1023,16 +1067,19 @@ deserialize_nvpair(topo_hdl_t *thp, topo_mod_t *mod, nvlist_t *nvl,
 		}
 	} else if (xmlStrcmp(type, (xmlChar *)TDG_XML_UINT8) == 0) {
 		if (xmlattr_to_int(mod, xn, TDG_XML_VALUE, &val) != 0 ||
+		    is_overflow(thp, val, 8) ||
 		    nvlist_add_uint8(nvl, (char *)name, (uint8_t)val) != 0) {
 			goto fail;
 		}
 	} else if (xmlStrcmp(type, (xmlChar *)TDG_XML_UINT16) == 0) {
 		if (xmlattr_to_int(mod, xn, TDG_XML_VALUE, &val) != 0 ||
+		    is_overflow(thp, val, 16) ||
 		    nvlist_add_uint16(nvl, (char *)name, (uint16_t)val) != 0) {
 			goto fail;
 		}
 	} else if (xmlStrcmp(type, (xmlChar *)TDG_XML_UINT32) == 0) {
 		if (xmlattr_to_int(mod, xn, TDG_XML_VALUE, &val) != 0 ||
+		    is_overflow(thp, val, 32) ||
 		    nvlist_add_uint32(nvl, (char *)name, (uint32_t)val) != 0) {
 			goto fail;
 		}
@@ -1314,7 +1361,6 @@ deserialize_vertex(topo_hdl_t *thp, topo_mod_t *mod, topo_digraph_t *tdg,
 
 fail:
 	if (ret != 0) {
-		topo_vertex_destroy(mod, vtx);
 		topo_dprintf(thp, TOPO_DBG_XML, "%s: error parsing %s element",
 		    __func__, TDG_XML_VERTEX);
 		dump_xml_node(thp, xn);
@@ -1348,9 +1394,9 @@ topo_digraph_deserialize(topo_hdl_t *thp, const char *xml, size_t sz)
 	topo_mod_t *mod;
 	topo_digraph_t *tdg, *ret = NULL;
 
-	if ((doc = xmlReadMemory(xml, sz, "nobase.xml", NULL, 0)) == NULL) {
+	if ((doc = xmlReadMemory(xml, sz, "", NULL, 0)) == NULL) {
 		topo_dprintf(thp, TOPO_DBG_XML, "Failed to parse XML");
-		return (NULL);
+		goto fail;
 	}
 
 	/*
@@ -1447,6 +1493,9 @@ fail:
 	if (scheme != NULL)
 		xmlFree(scheme);
 
-	xmlFreeDoc(doc);
+	if (doc != NULL)
+		xmlFreeDoc(doc);
+
+	(void) topo_hdl_seterrno(thp, ETOPO_MOD_XENUM);
 	return (ret);
 }

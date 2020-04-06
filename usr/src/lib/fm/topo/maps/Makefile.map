@@ -23,7 +23,7 @@
 # Copyright 2008 Sun Microsystems, Inc.  All rights reserved.
 # Use is subject to license terms.
 #
-# Copyright 2019 Joyent, Inc.
+# Copyright 2020 Joyent, Inc.
 #
 
 .KEEP_STATE:
@@ -57,7 +57,7 @@ install:= FILEMODE =	0444
 # to avoid having to deal with things like 48 platform specific internal
 # storage bays by hand.
 .xmlgen.xml:
-	$(RM) $@ 
+	$(RM) $@
 	$(CAT) ../common/xmlgen-header.xml > $@
 	$(PERL) $< >> $@
 
@@ -65,7 +65,7 @@ install:= FILEMODE =	0444
 	$(RM) $@
 	$(CAT) ../common/xmlgen-header-new.xml > $@
 	$(KSH93) $< >> $@
-	
+
 %.xml: ../common/%.xml
 	$(RM) $@
 	$(CAT) $< > $@

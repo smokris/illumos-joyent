@@ -1138,7 +1138,7 @@ hc_fmri_create_meth(topo_mod_t *mod, tnode_t *node, topo_version_t version,
 	int ret;
 	nvlist_t *args, *pfmri = NULL;
 	nvlist_t *auth;
-	topo_instance_t inst;
+	uint64_t inst;
 	char *name, *serial, *rev, *part;
 
 	if (version > TOPO_METH_FMRI_VERSION)

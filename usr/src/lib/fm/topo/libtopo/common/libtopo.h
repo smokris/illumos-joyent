@@ -423,7 +423,7 @@ extern tnode_t *topo_vertex_node(topo_vertex_t *);
 extern int topo_edge_iter(topo_hdl_t *, topo_vertex_t *,
     int (*)(topo_hdl_t *, topo_edge_t *, boolean_t, void *), void *);
 extern int topo_digraph_paths(topo_hdl_t *, topo_digraph_t *,
-    topo_vertex_t *, topo_vertex_t *, topo_path_t ***);
+    topo_vertex_t *, topo_vertex_t *, topo_path_t ***, uint_t *);
 extern void topo_path_destroy(topo_hdl_t *, topo_path_t *);
 extern int topo_digraph_serialize(topo_hdl_t *, topo_digraph_t *, FILE *);
 extern topo_digraph_t *topo_digraph_deserialize(topo_hdl_t *, const char *,

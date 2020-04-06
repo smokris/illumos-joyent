@@ -8,24 +8,24 @@
 
                            |===> node=2 ===
                            |               |
-    node=0 ====> node=1 ===                |===> node=4
-                           |               |
-                           |===> node=3 ===
-                                  ^
-    node=5                        |
-                                  |
-    node=6 =======================
+    node=0 ====> node=1 ===                |===> node=4 ==
+                           |               |              |
+                           |===> node=3 ===               |
+                                  ^  ^                    |
+    node=5                        |  |                    |
+                                  |  |                    |
+    node=6 =======================   ======================
 
 -->
 
 <topo-digraph fmri-scheme='hc' nodename='test-nodename' os-version='test-os-version' product-id='test-product-id' timestamp='2019-12-20T01:51:26Z'>
-<vertices nelem='7'>
+<vertices>
 <vertex name='node' instance='0x0' fmri='hc:///node=0'>
 
-  <nvpair name='property-groups' type='nvlist-array' nelem='2'>
+  <nvpair name='property-groups' type='nvlist-array'>
     <nvlist>
       <nvpair name='property-group-name' type='string' value='test-pg-1' />
-      <nvpair name='property-values' type='nvlist-array' nelem='7'>
+      <nvpair name='property-values' type='nvlist-array'>
 
         <nvlist>
           <nvpair name='property-name' type='string' value='string-prop' />
@@ -36,7 +36,7 @@
         <nvlist>
           <nvpair name='property-name' type='string' value='uint64-array-prop' />
           <nvpair name='property-type' type='uint32' value='13' />
-          <nvpair name='property-value' type='uint64-array' nelem='2'>
+          <nvpair name='property-value' type='uint64-array'>
             <nvpair value='0x1' />
             <nvpair value='0x2' />
           </nvpair>
@@ -45,7 +45,7 @@
         <nvlist>
           <nvpair name='property-name' type='string' value='int64-array-prop' />
           <nvpair name='property-type' type='uint32' value='12' />
-          <nvpair name='property-value' type='int64-array' nelem='2'>
+          <nvpair name='property-value' type='int64-array'>
             <nvpair value='1' />
             <nvpair value='2' />
           </nvpair>
@@ -54,7 +54,7 @@
         <nvlist>
           <nvpair name='property-name' type='string' value='uint32-array-prop' />
           <nvpair name='property-type' type='uint32' value='11' />
-          <nvpair name='property-value' type='uint32-array' nelem='2'>
+          <nvpair name='property-value' type='uint32-array'>
             <nvpair value='1' />
             <nvpair value='2' />
           </nvpair>
@@ -63,7 +63,7 @@
         <nvlist>
           <nvpair name='property-name' type='string' value='int32-array-prop' />
           <nvpair name='property-type' type='uint32' value='10' />
-          <nvpair name='property-value' type='int32-array' nelem='2'>
+          <nvpair name='property-value' type='int32-array'>
             <nvpair value='1' />
             <nvpair value='2' />
           </nvpair>
@@ -85,7 +85,7 @@
     </nvlist>
     <nvlist>
       <nvpair name='property-group-name' type='string' value='protocol' />
-      <nvpair name='property-values' type='nvlist-array' nelem='1'>
+      <nvpair name='property-values' type='nvlist-array'>
         <nvlist>
           <nvpair name='property-name' type='string' value='resource' />
           <nvpair name='property-type' type='uint32' value='9' />
@@ -93,7 +93,7 @@
             <nvlist>
               <nvpair name='scheme' type='string' value='hc' />
               <nvpair name='version' type='uint8' value='0' />
-              <nvpair name='hc-list' type='nvlist-array' nelem='1'>
+              <nvpair name='hc-list' type='nvlist-array'>
                 <nvlist>
                   <nvpair name='hc-name' type='string' value='node' />
                   <nvpair name='hc-id' type='string' value='0' />
@@ -106,7 +106,7 @@
     </nvlist>
 
   </nvpair> <!-- property-groups -->
-  <outgoing-edges nelem='1'>
+  <outgoing-edges>
     <edge fmri='hc:///node=1' />
   </outgoing-edges>
 
@@ -114,11 +114,11 @@
 
 <vertex name='node' instance='0x1' fmri='hc:///node=1'>
 
-  <nvpair name='property-groups' type='nvlist-array' nelem='1'>
+  <nvpair name='property-groups' type='nvlist-array'>
 
     <nvlist>
       <nvpair name='property-group-name' type='string' value='protocol' />
-      <nvpair name='property-values' type='nvlist-array' nelem='1'>
+      <nvpair name='property-values' type='nvlist-array'>
         <nvlist>
           <nvpair name='property-name' type='string' value='resource' />
           <nvpair name='property-type' type='uint32' value='9' />
@@ -126,7 +126,7 @@
             <nvlist>
               <nvpair name='scheme' type='string' value='hc' />
               <nvpair name='version' type='uint8' value='0' />
-              <nvpair name='hc-list' type='nvlist-array' nelem='1'>
+              <nvpair name='hc-list' type='nvlist-array'>
                 <nvlist>
                   <nvpair name='hc-name' type='string' value='node' />
                   <nvpair name='hc-id' type='string' value='1' />
@@ -138,7 +138,7 @@
       </nvpair> <!-- property-values -->
     </nvlist>
   </nvpair> <!-- property-groups -->
-  <outgoing-edges nelem='2'>
+  <outgoing-edges>
     <edge fmri='hc:///node=2' />
     <edge fmri='hc:///node=3' />
   </outgoing-edges>
@@ -147,11 +147,11 @@
 
 <vertex name='node' instance='0x2' fmri='hc:///node=2'>
 
-  <nvpair name='property-groups' type='nvlist-array' nelem='1'>
+  <nvpair name='property-groups' type='nvlist-array'>
 
     <nvlist>
       <nvpair name='property-group-name' type='string' value='protocol' />
-      <nvpair name='property-values' type='nvlist-array' nelem='1'>
+      <nvpair name='property-values' type='nvlist-array'>
         <nvlist>
           <nvpair name='property-name' type='string' value='resource' />
           <nvpair name='property-type' type='uint32' value='9' />
@@ -159,7 +159,7 @@
             <nvlist>
               <nvpair name='scheme' type='string' value='hc' />
               <nvpair name='version' type='uint8' value='0' />
-              <nvpair name='hc-list' type='nvlist-array' nelem='1'>
+              <nvpair name='hc-list' type='nvlist-array'>
                 <nvlist>
                   <nvpair name='hc-name' type='string' value='node' />
                   <nvpair name='hc-id' type='string' value='2' />
@@ -172,7 +172,7 @@
     </nvlist>
 
   </nvpair> <!-- property-groups -->
-  <outgoing-edges nelem='1'>
+  <outgoing-edges>
     <edge fmri='hc:///node=4' />
   </outgoing-edges>
 
@@ -180,11 +180,11 @@
 
 <vertex name='node' instance='0x3' fmri='hc:///node=3'>
 
-  <nvpair name='property-groups' type='nvlist-array' nelem='1'>
+  <nvpair name='property-groups' type='nvlist-array'>
 
     <nvlist>
       <nvpair name='property-group-name' type='string' value='protocol' />
-      <nvpair name='property-values' type='nvlist-array' nelem='1'>
+      <nvpair name='property-values' type='nvlist-array'>
         <nvlist>
           <nvpair name='property-name' type='string' value='resource' />
           <nvpair name='property-type' type='uint32' value='9' />
@@ -192,7 +192,7 @@
             <nvlist>
               <nvpair name='scheme' type='string' value='hc' />
               <nvpair name='version' type='uint8' value='0' />
-              <nvpair name='hc-list' type='nvlist-array' nelem='1'>
+              <nvpair name='hc-list' type='nvlist-array'>
                 <nvlist>
                   <nvpair name='hc-name' type='string' value='node' />
                   <nvpair name='hc-id' type='string' value='3' />
@@ -205,7 +205,7 @@
     </nvlist>
 
   </nvpair> <!-- property-groups -->
-  <outgoing-edges nelem='1'>
+  <outgoing-edges>
     <edge fmri='hc:///node=4' />
   </outgoing-edges>
 
@@ -213,10 +213,10 @@
 
 <vertex name='node' instance='0x4' fmri='hc:///node=4'>
 
-  <nvpair name='property-groups' type='nvlist-array' nelem='1'>
+  <nvpair name='property-groups' type='nvlist-array'>
     <nvlist>
       <nvpair name='property-group-name' type='string' value='protocol' />
-      <nvpair name='property-values' type='nvlist-array' nelem='1'>
+      <nvpair name='property-values' type='nvlist-array'>
         <nvlist>
           <nvpair name='property-name' type='string' value='resource' />
           <nvpair name='property-type' type='uint32' value='9' />
@@ -224,7 +224,7 @@
             <nvlist>
               <nvpair name='scheme' type='string' value='hc' />
               <nvpair name='version' type='uint8' value='0' />
-              <nvpair name='hc-list' type='nvlist-array' nelem='1'>
+              <nvpair name='hc-list' type='nvlist-array'>
                 <nvlist>
                   <nvpair name='hc-name' type='string' value='node' />
                   <nvpair name='hc-id' type='string' value='4' />
@@ -237,15 +237,18 @@
     </nvlist>
 
   </nvpair> <!-- property-groups -->
+  <outgoing-edges>
+    <edge fmri='hc:///node=3' />
+  </outgoing-edges>
 
 </vertex>
 
 <vertex name='node' instance='0x5' fmri='hc:///node=5'>
 
-  <nvpair name='property-groups' type='nvlist-array' nelem='1'>
+  <nvpair name='property-groups' type='nvlist-array'>
     <nvlist>
       <nvpair name='property-group-name' type='string' value='protocol' />
-      <nvpair name='property-values' type='nvlist-array' nelem='1'>
+      <nvpair name='property-values' type='nvlist-array'>
         <nvlist>
           <nvpair name='property-name' type='string' value='resource' />
           <nvpair name='property-type' type='uint32' value='9' />
@@ -253,7 +256,7 @@
             <nvlist>
               <nvpair name='scheme' type='string' value='hc' />
               <nvpair name='version' type='uint8' value='0' />
-              <nvpair name='hc-list' type='nvlist-array' nelem='1'>
+              <nvpair name='hc-list' type='nvlist-array'>
                 <nvlist>
                   <nvpair name='hc-name' type='string' value='node' />
                   <nvpair name='hc-id' type='string' value='5' />
@@ -271,10 +274,10 @@
 
 <vertex name='node' instance='0x6' fmri='hc:///node=6'>
 
-  <nvpair name='property-groups' type='nvlist-array' nelem='1'>
+  <nvpair name='property-groups' type='nvlist-array'>
     <nvlist>
       <nvpair name='property-group-name' type='string' value='protocol' />
-      <nvpair name='property-values' type='nvlist-array' nelem='1'>
+      <nvpair name='property-values' type='nvlist-array'>
         <nvlist>
           <nvpair name='property-name' type='string' value='resource' />
           <nvpair name='property-type' type='uint32' value='9' />
@@ -282,7 +285,7 @@
             <nvlist>
               <nvpair name='scheme' type='string' value='hc' />
               <nvpair name='version' type='uint8' value='0' />
-              <nvpair name='hc-list' type='nvlist-array' nelem='1'>
+              <nvpair name='hc-list' type='nvlist-array'>
                 <nvlist>
                   <nvpair name='hc-name' type='string' value='node' />
                   <nvpair name='hc-id' type='string' value='6' />
@@ -295,7 +298,7 @@
     </nvlist>
 
   </nvpair> <!-- property-groups -->
-  <outgoing-edges nelem='1'>
+  <outgoing-edges>
     <edge fmri='hc:///node=3' />
   </outgoing-edges>
 

@@ -12,6 +12,7 @@
 /*
  * Copyright 2020 Joyent, Inc.
  */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -27,11 +28,19 @@
 #include <sys/varargs.h>
 
 
-#define	TEST_XML_IN	"digraph-test-in.xml"
-#define	TEST_XML_OUT	"digraph-test-out.xml"
-#define	TEST_GRAPH_SZ	7
+#define	TEST_HOME		"/opt/os-tests/tests/libtopo/"
+#define	TEST_XML_IN		"digraph-test-in.xml"
+#define	TEST_XML_IN_BADSCHEME	"digraph-test-in-badscheme.xml"
+#define	TEST_XML_IN_BADNUM	"digraph-test-in-badnum.xml"
+#define	TEST_XML_IN_BADEDGE	"digraph-test-in-badedge.xml"
+#define	TEST_XML_IN_BADELEMENT	"digraph-test-in-badelement.xml"
+#define	TEST_GRAPH_SZ		7
+#define	TEST_XML_OUT_DIR	"/var/tmp"
+#define	TEST_XML_OUT_PREFIX	"digraph-test-out"
 
 static const char *pname;
+
+extern int topo_hdl_errno(topo_hdl_t *);
 
 /*
  * Generate an ISO 8601 timestamp
@@ -65,7 +74,7 @@ logmsg(const char *format, ...)
 }
 
 static topo_digraph_t *
-test_deserialize(topo_hdl_t *thp)
+test_deserialize(topo_hdl_t *thp, const char *path)
 {
 	struct stat statbuf = { 0 };
 	char *buf = NULL;
@@ -73,14 +82,12 @@ test_deserialize(topo_hdl_t *thp)
 	topo_digraph_t *tdg = NULL;
 
 	logmsg("\tOpening test XML topology");
-	if ((fd = open(TEST_XML_IN, O_RDONLY)) < 0) {
-		logmsg("\tfailed to open %s (%s)", TEST_XML_IN,
-		    strerror(errno));
+	if ((fd = open(path, O_RDONLY)) < 0) {
+		logmsg("\tfailed to open %s (%s)", path, strerror(errno));
 		goto out;
 	}
 	if (fstat(fd, &statbuf) != 0) {
-		logmsg("\tfailed to stat %s (%s)", TEST_XML_IN,
-		    strerror(errno));
+		logmsg("\tfailed to stat %s (%s)", path, strerror(errno));
 		goto out;
 	}
 	if ((buf = malloc(statbuf.st_size)) == NULL) {
@@ -98,6 +105,7 @@ test_deserialize(topo_hdl_t *thp)
 		logmsg("\ttopo_digraph_deserialize() failed!");
 		goto out;
 	}
+	logmsg("\ttopo_digraph_deserialize() succeeded");
 out:
 	free(buf);
 	if (fd > 0) {
@@ -127,8 +135,9 @@ test_paths(topo_hdl_t *thp, topo_digraph_t *tdg)
 {
 	topo_vertex_t *vertices[TEST_GRAPH_SZ];
 	struct cb_arg cbarg = { 0 };
-	int np = 0, ret = -1;
+	int ret = -1;
 	topo_path_t **paths;
+	uint_t np;
 
 	cbarg.vertices = vertices;
 	if (topo_vertex_iter(thp, tdg, test_paths_cb, &cbarg) != 0) {
@@ -137,8 +146,8 @@ test_paths(topo_hdl_t *thp, topo_digraph_t *tdg)
 	}
 
 	logmsg("\tCalculating number of paths between node 0 and node 4");
-	np = topo_digraph_paths(thp, tdg, vertices[0], vertices[4], &paths);
-	if (np < 0) {
+	if (topo_digraph_paths(thp, tdg, vertices[0], vertices[4], &paths,
+	    &np) < 0) {
 		logmsg("\ttopo_digraph_paths() failed");
 		goto out;
 	}
@@ -152,8 +161,8 @@ test_paths(topo_hdl_t *thp, topo_digraph_t *tdg)
 	topo_hdl_free(thp, paths, np * sizeof (topo_path_t *));
 
 	logmsg("\tCalculating number of paths between node 6 and node 4");
-	np = topo_digraph_paths(thp, tdg, vertices[6], vertices[4], &paths);
-	if (np < 0) {
+	if (topo_digraph_paths(thp, tdg, vertices[6], vertices[4], &paths,
+	    &np) < 0) {
 		logmsg("\ttopo_digraph_paths() failed");
 		goto out;
 	}
@@ -167,8 +176,8 @@ test_paths(topo_hdl_t *thp, topo_digraph_t *tdg)
 	topo_hdl_free(thp, paths, np * sizeof (topo_path_t *));
 
 	logmsg("\tCalculating number of paths between node 5 and node 1");
-	np = topo_digraph_paths(thp, tdg, vertices[5], vertices[1], &paths);
-	if (np < 0) {
+	if (topo_digraph_paths(thp, tdg, vertices[5], vertices[1], &paths,
+	    &np) < 0) {
 		logmsg("\ttopo_digraph_paths() failed");
 		goto out;
 	}
@@ -180,22 +189,31 @@ test_paths(topo_hdl_t *thp, topo_digraph_t *tdg)
 
 out:
 	if (np > 0) {
-	        for (uint_t i = 0; i < np; i++) {
+		for (uint_t i = 0; i < np; i++) {
 			topo_path_destroy(thp, paths[i]);
-        	}
-        	topo_hdl_free(thp, paths, np * sizeof (topo_path_t *));
+		}
+		topo_hdl_free(thp, paths, np * sizeof (topo_path_t *));
 	}
 	return (ret);
 }
 
 static int
-test_serialize(topo_hdl_t *thp, topo_digraph_t *tdg)
+test_serialize(topo_hdl_t *thp, topo_digraph_t *tdg, const char *path)
 {
-	logmsg("\tSerializing topology to XML");
-	if (topo_digraph_serialize(thp, tdg, stdout) != 0) {
-		logmsg("\ttopo_digraph_serialize() failed!");
+	FILE *xml_out;
+
+	if ((xml_out = fopen(path, "w")) == NULL) {
+		logmsg("\tfailed to open %s for writing (%s)",
+		    strerror(errno));
 		return (-1);
 	}
+	logmsg("\tSerializing topology to XML (%s)", path);
+	if (topo_digraph_serialize(thp, tdg, xml_out) != 0) {
+		logmsg("\ttopo_digraph_serialize() failed!");
+		(void) fclose(xml_out);
+		return (-1);
+	}
+	(void) fclose(xml_out);
 	return (0);
 }
 
@@ -204,15 +222,19 @@ main(int argc, char **argv)
 {
 	topo_hdl_t *thp = NULL;
 	topo_digraph_t *tdg;
-	char *root = "/";
+	char *root = "/", *out_path = NULL;
+	boolean_t abort_on_exit = B_FALSE;
 	int err, status = EXIT_FAILURE;
 
-	if (getuid() != 0) {
-		(void) fprintf(stderr, "This test must be run as root.\n");
-		return (EXIT_FAILURE);
-	}
-
 	pname = argv[0];
+
+	/*
+	 * Setting DIGRAPH_TEST_CORE causes us to abort and dump core before
+	 * exiting.  This is useful for examining for memory leaks.
+	 */
+	if (getenv("DIGRAPH_TEST_CORE") != NULL) {
+		abort_on_exit = B_TRUE;
+	}
 
 	logmsg("Opening libtopo");
 	if ((thp = topo_open(TOPO_VERSION, root, &err)) == NULL) {
@@ -221,7 +243,37 @@ main(int argc, char **argv)
 	}
 
 	logmsg("TEST: Deserialize directed graph topology");
-	if ((tdg = test_deserialize(thp)) == NULL) {
+	if ((tdg = test_deserialize(thp, TEST_HOME TEST_XML_IN)) == NULL) {
+		logmsg("FAIL");
+		goto out;
+	}
+	logmsg("PASS");
+
+	logmsg("TEST: Serialize directed graph topology");
+	if ((out_path = tempnam(TEST_XML_OUT_DIR, TEST_XML_OUT_PREFIX)) ==
+	    NULL) {
+		logmsg("\tFailed to create temporary file name under %s (%s)",
+		    TEST_XML_OUT_DIR, strerror(errno));
+		logmsg("FAIL");
+		goto out;
+	}
+	if (test_serialize(thp, tdg, out_path) != 0) {
+		logmsg("FAIL");
+		goto out;
+	}
+	logmsg("PASS");
+
+	logmsg("Closing libtopo");
+	topo_close(thp);
+
+	logmsg("Reopening libtopo");
+	if ((thp = topo_open(TOPO_VERSION, root, &err)) == NULL) {
+		logmsg("failed to get topo handle: %s", topo_strerror(err));
+		goto out;
+	}
+
+	logmsg("TEST: Deserialize directed graph topology (pass 2)");
+	if ((tdg = test_deserialize(thp, out_path)) == NULL) {
 		logmsg("FAIL");
 		goto out;
 	}
@@ -234,19 +286,95 @@ main(int argc, char **argv)
 	}
 	logmsg("PASS");
 
-	logmsg("TEST: Serialize directed graph topology");
-	if (test_serialize(thp, tdg) != 0) {
-		logmsg("FAIL");
+	logmsg("Closing libtopo");
+	topo_close(thp);
+
+	logmsg("Reopening libtopo");
+	if ((thp = topo_open(TOPO_VERSION, root, &err)) == NULL) {
+		logmsg("failed to get topo handle: %s", topo_strerror(err));
 		goto out;
 	}
-	logmsg("PASS");
 
+	/*
+	 * The following tests attempt to deserialize XML files that either
+	 * violate the DTD or contain invalid attribute values.
+	 *
+	 * The expection is that topo_digraph_deserialize() should fail
+	 * gracefully (i.e. not segfault) and topo_errno should be set.
+	 */
+	logmsg("TEST: Deserialize directed graph topology (bad scheme)");
+	if ((tdg = test_deserialize(thp, TEST_HOME TEST_XML_IN_BADSCHEME)) !=
+	    NULL) {
+		logmsg("FAIL");
+		goto out;
+	} else if (topo_hdl_errno(thp) == 0) {
+		logmsg("\texpected topo_errno to be non-zero");
+		logmsg("FAIL");
+		goto out;
+	} else {
+		logmsg("PASS");
+	}
+
+	logmsg("TEST: Deserialize directed graph topology (bad number)");
+	if ((tdg = test_deserialize(thp, TEST_HOME TEST_XML_IN_BADNUM)) !=
+	    NULL) {
+		logmsg("FAIL");
+		goto out;
+	} else if (topo_hdl_errno(thp) == 0) {
+		logmsg("\texpected topo_errno to be non-zero");
+		logmsg("FAIL");
+		goto out;
+	} else {
+		logmsg("PASS");
+	}
+
+	logmsg("TEST: Deserialize directed graph topology (bad edge)");
+	if ((tdg = test_deserialize(thp, TEST_HOME TEST_XML_IN_BADEDGE)) !=
+	    NULL) {
+		logmsg("FAIL");
+		goto out;
+	} else if (topo_hdl_errno(thp) == 0) {
+		logmsg("\texpected topo_errno to be non-zero");
+		logmsg("FAIL");
+		goto out;
+	} else {
+		logmsg("PASS");
+	}
+
+	logmsg("TEST: Deserialize directed graph topology (bad element)");
+	if ((tdg = test_deserialize(thp, TEST_HOME TEST_XML_IN_BADELEMENT)) !=
+	    NULL) {
+		logmsg("FAIL");
+		goto out;
+	} else if (topo_hdl_errno(thp) == 0) {
+		logmsg("\texpected topo_errno to be non-zero");
+		logmsg("FAIL");
+		goto out;
+	} else {
+		logmsg("PASS");
+	}
+
+	/*
+	 * If any tests failed, we don't unlink the temp file, as its contents
+	 * may be useful for root-causing the test failure.
+	 */
+	if (unlink(out_path) != 0) {
+		logmsg("Failed to unlink temp file: %s (%s)", out_path,
+		    strerror(errno));
+	}
 	status = EXIT_SUCCESS;
 out:
 	if (thp != NULL) {
 		topo_close(thp);
 	}
+	if (out_path != NULL) {
+		free(out_path);
+	}
 	logmsg("digraph tests %s",
 	    status == EXIT_SUCCESS ? "passed" : "failed");
+
+	if (abort_on_exit) {
+		abort();
+	}
 	return (status);
 }

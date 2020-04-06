@@ -9,7 +9,7 @@
  source.  A copy of the CDDL is also available via the Internet at
  http://www.illumos.org/license/CDDL.
 
- Copyright 2019, Joyent, Inc.
+ Copyright 2020 Joyent, Inc.
 -->
 
 <!--
@@ -25,7 +25,7 @@
 <!ELEMENT vertices>
 
 <!ATTLIST vertices
-    	nelem		CDATA #REQUIRED
+        nelem           CDATA #REQUIRED
 >
 
 <!ELEMENT vertex (nvpair*, outgoing-edges?) >
@@ -44,10 +44,6 @@
 >
 
 <!ELEMENT outgoing-edges (edge*) >
-
-<!ATTLIST outgoing-edges
-        nelem		CDATA #REQUIRED
->
 
 <!ELEMENT edge (edge*) >
 

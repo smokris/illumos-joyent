@@ -18,7 +18,13 @@ include $(SRC)/Makefile.master
 ROOTOPTPKG = $(ROOT)/opt/os-tests
 TESTDIR = $(ROOTOPTPKG)/tests/libtopo
 
-PROGS = digraph-test digraph-test-in.xml
+PROGS = digraph-test
+
+XML =	digraph-test-in.xml \
+	digraph-test-in-badscheme.xml \
+	digraph-test-in-badnum.xml \
+	digraph-test-in-badedge.xml \
+	digraph-test-in-badelement.xml
 
 include $(SRC)/cmd/Makefile.cmd
 include $(SRC)/test/Makefile.com
@@ -30,14 +36,15 @@ CSTD= $(CSTD_GNU99)
 CMDS = $(PROGS:%=$(TESTDIR)/%)
 $(CMDS) := FILEMODE = 0555
 
+FILES = $(XML:%=$(TESTDIR)/%)
+$(FILES) := FILEMODE = 0444
+
 all: $(PROGS)
 
-install: all $(CMDS)
-
-lint:
+install: all $(CMDS) $(FILES)
 
 clobber: clean
-	-$(RM) $(PROGS)
+	-$(RM) $(PROGS) $(FILES)
 
 clean:
 	-$(RM) *.o

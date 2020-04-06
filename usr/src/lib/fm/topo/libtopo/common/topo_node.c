@@ -20,7 +20,7 @@
  */
 /*
  * Copyright (c) 2006, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright 2019 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 /*
@@ -193,6 +193,14 @@ topo_node_destroy(tnode_t *node)
 		topo_list_delete(&node->tn_children, nhp);
 		topo_mod_free(hmod, nhp, sizeof (topo_nodehash_t));
 		topo_mod_rele(hmod);
+	}
+
+	/*
+	 * Nodes in a directed graph structure have no children, so the node
+	 * name is still intact. We must free it now.
+	 */
+	if (node->tn_vtx != NULL) {
+		topo_mod_strfree(mod, node->tn_name);
 	}
 
 	/*

@@ -47,6 +47,33 @@
  * of incoming and outgoing edges and a pointer to the next and previous
  * vertices in digraph's adjecency list.
  *
+ * Locking
+ * -------
+ * The module APIs should only be used during snapshot creation, which is
+ * single-threaded, or as the result of a call to topo_snap_release() or
+ * topo_close().  While libtopo does prevent concurrent calls to
+ * topo_snap_release() and topo_close() via the topo_hdl_t lock, there is no
+ * mechanism currently that prevents the situation where one or more threads
+ * were to access the snapshot (e.g. they've got a cached tnode_t ptr or are
+ * walking the snapshot) while another thread is calling topo_snap_release()
+ * or topo_close().  The same is true for tree topologies.  It is up to the
+ * library consumer to provide their own synchronization or reference counting
+ * mechanism for that case. For example, fmd implements a reference counting
+ * mechanism around topo snapshots so that individual fmd modules can safely
+ * cache pointers to a given topo snapshot.
+ *
+ * None of the client APIs modify the state of the graph structure once
+ * the snapshot is created.  The exception is the state of the underlyng topo
+ * nodes for each vertex, who's properties may change as a result of the
+ * following:
+ *
+ * 1) topo_prop_get operations for properties that are backed by topo methods
+ * 2) topo_prop_set operations.
+ *
+ * For both of the above situations, synchronization is enforced by the per-node
+ * locks. Thus there a no locks used for synchronizing access to
+ * the topo_digraph_t or topo_vertex_t structures.
+ *
  * path scheme FMRIs
  * -----------------
  * For digraph topologies it is useful to be able to treat paths between
@@ -56,7 +83,13 @@
  *
  * path://scheme=<scheme>/<nodename>=<instance>/...
  *
- * For example, the path FMRI to represent a path between an initiator and a
+ * The path FMRI for a path from one vertex to another vertex is represented by
+ * a sequence of nodename/instance pairs where each pair represents a vertex on
+ * the path between the two vertices.  The first nodename/instance pair
+ * represents the "from" vertex and the last nodename/instance pair represents
+ * the "to" vertex.
+ *
+ * For example, the path FMRI to represent a path from an initiator to a
  * target in a SAS scheme digraph might look like this:
  *
  * path://scheme=sas/initiator=5003048023567a00/port=5003048023567a00/
@@ -115,7 +148,7 @@ find_digraph(topo_mod_t *mod)
 }
 
 /*
- * On successs, qllocates a new topo_digraph_t structure for the requested
+ * On successs, allocates a new topo_digraph_t structure for the requested
  * scheme.  The caller is responsible for free all memory allocated for this
  * structure when done via a call to topo_digraph_destroy().
  *
@@ -170,7 +203,8 @@ topo_digraph_new(topo_hdl_t *thp, topo_mod_t *mod, const char *scheme)
 		return (NULL);
 	}
 
-	(void) pthread_mutex_init(&tdg->tdg_lock, NULL);
+	/* This is released during topo_digraph_destroy() */
+	topo_mod_hold(mod);
 
 	return (tdg);
 err:
@@ -180,6 +214,14 @@ err:
 
 /*
  * Deallocates all memory associated with the specified topo_digraph_t.
+ *
+ * This only frees the memory allocated during topo_digraph_new().  To free the
+ * actual graph vertices one should call topo_snap_destroy() prior to calling
+ * topo_digraph_destroy().
+ *
+ * Calling topo_close() will also result in a call to topo_snap_destroy() and
+ * topo_digraph_dstroy() for all digraphs associated with the library handle.
+ *
  * This function is a NOP if NULL is passed in.
  */
 void
@@ -192,10 +234,10 @@ topo_digraph_destroy(topo_digraph_t *tdg)
 
 	mod = tdg->tdg_mod;
 	topo_method_unregister_all(mod, tdg->tdg_rootnode);
-	(void) pthread_mutex_destroy(&tdg->tdg_lock);
 	topo_mod_strfree(mod, (char *)tdg->tdg_scheme);
 	topo_mod_free(mod, tdg->tdg_rootnode, sizeof (tnode_t));
 	topo_mod_free(mod, tdg, sizeof (topo_digraph_t));
+	topo_mod_rele(mod);
 }
 
 /*
@@ -249,9 +291,7 @@ topo_vertex_new(topo_mod_t *mod, const char *name, topo_instance_t inst)
 	/* Bump the refcnt on the module that's creating this vertex. */
 	topo_mod_hold(mod);
 
-	(void) pthread_mutex_lock(&tdg->tdg_lock);
 	if (tdg->tdg_nvertices == UINT32_MAX) {
-		(void) pthread_mutex_unlock(&tdg->tdg_lock);
 		topo_mod_dprintf(mod, "Max vertices reached!");
 		(void) topo_mod_seterrno(mod, EMOD_DIGRAPH_MAXSZ);
 		topo_mod_rele(mod);
@@ -259,7 +299,6 @@ topo_vertex_new(topo_mod_t *mod, const char *name, topo_instance_t inst)
 	}
 	tdg->tdg_nvertices++;
 	topo_list_append(&tdg->tdg_vertices, vtx);
-	(void) pthread_mutex_unlock(&tdg->tdg_lock);
 
 	return (vtx);
 err:
@@ -379,12 +418,10 @@ topo_edge_new(topo_mod_t *mod, topo_vertex_t *from, topo_vertex_t *to)
 		topo_mod_dprintf(mod, "Digraph lookup failed");
 		return (topo_mod_seterrno(mod, EMOD_UNKNOWN));
 	}
-	(void) pthread_mutex_lock(&tdg->tdg_lock);
 	if (from->tvt_noutgoing == UINT32_MAX ||
 	    to->tvt_nincoming == UINT32_MAX ||
 	    tdg->tdg_nedges == UINT32_MAX) {
 		topo_mod_dprintf(mod, "Max edges reached!");
-		(void) pthread_mutex_unlock(&tdg->tdg_lock);
 		return (topo_mod_seterrno(mod, EMOD_DIGRAPH_MAXSZ));
 
 	}
@@ -392,7 +429,6 @@ topo_edge_new(topo_mod_t *mod, topo_vertex_t *from, topo_vertex_t *to)
 	    (e_to = topo_mod_zalloc(mod, sizeof (topo_edge_t))) == NULL) {
 		topo_mod_free(mod, e_from, sizeof (topo_edge_t));
 		topo_mod_free(mod, e_to, sizeof (topo_edge_t));
-		(void) pthread_mutex_unlock(&tdg->tdg_lock);
 		return (topo_mod_seterrno(mod, EMOD_NOMEM));
 	}
 	e_from->tve_vertex = from;
@@ -403,7 +439,6 @@ topo_edge_new(topo_mod_t *mod, topo_vertex_t *from, topo_vertex_t *to)
 	topo_list_append(&to->tvt_incoming, e_from);
 	to->tvt_nincoming++;
 	tdg->tdg_nedges++;
-	(void) pthread_mutex_unlock(&tdg->tdg_lock);
 
 	return (0);
 }
@@ -588,24 +623,24 @@ err:
 }
 
 /*
- * On success, populates the "paths" parameter with an array of
- * topo_path_t structs representing all paths from the "from" vertex to the
- * "to" vertex.  The caller is responsible for freeing this array.  Also, on
- * success, returns the the number of paths found.  If no paths are found, 0
- * is returned.
+ * On success, 0 is returns and the "paths" parameter is populated with an
+ * array of topo_path_t structs representing all paths from the "from" vertex
+ * to the "to" vertex.  The caller is responsible for freeing this array.  The
+ * "npaths" parameter will be populated with the number of paths found or 0 if
+ * no paths were found.
  *
  * On error, -1 is returned.
  */
 int
 topo_digraph_paths(topo_hdl_t *thp, topo_digraph_t *tdg, topo_vertex_t *from,
-    topo_vertex_t *to, topo_path_t ***paths)
+    topo_vertex_t *to, topo_path_t ***paths, uint_t *npaths)
 {
 	topo_list_t all_paths = { 0 };
 	char *curr_path;
 	topo_path_component_t *pathcomp = NULL;
 	topo_list_t curr_path_comps = { 0 };
 	struct digraph_path *path;
-	uint_t i, npaths = 0;
+	uint_t i;
 	int ret;
 
 	if (asprintf(&curr_path, "%s://%s=%s/%s=%" PRIx64"",
@@ -623,11 +658,12 @@ topo_digraph_paths(topo_hdl_t *thp, topo_digraph_t *tdg, topo_vertex_t *from,
 	pathcomp->tspc_vertex = from;
 	topo_list_append(&curr_path_comps, pathcomp);
 
+	*npaths = 0;
 	for (topo_edge_t *edge = topo_list_next(&from->tvt_outgoing);
 	    edge != NULL; edge = topo_list_next(edge)) {
 
 		ret = visit_vertex(thp, edge->tve_vertex, to, &all_paths,
-		    curr_path, &curr_path_comps, &npaths);
+		    curr_path, &curr_path_comps, npaths);
 		if (ret != 0) {
 			/* errno set */
 			goto err;
@@ -639,12 +675,12 @@ topo_digraph_paths(topo_hdl_t *thp, topo_digraph_t *tdg, topo_vertex_t *from,
 	 * No paths were found between the "from" and "to" vertices, so
 	 * we're done here.
 	 */
-	if (npaths == 0) {
+	if (*npaths == 0) {
 		free(curr_path);
 		return (0);
 	}
 
-	*paths = topo_hdl_zalloc(thp, npaths * sizeof (topo_path_t *));
+	*paths = topo_hdl_zalloc(thp, (*npaths) * sizeof (topo_path_t *));
 	if (*paths == NULL) {
 		(void) topo_hdl_seterrno(thp, ETOPO_NOMEM);
 		goto err;
@@ -664,7 +700,7 @@ topo_digraph_paths(topo_hdl_t *thp, topo_digraph_t *tdg, topo_vertex_t *from,
 		topo_hdl_free(thp, tmp, sizeof (struct digraph_path));
 	}
 	free(curr_path);
-	return (npaths);
+	return (0);
 
 err:
 	free(curr_path);
@@ -850,14 +886,14 @@ path_fmri_str2nvl(topo_mod_t *mod, tnode_t *node, topo_version_t version,
 	 * of the NUL chars that strtok inserts - which will cause
 	 * topo_mod_strfree to miscalculate the length of the string.  So we
 	 * keep track of the length of the original string and use
-	 * topo_mod_zalloc/topo_mod_free.
+	 * topo_mod_alloc/topo_mod_free.
 	 */
-	fmrilen = strlen(fmristr);
-	if ((tmp = topo_mod_zalloc(mod, fmrilen + 1)) == NULL) {
+	fmrilen = strlen(fmristr) + 1;
+	if ((tmp = topo_mod_alloc(mod, fmrilen)) == NULL) {
 		(void) topo_mod_seterrno(mod, EMOD_NOMEM);
 		goto err;
 	}
-	(void) strncpy(tmp, fmristr, fmrilen);
+	bcopy(fmristr, tmp, fmrilen);
 
 	/*
 	 * Find the offset of the "/" after the authority portion of the FMRI.
@@ -979,7 +1015,7 @@ path_fmri_str2nvl(topo_mod_t *mod, tnode_t *node, topo_version_t version,
 		topo_mod_free(mod, path, npairs * sizeof (nvlist_t *));
 	}
 	nvlist_free(auth);
-	topo_mod_free(mod, tmp, fmrilen + 1);
+	topo_mod_free(mod, tmp, fmrilen);
 	return (0);
 
 err:
@@ -993,6 +1029,7 @@ err:
 	}
 	nvlist_free(auth);
 	nvlist_free(fmri);
-	topo_mod_free(mod, tmp, fmrilen + 1);
+	if (tmp != NULL)
+		topo_mod_free(mod, tmp, fmrilen);
 	return (-1);
 }

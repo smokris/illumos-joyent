@@ -35,7 +35,6 @@ extern "C" {
 
 struct topo_digraph {
 	topo_list_t	tdg_list;		/* next/prev pointers */
-	pthread_mutex_t	tdg_lock;
 	const char	*tdg_scheme;		/* FMRI scheme */
 	topo_mod_t	*tdg_mod;		/* builtin enumerator mod */
 	tnode_t		*tdg_rootnode;		/* see topo_digraph_new() */
