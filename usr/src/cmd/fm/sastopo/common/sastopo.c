@@ -796,12 +796,11 @@ main(int argc, char *argv[])
 	    ini = topo_list_next(ini)) {
 		for (tgt = topo_list_next(&cbarg.tgt_list); tgt != NULL;
 		    tgt = topo_list_next(tgt)) {
-			int np;
+			uint_t np;
 			topo_path_t **paths;
 
-			np = topo_digraph_paths(thp, tdg, ini->vtx, tgt->vtx,
-			    &paths);
-			if (np < 0) {
+			if (topo_digraph_paths(thp, tdg, ini->vtx, tgt->vtx,
+			    &paths, &np) < 0) {
 				(void) fprintf(stderr, "topo_digraph_paths "
 				    "failed!\n");
 				goto out;

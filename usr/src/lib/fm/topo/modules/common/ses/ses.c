@@ -100,7 +100,7 @@ typedef struct ses_enum_chassis {
 	ses_enum_target_t	*sec_target;
 	topo_instance_t		sec_instance;
 	topo_instance_t		sec_scinstance;
-	int			sec_maxinstance;
+	uint64_t		sec_maxinstance;
 	boolean_t		sec_hasdev;
 	boolean_t		sec_internal;
 } ses_enum_chassis_t;
