@@ -162,6 +162,10 @@ struct bd {
 	uint64_t	d_numblks;
 	ddi_devid_t	d_devid;
 
+	uint64_t	d_max_free_seg;
+	uint64_t	d_max_free_sect;
+	uint64_t	d_free_align;
+
 	kmem_cache_t	*d_cache;
 	bd_queue_t	*d_queues;
 	kstat_t		*d_ksp;
@@ -712,6 +716,23 @@ bd_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 		bd->d_maxxfer = drive.d_maxxfer;
 
 	bd_create_inquiry_props(dip, &drive);
+
+	if (CAN_FREESPACE(bd)) {
+		/*
+		 * Default values -- no limits, no stricter alignment than
+		 * the device block size (unspecified fields are set to 0).
+		 */
+		bd_free_info_t bfi = {
+			.bfi_align = 1,
+		};
+
+		if (bd->d_ops.o_free_space_info != NULL)
+			bd->d_ops.o_free_space_info(bd->d_private, &bfi);
+
+		bd->d_max_free_seg = bfi.bfi_max_seg;
+		bd->d_max_free_sect = bfi.bfi_max_sect;
+		bd->d_free_align = bfi.bfi_align;
+	}
 
 	bd_create_errstats(bd, inst, &drive);
 	bd_init_errstats(bd, &drive);
@@ -1552,7 +1573,6 @@ bd_ioctl(dev_t dev, int cmd, intptr_t arg, int flag, cred_t *credp, int *rvalp)
 		if (rv != 0)
 			return (rv);
 
-		/* bd_xfer_done() frees dfl via bd_xfer_free() */
 		rv = bd_free_space(dev, bd, dfl);
 		return (rv);
 	}
@@ -1967,75 +1987,14 @@ bd_free_space_done(struct buf *bp)
 	return (0);
 }
 
-/*
- * Adjust extents to be relative to start of the device. When DKIOCFREE
- * is called on a blkdev instance, the extents are relative to the start of
- * the partition for a given blkdev instance. We adjust the extent
- * starting addresses (by adding the partition start offset to dfl_offset)
- * and truncate any extents that extend beyond the end of the partition.
- */
 static int
-bd_adjust_extents(dev_t dev, bd_t *bd, dkioc_free_list_t *dfl)
+bd_free_space_cb(dkioc_free_list_t *dfl, void *arg)
 {
-	dkioc_free_list_ext_t	*ext;
-	minor_t			part;
-	diskaddr_t		p_lba;
-	diskaddr_t		p_nblks;
-	uint64_t		offset;
-	uint64_t		length;
-	size_t			i;
-	uint32_t		shift = bd->d_blkshift;
-
-	part = BDPART(dev);
-
-	if (cmlb_partinfo(bd->d_cmlbh, part, &p_nblks, &p_lba,
-	    NULL, NULL, 0) != 0) {
-		return (ENXIO);
-	}
-
-	offset = (uint64_t)p_lba << shift;
-	length = (uint64_t)p_nblks << shift;
-
-	dfl->dfl_offset += offset;
-	if (dfl->dfl_offset < offset)
-		return (EOVERFLOW); /* XXX: or EINVAL? */
-
-	for (ext = dfl->dfl_exts, i = 0; i < dfl->dfl_num_exts; i++, ext++) {
-		if (ext->dfle_start > length) {
-			ext->dfle_length = 0;
-			continue;
-		}
-
-		uint64_t end = ext->dfle_start + ext->dfle_length;
-
-		if (end < ext->dfle_start)
-			return (EOVERFLOW); /* XXX: or EINVAL? */
-
-		if (end > length)
-			ext->dfle_length = length - ext->dfle_start;
-	}
-
-	return (0);
-}
-
-static int
-bd_free_space(dev_t dev, bd_t *bd, dkioc_free_list_t *dfl)
-{
-	buf_t			*bp = NULL;
-	bd_xfer_impl_t		*xi = NULL;
-	int			rv = 0;
-	boolean_t		sync = (dfl->dfl_flags & DF_WAIT_SYNC) != 0 ?
-	    B_TRUE : B_FALSE;
-
-	/*
-	 * bd_ioctl created our own copy of dfl, so we can modify as
-	 * necessary
-	 */
-	rv = bd_adjust_extents(dev, bd, dfl);
-	if (rv != 0) {
-		dfl_free(dfl);
-		return (rv);
-	}
+	bd_t		*bd = arg;
+	buf_t		*bp = NULL;
+	bd_xfer_impl_t	*xi = NULL;
+	boolean_t	sync = DFL_ISSYNC(dfl) ?  B_TRUE : B_FALSE;
+	int		rv = 0;
 
 	bp = getrbuf(KM_SLEEP);
 	bp->b_resid = 0;
@@ -2058,6 +2017,39 @@ bd_free_space(dev_t dev, bd_t *bd, dkioc_free_list_t *dfl)
 	freerbuf(bp);
 
 	return (rv);
+}
+
+static int
+bd_free_space(dev_t dev, bd_t *bd, dkioc_free_list_t *dfl)
+{
+	diskaddr_t p_len, p_offset;
+	uint64_t offset_bytes;
+	minor_t part = BDINST(dev);
+	dkioc_free_info_t dfi = {
+		.dfi_bshift = bd->d_blkshift,
+		.dfi_align = bd->d_free_align,
+		.dfi_max_blocks = bd->d_max_free_sect,
+		.dfi_max_ext = bd->d_max_free_seg,
+	};
+
+	if (cmlb_partinfo(bd->d_cmlbh, part, &p_len, &p_offset, NULL,
+	    NULL, 0) != 0) {
+		dfl_free(dfl);
+		return (ENXIO);
+	}
+
+	/*
+	 * bd_ioctl created our own copy of dfl, so we can modify as
+	 * necessary
+	 */
+	offset_bytes = (uint64_t)p_offset << bd->d_blkshift;
+	dfl->dfl_offset += offset_bytes;
+	if (dfl->dfl_offset < offset_bytes) {
+		dfl_free(dfl);
+		return (EOVERFLOW);
+	}
+
+	return (dfl_iter(dfl, &dfi, p_len, bd_free_space_cb, bd, KM_SLEEP));
 }
 
 /*
@@ -2126,6 +2118,7 @@ bd_alloc_handle(void *private, bd_ops_t *ops, ddi_dma_attr_t *dma, int kmflag)
 	switch (ops->o_version) {
 	case BD_OPS_CURRENT_VERSION:
 		hdl->h_ops.o_free_space = ops->o_free_space;
+		hdl->h_ops.o_free_space_info = ops->o_free_space_info;
 		/*FALLTHRU*/
 	case BD_OPS_VERSION_1:
 	case BD_OPS_VERSION_0:

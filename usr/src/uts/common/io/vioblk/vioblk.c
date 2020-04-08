@@ -22,7 +22,7 @@
 /*
  * Copyright (c) 2015, Nexenta Systems, Inc. All rights reserved.
  * Copyright (c) 2012, Alexey Zaytsev <alexey.zaytsev@gmail.com>
- * Copyright 2019 Joyent Inc.
+ * Copyright 2020 Joyent Inc.
  * Copyright 2019 Western Digital Corporation.
  */
 
@@ -147,13 +147,6 @@ static const ddi_dma_attr_t vioblk_dma_attr = {
 	.dma_attr_granular =		1,
 	.dma_attr_flags =		0
 };
-
-/*
- * Break up DISCARD requests into smaller pieces if the request exceeds
- * the limits given by the host. If 0, requests may be truncated if
- * they exceed the host limits.
- */
-static int vioblk_split_discard = 0;
 
 static vioblk_req_t *
 vioblk_req_alloc(vioblk_t *vib)
@@ -551,6 +544,16 @@ vioblk_bd_mediainfo(void *arg, bd_media_t *media)
 }
 
 static void
+vioblk_bd_free_space_info(void *arg, bd_free_info_t *bfi)
+{
+	vioblk_t *vib = (void *)arg;
+
+	bfi->bfi_max_seg = vib->vib_max_discard_seg;
+	bfi->bfi_max_sect = vib->vib_max_discard_sectors;
+	bfi->bfi_align = vib->vib_discard_sector_align;
+}
+
+static void
 vioblk_get_id(vioblk_t *vib)
 {
 	virtio_dma_t *dma;
@@ -618,76 +621,35 @@ vioblk_bd_devid(void *arg, dev_info_t *dip, ddi_devid_t *devid)
 	    devid));
 }
 
-struct vioblk_freesp_arg {
-	vioblk_t	*vfpa_vioblk;
-	bd_xfer_t	*vfpa_xfer;
-};
-
 static int
-vioblk_free_exts(const dkioc_free_list_ext_t *exts, size_t n_exts,
-    boolean_t last, void *arg)
+vioblk_bd_free_space(void *arg, bd_xfer_t *xfer)
 {
-	struct vioblk_freesp_arg *args = arg;
-	vioblk_t *vib = args->vfpa_vioblk;
+	const dkioc_free_list_t *dfl = xfer->x_dfl;
+	const dkioc_free_list_ext_t *exts = dfl->dfl_exts;
+	vioblk_t *vib = arg;
 	virtio_dma_t *dma = NULL;
 	virtio_chain_t *vic = NULL;
 	vioblk_req_t *vbr = NULL;
 	struct vioblk_discard_write_zeroes *wzp = NULL;
-	size_t i;
 	int r = 0;
-	boolean_t polled;
+	boolean_t polled = DFL_ISSYNC(dfl) ? B_TRUE : B_FALSE;
 
-	/*
-	 * While rare, it's possible we might get called with a list of
-	 * zero extents. In that case, just return success.
-	 */
-	if (n_exts == 0) {
-		if (last) {
-			bd_xfer_done(args->vfpa_xfer, 0);
-			args->vfpa_xfer = NULL;
-		}
+	/* XXX: This seems like it could be folded into vioblk_request() */
 
-		return (0);
-	}
-
-	/*
-	 * If last is false, dfl_iter() had to segment or split the
-	 * original DKIOCFREE request into multiple requests for us (if last
-	 * is B_FALSE, it implies more extents are coming). While the blkdev
-	 * framework handles implementing the necessary sync/not sync semantics
-	 * for a DKIOCFREE request, that is in terms of the entire original
-	 * request. If dfl_iter() had to break things up, we always treat
-	 * the non-final (last == B_FALSE) calls to vioblk_free_extents() as
-	 * synchronous (polled).
-	 *
-	 * The assumption is that if the host is placing limits on a
-	 * DISCARD request, issuing multiple requests to the same device
-	 * asynchronously is likely to have undesirable results (or else why
-	 * wouldn't the host expose larger limits to prevent segmentation?),
-	 * so we issue one at a time (at least until the final group).
-	 *
-	 * The vioblk_split_discard tunable can be set to 0 to disable this
-	 * behavior -- in that case, any extents that exceed the host limits
-	 * are just discarded.
-	 *
-	 * Unfortunately, there isn't currently a way to report partial
-	 * results, so the choices are to fail the request if any extent in
-	 * the request doesn't meet the device requirements or to break
-	 * as much of the request as is possible 
-	 */
-	polled = !!last;
-
-	dma = virtio_dma_alloc(vib->vib_virtio, n_exts * sizeof (*wzp),
-	    &vioblk_dma_attr, DDI_DMA_CONSISTENT | DDI_DMA_WRITE, KM_SLEEP);
+	dma = virtio_dma_alloc(vib->vib_virtio,
+	    dfl->dfl_num_exts * sizeof (*wzp), &vioblk_dma_attr,
+	    DDI_DMA_CONSISTENT | DDI_DMA_WRITE, KM_SLEEP);
 	if (dma == NULL)
 		return (ENOMEM);
 
 	wzp = virtio_dma_va(dma, 0);
 
-	for (i = 0; i < n_exts; i++, exts++, wzp++) {
+	for (size_t i = 0; i < dfl->dfl_num_exts; i++, exts++, wzp++) {
+		uint64_t start = dfl->dfl_offset + exts->dfle_start;
+
 		struct vioblk_discard_write_zeroes vdwz = {
-			.vdwz_sector = exts->dfle_start,
-			.vdwz_num_sectors = exts->dfle_length,
+			.vdwz_sector = start >> DEV_BSHIFT,
+			.vdwz_num_sectors = exts->dfle_length >> DEV_BSHIFT,
 			.vdwz_flags = 0
 		};
 
@@ -714,51 +676,9 @@ vioblk_free_exts(const dkioc_free_list_ext_t *exts, size_t n_exts,
 		return (ENOMEM);
 	}
 
-	if (last) {
-		/*
-		 * We attach xfer to the final vioblk request we submit.
-		 * This will allow the vioblk_complete() to handle any
-		 * notifications (e.g. a synchronous request) and
-		 * dispose of xfer afterwards.
-		 */
-		vbr->vbr_xfer = args->vfpa_xfer;
-		args->vfpa_xfer = NULL;
-	}
-
+	vbr->vbr_xfer = xfer;
 	r = vioblk_common_submit(vib, vic);
 	mutex_exit(&vib->vib_mutex);
-	return (r);
-}
-
-static int
-vioblk_bd_free_space(void *arg, bd_xfer_t *xfer)
-{
-	vioblk_t *vib = arg;
-	dkioc_free_align_t align = {
-		.dfa_bsize = DEV_BSIZE,
-		.dfa_max_ext = vib->vib_max_discard_seg,
-		.dfa_max_blocks = vib->vib_max_discard_sectors,
-		.dfa_align = vib->vib_discard_sector_align,
-		.dfa_gran = 1,
-	};
-	struct vioblk_freesp_arg sp_arg = {
-		.vfpa_vioblk = vib,
-		.vfpa_xfer = xfer
-	};
-	dkioc_free_list_t *dfl = xfer->x_dfl;
-	dkioc_iter_flags_t iter_flags =
-	    (vioblk_split_discard == 0) ? DIF_NOSPLIT : DIF_NONE;
-	int r = 0;
-
-	r = dfl_iter(dfl, &align, vioblk_free_exts, &sp_arg, KM_SLEEP,
-	    iter_flags);
-
-	/*
-	 * If we didn't include xfer as part of the final request
-	 * (sp_arg.vfpa_xfer is still set), we should be returning failure
-	 * so that bd_sched() will free xfer.
-	 */
-	IMPLY(sp_arg.vfpa_xfer != NULL, r != 0);
 
 	return (r);
 }
@@ -1084,6 +1004,13 @@ vioblk_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	 * "o_sync_cache" member from the ops vector.  As "bd_alloc_handle()"
 	 * makes a copy of the ops vector, we can safely assemble one on the
 	 * stack based on negotiated features.
+	 *
+	 * Similarly, the blkdev framework does not provide a way to indicate
+	 * if a device supports an TRIM/UNMAP/DISCARD type operation except
+	 * by omitting the "o_free_space" member from the ops vector. For
+	 * consistency, we also omit the "o_free_info" member since it is
+	 * only possibly used when a device specifies a "o_free_space"
+	 * function.
 	 */
 	bd_ops_t vioblk_bd_ops = {
 		.o_version =		BD_OPS_CURRENT_VERSION,
@@ -1094,12 +1021,14 @@ vioblk_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 		.o_read =		vioblk_bd_read,
 		.o_write =		vioblk_bd_write,
 		.o_free_space = 	vioblk_bd_free_space,
+		.o_free_space_info =	vioblk_bd_free_space_info,
 	};
 	if (!virtio_feature_present(vio, VIRTIO_BLK_F_FLUSH)) {
 		vioblk_bd_ops.o_sync_cache = NULL;
 	}
 	if (!virtio_feature_present(vio, VIRTIO_BLK_F_DISCARD)) {
 		vioblk_bd_ops.o_free_space = NULL;
+		vioblk_bd_ops.o_free_space_info = NULL;
 	}
 
 	vib->vib_bd_h = bd_alloc_handle(vib, &vioblk_bd_ops,

@@ -25,44 +25,34 @@ extern "C" {
 
 #define	DFL_COPYIN_MAX_EXTS	(1024 * 1024)
 
-typedef struct dkioc_free_align {
-	/* Device block size in bytes. Must be > 0, and must be a power of 2 */
-	size_t	dfa_bsize;
+#define	DFL_ISSYNC(dfl) ((dfl)->dfl_flags & DF_WAIT_SYNC)
+
+typedef struct dkioc_free_info {
+	/* log2(block size) */
+	size_t	dfi_bshift;
 
 	/* Maximum number of extents in a single request. 0 == no limit */
-	size_t	dfa_max_ext;
+	size_t	dfi_max_ext;
+
+	/* Maximum number of blocks in a single request.  0 == no limit. */
+	size_t	dfi_max_blocks;
 
 	/*
-	 * Maximum number of blocks (in units of dfa_bsize) in a single request.
-	 * 0 == no limit.
-	 */
-	size_t	dfa_max_blocks;
-
-	/*
-	 * Minimum alignment for extent offsets in units of blocks (dfa_bsize).
-	 * etc). Must be > 0, and a power of two.
-	 */
-	size_t	dfa_align;
-
-	/*
-	 * Minimum granularity for length in units of blocks (dfa_bsize).
+	 * Minimum alignment for starting extent offsets in units of blocks.
 	 * Must be > 0, and a power of two.
+	 *
+	 * A possible future extention might be to also express a preferred
+	 * alignment when splitting extents.
 	 */
-	size_t dfa_gran;
-} dkioc_free_align_t;
+	size_t	dfi_align;
+} dkioc_free_info_t;
 
-typedef enum dkioc_iter_flags {
-	DIF_NONE	= 0,
-	DIF_NOSPLIT	= (1 << 1)
-} dkioc_iter_flags_t;
-
-typedef int (*dfl_iter_fn_t)(const dkioc_free_list_ext_t *exts, size_t n_ext,
-    boolean_t last, void *arg);
+typedef int (*dfl_iter_fn_t)(dkioc_free_list_t *dfl, void *arg);
 
 int dfl_copyin(void *arg, dkioc_free_list_t **out, int ddi_flags, int kmflags);
 void dfl_free(dkioc_free_list_t *dfl);
-int dfl_iter(const dkioc_free_list_t *dfl, const dkioc_free_align_t *align,
-    dfl_iter_fn_t fn, void *arg, int kmflag, dkioc_iter_flags_t);
+int dfl_iter(dkioc_free_list_t *dfl, const dkioc_free_info_t *dfi, uint64_t len,
+    dfl_iter_fn_t fn, void *arg, int kmflag);
 
 #ifdef	__cplusplus
 }

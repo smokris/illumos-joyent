@@ -23,7 +23,7 @@
  * Copyright 2016 Nexenta Systems, Inc.  All rights reserved.
  * Copyright (c) 2009, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright 2019 Western Digital Corporation.
- * Copyright 2019 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #ifndef	_SYS_BLKDEV_H
@@ -80,6 +80,7 @@ typedef struct bd_handle *bd_handle_t;
 typedef struct bd_xfer bd_xfer_t;
 typedef struct bd_drive bd_drive_t;
 typedef struct bd_media bd_media_t;
+typedef struct bd_free_info bd_free_info_t;
 typedef struct bd_ops bd_ops_t;
 
 struct dkioc_free_list_s;
@@ -149,6 +150,12 @@ struct bd_media {
 #define	BD_INFO_FLAG_HOTPLUGGABLE	(1U << 1)
 #define	BD_INFO_FLAG_READ_ONLY		(1U << 2)
 
+struct bd_free_info {
+	uint64_t		bfi_align;
+	uint64_t		bfi_max_seg;
+	uint64_t		bfi_max_sect;
+};
+
 /*
  * If the API changes and we want to bump the version, add another
  * enum value, Eg BD_OPS_VERSION_1. BD_OPS_CURRENT_VERSION should always
@@ -169,6 +176,7 @@ struct bd_ops {
 	int		(*o_read)(void *, bd_xfer_t *);
 	int		(*o_write)(void *, bd_xfer_t *);
 	int		(*o_free_space)(void *, bd_xfer_t *);
+	void		(*o_free_space_info)(void *, bd_free_info_t *);
 };
 
 struct bd_errstats {
