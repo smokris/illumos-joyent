@@ -2016,6 +2016,7 @@ bd_free_space_cb(dkioc_free_list_t *dfl, void *arg)
 		return (0);
 	}
 
+	xi->i_flags |= BD_XFER_POLL;
 	bd_submit(bd, xi);
 
 	(void) biowait(bp);

@@ -375,6 +375,45 @@ out:
 }
 
 static int
+vioblk_map_discard(vioblk_t *vib, virtio_chain_t *vic, const bd_xfer_t *xfer)
+{
+	const dkioc_free_list_t *dfl = xfer->x_dfl;
+	const dkioc_free_list_ext_t *exts = dfl->dfl_exts;
+	virtio_dma_t *dma = NULL;
+	struct vioblk_discard_write_zeroes *wzp = NULL;
+
+	dma = virtio_dma_alloc(vib->vib_virtio,
+	    dfl->dfl_num_exts * sizeof (*wzp), &vioblk_dma_attr,
+	    DDI_DMA_CONSISTENT | DDI_DMA_WRITE, KM_SLEEP);
+	if (dma == NULL)
+		return (ENOMEM);
+
+	wzp = virtio_dma_va(dma, 0);
+
+	for (size_t i = 0; i < dfl->dfl_num_exts; i++, exts++, wzp++) {
+		uint64_t start = dfl->dfl_offset + exts->dfle_start;
+
+		struct vioblk_discard_write_zeroes vdwz = {
+			.vdwz_sector = start >> DEV_BSHIFT,
+			.vdwz_num_sectors = exts->dfle_length >> DEV_BSHIFT,
+			.vdwz_flags = 0
+		};
+
+		bcopy(&vdwz, wzp, sizeof (*wzp));
+	}
+
+	if (virtio_chain_append(vic,
+	    virtio_dma_cookie_pa(dma, 0),
+	    virtio_dma_cookie_size(dma, 0),
+	    VIRTIO_DIR_DEVICE_READS) != DDI_SUCCESS) {
+		virtio_dma_free(dma);
+		return (ENOMEM);
+	}
+
+	return (0);
+}
+
+static int
 vioblk_request(vioblk_t *vib, bd_xfer_t *xfer, int type)
 {
 	virtio_chain_t *vic = NULL;
@@ -437,6 +476,11 @@ vioblk_request(vioblk_t *vib, bd_xfer_t *xfer, int type)
 		dev_err(vib->vib_dip, CE_PANIC,
 		    "request of type %d had payload length of %lu blocks", type,
 		    xfer->x_nblks);
+	} else if (type == VIRTIO_BLK_T_DISCARD) {
+		r = vioblk_map_discard(vib, vic, xfer);
+		if (r != 0) {
+			goto fail;
+		}
 	}
 
 	if (vib->vib_stats->vbs_rw_cookiesmax.value.ui32 < total_cookies) {
@@ -624,60 +668,11 @@ vioblk_bd_devid(void *arg, dev_info_t *dip, ddi_devid_t *devid)
 static int
 vioblk_bd_free_space(void *arg, bd_xfer_t *xfer)
 {
-	const dkioc_free_list_t *dfl = xfer->x_dfl;
-	const dkioc_free_list_ext_t *exts = dfl->dfl_exts;
 	vioblk_t *vib = arg;
-	virtio_dma_t *dma = NULL;
-	virtio_chain_t *vic = NULL;
-	vioblk_req_t *vbr = NULL;
-	struct vioblk_discard_write_zeroes *wzp = NULL;
 	int r = 0;
-	boolean_t polled = DFL_ISSYNC(dfl) ? B_TRUE : B_FALSE;
-
-	/* XXX: This seems like it could be folded into vioblk_request() */
-
-	dma = virtio_dma_alloc(vib->vib_virtio,
-	    dfl->dfl_num_exts * sizeof (*wzp), &vioblk_dma_attr,
-	    DDI_DMA_CONSISTENT | DDI_DMA_WRITE, KM_SLEEP);
-	if (dma == NULL)
-		return (ENOMEM);
-
-	wzp = virtio_dma_va(dma, 0);
-
-	for (size_t i = 0; i < dfl->dfl_num_exts; i++, exts++, wzp++) {
-		uint64_t start = dfl->dfl_offset + exts->dfle_start;
-
-		struct vioblk_discard_write_zeroes vdwz = {
-			.vdwz_sector = start >> DEV_BSHIFT,
-			.vdwz_num_sectors = exts->dfle_length >> DEV_BSHIFT,
-			.vdwz_flags = 0
-		};
-
-		bcopy(&vdwz, wzp, sizeof (*wzp));
-	}
 
 	mutex_enter(&vib->vib_mutex);
-
-	vic = vioblk_common_start(vib, VIRTIO_BLK_T_DISCARD, 0, polled);
-	if (vic == NULL) {
-		mutex_exit(&vib->vib_mutex);
-		virtio_dma_free(dma);
-		return (ENOMEM);
-	}
-
-	vbr = virtio_chain_data(vic);
-	if (virtio_chain_append(vic,
-	    virtio_dma_cookie_pa(dma, 0),
-	    virtio_dma_cookie_size(dma, 0),
-	    VIRTIO_DIR_DEVICE_READS) != DDI_SUCCESS) {
-		vioblk_req_free(vib, vbr);
-		virtio_chain_free(vic);
-		mutex_exit(&vib->vib_mutex);
-		return (ENOMEM);
-	}
-
-	vbr->vbr_xfer = xfer;
-	r = vioblk_common_submit(vib, vic);
+	r = vioblk_request(vib, xfer, VIRTIO_BLK_T_DISCARD);
 	mutex_exit(&vib->vib_mutex);
 
 	return (r);
