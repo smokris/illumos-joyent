@@ -1,0 +1,88 @@
+#!/bin/ksh
+#
+# This file and its contents are supplied under the terms of the
+# Common Development and Distribution License ("CDDL"), version 1.0.
+# You may only use this file in accordance with the terms of version
+# 1.0 of the CDDL.
+#
+# A full copy of the text of the CDDL should have accompanied this
+# source.  A copy of the CDDL is also available via the Internet at
+# http://www.illumos.org/license/CDDL.
+#
+
+#
+# Copyright (c) 2019, Joyent, Inc.
+#
+
+#
+# There are two SAS expanders.  Behind each SAS expander are 30 LFF drive bays.
+# Testing shows that ses-enclosure=0 is connected to drives 1-30 and
+# ses-enclosure=1 is connected to drives 31-60.  There are no physical labels
+# on the drive bays, but the service sticker on the underside of the top
+# chassis cover simply refers to the bays by number (starting from 1).  As
+# these bays are intended to be occupied by hard drives, we set the FRU labels
+# "HDD 1" to "HDD 60".
+#
+function do_hdd_bay
+{
+  cat <<EOF
+        <node instance='${1}' static='true'>
+          <propgroup name='protocol' version='1' name-stability='Private'
+            data-stability='Private'>
+            <propval name='label' type='string' value='${2}' />
+          </propgroup>
+          <dependents grouping='children'>
+          <range name='disk' min='0' max='0'>
+           <node instance='0' static='true'>
+             <propgroup name='protocol' version='1' name-stability='Private'
+               data-stability='Private'>
+               <propval name='label' type='string' value='${2}' />
+             </propgroup>
+           </node>
+          </range>
+          </dependents>
+        </node>
+EOF
+}
+
+cat <<EOF
+<topology name='disk' scheme='hc'>
+  <range name='ses-enclosure' min='0' max='1'>
+    <node instance='0' static='true'>
+      <dependents grouping='children'>
+      <range name='bay' min='0' max='29'>
+EOF
+
+bay=0
+slot=1
+while (( bay <= 29 )); do
+	do_hdd_bay $bay "HDD $slot"
+	(( bay = bay + 1 ))
+	(( slot = slot + 1 ))
+done
+
+cat <<EOF
+       </range> <!-- bay -->
+     </dependents>
+    </node>
+    <node instance='1' static='true'>
+      <dependents grouping='children'>
+      <range name='bay' min='0' max='29'>
+EOF
+
+bay=0
+slot=31
+while (( bay <= 29 )); do
+	do_hdd_bay $bay "HDD $slot"
+	(( bay = bay + 1 ))
+	(( slot = slot + 1 ))
+done
+
+cat <<EOF
+       </range> <!-- bay -->
+     </dependents>
+    </node>
+</range> <!-- ses-enclosure -->
+
+</topology>
+EOF
