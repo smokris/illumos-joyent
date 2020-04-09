@@ -137,7 +137,8 @@ static bd_ops_t skd_bd_ops = {
 	NULL,			/* sync_cache */
 	skd_bd_read,
 	skd_bd_write,
-	NULL			/* free_space */
+	NULL,			/* free_space */
+	NULL,			/* free_space_info */
 };
 
 static ddi_device_acc_attr_t	dev_acc_attr = {

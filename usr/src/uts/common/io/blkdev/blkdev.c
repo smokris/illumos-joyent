@@ -98,6 +98,12 @@
  *
  * o_free_space: Free the space described by bd_xfer_t argument (optional).
  *
+ * o_free_space_info:	Provide information to blkdev on requirements for
+ * 			extents passed in a DKIOCFREE call to allow blkdev
+ * 			to split and align requests as required by the
+ * 			driver (optional). Only used when o_free_space is
+ * 			implemented by a driver.
+ *
  * Queues
  * ------
  * Part of the drive_info data is a queue count. blkdev will create

@@ -487,6 +487,7 @@ static bd_ops_t sda_bd_ops = {
 	sda_mem_bd_read,
 	sda_mem_bd_write,
 	NULL,			/* free_space */
+	NULL,			/* free_space_info */
 };
 
 void
