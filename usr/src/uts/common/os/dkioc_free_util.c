@@ -104,8 +104,8 @@ dfl_free(dkioc_free_list_t *dfl)
  * required to conform to its requirements.
  *
  * The original request is passed as 'dfl' and the alignment requirements
- * are passed in 'dfi'. Additionally the size of the device (in units of
- * blocks as described in dfi) is passed as len -- this allows a driver with
+ * are passed in 'dfi'. Additionally the maximum offset of the device allowed
+ * in bytes) is passed as max_off -- this allows a driver with
  * multiple instances of different sizes but similar requirements (e.g.
  * a partitioned blkdev device) to not construct a separate dkioc_free_info_t
  * struct for each device.
@@ -145,27 +145,23 @@ dfl_free(dkioc_free_list_t *dfl)
  * dfl_iter() will never call 'func' and will merely return 0.
  */
 int
-dfl_iter(dkioc_free_list_t *dfl, const dkioc_free_info_t *dfi, uint64_t len,
+dfl_iter(dkioc_free_list_t *dfl, const dkioc_free_info_t *dfi, uint64_t max_off,
     dfl_iter_fn_t func, void *arg, int kmflag)
 {
-	size_t n_blocks, n_segs, start_idx, i;
+	dkioc_free_list_ext_t *ext;
+	size_t n_bytes, n_segs, start_idx, i;
+	uint_t bsize = 1U << dfi->dfi_bshift;
 	int r = 0;
 	boolean_t need_copy = B_FALSE;
 
-	/* Offset alignment must also be at least 1 and a power of two */
-	if (dfi->dfi_align == 0 || !ISP2(dfi->dfi_align)) {
+	/* Max bytes must be a multiple of the block size */
+	if (!IS_P2ALIGNED(dfi->dfi_max_bytes, bsize)) {
 		r = SET_ERROR(EINVAL);
 		goto done;
 	}
 
-	/*
-	 * If a limit on the total number of blocks is given, it must be
-	 * greater than the offset alignment. E.g. if the block size is 512
-	 * bytes and the offset alignment is 4096 (8 blocks), the device must
-	 * allow extent sizes at least 8 blocks long (otherwise there will be
-	 * device addresses that cannot be contained within an extent).
-	 */
-	if (dfi->dfi_max_blocks > 0 && dfi->dfi_max_blocks < dfi->dfi_align) {
+	/* Start offset alignment must also be a multiple of the block size */
+	if (dfi->dfi_align == 0 || !IS_P2ALIGNED(dfi->dfi_align, bsize)) {
 		r = SET_ERROR(EINVAL);
 		goto done;
 	}
@@ -174,7 +170,7 @@ dfl_iter(dkioc_free_list_t *dfl, const dkioc_free_info_t *dfi, uint64_t len,
 	 * The first pass, align everything as needed and make sure all the
 	 * extents look valid.
 	 */
-	if ((r = adjust_exts(dfl, dfi, len)) != 0) {
+	if ((r = adjust_exts(dfl, dfi, max_off)) != 0) {
 		goto done;
 	}
 
@@ -186,13 +182,13 @@ dfl_iter(dkioc_free_list_t *dfl, const dkioc_free_info_t *dfi, uint64_t len,
 	 * process in a single request.
 	 */
 	start_idx = 0;
-	n_blocks = n_segs = 0;
-	for (i = 0; i < dfl->dfl_num_exts; i++) {
-		uint64_t start = dfl->dfl_offset + dfl->dfl_exts[i].dfle_start;
-		uint64_t end = start + dfl->dfl_exts[i].dfle_length;
-		size_t len_blk = (end - start) >> dfi->dfi_bshift;
+	n_bytes = n_segs = 0;
+	ext = dfl->dfl_exts;
+	for (i = 0; i < dfl->dfl_num_exts; i++, ext++) {
+		uint64_t start = dfl->dfl_offset + ext->dfle_start;
+		uint64_t len = ext->dfle_length;
 
-		if (len_blk == 0) {
+		if (len == 0) {
 			/*
 			 * If we encounter a zero length extent, we're going
 			 * to create a new copy of dfl no matter what --
@@ -205,13 +201,14 @@ dfl_iter(dkioc_free_list_t *dfl, const dkioc_free_info_t *dfi, uint64_t len,
 			continue;
 		}
 
-		if (n_blocks + len_blk > dfi->dfi_max_blocks) {
+		if (dfi->dfi_max_bytes > 0 &&
+		    n_bytes + len > dfi->dfi_max_bytes) {
 			if ((r = process_range(dfl, start_idx, i - start_idx,
 			    func, arg, kmflag)) != 0) {
 				goto done;
 			}
 
-			if (len_blk < dfi->dfi_max_blocks) {
+			if (len < dfi->dfi_max_bytes) {
 				/*
 				 * We've spilled over, but this block on its
 				 * own is fine. Start the next range of
@@ -219,7 +216,7 @@ dfl_iter(dkioc_free_list_t *dfl, const dkioc_free_info_t *dfi, uint64_t len,
 				 */
 				start_idx = i;
 				n_segs = 1;
-				n_blocks = len_blk;
+				n_bytes = len;
 				continue;
 			}
 
@@ -234,11 +231,11 @@ dfl_iter(dkioc_free_list_t *dfl, const dkioc_free_info_t *dfi, uint64_t len,
 
 			start_idx = i + 1;
 			n_segs = 0;
-			n_blocks = 0;
+			n_bytes = 0;
 			continue;
 		}
 
-		if (n_segs + 1 > dfi->dfi_max_ext) {
+		if (dfi->dfi_max_ext > 0 && n_segs + 1 > dfi->dfi_max_ext) {
 			if ((r = process_range(dfl, start_idx, i - start_idx,
 			    func, arg, kmflag)) != 0) {
 				goto done;
@@ -246,12 +243,12 @@ dfl_iter(dkioc_free_list_t *dfl, const dkioc_free_info_t *dfi, uint64_t len,
 
 			start_idx = i;
 			n_segs = 0;
-			n_blocks = 0;
+			n_bytes = 0;
 			continue;
 		}
 
 		n_segs++;
-		n_blocks += len_blk;
+		n_bytes += len;
 	}
 
 	/*
@@ -278,12 +275,11 @@ done:
  */
 static int
 adjust_exts(dkioc_free_list_t *dfl, const dkioc_free_info_t *dfi,
-    uint64_t len_blk)
+    uint64_t max_off)
 {
 	dkioc_free_list_ext_t *exts = dfl->dfl_exts;
-	size_t len = len_blk << dfi->dfi_bshift;
-	uint_t align = dfi->dfi_align << dfi->dfi_bshift;
-	uint_t bsize = (uint_t)1 << dfi->dfi_bshift;
+	const uint64_t align = dfi->dfi_align;
+	const uint64_t bsize = (uint64_t)1 << dfi->dfi_bshift;
 
 	for (size_t i = 0; i < dfl->dfl_num_exts; i++, exts++) {
 		/*
@@ -314,21 +310,27 @@ adjust_exts(dkioc_free_list_t *dfl, const dkioc_free_info_t *dfi,
 		 * Make sure we don't extend past the end of the device
 		 * XXX: ENXIO instead?
 		 */
-		if (end > len) {
+		if (end > max_off) {
 			return (SET_ERROR(ERANGE));
 		}
 
 		start = P2ROUNDUP(start, align);
 		end = P2ALIGN(end, bsize);
 
-		ASSERT(IS_P2ALIGNED(end - start, bsize));
+		ASSERT3U(start, >=, dfl->dfl_offset);
 
 		/*
 		 * Remove the offset so that when it's later applied again,
 		 * the correct start value is obtained.
 		 */
 		exts->dfle_start = start - dfl->dfl_offset;
-		exts->dfle_length = end - start;
+
+		/*
+		 * If the original length was less than the block size
+		 * of the device, we can end up with end < start. If that
+		 * happens we just set the length to zero.
+		 */
+		exts->dfle_length = (end < start) ? 0 : end - start;
 	}
 
 	return (0);
@@ -345,7 +347,7 @@ process_range(dkioc_free_list_t *dfl, size_t start_idx, size_t n,
 	dkioc_free_list_t *new_dfl = NULL;
 	dkioc_free_list_ext_t *new_exts = NULL;
 	dkioc_free_list_ext_t *exts = dfl->dfl_exts + start_idx;
-	size_t actual_len = n;
+	size_t actual_n = n;
 	int r = 0;
 
 	if (n == 0) {
@@ -364,18 +366,18 @@ process_range(dkioc_free_list_t *dfl, size_t start_idx, size_t n,
 	 * of the DKIOCFREE request would be useful.
 	 */
 	for (size_t i = 0; i < n; i++) {
-		if (exts[i].dfle_length == 0 && --actual_len == 0) {
+		if (exts[i].dfle_length == 0 && --actual_n == 0) {
 			return (0);
 		}
 	}
 
-	new_dfl = kmem_zalloc(DFL_SZ(actual_len), kmflag);
+	new_dfl = kmem_zalloc(DFL_SZ(actual_n), kmflag);
 	if (new_dfl == NULL) {
 		return (SET_ERROR(ENOMEM));
 	}
 
 	new_dfl->dfl_flags = dfl->dfl_flags;
-	new_dfl->dfl_num_exts = actual_len;
+	new_dfl->dfl_num_exts = actual_n;
 	new_dfl->dfl_offset = dfl->dfl_offset;
 	new_exts = new_dfl->dfl_exts;
 
@@ -399,7 +401,7 @@ split_extent(dkioc_free_list_t *dfl, const dkioc_free_info_t *dfi, size_t idx,
 {
 	ASSERT3U(idx, <, dfl->dfl_num_exts);
 
-	const uint64_t		amt = dfi->dfi_max_blocks << dfi->dfi_bshift;
+	const uint64_t		maxlen = dfi->dfi_max_bytes;
 	dkioc_free_list_ext_t	*ext = dfl->dfl_exts + idx;
 	uint64_t		len = ext->dfle_length;
 	int			r;
@@ -413,11 +415,14 @@ split_extent(dkioc_free_list_t *dfl, const dkioc_free_info_t *dfi, size_t idx,
 	 * it's determined to be worthwhile.
 	 */
 	while (len > 0) {
-		ext->dfle_length = (len > amt) ? amt : len;
+		ext->dfle_length = (len > maxlen) ? maxlen : len;
+
 		if ((r = process_range(dfl, idx, 1, func, arg, kmflag)) != 0) {
 			return (r);
 		}
+
 		ext->dfle_start += ext->dfle_length;
+		len -= ext->dfle_length;
 	}
 
 	return (0);

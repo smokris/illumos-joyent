@@ -2023,12 +2023,13 @@ static int
 bd_free_space(dev_t dev, bd_t *bd, dkioc_free_list_t *dfl)
 {
 	diskaddr_t p_len, p_offset;
-	uint64_t offset_bytes;
-	minor_t part = BDINST(dev);
+	uint64_t offset_bytes, len_bytes;
+	minor_t part = BDPART(dev);
+	const uint_t bshift = bd->d_blkshift;
 	dkioc_free_info_t dfi = {
-		.dfi_bshift = bd->d_blkshift,
-		.dfi_align = bd->d_free_align,
-		.dfi_max_blocks = bd->d_max_free_sect,
+		.dfi_bshift = bshift,
+		.dfi_align = (size_t)bd->d_free_align << bshift,
+		.dfi_max_bytes = (size_t)bd->d_max_free_sect << bshift,
 		.dfi_max_ext = bd->d_max_free_seg,
 	};
 
@@ -2042,14 +2043,17 @@ bd_free_space(dev_t dev, bd_t *bd, dkioc_free_list_t *dfl)
 	 * bd_ioctl created our own copy of dfl, so we can modify as
 	 * necessary
 	 */
-	offset_bytes = (uint64_t)p_offset << bd->d_blkshift;
+	offset_bytes = (uint64_t)p_offset << bshift;
+	len_bytes = (uint64_t)p_len << bshift;
+
 	dfl->dfl_offset += offset_bytes;
 	if (dfl->dfl_offset < offset_bytes) {
 		dfl_free(dfl);
 		return (EOVERFLOW);
 	}
 
-	return (dfl_iter(dfl, &dfi, p_len, bd_free_space_cb, bd, KM_SLEEP));
+	return (dfl_iter(dfl, &dfi, offset_bytes + len_bytes, bd_free_space_cb,
+	    bd, KM_SLEEP));
 }
 
 /*

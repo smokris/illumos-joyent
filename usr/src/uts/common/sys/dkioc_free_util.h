@@ -27,6 +27,11 @@ extern "C" {
 
 #define	DFL_ISSYNC(dfl) ((dfl)->dfl_flags & DF_WAIT_SYNC)
 
+/*
+ * Since dkioc_free_list_t and in general DKIOCFREE use bytes to express
+ * values instead of blocks, dkioc_free_info_t uses bytes as well for
+ * consistency.
+ */
 typedef struct dkioc_free_info {
 	/* log2(block size) */
 	size_t	dfi_bshift;
@@ -34,12 +39,16 @@ typedef struct dkioc_free_info {
 	/* Maximum number of extents in a single request. 0 == no limit */
 	size_t	dfi_max_ext;
 
-	/* Maximum number of blocks in a single request.  0 == no limit. */
-	size_t	dfi_max_blocks;
+	/*
+	 * Maximum number of bytes in a single request.  0 == no limit.
+	 * Must by a multiple of 1U << dfi_bshift (e.g. dfi_bshift == 9,
+	 * dfk_max_bytes must be a multiple of 512).
+	 */
+	size_t	dfi_max_bytes;
 
 	/*
-	 * Minimum alignment for starting extent offsets in units of blocks.
-	 * Must be > 0, and a power of two.
+	 * Minimum alignment for starting extent offsets in bytes
+	 * Must be > 0, and a multiple of 1U << dfi_shift.
 	 *
 	 * A possible future extention might be to also express a preferred
 	 * alignment when splitting extents.
