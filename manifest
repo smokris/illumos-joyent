@@ -10603,6 +10603,9 @@ f usr/platform/i86pc/lib/fm/eft/gcpu_amd.eft 0444 root sys
 f usr/platform/i86pc/lib/fm/eft/intel.eft 0444 root sys
 d usr/platform/i86pc/lib/fm/topo 0755 root sys
 d usr/platform/i86pc/lib/fm/topo/maps 0755 root sys
+f usr/platform/i86pc/lib/fm/topo/maps/H4060-S-hc-topology.xml 0444 root sys
+f usr/platform/i86pc/lib/fm/topo/maps/H4060-S-chassis-hc-topology.xml 0444 root sys
+f usr/platform/i86pc/lib/fm/topo/maps/H4060-S-disk-hc-topology.xml 0444 root sys
 f usr/platform/i86pc/lib/fm/topo/maps/Joyent-Compute-Platform-1101-disk-hc-topology.xml 0444 root sys
 s usr/platform/i86pc/lib/fm/topo/maps/Joyent-Compute-Platform-3101-hc-topology.xml=./SSG-2028R-ACR24L-hc-topology.xml
 s usr/platform/i86pc/lib/fm/topo/maps/Joyent-Compute-Platform-3101-usb.usbtopo=./SSG-2028R-ACR24L-usb.usbtopo

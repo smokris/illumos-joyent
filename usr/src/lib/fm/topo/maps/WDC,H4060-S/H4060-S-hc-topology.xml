@@ -1,0 +1,215 @@
+<?xml version="1.0"?>
+<!DOCTYPE topology SYSTEM "/usr/share/lib/xml/dtd/topology.dtd.1">
+<!--
+ This file and its contents are supplied under the terms of the
+ Common Development and Distribution License ("CDDL"), version 1.0.
+ You may only use this file in accordance with the terms of version
+ 1.0 of the CDDL.
+
+ A full copy of the text of the CDDL should have accompanied this
+ source.  A copy of the CDDL is also available via the Internet at
+ http://www.illumos.org/license/CDDL.
+
+ Copyright (c) 2018, Joyent, Inc.
+-->
+<topology name='i86pc' scheme='hc'>
+
+  <range name='motherboard' min='0' max='0'>
+    <enum-method name='smbios' version='1' />
+    <node instance='0' static='true'>
+        <fac-enum provider='fac_prov_ipmi' />
+        <facility name='BMC Watchdog' type='sensor' provider='fac_prov_ipmi' >
+          <propgroup name='facility' version='1' name-stability='Private'
+            data-stability='Private' >
+            <propval name='type' type='uint32' value='269' />
+            <propval name='sensor-class' type='string' value='discrete' />
+            <propval name='entity_ref' type='string_array' value='discrete' >
+                <propitem value='BMC Watchdog' />
+            </propval>
+            <propmethod name='ipmi_sensor_state' version='0'
+                propname='state' proptype='uint32' >
+            </propmethod>
+	  </propgroup>
+        </facility>
+        <facility name='CPU ERR2' type='sensor' provider='fac_prov_ipmi' >
+          <propgroup name='facility' version='1' name-stability='Private'
+            data-stability='Private' >
+            <propval name='type' type='uint32' value='269' />
+            <propval name='sensor-class' type='string' value='discrete' />
+            <propval name='entity_ref' type='string_array' value='discrete' >
+                <propitem value='CPU ERR2' />
+            </propval>
+            <propmethod name='ipmi_sensor_state' version='0'
+                propname='state' proptype='uint32' >
+            </propmethod>
+	  </propgroup>
+        </facility>
+        <facility name='CPU Missing' type='sensor' provider='fac_prov_ipmi' >
+          <propgroup name='facility' version='1' name-stability='Private'
+            data-stability='Private' >
+            <propval name='type' type='uint32' value='269' />
+            <propval name='sensor-class' type='string' value='discrete' />
+            <propval name='entity_ref' type='string_array' value='discrete' >
+                <propitem value='CPU Missing' />
+            </propval>
+            <propmethod name='ipmi_sensor_state' version='0'
+                propname='state' proptype='uint32' >
+            </propmethod>
+	  </propgroup>
+        </facility>
+        <facility name='SSB Therm Trip' type='sensor' provider='fac_prov_ipmi' >
+          <propgroup name='facility' version='1' name-stability='Private'
+            data-stability='Private' >
+            <propval name='type' type='uint32' value='269' />
+            <propval name='sensor-class' type='string' value='discrete' />
+            <propval name='entity_ref' type='string_array' value='discrete' >
+                <propitem value='SSB Therm Trip' />
+            </propval>
+            <propmethod name='ipmi_sensor_state' version='0'
+                propname='state' proptype='uint32' >
+            </propmethod>
+	  </propgroup>
+        </facility>
+        <facility name='SMI Watchdog' type='sensor' provider='fac_prov_ipmi' >
+          <propgroup name='facility' version='1' name-stability='Private'
+            data-stability='Private' >
+            <propval name='type' type='uint32' value='269' />
+            <propval name='sensor-class' type='string' value='discrete' />
+            <propval name='entity_ref' type='string_array' value='discrete' >
+                <propitem value='SMI Watchdog' />
+            </propval>
+            <propmethod name='ipmi_sensor_state' version='0'
+                propname='state' proptype='uint32' >
+            </propmethod>
+	  </propgroup>
+        </facility>
+        <facility name='Voltage Fault' type='sensor' provider='fac_prov_ipmi' >
+          <propgroup name='facility' version='1' name-stability='Private'
+            data-stability='Private' >
+            <propval name='type' type='uint32' value='269' />
+            <propval name='sensor-class' type='string' value='discrete' />
+            <propval name='entity_ref' type='string_array' value='discrete' >
+                <propitem value='Voltage Fault' />
+            </propval>
+            <propmethod name='ipmi_sensor_state' version='0'
+                propname='state' proptype='uint32' >
+            </propmethod>
+	  </propgroup>
+        </facility>
+        <facility name='VR Watchdog' type='sensor' provider='fac_prov_ipmi' >
+          <propgroup name='facility' version='1' name-stability='Private'
+            data-stability='Private' >
+            <propval name='type' type='uint32' value='269' />
+            <propval name='sensor-class' type='string' value='discrete' />
+            <propval name='entity_ref' type='string_array' value='discrete' >
+                <propitem value='VR Watchdog' />
+            </propval>
+            <propmethod name='ipmi_sensor_state' version='0'
+                propname='state' proptype='uint32' >
+            </propmethod>
+	  </propgroup>
+        </facility>
+        <facility name='VRD Hot' type='sensor' provider='fac_prov_ipmi' >
+          <propgroup name='facility' version='1' name-stability='Private'
+            data-stability='Private' >
+            <propval name='type' type='uint32' value='269' />
+            <propval name='sensor-class' type='string' value='discrete' />
+            <propval name='entity_ref' type='string_array' value='discrete' >
+                <propitem value='VRD Hot' />
+            </propval>
+            <propmethod name='ipmi_sensor_state' version='0'
+                propname='state' proptype='uint32' >
+            </propmethod>
+	  </propgroup>
+        </facility>
+        <facility name='P1 Therm Ctrl %' type='sensor' provider='fac_prov_ipmi' >
+          <propgroup name='facility' version='1' name-stability='Private'
+            data-stability='Private' >
+            <propval name='type' type='uint32' value='257' />
+            <propval name='units' type='uint32' value='200' />
+            <propval name='sensor-class' type='string' value='threshold' />
+            <propval name='entity_ref' type='string_array' value='discrete' >
+                <propitem value='P1 Therm Ctrl %' />
+            </propval>
+            <propmethod name='ipmi_sensor_state' version='0'
+                propname='state' proptype='uint32' >
+            </propmethod>
+            <propmethod name='ipmi_sensor_reading' version='0'
+                propname='reading' proptype='double' >
+            </propmethod>
+	  </propgroup>
+        </facility>
+        <facility name='P2 Therm Ctrl %' type='sensor' provider='fac_prov_ipmi' >
+          <propgroup name='facility' version='1' name-stability='Private'
+            data-stability='Private' >
+            <propval name='type' type='uint32' value='257' />
+            <propval name='units' type='uint32' value='200' />
+            <propval name='sensor-class' type='string' value='threshold' />
+            <propval name='entity_ref' type='string_array' value='discrete' >
+                <propitem value='P2 Therm Ctrl %' />
+            </propval>
+            <propmethod name='ipmi_sensor_state' version='0'
+                propname='state' proptype='uint32' >
+            </propmethod>
+            <propmethod name='ipmi_sensor_reading' version='0'
+                propname='reading' proptype='double' >
+            </propmethod>
+	  </propgroup>
+        </facility>
+        <propgroup name='protocol' version='1'
+            name-stability='Private' data-stability='Private' >
+            <propval name='label' type='string' value='MB' />
+        </propgroup>
+        <propgroup name='ipmi' version='1'
+            name-stability='Private' data-stability='Private' >
+            <propval name='entity-list' type='string_array' >
+                <propitem value='BB Ambient Temp' />
+                <propitem value='BB BMC Temp' />
+                <propitem value='BB Mem VRM Temp' />
+                <propitem value='BB Mem VR Temp' />
+                <propitem value='BB M.2 Temp' />
+                <propitem value='BB P2 VR Temp' />
+                <propitem value='BB +12.0V' />
+                <propitem value='BB +3.3V Vbat' />
+                <propitem value='BMC FW Health' />
+                <propitem value='DIMM Thrm Mrgn 1' />
+                <propitem value='DIMM Thrm Mrgn 2' />
+                <propitem value='DIMM Thrm Mrgn 3' />
+                <propitem value='DIMM Thrm Mrgn 4' />
+                <propitem value='FW Update Status ' />
+                <propitem value='LAN NIC Temp' />
+                <propitem value='IPMI Watchdog' />
+                <propitem value='P1 DTS Therm Mgn' />
+                <propitem value='P1 Status' />
+                <propitem value='P2 DTS Therm Mgn' />
+                <propitem value='P2 Status' />
+                <propitem value='SSB Temp' />
+                <propitem value='System Event Log' />
+                <propitem value='System Event' />
+           </propval>
+        </propgroup>
+    </node>
+
+    <dependents grouping='children'>
+      <range name='chip' min='0' max='1'>
+        <enum-method name='chip' version='1' />
+      </range>
+      <range name='hostbridge' min='0' max='254'>
+        <enum-method name='hostbridge' version='1' />
+      </range>
+      <range name='sp' min='0' max='0'>
+        <enum-method name='ipmi' version='1' />
+      </range>
+    </dependents>
+
+  </range>
+
+  <range name='chassis' min='0' max='0'>
+    <propmap name='H4060-S-chassis' />
+  </range>
+  <range name='ses-enclosure' min='0' max='0'>
+    <enum-method name='ses' version='1' />
+    <propmap name='H4060-S-disk' />
+  </range>
+
+</topology>

@@ -1,0 +1,104 @@
+#!/bin/ksh -x
+#
+# This file and its contents are supplied under the terms of the
+# Common Development and Distribution License ("CDDL"), version 1.0.
+# You may only use this file in accordance with the terms of version
+# 1.0 of the CDDL.
+#
+# A full copy of the text of the CDDL should have accompanied this
+# source.  A copy of the CDDL is also available via the Internet at
+# http://www.illumos.org/license/CDDL.
+#
+
+#
+# Copyright (c) 2019, Joyent, Inc.
+#
+
+#
+# The 60 LFF drive bays and their occupants will get enumerated by the ses
+# module.  However, the labels we get from SES have the drive serial number
+# embedded in them - for example: "SLOT 00,8DGNA1EH".
+#
+# So we override the labels here.  There are no physical labels on the LFF
+# drive bays.  And the service sticker label on the underside of the top
+# chassis cover simply refers to the bays by number (starting from 0).  As
+# these bays are intended to be occupied by hard drives, we set the FRU labels
+# "HDD 0" to "HDD 59".
+#
+function do_hdd_bay
+{
+  cat <<EOF
+        <node instance='${1}' static='true'>
+          <propgroup name='protocol' version='1' name-stability='Private'
+            data-stability='Private'>
+            <propval name='label' type='string' value='${2}' />
+          </propgroup>
+        </node>
+EOF
+}
+
+#
+# Generate the topology map the 8 SFF SAS bays.  LED managment for these
+# bays is driven by the IOM and so empty bays will already have been enumerated
+# by the ses module.  We simply add the necessary binding properties to these
+# bay nodes so that the disk module can enumerate any occupants.  The SFF
+# bays, which are intended to carry SSDs are physically labeled "SSD 60" to
+# "SSD 67"
+#
+function do_ssd_bay
+{
+  cat <<EOF
+        <node instance='${1}' static='true'>
+          <propgroup name='protocol' version='1' name-stability='Private'
+            data-stability='Private'>
+            <propval name='label' type='string' value='${2}' />
+          </propgroup>
+          <propgroup name='binding' version='1' name-stability='Private'
+            data-stability='Private'>
+            <propval name='driver' type='string' value='mpt_sas' />
+            <propval name='devctl' type='string'
+	      value='${3}' />
+            <propval name='enclosure' type='uint32' value='${4}' />
+            <propval name='slot' type='uint32' value='${5}' />
+          </propgroup>
+        </node>
+EOF
+}
+
+cat <<EOF
+<topology name='disk' scheme='hc'>
+  <range name='ses-enclosure' min='0' max='0'>
+    <node instance='0' static='true'>
+      <dependents grouping='children'>
+      <range name='bay' min='0' max='67'>
+EOF
+
+bay=0
+while (( bay <= 59 )); do
+	do_hdd_bay $bay "HDD $bay"
+	(( bay = bay + 1 ))
+done
+
+enclosure=1
+bay=60
+slot=0
+devctl='/devices/pci@7b,0/pci8086,2030@0/pci1000,30e0@0:devctl'
+while (( slot <= 7 )); do
+	do_ssd_bay $bay "SSD $bay" "$devctl" $enclosure $slot
+	(( bay = bay + 1 ))
+	(( slot = slot + 1 ))
+done
+
+cat <<EOF
+          <dependents grouping='children'>
+          <range name='disk' min='0' max='0'>
+            <enum-method name='disk' version='1' />
+          </range>
+          </dependents>
+       </range> <!-- bay -->
+     </dependents>
+  </node>
+</range> <!-- ses-enclosure -->
+
+</topology>
+EOF
