@@ -24,6 +24,7 @@
 
 /*
  * Copyright (c) 1988, 2010, Oracle and/or its affiliates. All rights reserved.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #ifndef _SYS_TIHDR_H
@@ -179,44 +180,6 @@ extern "C" {
 
 #endif /* _KERNEL */
 
-/*
- * The following are the events that drive the state machine
- */
-/* Initialization events */
-#define	TE_BIND_REQ	0	/* bind request				*/
-#define	TE_UNBIND_REQ	1	/* unbind request			*/
-#define	TE_OPTMGMT_REQ	2	/* manage options req			*/
-#define	TE_BIND_ACK	3	/* bind acknowledment			*/
-#define	TE_OPTMGMT_ACK	4	/* manage options ack			*/
-#define	TE_ERROR_ACK	5	/* error acknowledgment			*/
-#define	TE_OK_ACK1	6	/* ok ack  seqcnt == 0			*/
-#define	TE_OK_ACK2	7	/* ok ack  seqcnt == 1, q == resq	*/
-#define	TE_OK_ACK3	8	/* ok ack  seqcnt == 1, q != resq	*/
-#define	TE_OK_ACK4	9	/* ok ack  seqcnt > 1			*/
-
-/* Connection oriented events */
-#define	TE_CONN_REQ	10	/* connection request			*/
-#define	TE_CONN_RES	11	/* connection response			*/
-#define	TE_DISCON_REQ	12	/* disconnect request			*/
-#define	TE_DATA_REQ	13	/* data request				*/
-#define	TE_EXDATA_REQ	14	/* expedited data request		*/
-#define	TE_ORDREL_REQ	15	/* orderly release req			*/
-#define	TE_CONN_IND	16	/* connection indication		*/
-#define	TE_CONN_CON	17	/* connection confirmation		*/
-#define	TE_DATA_IND	18	/* data indication			*/
-#define	TE_EXDATA_IND	19	/* expedited data indication		*/
-#define	TE_ORDREL_IND	20	/* orderly release ind			*/
-#define	TE_DISCON_IND1	21	/* disconnect indication seq == 0	*/
-#define	TE_DISCON_IND2	22	/* disconnect indication seq == 1	*/
-#define	TE_DISCON_IND3	23	/* disconnect indication seq > 1	*/
-#define	TE_PASS_CONN	24	/* pass connection			*/
-
-/* Unit data events */
-#define	TE_UNITDATA_REQ	25	/* unitdata request			*/
-#define	TE_UNITDATA_IND	26	/* unitdata indication			*/
-#define	TE_UDERROR_IND	27	/* unitdata error indication		*/
-
-#define	TE_NOEVENTS	28
 /*
  * The following are the possible states of the Transport
  * Service Interface
