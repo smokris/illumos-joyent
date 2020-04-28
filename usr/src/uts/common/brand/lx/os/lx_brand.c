@@ -1375,7 +1375,6 @@ lx_brandsys(int cmd, int64_t *rval, uintptr_t arg1, uintptr_t arg2,
 	kthread_t *t = curthread;
 	klwp_t *lwp = ttolwp(t);
 	proc_t *p = ttoproc(t);
-	zone_t *z = p->p_zone;
 	lx_proc_data_t *pd;
 	struct termios *termios;
 	uint_t termios_len;
