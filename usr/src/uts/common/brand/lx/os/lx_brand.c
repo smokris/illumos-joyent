@@ -1404,13 +1404,10 @@ lx_brandsys(int cmd, int64_t *rval, uintptr_t arg1, uintptr_t arg2,
 		return (ENOSYS);
 
 	/*
-	 * In order to allow dockerinit to start the lx_lockd process we need
-	 * to allow the native_brand through here. We also check that the
-	 * native_brand process is from within an lx branded zone. Everything
-	 * else that's not originating from a branded process should be denied.
+	 * Certain native applications may wish to start the lx_lockd process.
+	 * Every other process that's not branded should be denied.
 	 */
-	if (p->p_brand != &lx_brand && (cmd != B_START_NFS_LOCKD ||
-	    z->zone_brand != &lx_brand))
+	if (p->p_brand != &lx_brand && cmd != B_START_NFS_LOCKD)
 		return (ENOSYS);
 
 	if (cmd != B_START_NFS_LOCKD)
