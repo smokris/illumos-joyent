@@ -25,7 +25,7 @@
  */
 
 /*
- * Copyright 2019 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 /*
@@ -1375,6 +1375,7 @@ lx_brandsys(int cmd, int64_t *rval, uintptr_t arg1, uintptr_t arg2,
 	kthread_t *t = curthread;
 	klwp_t *lwp = ttolwp(t);
 	proc_t *p = ttoproc(t);
+	zone_t *z = p->p_zone;
 	lx_proc_data_t *pd;
 	struct termios *termios;
 	uint_t termios_len;
@@ -1402,8 +1403,18 @@ lx_brandsys(int cmd, int64_t *rval, uintptr_t arg1, uintptr_t arg2,
 	if (p->p_brand == NULL)
 		return (ENOSYS);
 
-	VERIFY(p->p_brand == &lx_brand);
-	VERIFY(p->p_brand_data != NULL);
+	/*
+	 * In order to allow dockerinit to start the lx_lockd process we need
+	 * to allow the native_brand through here. We also check that the
+	 * native_brand process is from within an lx branded zone. Everything
+	 * else that's not originating from a branded process should be denied.
+	 */
+	if (p->p_brand != &lx_brand && (cmd != B_START_NFS_LOCKD ||
+	    z->zone_brand != &lx_brand))
+		return (ENOSYS);
+
+	if (cmd != B_START_NFS_LOCKD)
+		VERIFY(p->p_brand_data != NULL);
 
 	switch (cmd) {
 	case B_REGISTER:

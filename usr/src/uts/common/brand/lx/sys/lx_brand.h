@@ -94,6 +94,11 @@ extern "C" {
 #define	B_LPID_TO_SPAIR		128
 #define	B_GET_CURRENT_CONTEXT	129
 #define	B_EMULATION_DONE	130
+/*
+ * Any change to this value needs to be made in dockerinit as well, as it
+ * hardcodes this value so that it can start lx_lockd even though it's using
+ * the native mount command.
+ */
 #define	B_START_NFS_LOCKD	131
 #define	B_BLOCK_ALL_SIGS	132
 #define	B_UNBLOCK_ALL_SIGS	133
