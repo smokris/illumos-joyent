@@ -3242,7 +3242,7 @@ iwn_fatal_intr(struct iwn_softc *sc)
 		return;
 	}
 	/* Read firmware error log from SRAM. */
-	/*LINTED: E_PTR_BAD_CAST_ALIGN*/
+#pragma GCC diagnostic ignored "-Waddress-of-packed-member"
 	iwn_mem_read_region_4(sc, sc->errptr, (uint32_t *)&dump,
 	    sizeof (dump) / sizeof (uint32_t));
 	iwn_nic_unlock(sc);

@@ -1513,11 +1513,14 @@ svm_vmexit(struct svm_softc *svm_sc, int vcpu, struct vm_exit *vmexit)
 		break;
 	case VMCB_EXIT_CPUID:
 		vmm_stat_incr(svm_sc->vm, vcpu, VMEXIT_CPUID, 1);
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Waddress-of-packed-member"
 		handled = x86_emulate_cpuid(svm_sc->vm, vcpu,
 		    (uint32_t *)&state->rax,
 		    (uint32_t *)&ctx->sctx_rbx,
 		    (uint32_t *)&ctx->sctx_rcx,
 		    (uint32_t *)&ctx->sctx_rdx);
+#pragma GCC diagnostic pop
 		break;
 	case VMCB_EXIT_HLT:
 		vmm_stat_incr(svm_sc->vm, vcpu, VMEXIT_HLT, 1);
