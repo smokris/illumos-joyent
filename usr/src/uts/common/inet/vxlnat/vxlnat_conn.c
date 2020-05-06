@@ -136,7 +136,7 @@ boolean_t
 vxlnat_new_conn(vxlnat_flow_t *flow)
 {
 	conn_t *connp;
-	uint16_t new_lport;
+	uint16_t new_lport = 0;
 	uint8_t protocol = flow->vxnfl_protocol;
 	int rc, error, ntries = 3;
 
@@ -277,8 +277,8 @@ vxlnat_new_conn(vxlnat_flow_t *flow)
 			 * IP code to bind an ICMP socket to anything beyond
 			 * the addresses.  But also we allow multiple ICMP
 			 * conn_ts, which could mean duplicate packets.  :-/
+			 * Good thing new_lport is already zeroed!
 			 */
-			new_lport = 0;
 			break;
 		}
 		default:
