@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2018 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #include <sys/types.h>
@@ -284,7 +284,6 @@ vxlnat_new_conn(vxlnat_flow_t *flow)
 		default:
 			/* Should never reach here... */
 			cmn_err(CE_PANIC, "vxnfl_protocol corruption!");
-			return (B_FALSE);
 		}
 		connp->conn_lport = new_lport;
 
