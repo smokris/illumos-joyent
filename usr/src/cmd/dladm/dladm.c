@@ -9911,8 +9911,8 @@ do_create_overlay(int argc, char *argv[], const char *use)
 			if (*endp != '\0' || (dcid == 0 && errno == EINVAL))
 				die("couldn't parse datacenter id: %s",
 				    optarg);
-			if ((dcid == ULONG_MAX && errno == ERANGE) ||
-			    (dcid > UINT32_MAX))
+			/* XXX If we go 64-bit, add check for > UINT32_MAX. */
+			if (dcid == ULONG_MAX && errno == ERANGE)
 				die("datacenter id too large: %s", optarg);
 			break;
 		case 'e':
@@ -10526,7 +10526,7 @@ parse_overlay_mac(const char *s, uint32_t *dcidp, struct ether_addr *ep)
 	*dcidp = 0;
 
 	if ((slash = strchr(s, '/')) != NULL) {
-		unsigned long dcval = 0;
+		ulong_t dcval = 0;
 		size_t slen = (size_t)(slash - s) + 1;
 
 		/*
@@ -10542,11 +10542,9 @@ parse_overlay_mac(const char *s, uint32_t *dcidp, struct ether_addr *ep)
 		errno = 0;
 		if ((dcval = strtoul(dcstr, NULL, 10)) == 0 && errno != 0)
 			die("invalid data center id: %s\n", dcstr);
+		/* XXX if we become 64-bit, check for results > UINT32_MAX */
 
-		if (dcval > UINT32_MAX)
-			die("data center id out of range: %s\n", dcstr);
-
-		*dcidp = (uint32_t) dcval;
+		*dcidp = (uint32_t)dcval;
 		/* Move s past '/' */
 		s = slash + 1;
 	}

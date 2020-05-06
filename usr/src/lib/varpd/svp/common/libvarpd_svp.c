@@ -656,7 +656,7 @@ varpd_svp_lookup_l3(svp_t *svp, varpd_query_handle_t *vqh,
     overlay_target_route_t *otr, overlay_target_mac_t *otm)
 {
 	svp_lookup_t *slp;
-	uint32_t type;
+	/* uint32_t type; */
 	const struct in6_addr *src = &otl->otl_addru.otlu_l3.otl3_srcip,
 	    *dst = &otl->otl_addru.otlu_l3.otl3_dstip;
 
@@ -676,13 +676,13 @@ varpd_svp_lookup_l3(svp_t *svp, varpd_query_handle_t *vqh,
 			libvarpd_plugin_query_reply(vqh, VARPD_LOOKUP_DROP);
 			return;
 		}
-		type = SVP_VL3_IP;
+		/* type = SVP_VL3_IP; */
 	} else {
 		if (IN6_IS_ADDR_V4MAPPED(dst)) {
 			libvarpd_plugin_query_reply(vqh, VARPD_LOOKUP_DROP);
 			return;
 		}
-		type = SVP_VL3_IPV6;
+		/* type = SVP_VL3_IPV6; */
 	}
 
 	slp = umem_cache_alloc(svp_lookup_cache, UMEM_DEFAULT);

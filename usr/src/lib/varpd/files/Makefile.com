@@ -22,7 +22,7 @@ include ../../../Makefile.lib
 include ../../Makefile.plugin
 
 LIBS =		$(DYNLIB)
-LDLIBS +=	-lc -lumem -lnvpair -lsocket -lnsl -lcustr
+LDLIBS +=	-lc -lumem -lnvpair -lsocket -lcustr
 LDLIBS +=	-lcmdutils -lavl -lbunyan
 CPPFLAGS +=	-I../common
 
