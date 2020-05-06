@@ -22,7 +22,7 @@
 /*
  * Copyright 2014 Gary Mills
  * Copyright (c) 2003, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright 2015 Joyent Inc.
+ * Copyright 2019 Joyent, Inc.
  * Copyright 2015 Nexenta Systems, Inc. All rights reserved.
  */
 
@@ -1520,7 +1520,7 @@ zonecfg_notify_conf_change(const char *zname, char *os, char *ns)
 		return;
 
 	/* Current time since Jan 1 1970 but consumers expect NS */
-	gettimeofday(&now, NULL);
+	(void) gettimeofday(&now, NULL);
 	t = (now.tv_sec * NANOSEC) + (now.tv_usec * 1000);
 
 	if (nvlist_alloc(&nvl, NV_UNIQUE_NAME, KM_SLEEP) == 0 &&
@@ -2163,7 +2163,7 @@ normalize_mac_addr(char *dst, const char *src, int len)
 	p = strtok(buf, ":");
 	while (p != NULL) {
 		n = strtol(p, &e, 16);
-		if (*e != NULL || n > 0xff)
+		if (*e != '\0' || n > 0xff)
 			return;
 		(void) snprintf(tmp, sizeof (tmp), "%s%02x", sep, n);
 		(void) strlcat(dst, tmp, len);
@@ -3274,8 +3274,8 @@ zonecfg_devwalk_cb(const char *path, const struct stat *st, int f,
 	if (strlen(path) <= g_devwalk_skip_prefix)
 		return (0);
 
-	g_devwalk_cb(path + g_devwalk_skip_prefix, st->st_uid, st->st_gid,
-	    st->st_mode & S_IAMB, acl_txt != NULL ? acl_txt : "",
+	(void) g_devwalk_cb(path + g_devwalk_skip_prefix, st->st_uid,
+	    st->st_gid, st->st_mode & S_IAMB, acl_txt != NULL ? acl_txt : "",
 	    g_devwalk_data);
 	free(acl_txt);
 	return (0);
@@ -6066,9 +6066,16 @@ new_zone_did()
 	int len;
 	int val;
 	struct flock lck;
+	char pathbuf[PATH_MAX];
 	char buf[80];
 
-	if ((fd = open(DEBUGID_FILE, O_RDWR | O_CREAT,
+	if (snprintf(pathbuf, sizeof (pathbuf), "%s%s", zonecfg_get_root(),
+	    DEBUGID_FILE) >= sizeof (pathbuf)) {
+		printf(gettext("alternate root path is too long"));
+		return (-1);
+	}
+
+	if ((fd = open(pathbuf, O_RDWR | O_CREAT,
 	    S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH)) < 0) {
 		perror("new_zone_did open failed");
 		return (-1);

@@ -11,6 +11,7 @@
 
 #
 # Copyright 2017 Nexenta Systems, Inc.
+# Copyright (c) 2018, Joyent, Inc.
 #
 
 LIBRARY=	libofmt.a
@@ -23,16 +24,16 @@ include		$(SRC)/lib/Makefile.rootfs
 
 SRCDIR=		../common
 
-LIBS=		$(DYNLIB) $(LINTLIB)
+LIBS=		$(DYNLIB)
 SRCS=		$(SRCDIR)/ofmt.c
 
-$(LINTLIB)	:= SRCS = $(SRCDIR)/$(LINTSRC)
 LDLIBS +=	-lc
+
+SMOFF += kmalloc_wrong_size
 
 .KEEP_STATE:
 
 all:		$(LIBS)
 
-lint:		lintcheck
 
 include		$(SRC)/lib/Makefile.targ

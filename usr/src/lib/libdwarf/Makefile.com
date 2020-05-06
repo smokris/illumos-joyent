@@ -83,10 +83,11 @@ CPPFLAGS +=	-I$(SRCDIR) -DELF_TARGET_ALL=1
 CERRWARN +=	-_gcc=-Wno-unused
 CERRWARN +=	-_gcc=-Wno-implicit-function-declaration
 
+SMATCH =	off
+
 .KEEP_STATE:
 
 all:	$(LIBS)
 
-lint:	lintcheck
 
 include ../../Makefile.targ

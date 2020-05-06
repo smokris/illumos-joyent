@@ -20,6 +20,7 @@
 #
 #
 # Copyright (c) 2001, 2010, Oracle and/or its affiliates. All rights reserved.
+# Copyright 2019 Joyent, Inc.
 #
 
 PROG= logadm
@@ -35,7 +36,8 @@ include ../Makefile.cmd
 CPPFLAGS += -D_FILE_OFFSET_BITS=64
 CERRWARN += -_gcc=-Wno-parentheses
 CERRWARN += -_gcc=-Wno-clobbered
-CERRWARN += -_gcc=-Wno-uninitialized
+CERRWARN += $(CNOWARN_UNINIT)
+CERRWARN += -_gcc=-Wno-unused-label
 XGETFLAGS += -a -x logadm.xcl
 
 $(ROOTETC)/$(CONFIGFILE):= FILEMODE= 644

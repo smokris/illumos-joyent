@@ -22,7 +22,7 @@
 # Copyright 2007 Sun Microsystems, Inc.  All rights reserved.
 # Use is subject to license terms.
 #
-# Copyright 2018 Joyent, Inc.
+# Copyright 2019 Joyent, Inc.
 
 MODULE = unix.so
 MDBTGT = kvm
@@ -38,12 +38,13 @@ include ../../../../Makefile.module
 
 CPPFLAGS += -DMP -D_MACHDEP
 CPPFLAGS += -I../../../../common
+CPPFLAGS += -I../../../../intel
 CPPFLAGS += -I$(SRC)/uts/i86pc
 CPPFLAGS += -I$(SRC)/uts/intel
 
 CERRWARN += -_gcc=-Wno-char-subscripts
 CERRWARN += -_gcc=-Wno-parentheses
 CERRWARN += -_gcc=-Wno-unused-label
-CERRWARN += -_gcc=-Wno-uninitialized
+CERRWARN += $(CNOWARN_UNINIT)
 
 CERRWARN += -_gcc=-Wno-unused-function

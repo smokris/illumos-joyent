@@ -20,7 +20,7 @@
  */
 /*
  * Copyright (c) 1983, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright 2016 Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  */
 /*
  * Copyright 2016 Nexenta Systems, Inc. All rights reserved.
@@ -42,6 +42,8 @@
 #include <atomic.h>
 #include <libnvpair.h>
 #include <libintl.h>
+#include <assert.h>
+#include <strings.h>
 #include <sys/mem.h>
 #include <sys/statvfs.h>
 #include <sys/dumphdr.h>
@@ -55,6 +57,7 @@
 #include <sys/fm/util.h>
 #include <fm/libfmevent.h>
 #include <sys/int_fmtio.h>
+#include <crypto/chacha/chacha.h>
 
 
 /* fread/fwrite buffer size */
@@ -74,6 +77,8 @@ static long	pagesize;		/* dump pagesize */
 static int	dumpfd = -1;		/* dumpfile descriptor */
 static boolean_t have_dumpfile = B_TRUE;	/* dumpfile existence */
 static dumphdr_t corehdr, dumphdr;	/* initial and terminal dumphdrs */
+static dump_crypt_t dcrypt;		/* dump encryption header */
+static size_t	dumphdr_size;		/* size of dump header */
 static boolean_t dump_incomplete;	/* dumphdr indicates incomplete */
 static boolean_t fm_panic;		/* dump is the result of fm_panic */
 static offset_t	endoff;			/* offset of end-of-dump header */
@@ -92,6 +97,7 @@ static dumpdatahdr_t datahdr;		/* compression info */
 static long	coreblksize;		/* preferred write size (st_blksize) */
 static int	cflag;			/* run as savecore -c */
 static int	mflag;			/* run as savecore -m */
+static int	rflag;			/* run as savecore -r */
 
 /*
  * Payload information for the events we raise.  These are used
@@ -164,7 +170,8 @@ static void
 usage(void)
 {
 	(void) fprintf(stderr,
-	    "usage: %s [-Lvd] [-f dumpfile] [dirname]\n", progname);
+	    "usage: %s [-L | -r] [-vd] [-k keyfile] [-f dumpfile] [dirname]\n",
+	    progname);
 	exit(1);
 }
 
@@ -229,7 +236,7 @@ logprint(uint32_t flags, char *message, ...)
 		 * raise if run as savecore -m.  If something in the
 		 * raise_event codepath calls logprint avoid recursion.
 		 */
-		if (!mflag && logprint_raised++ == 0)
+		if (!mflag && !rflag && logprint_raised++ == 0)
 			raise_event(SC_EVENT_SAVECORE_FAILURE, buf);
 		code = 2;
 		break;
@@ -240,7 +247,7 @@ logprint(uint32_t flags, char *message, ...)
 
 	case SC_EXIT_ERR:
 	default:
-		if (!mflag && logprint_raised++ == 0 && have_dumpfile)
+		if (!mflag && !rflag && logprint_raised++ == 0 && have_dumpfile)
 			raise_event(SC_EVENT_SAVECORE_FAILURE, buf);
 		code = 1;
 		break;
@@ -328,6 +335,19 @@ Pwrite(int fd, void *buf, size_t size, off64_t off)
 		    strerror(errno));
 }
 
+static void
+Read(int fd, void *buf, size_t size)
+{
+	ssize_t sz = read(fd, buf, size);
+
+	if (sz < 0)
+		logprint(SC_SL_ERR | SC_EXIT_ERR,
+		    "read: %s", strerror(errno));
+	else if (sz != size)
+		logprint(SC_SL_ERR | SC_EXIT_ERR,
+		    "read: size %ld != %ld", sz, size);
+}
+
 static void *
 Zalloc(size_t size)
 {
@@ -355,15 +375,15 @@ read_number_from_file(const char *filename, long default_value)
 static void
 read_dumphdr(void)
 {
-	if (filemode)
+	if (filemode || rflag)
 		dumpfd = Open(dumpfile, O_RDONLY, 0644);
 	else
 		dumpfd = Open(dumpfile, O_RDWR | O_DSYNC, 0644);
 	endoff = llseek(dumpfd, -DUMP_OFFSET, SEEK_END) & -DUMP_OFFSET;
 	Pread(dumpfd, &dumphdr, sizeof (dumphdr), endoff);
-	Pread(dumpfd, &datahdr, sizeof (datahdr), endoff + sizeof (dumphdr));
 
 	pagesize = dumphdr.dump_pagesize;
+	dumphdr_size = sizeof (dumphdr);
 
 	if (dumphdr.dump_magic != DUMP_MAGIC)
 		logprint(SC_SL_NONE | SC_EXIT_PEND, "bad magic number %x",
@@ -382,6 +402,20 @@ read_dumphdr(void)
 		logprint(SC_SL_NONE | SC_EXIT_PEND,
 		    "dump is from %u-bit kernel - cannot save on %u-bit kernel",
 		    dumphdr.dump_wordsize, DUMP_WORDSIZE);
+
+	if (dumphdr.dump_flags & DF_ENCRYPTED) {
+		/*
+		 * If our dump is encrypted, our encryption header follows
+		 * our dump header.  Read it, and then increment our
+		 * dumphdr_size to assure that reads of data following the
+		 * encryption header account for it.
+		 */
+		Pread(dumpfd, &dcrypt, sizeof (dcrypt),
+		    endoff + sizeof (dumphdr));
+		dumphdr_size += sizeof (dcrypt);
+	}
+
+	Pread(dumpfd, &datahdr, sizeof (datahdr), endoff + dumphdr_size);
 
 	if (datahdr.dump_datahdr_magic == DUMP_DATAHDR_MAGIC) {
 		if (datahdr.dump_datahdr_version != DUMP_DATAHDR_VERSION)
@@ -408,7 +442,7 @@ read_dumphdr(void)
 		/*
 		 * Clear valid bit so we don't complain on every invocation.
 		 */
-		if (!filemode)
+		if (!filemode && !rflag)
 			Pwrite(dumpfd, &dumphdr, sizeof (dumphdr), endoff);
 		logprint(SC_SL_ERR | SC_EXIT_ERR,
 		    "initial dump header corrupt");
@@ -499,19 +533,76 @@ build_dump_map(int corefd, const pfn_t *pfn_table)
 	free(inbuf);
 }
 
+static void
+Decrypt(offset_t dumpoff, len_t nb, char *buf, size_t sz, uint8_t *key)
+{
+	size_t nelems = nb / sizeof (uint64_t), i;
+	uint64_t *clear = (uint64_t *)buf;
+	uint64_t *stream = (uint64_t *)(buf + sz);
+	uint64_t *crypt = (uint64_t *)(buf + (2 * sz));
+	uint64_t ctr = dumpoff >> DUMP_CRYPT_BLOCKSHIFT;
+	chacha_ctx_t ctx;
+
+	/*
+	 * If our size is not 8-byte aligned, prepare our ciphertext to the
+	 * next 8-byte boundary.
+	 */
+	if (nb & (sizeof (uint64_t) - 1)) {
+		assert(nb < sz);
+		nelems++;
+	}
+
+	chacha_keysetup(&ctx, key, DUMP_CRYPT_KEYLEN * 8, 0);
+	chacha_ivsetup(&ctx, dcrypt.dump_crypt_nonce, (uint8_t *)&ctr);
+
+	for (i = 0; i < nelems; i++) {
+		stream[i] = dumpoff;
+		dumpoff += sizeof (uint64_t);
+	}
+
+	chacha_encrypt_bytes(&ctx, (uint8_t *)stream, (uint8_t *)crypt, nb);
+
+	for (i = 0; i < nelems; i++)
+		clear[i] ^= crypt[i];
+}
+
+static void
+Verify(uint8_t *key)
+{
+	chacha_ctx_t ctx;
+	uint8_t hmac[DUMP_CRYPT_HMACLEN];
+
+	chacha_keysetup(&ctx, key, DUMP_CRYPT_KEYLEN * 8, 0);
+	chacha_ivsetup(&ctx, dcrypt.dump_crypt_nonce, NULL);
+
+	chacha_encrypt_bytes(&ctx, (uint8_t *)&dumphdr.dump_utsname,
+	    (uint8_t *)hmac, DUMP_CRYPT_HMACLEN);
+
+	if (bcmp(hmac, &dcrypt.dump_crypt_hmac, DUMP_CRYPT_HMACLEN) == 0)
+		return;
+
+	logprint(SC_SL_NONE | SC_EXIT_ERR,
+	    "provided key does not match encryption key");
+}
+
 /*
  * Copy whole sections of the dump device to the file.
  */
 static void
 Copy(offset_t dumpoff, len_t nb, offset_t *offp, int fd, char *buf,
-    size_t sz)
+    size_t sz, uint8_t *key)
 {
 	size_t nr;
 	offset_t off = *offp;
 
 	while (nb > 0) {
 		nr = sz < nb ? sz : (size_t)nb;
+
 		Pread(dumpfd, buf, nr, dumpoff);
+
+		if (dumphdr.dump_flags & DF_ENCRYPTED)
+			Decrypt(dumpoff, nr, buf, sz, key);
+
 		Pwrite(fd, buf, nr, off);
 		off += nr;
 		dumpoff += nr;
@@ -566,21 +657,56 @@ CopyPages(offset_t *offp, int fd, char *buf, size_t sz)
  * Update corehdr with new offsets.
  */
 static void
-copy_crashfile(const char *corefile)
+copy_crashfile(const char *corefile, const char *keyfile)
 {
 	int corefd = Open(corefile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	uint8_t keybuf[DUMP_CRYPT_KEYLEN];
 	size_t bufsz = FBUFSIZE;
-	char *inbuf = Zalloc(bufsz);
+	char *inbuf;
 	offset_t coreoff;
 	size_t nb;
+	uint8_t *key = NULL;
 
-	logprint(SC_SL_ERR | SC_IF_VERBOSE,
-	    "Copying %s to %s/%s\n", dumpfile, savedir, corefile);
+	if (dumphdr.dump_flags & DF_ENCRYPTED) {
+		int keyfd;
+
+		if (dcrypt.dump_crypt_algo != DUMP_CRYPT_ALGO_CHACHA20) {
+			logprint(SC_SL_NONE | SC_EXIT_ERR, "unrecognized dump "
+			    "encryption algorithm %u", dcrypt.dump_crypt_algo);
+		}
+
+		if (keyfile == NULL) {
+			logprint(SC_SL_NONE | SC_EXIT_ERR, "dump is encrypted; "
+			    "key must be provided");
+		}
+
+		keyfd = Open(keyfile, O_RDONLY, 0600);
+		Read(keyfd, keybuf, sizeof (keybuf));
+		(void) close(keyfd);
+
+		/*
+		 * For the encrypted case, we triple our buffer size to
+		 * allow for the stream buffer and the ciphertext buffer.
+		 */
+		inbuf = Zalloc(bufsz * 3);
+		key = keybuf;
+		Verify(key);
+
+		logprint(SC_SL_ERR | SC_IF_VERBOSE, "Decrypting and copying "
+		    "%s to %s/%s\n", dumpfile, savedir, corefile);
+	} else {
+		inbuf = Zalloc(bufsz);
+
+		logprint(SC_SL_ERR | SC_IF_VERBOSE,
+		    "Copying %s to %s/%s\n", dumpfile, savedir, corefile);
+	}
 
 	/*
-	 * This dump file is still compressed
+	 * This dump file is still compressed -- but it will no longer be
+	 * encrypted.
 	 */
 	corehdr.dump_flags |= DF_COMPRESSED | DF_VALID;
+	corehdr.dump_flags &= ~DF_ENCRYPTED;
 
 	/*
 	 * Leave room for corehdr, it is updated and written last
@@ -594,7 +720,7 @@ copy_crashfile(const char *corefile)
 	coreoff = roundup(coreoff, pagesize);
 	corehdr.dump_ksyms = coreoff;
 	Copy(dumphdr.dump_ksyms, dumphdr.dump_ksyms_csize, &coreoff, corefd,
-	    inbuf, bufsz);
+	    inbuf, bufsz, key);
 
 	/*
 	 * Save the pfn table.
@@ -602,7 +728,7 @@ copy_crashfile(const char *corefile)
 	coreoff = roundup(coreoff, pagesize);
 	corehdr.dump_pfn = coreoff;
 	Copy(dumphdr.dump_pfn, dumphdr.dump_npages * sizeof (pfn_t), &coreoff,
-	    corefd, inbuf, bufsz);
+	    corefd, inbuf, bufsz, key);
 
 	/*
 	 * Save the dump map.
@@ -610,7 +736,7 @@ copy_crashfile(const char *corefile)
 	coreoff = roundup(coreoff, pagesize);
 	corehdr.dump_map = coreoff;
 	Copy(dumphdr.dump_map, dumphdr.dump_nvtop * sizeof (mem_vtop_t),
-	    &coreoff, corefd, inbuf, bufsz);
+	    &coreoff, corefd, inbuf, bufsz, key);
 
 	/*
 	 * Save the data pages.
@@ -619,7 +745,7 @@ copy_crashfile(const char *corefile)
 	corehdr.dump_data = coreoff;
 	if (datahdr.dump_data_csize != 0)
 		Copy(dumphdr.dump_data, datahdr.dump_data_csize, &coreoff,
-		    corefd, inbuf, bufsz);
+		    corefd, inbuf, bufsz, key);
 	else
 		CopyPages(&coreoff, corefd, inbuf, bufsz);
 
@@ -660,7 +786,7 @@ copy_crashfile(const char *corefile)
 	 * Write out the modified dump header to the dump device.
 	 * The dump device has been processed, so DF_VALID is clear.
 	 */
-	if (!filemode)
+	if (!filemode && !rflag)
 		Pwrite(dumpfd, &dumphdr, sizeof (dumphdr), endoff);
 
 	(void) close(corefd);
@@ -1422,7 +1548,7 @@ build_corefile(const char *namelist, const char *corefile)
 	 * Write out the modified dump headers.
 	 */
 	Pwrite(corefd, &corehdr, sizeof (corehdr), 0);
-	if (!filemode)
+	if (!filemode && !rflag)
 		Pwrite(dumpfd, &dumphdr, sizeof (dumphdr), endoff);
 
 	(void) close(corefd);
@@ -1531,7 +1657,10 @@ stack_retrieve(char *stack)
 	    DUMP_ERPTSIZE);
 	dumpoff -= DUMP_SUMMARYSIZE;
 
-	dumpfd = Open(dumpfile, O_RDWR | O_DSYNC, 0644);
+	if (rflag)
+		dumpfd = Open(dumpfile, O_RDONLY, 0644);
+	else
+		dumpfd = Open(dumpfile, O_RDWR | O_DSYNC, 0644);
 	dumpoff = llseek(dumpfd, dumpoff, SEEK_END) & -DUMP_OFFSET;
 
 	Pread(dumpfd, &sd, sizeof (summary_dump_t), dumpoff);
@@ -1653,6 +1782,8 @@ main(int argc, char *argv[])
 	struct rlimit rl;
 	long filebounds = -1;
 	char namelist[30], corefile[30], boundstr[30];
+	char *keyfile = NULL;
+
 	dumpfile = NULL;
 
 	startts = gethrtime();
@@ -1668,7 +1799,7 @@ main(int argc, char *argv[])
 	if (savedir != NULL)
 		savedir = strdup(savedir);
 
-	while ((c = getopt(argc, argv, "Lvcdmf:")) != EOF) {
+	while ((c = getopt(argc, argv, "Lvcdmf:rk:")) != EOF) {
 		switch (c) {
 		case 'L':
 			livedump++;
@@ -1685,9 +1816,15 @@ main(int argc, char *argv[])
 		case 'm':
 			mflag++;
 			break;
+		case 'r':
+			rflag++;
+			break;
 		case 'f':
 			dumpfile = optarg;
 			filebounds = getbounds(dumpfile);
+			break;
+		case 'k':
+			keyfile = optarg;
 			break;
 		case '?':
 			usage();
@@ -1707,6 +1844,9 @@ main(int argc, char *argv[])
 	interactive = isatty(STDOUT_FILENO);
 
 	if (cflag && livedump)
+		usage();
+
+	if (rflag && (cflag || mflag || livedump))
 		usage();
 
 	if (dumpfile == NULL || livedump)
@@ -1746,13 +1886,25 @@ main(int argc, char *argv[])
 
 	read_dumphdr();
 
+	if (dumphdr.dump_flags & DF_ENCRYPTED) {
+		if (filemode) {
+			logprint(SC_SL_NONE | SC_EXIT_ERR, "saved dump file is "
+			    "erroneously encrypted");
+		}
+
+		if (!csave) {
+			logprint(SC_SL_NONE | SC_EXIT_ERR, "dump is encrypted; "
+			    "cannot be saved uncompressed");
+		}
+	}
+
 	/*
 	 * We want this message to go to the log file, but not the console.
 	 * There's no good way to do that with the existing syslog facility.
 	 * We could extend it to handle this, but there doesn't seem to be
 	 * a general need for it, so we isolate the complexity here instead.
 	 */
-	if (dumphdr.dump_panicstring[0] != '\0') {
+	if (dumphdr.dump_panicstring[0] != '\0' && !rflag) {
 		int logfd = Open("/dev/conslog", O_WRONLY, 0644);
 		log_ctl_t lc;
 		struct strbuf ctl, dat;
@@ -1801,7 +1953,7 @@ main(int argc, char *argv[])
 	 * for the same event.  Also avoid raising an event for a
 	 * livedump, or when we inflating a compressed dump.
 	 */
-	if (!fm_panic && !livedump && !filemode)
+	if (!fm_panic && !livedump && !filemode && !rflag)
 		raise_event(SC_EVENT_DUMP_PENDING, NULL);
 
 	logprint(SC_SL_WARN, "System dump time: %s",
@@ -1850,14 +2002,14 @@ main(int argc, char *argv[])
 		    "Saving compressed system crash dump in %s/%s",
 		    savedir, corefile);
 
-		copy_crashfile(corefile);
+		copy_crashfile(corefile, keyfile);
 
 		/*
 		 * Raise a fault management event that indicates the system
 		 * has panicked. We know a reasonable amount about the
 		 * condition at this time, but the dump is still compressed.
 		 */
-		if (!livedump && !fm_panic)
+		if (!livedump && !fm_panic && !rflag)
 			raise_event(SC_EVENT_DUMP_AVAILABLE, NULL);
 
 		if (metrics_size > 0) {
@@ -1866,7 +2018,7 @@ main(int argc, char *argv[])
 			char *metrics = Zalloc(metrics_size + 1);
 
 			Pread(dumpfd, metrics, metrics_size, endoff +
-			    sizeof (dumphdr) + sizeof (datahdr));
+			    dumphdr_size + sizeof (datahdr));
 
 			if (sec < 1)
 				sec = 1;
@@ -1926,7 +2078,7 @@ main(int argc, char *argv[])
 
 		build_corefile(namelist, corefile);
 
-		if (!livedump && !filemode && !fm_panic)
+		if (!livedump && !filemode && !fm_panic && !rflag)
 			raise_event(SC_EVENT_DUMP_AVAILABLE, NULL);
 
 		if (access(METRICSFILE, F_OK) == 0) {

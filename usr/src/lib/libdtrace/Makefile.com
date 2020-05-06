@@ -22,6 +22,7 @@
 # Copyright (c) 2003, 2010, Oracle and/or its affiliates. All rights reserved.
 # Copyright (c) 2011, 2016 by Delphix. All rights reserved.
 #
+# Copyright (c) 2018, Joyent, Inc.
 
 LIBRARY = libdtrace.a
 VERS = .1
@@ -96,6 +97,7 @@ DLIBSRCS += \
 	sched.d \
 	signal.d \
 	scsi.d \
+	smb.d \
 	srp.d \
 	sysevent.d \
 	tcp.d \
@@ -105,8 +107,8 @@ DLIBSRCS += \
 
 include ../../Makefile.lib
 
-SRCS = $(LIBSRCS:%.c=../common/%.c) $(LIBISASRCS:%.c=../$(MACH)/%.c) 
-LIBS = $(DYNLIB) $(LINTLIB)
+SRCS = $(LIBSRCS:%.c=../common/%.c) $(LIBISASRCS:%.c=../$(MACH)/%.c)
+LIBS = $(DYNLIB)
 
 SRCDIR = ../common
 
@@ -132,8 +134,11 @@ CFLAGS64 += $(CCVERBOSE) $(C_BIGPICFLAGS)
 CERRWARN += -_gcc=-Wno-unused-label
 CERRWARN += -_gcc=-Wno-unused-variable
 CERRWARN += -_gcc=-Wno-parentheses
-CERRWARN += -_gcc=-Wno-uninitialized
+CERRWARN += $(CNOWARN_UNINIT)
 CERRWARN += -_gcc=-Wno-switch
+
+# not linted
+SMATCH=off
 
 YYCFLAGS =
 LDLIBS += -lgen -lproc -lrtld_db -lnsl -lsocket -lctf -lelf -lc -lzonecfg
@@ -141,8 +146,6 @@ DRTILDLIBS = $(LDLIBS.lib) -lc
 LIBDAUDITLIBS = $(LDLIBS.lib) -lmapmalloc -lc -lproc
 
 yydebug := YYCFLAGS += -DYYDEBUG
-
-$(LINTLIB) := SRCS = $(SRCDIR)/$(LINTSRC)
 
 LFLAGS = -t -v
 YFLAGS = -d -v
@@ -164,10 +167,6 @@ $(ROOTDLIBDIR64)/%.so := FILEMODE=555
 
 all: $(LIBS) $(DRTIOBJ) $(LIBDAUDIT)
 
-lint: lintdlink lintcheck
-
-lintdlink: $(DLINKSRCS:%.c=../common/%.c)
-	$(LINT.c) $(DLINKSRCS:%.c=../common/%.c) $(DRTILDLIBS)
 
 dt_lex.c: $(SRCDIR)/dt_lex.l dt_grammar.h
 	$(LEX) $(LFLAGS) $(SRCDIR)/dt_lex.l > $@

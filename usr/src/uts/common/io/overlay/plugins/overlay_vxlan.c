@@ -178,12 +178,12 @@ vxlan_o_encap(void *arg, mblk_t *mp, ovep_encap_info_t *einfop,
 			return (ENOMEM);
 
 		ob->b_wptr = DB_LIM(ob);
-		ob->b_rptr = ob->b_wptr - VXLAN_HDR_LEN;
+		ob->b_rptr = ob->b_wptr;
 		ob->b_cont = mp;
 	} else {
 		ob = mp;
-		mp->b_rptr -= VXLAN_HDR_LEN;
 	}
+	ob->b_rptr -= VXLAN_HDR_LEN;
 
 	vxh = (vxlan_hdr_t *)ob->b_rptr;
 	vxh->vxlan_flags = ntohl(VXLAN_F_VDI);

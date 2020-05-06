@@ -20,11 +20,10 @@
  */
 /*
  * Copyright (c) 1989, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2012, Joyent, Inc. All rights reserved.
  */
 
 /*	Copyright (c) 1984, 1986, 1987, 1988, 1989 AT&T		*/
-/*	  All Rights Reserved  	*/
+/*	  All Rights Reserved	*/
 
 /*
  * University Copyright- Copyright (c) 1982, 1986, 1988
@@ -174,13 +173,6 @@ main(int ac, char *av[])
 	    can_do_mlp ? PRIV_NET_BINDMLP : NULL, NULL) == -1) {
 		(void) fprintf(stderr, "%s should be run with"
 		    " sufficient privileges\n", av[0]);
-		exit(1);
-	}
-
-	/* Nfsd cannot run in a non-global zone. */
-	if (getzoneid() != GLOBAL_ZONEID) {
-		(void) fprintf(stderr, "%s: can only run in the global zone\n",
-		    av[0]);
 		exit(1);
 	}
 
@@ -856,7 +848,7 @@ dss_init(uint_t npaths, char **pathnames)
 		/* now NULL out any duplicates */
 		i = 0; j = 1; nskipped = 0;
 		while (j < npaths) {
-			if (strcmp(pathnames[i], pathnames[j]) == NULL) {
+			if (strcmp(pathnames[i], pathnames[j]) == 0) {
 				pathnames[j] = NULL;
 				j++;
 				nskipped++;

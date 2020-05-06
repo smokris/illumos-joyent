@@ -23,7 +23,7 @@
  * Copyright (c) 2009, 2010, Oracle and/or its affiliates. All rights reserved
  *
  * Copyright 2011 Nexenta Systems, Inc. All rights reserved.
- * Copyright 2018 Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  */
 /* Copyright (c) 1990 Mentat Inc. */
 
@@ -198,7 +198,7 @@ ip_input_common_v6(ill_t *ill, ill_rx_ring_t *ip_ring, mblk_t *mp_chain,
 	ip_recv_attr_t	iras;	/* Receive attributes */
 	rtc_t		rtc;
 	iaflags_t	chain_flags = 0;	/* Fixed for chain */
-	mblk_t 		*ahead = NULL;	/* Accepted head */
+	mblk_t		*ahead = NULL;	/* Accepted head */
 	mblk_t		*atail = NULL;	/* Accepted tail */
 	uint_t		acnt = 0;	/* Accepted count */
 
@@ -348,7 +348,7 @@ ip_input_common_v6(ill_t *ill, ill_rx_ring_t *ip_ring, mblk_t *mp_chain,
 
 		/*
 		 * Call one of:
-		 * 	ill_input_full_v6
+		 *	ill_input_full_v6
 		 *	ill_input_short_v6
 		 * The former is used in the case of TX. See ill_set_inputfn().
 		 */
@@ -517,7 +517,7 @@ ill_input_short_v6(mblk_t *mp, void *iph_arg, void *nexthop_arg,
 	ill_t		*ill = ira->ira_ill;
 	ip_stack_t	*ipst = ill->ill_ipst;
 	uint_t		pkt_len;
-	ssize_t 	len;
+	ssize_t		len;
 	ip6_t		*ip6h = (ip6_t *)iph_arg;
 	in6_addr_t	nexthop = *(in6_addr_t *)nexthop_arg;
 	ilb_stack_t	*ilbs = ipst->ips_netstack->netstack_ilb;
@@ -1903,13 +1903,12 @@ ip_input_cksum_v6(iaflags_t iraflags, mblk_t *mp, ip6_t *ip6h,
 		return (ip_input_sw_cksum_v6(mp, ip6h, ira));
 	}
 
+	hck_flags = DB_CKSUMFLAGS(mp);
+
 	/*
 	 * We apply this for all ULP protocols. Does the HW know to
 	 * not set the flags for SCTP and other protocols.
 	 */
-
-	hck_flags = DB_CKSUMFLAGS(mp);
-
 	if (hck_flags & HCK_FULLCKSUM_OK) {
 		/*
 		 * Hardware has already verified the checksum.
@@ -2020,8 +2019,8 @@ repeat:
 	 */
 	if (IPP_ENABLED(IPP_LOCAL_IN, ipst) &&
 	    !(iraflags & IRAF_LOOPBACK) &&
-	    (protocol != IPPROTO_ESP || protocol != IPPROTO_AH ||
-	    protocol != IPPROTO_DSTOPTS || protocol != IPPROTO_ROUTING ||
+	    (protocol != IPPROTO_ESP && protocol != IPPROTO_AH &&
+	    protocol != IPPROTO_DSTOPTS && protocol != IPPROTO_ROUTING &&
 	    protocol != IPPROTO_FRAGMENT)) {
 		/*
 		 * Use the interface on which the packet arrived - not where

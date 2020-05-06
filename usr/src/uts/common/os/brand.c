@@ -20,7 +20,7 @@
  */
 /*
  * Copyright (c) 2006, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright 2016, Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  */
 
 #include <sys/kmem.h>
@@ -671,9 +671,9 @@ restoreexecenv(struct execenv *ep, stack_t *sp)
 /*ARGSUSED*/
 int
 brand_solaris_elfexec(vnode_t *vp, execa_t *uap, uarg_t *args,
-    intpdata_t *idatap, int level, long *execsz, int setid, caddr_t exec_file,
-    cred_t *cred, int *brand_action, struct brand *pbrand, char *bname,
-    char *brandlib, char *brandlib32)
+    intpdata_t *idatap, int level, size_t *execsz, int setid,
+    caddr_t exec_file, cred_t *cred, int *brand_action, struct brand *pbrand,
+    char *bname, char *brandlib, char *brandlib32)
 {
 
 	vnode_t		*nvp;
@@ -786,8 +786,8 @@ brand_solaris_elfexec(vnode_t *vp, execa_t *uap, uarg_t *args,
 		}
 	}
 	/* Make sure the emulator has an entry point */
-	ASSERT(sed.sed_entry != NULL);
-	ASSERT(sed.sed_phdr != NULL);
+	ASSERT(sed.sed_entry != 0);
+	ASSERT(sed.sed_phdr != 0);
 
 	bzero(&env, sizeof (env));
 	if (args->to_model == DATAMODEL_NATIVE) {
@@ -910,19 +910,19 @@ brand_solaris_elfexec(vnode_t *vp, execa_t *uap, uarg_t *args,
 			 */
 			sedp->sed_ldentry = ehdr.e_entry;
 			sedp->sed_entry = ehdr.e_entry;
-			sedp->sed_lddata = NULL;
-			sedp->sed_base = NULL;
+			sedp->sed_lddata = 0;
+			sedp->sed_base = 0;
 		} else {
 			/*
 			 * A shared object with no interpreter, we use
 			 * the calculated address from above.
 			 */
 			sedp->sed_ldentry = sedp->sed_entry;
-			sedp->sed_entry = NULL;
-			sedp->sed_phdr = NULL;
-			sedp->sed_phent = NULL;
-			sedp->sed_phnum = NULL;
-			sedp->sed_lddata = NULL;
+			sedp->sed_entry = 0;
+			sedp->sed_phdr = 0;
+			sedp->sed_phent = 0;
+			sedp->sed_phnum = 0;
+			sedp->sed_lddata = 0;
 			sedp->sed_base = voffset;
 
 			if (ehdr.e_type == ET_DYN) {
@@ -1056,7 +1056,7 @@ brand_solaris_elfexec(vnode_t *vp, execa_t *uap, uarg_t *args,
 		}
 
 		up->u_auxv[i].a_un.a_val = val;
-		if (val == NULL) {
+		if (val == 0) {
 			/* Hide the entry for static binaries */
 			up->u_auxv[i].a_type = AT_IGNORE;
 		}

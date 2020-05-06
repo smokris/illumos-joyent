@@ -24,6 +24,7 @@
 # Use is subject to license terms.
 # Copyright 2015 Joyent, Inc.
 #
+# Copyright 2019 Joyent, Inc.
 
 PROG:sh = basename `cd ..; pwd`
 
@@ -59,17 +60,23 @@ LDLIBS_pwdx		= -lproc
 LDLIBS += $(LDLIBS_$(PROG))
 
 CERRWARN_plgrp	+= -_gcc=-Wno-parentheses
+CERRWARN_plgrp	+= -_smatch=off
+
+CERRWARN_pmadvise += -_smatch=off
 
 CERRWARN_ppriv	+= -_gcc=-Wno-parentheses
-CERRWARN_ppriv	+= -_gcc=-Wno-uninitialized
+CERRWARN_ppriv	+= $(CNOWARN_UNINIT)
 
 CERRWARN_ptree	+= -_gcc=-Wno-parentheses
+CERRWARN_ptree	+= -_smatch=off
 
-CERRWARN_pstack	+= -_gcc=-Wno-uninitialized
+CERRWARN_pstack	+= $(CNOWARN_UNINIT)
 CERRWARN_pstack	+= -_gcc=-Wno-clobbered
 
 CERRWARN_pargs	+= -_gcc=-Wno-clobbered
 CERRWARN_pargs	+= -_gcc=-Wno-type-limits
+
+CERRWARN_pwait	+= -_smatch=off
 
 CERRWARN += $(CERRWARN_$(PROG))
 
@@ -121,6 +128,9 @@ CPPFLAGS +=	$(CPPFLAGS_$(PROG))
 OBJS +=		$(OBJS_$(PROG))
 SRCS +=		$(SRCS_$(PROG))
 
+$(OBJS_ptree) :=	CSTD = $(CSTD_GNU99)
+ptree :=		CSTD = $(CSTD_GNU99)
+
 INSTALL_NEW=
 INSTALL_LEGACY=$(RM) $(ROOTPROCBINSYMLINK) ; \
 	$(LN) -s ../../bin/$(PROG) $(ROOTPROCBINSYMLINK)
@@ -157,12 +167,12 @@ $(PROG): $$(OBJS)
 # Install the ptool, symlinking it into /usr/proc/bin if PTOOL_TYPE is set
 # to LEGACY.
 #
-install: all $(ROOTISAPROG) $(ROOTISALN)
+install: all $(ROOTISAPROG) $(ROOTISALN) $(ROOTBINLN)
 	-$(RM) $(ROOTBINPROG)
 	-$(LN) $(ISAEXEC) $(ROOTBINPROG)
 	-$(INSTALL_$(PTOOL_TYPE))
 
-$(ROOTBINLN):
+$(ROOTBINLN): $(ROOTISAPROG)
 	-$(RM) $@
 	-$(LN) $(ISAEXEC) $@
 

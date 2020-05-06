@@ -24,6 +24,10 @@
  * SUCH DAMAGE.
  */
 
+/*
+ * Copyright (c) 2019, Joyent, Inc.
+ */
+
 #include <sys/cdefs.h>
 
 /*
@@ -34,11 +38,14 @@
 #include <stand.h>
 #include <sys/param.h>
 #include <sys/multiboot2.h>
+#include <sys/consplat.h>
 #include <machine/metadata.h>
 #include <machine/pc/bios.h>
 #include "libi386.h"
 #include "btxv86.h"
 #include "bootstrap.h"
+
+extern multiboot_tag_framebuffer_t gfx_fb;
 
 /*
  * Verify the address is not in use by existing modules.
@@ -52,7 +59,7 @@ addr_verify(struct preloaded_file *fp, vm_offset_t addr, size_t size)
 		f_addr = fp->f_addr;
 
 		if ((f_addr <= addr) &&
-		     (f_addr + fp->f_size >= addr)) {
+		    (f_addr + fp->f_size >= addr)) {
 			return (0);
 		}
 		if ((f_addr >= addr) && (f_addr <= addr + size)) {
@@ -93,6 +100,8 @@ smap_find(struct bios_smap *smap, int smaplen, vm_offset_t addr, size_t size)
 	return (0);
 }
 
+#define SAFE_LOAD_BASE 0xc800000
+
 /*
  * Find usable address for loading. The address for the kernel is fixed, as
  * it is determined by kernel linker map (dboot PT_LOAD address).
@@ -100,7 +109,7 @@ smap_find(struct bios_smap *smap, int smaplen, vm_offset_t addr, size_t size)
  * aligned to page boundary and we have to fit into smap entry.
  */
 vm_offset_t
-i386_loadaddr(u_int type, void *data, vm_offset_t addr)
+i386_loadaddr(uint_t type, void *data, vm_offset_t addr)
 {
 	struct stat st;
 	size_t size, smaplen;
@@ -116,8 +125,13 @@ i386_loadaddr(u_int type, void *data, vm_offset_t addr)
 	if (type == LOAD_KERN)
 		return (addr);
 
+	/*
+	 * Nothing is yet loaded. We shouldn't get to a module with a load
+	 * address of zero still, and the kernel loads at its own multiboot
+	 * address, so we don't need to make any adjustments here.
+	 */
 	if (addr == 0)
-		return (addr);	/* nothing to do */
+		return (0);
 
 	if (type == LOAD_ELF)
 		return (0);	/* not supported */
@@ -141,16 +155,41 @@ i386_loadaddr(u_int type, void *data, vm_offset_t addr)
 		return (0);
 
 	smap = (struct bios_smap *)md->md_data;
-	smaplen = md->md_size / sizeof(struct bios_smap);
+	smaplen = md->md_size / sizeof (struct bios_smap);
 
 	/* Start from the end of the kernel. */
 	mfp = fp;
 	do {
+
+
 		if (mfp == NULL) {
 			off = roundup2(addr + 1, MULTIBOOT_MOD_ALIGN);
 		} else {
 			off = roundup2(mfp->f_addr + mfp->f_size + 1,
 			    MULTIBOOT_MOD_ALIGN);
+		}
+
+		/* RICHMOND-16 work around. */
+		if (off < SAFE_LOAD_BASE)
+			off = SAFE_LOAD_BASE;
+
+		/* Avoid possible framebuffer memory */
+		if (plat_stdout_is_framebuffer()) {
+			vm_offset_t fb_addr;
+			size_t fb_size;
+
+			fb_addr = gfx_fb.framebuffer_common.framebuffer_addr;
+			fb_size = gfx_fb.framebuffer_common.framebuffer_height *
+			    gfx_fb.framebuffer_common.framebuffer_pitch;
+
+			if ((off >= fb_addr && off <= fb_addr + fb_size) ||
+			    (off + size >= fb_addr &&
+			    off + size <= fb_addr + fb_size)) {
+				printf("\nSkipping framebuffer memory %#x "
+				    "size %#x\n", fb_addr, fb_size);
+				off = roundup2(fb_addr + fb_size + 1,
+				    MULTIBOOT_MOD_ALIGN);
+			}
 		}
 		off = smap_find(smap, smaplen, off, size);
 		off = addr_verify(fp, off, size);

@@ -38,7 +38,7 @@
  * http://www.illumos.org/license/CDDL.
  *
  * Copyright 2015 Pluribus Networks Inc.
- * Copyright 2018 Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  */
 
 #ifndef _VMM_H_
@@ -127,10 +127,39 @@ enum x2apic_state {
 #define	VM_INTINFO_HWEXCEPTION	(3 << 8)
 #define	VM_INTINFO_SWINTR	(4 << 8)
 
-
-#define	VM_MAX_NAMELEN	32
+#ifndef __FreeBSD__
+/*
+ * illumos doesn't have a limitation based on SPECNAMELEN like FreeBSD does.
+ * Instead of picking an arbitrary value we will just rely on the same
+ * calculation that's made below. If this calculation ever changes we need to
+ * update the the VM_MAX_NAMELEN mapping in the bhyve brand's boot.c file.
+ */
+#else
+/*
+ * The VM name has to fit into the pathname length constraints of devfs,
+ * governed primarily by SPECNAMELEN.  The length is the total number of
+ * characters in the full path, relative to the mount point and not 
+ * including any leading '/' characters.
+ * A prefix and a suffix are added to the name specified by the user.
+ * The prefix is usually "vmm/" or "vmm.io/", but can be a few characters
+ * longer for future use.
+ * The suffix is a string that identifies a bootrom image or some similar
+ * image that is attached to the VM. A separator character gets added to
+ * the suffix automatically when generating the full path, so it must be
+ * accounted for, reducing the effective length by 1.
+ * The effective length of a VM name is 229 bytes for FreeBSD 13 and 37
+ * bytes for FreeBSD 12.  A minimum length is set for safety and supports
+ * a SPECNAMELEN as small as 32 on old systems.
+ */
+#endif
+#define VM_MAX_PREFIXLEN 10
+#define VM_MAX_SUFFIXLEN 15
+#define VM_MIN_NAMELEN   6
+#define VM_MAX_NAMELEN \
+    (SPECNAMELEN - VM_MAX_PREFIXLEN - VM_MAX_SUFFIXLEN - 1)
 
 #ifdef _KERNEL
+CTASSERT(VM_MAX_NAMELEN >= VM_MIN_NAMELEN);
 
 struct vm;
 struct vm_exception;
@@ -146,7 +175,7 @@ struct vm_guest_paging;
 struct pmap;
 
 struct vm_eventinfo {
-	void	*rptr;		/* rendezvous cookie */
+	u_int	*rptr;		/* runblock cookie */
 	int	*sptr;		/* suspend cookie */
 	int	*iptr;		/* reqidle cookie */
 };
@@ -209,6 +238,7 @@ int vm_create(const char *name, struct vm **retvm);
 void vm_destroy(struct vm *vm);
 int vm_reinit(struct vm *vm);
 const char *vm_name(struct vm *vm);
+uint16_t vm_get_maxcpus(struct vm *vm);
 void vm_get_topology(struct vm *vm, uint16_t *sockets, uint16_t *cores,
     uint16_t *threads, uint16_t *maxcpus);
 int vm_set_topology(struct vm *vm, uint16_t sockets, uint16_t cores,
@@ -240,6 +270,7 @@ int vm_mmap_getnext(struct vm *vm, vm_paddr_t *gpa, int *segid,
     vm_ooffset_t *segoff, size_t *len, int *prot, int *flags);
 int vm_get_memseg(struct vm *vm, int ident, size_t *len, bool *sysmem,
     struct vm_object **objptr);
+vm_paddr_t vmm_sysmem_maxaddr(struct vm *vm);
 void *vm_gpa_hold(struct vm *, int vcpuid, vm_paddr_t gpa, size_t len,
     int prot, void **cookie);
 void vm_gpa_release(void *cookie);
@@ -273,38 +304,21 @@ int vm_resume_cpu(struct vm *vm, int vcpu);
 struct vm_exit *vm_exitinfo(struct vm *vm, int vcpuid);
 void vm_exit_suspended(struct vm *vm, int vcpuid, uint64_t rip);
 void vm_exit_debug(struct vm *vm, int vcpuid, uint64_t rip);
-void vm_exit_rendezvous(struct vm *vm, int vcpuid, uint64_t rip);
+void vm_exit_runblock(struct vm *vm, int vcpuid, uint64_t rip);
 void vm_exit_astpending(struct vm *vm, int vcpuid, uint64_t rip);
 void vm_exit_reqidle(struct vm *vm, int vcpuid, uint64_t rip);
 
 #ifdef _SYS__CPUSET_H_
-/*
- * Rendezvous all vcpus specified in 'dest' and execute 'func(arg)'.
- * The rendezvous 'func(arg)' is not allowed to do anything that will
- * cause the thread to be put to sleep.
- *
- * If the rendezvous is being initiated from a vcpu context then the
- * 'vcpuid' must refer to that vcpu, otherwise it should be set to -1.
- *
- * The caller cannot hold any locks when initiating the rendezvous.
- *
- * The implementation of this API may cause vcpus other than those specified
- * by 'dest' to be stalled. The caller should not rely on any vcpus making
- * forward progress when the rendezvous is in progress.
- */
-typedef void (*vm_rendezvous_func_t)(struct vm *vm, int vcpuid, void *arg);
-void vm_smp_rendezvous(struct vm *vm, int vcpuid, cpuset_t dest,
-    vm_rendezvous_func_t func, void *arg);
 cpuset_t vm_active_cpus(struct vm *vm);
 cpuset_t vm_debug_cpus(struct vm *vm);
 cpuset_t vm_suspended_cpus(struct vm *vm);
 #endif	/* _SYS__CPUSET_H_ */
 
 static __inline int
-vcpu_rendezvous_pending(struct vm_eventinfo *info)
+vcpu_runblocked(struct vm_eventinfo *info)
 {
 
-	return (*((uintptr_t *)(info->rptr)) != 0);
+	return (*info->rptr != 0);
 }
 
 static __inline int
@@ -324,12 +338,12 @@ vcpu_reqidle(struct vm_eventinfo *info)
 int vcpu_debugged(struct vm *vm, int vcpuid);
 
 /*
- * Return 1 if device indicated by bus/slot/func is supposed to be a
+ * Return true if device indicated by bus/slot/func is supposed to be a
  * pci passthrough device.
  *
- * Return 0 otherwise.
+ * Return false otherwise.
  */
-int vmm_is_pptdev(int bus, int slot, int func);
+bool vmm_is_pptdev(int bus, int slot, int func);
 
 void *vm_iommu_domain(struct vm *vm);
 
@@ -343,6 +357,9 @@ enum vcpu_state {
 int vcpu_set_state(struct vm *vm, int vcpu, enum vcpu_state state,
     bool from_idle);
 enum vcpu_state vcpu_get_state(struct vm *vm, int vcpu, int *hostcpu);
+void vcpu_block_run(struct vm *, int);
+void vcpu_unblock_run(struct vm *, int);
+
 #ifndef __FreeBSD__
 uint64_t vcpu_tsc_offset(struct vm *vm, int vcpuid);
 #endif
@@ -577,7 +594,7 @@ enum vm_exitcode {
 	VM_EXITCODE_INST_EMUL,
 	VM_EXITCODE_SPINUP_AP,
 	VM_EXITCODE_DEPRECATED1,	/* used to be SPINDOWN_CPU */
-	VM_EXITCODE_RENDEZVOUS,
+	VM_EXITCODE_RUNBLOCK,
 	VM_EXITCODE_IOAPIC_EOI,
 	VM_EXITCODE_SUSPENDED,
 	VM_EXITCODE_INOUT_STR,
@@ -587,6 +604,7 @@ enum vm_exitcode {
 	VM_EXITCODE_SVM,
 	VM_EXITCODE_REQIDLE,
 	VM_EXITCODE_DEBUG,
+	VM_EXITCODE_VMINSN,
 #ifndef	__FreeBSD__
 	VM_EXITCODE_HT,
 #endif
@@ -738,6 +756,8 @@ void vmm_sol_glue_cleanup(void);
 
 int vmm_mod_load(void);
 int vmm_mod_unload(void);
+
+void vmm_call_trap(uint64_t);
 
 /*
  * Because of tangled headers, these are mirrored by vmm_drv.h to present the

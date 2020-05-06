@@ -26,6 +26,7 @@
 # Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
 # Use is subject to license terms.
 #
+# Copyright (c) 2018, Joyent, Inc.
 
 LIBRARY= libpkg.a
 VERS=	.1
@@ -54,19 +55,22 @@ POFILE =	libpkg.po
 MSGFILES =	$(OBJECTS:%.o=../common/%.i)
 CLEANFILES +=   $(MSGFILES)
 
-$(LINTLIB):=	SRCS = $(SRCDIR)/$(LINTSRC)
 
 
-LIBS = $(DYNLIB) $(LINTLIB)
+LIBS = $(DYNLIB)
 
 
 LDLIBS +=	-lc -lscf -ladm
 
 CFLAGS +=	$(CCVERBOSE)
 CERRWARN +=	-_gcc=-Wno-parentheses
-CERRWARN +=	-_gcc=-Wno-uninitialized
+CERRWARN +=	$(CNOWARN_UNINIT)
 CERRWARN +=	-_gcc=-Wno-clobbered
 CERRWARN +=	-_gcc=-Wno-switch
+
+# not linted
+SMATCH=off
+
 CPPFLAGS +=	-I$(SRCDIR) -D_FILE_OFFSET_BITS=64
 
 .KEEP_STATE:
@@ -78,7 +82,6 @@ $(POFILE): $(MSGFILES)
 
 _msg: $(MSGDOMAINPOFILE)
 
-lint: lintcheck
 
 # include library targets
 include $(SRC)/lib/Makefile.targ

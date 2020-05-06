@@ -3,6 +3,8 @@
 # Use is subject to license terms.
 #
 # Copyright 2011, Richard Lowe.
+#
+# Copyright (c) 2018, Joyent, Inc.
 
 include ../../Makefile.ctf
 
@@ -66,7 +68,7 @@ OBJECTS=dwarf_abbrev.o		\
 	pro_weaks.o
 
 include $(SRC)/lib/Makefile.lib
-
+include $(SRC)/tools/Makefile.tools
 
 FILEMODE =	0755
 SRCDIR =	$(SRC)/lib/libdwarf/common/
@@ -76,7 +78,12 @@ CPPFLAGS +=	-I$(SRCDIR) -DELF_TARGET_ALL=1
 CERRWARN +=	-_gcc=-Wno-unused
 CERRWARN +=	-_gcc=-Wno-implicit-function-declaration
 
+# libdwarf not clean
+SMATCH=off
+
+DYNFLAGS += '-R$$ORIGIN/../../lib/$(MACH)'
 LDLIBS = -lelf -lc
+NATIVE_LIBS += libelf.so libc.so
 
 .KEEP_STATE:
 .PARALLEL:

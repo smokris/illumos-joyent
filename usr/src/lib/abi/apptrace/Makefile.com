@@ -32,7 +32,7 @@ include ../../Makefile.abi
 LIBS =		$(DYNLIB)
 CPPFLAGS =      -I. $(CPPFLAGS.master)
 
-CERRWARN +=	-_gcc=-Wno-uninitialized
+CERRWARN +=	$(CNOWARN_UNINIT)
 
 # No mapfile here
 MAPFILES =
@@ -46,6 +46,5 @@ $(SUPPRESS_LIBS)ZDEFS = -zdefs
 
 all:	$(LIBS)
 
-lint:	lintcheck
 
 include	../../../Makefile.targ

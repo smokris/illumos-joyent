@@ -20,27 +20,29 @@
 #
 #
 # Copyright (c) 1998, 2010, Oracle and/or its affiliates. All rights reserved.
+# Copyright 2020 Joyent, Inc.
 #
 
 PROG = dumpadm
 MANIFEST = dumpadm.xml
 SVCMETHOD= svc-dumpadm
+ETCFILES= dumpadm.conf
 
 OBJS = main.o dconf.o minfree.o utils.o swap.o
 SRCS = $(OBJS:.o=.c)
 
-
-lint := LINTFLAGS = -mx
+ROOTETCFILES= $(ETCFILES:%=$(ROOTETC)/%)
 
 include ../Makefile.cmd
 
 CFLAGS += $(CCVERBOSE)
+CFLAGS += -I../../lib/libzutil/common
 
 FILEMODE = 0555
 
 ROOTMANIFESTDIR = $(ROOTSVCSYSTEM)
 
-LDLIBS +=	-ldiskmgt -lzfs -luuid
+LDLIBS +=	-ldiskmgt -lzfs -luuid -lzutil
 
 .KEEP_STATE:
 
@@ -50,13 +52,11 @@ $(PROG): $(OBJS)
 	$(LINK.c) -o $@ $(OBJS) $(LDLIBS)
 	$(POST_PROCESS)
 
-install: all $(ROOTUSRSBINPROG) $(ROOTMANIFEST) $(ROOTSVCMETHOD)
+install: all $(ROOTUSRSBINPROG) $(ROOTMANIFEST) $(ROOTSVCMETHOD) $(ROOTETCFILES)
 
 check: $(CHKMANIFEST)
 
 clean:
 	$(RM) $(OBJS)
-
-lint: lint_SRCS
 
 include ../Makefile.targ

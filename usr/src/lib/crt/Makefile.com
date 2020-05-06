@@ -22,6 +22,8 @@
 # Copyright 2006 Sun Microsystems, Inc.  All rights reserved.
 # Use is subject to license terms.
 #
+# Copyright 2019 Joyent, Inc.
+#
 
 CRTI = crti.o
 CRTN = crtn.o
@@ -51,9 +53,44 @@ $(INTEL_BLD)ROOTOBJECTS64 += $(ROOTLIB64)/gcrt1.o
 ASFLAGS +=	-P -D__STDC__ -D_ASM -DPIC $(AS_PICFLAGS)
 
 values-xpg6.o := CPPFLAGS += -I$(SRC)/lib/libc/inc
-values-xpg6.lint := CPPFLAGS += -I$(SRC)/lib/libc/inc
 $(COMMON_CRT) $(VALUES) := CFLAGS += $(C_PICFLAGS)
 $(COMMON_CRT) $(VALUES) := CFLAGS64 += $(C_PICFLAGS64)
+
+# intentional double exit
+SMOFF += unreachable
+
+COMPATLINKS=	usr/ccs/lib/values-Xa.o \
+		usr/ccs/lib/values-Xc.o \
+		usr/ccs/lib/values-Xs.o \
+		usr/ccs/lib/values-Xt.o \
+		usr/ccs/lib/values-xpg4.o \
+		usr/ccs/lib/values-xpg6.o
+
+COMPATLINKS64=	usr/ccs/lib/$(MACH64)/values-Xa.o \
+		usr/ccs/lib/$(MACH64)/values-Xc.o \
+		usr/ccs/lib/$(MACH64)/values-Xs.o \
+		usr/ccs/lib/$(MACH64)/values-Xt.o \
+		usr/ccs/lib/$(MACH64)/values-xpg4.o \
+		usr/ccs/lib/$(MACH64)/values-xpg6.o
+
+$(ROOT)/usr/ccs/lib/values-Xa.o:=	COMPATLINKTARGET=../../lib/values-Xa.o
+$(ROOT)/usr/ccs/lib/values-Xc.o:=	COMPATLINKTARGET=../../lib/values-Xc.o
+$(ROOT)/usr/ccs/lib/values-Xs.o:=	COMPATLINKTARGET=../../lib/values-Xs.o
+$(ROOT)/usr/ccs/lib/values-Xt.o:=	COMPATLINKTARGET=../../lib/values-Xt.o
+$(ROOT)/usr/ccs/lib/values-xpg4.o:=	COMPATLINKTARGET=../../lib/values-xpg4.o
+$(ROOT)/usr/ccs/lib/values-xpg6.o:=	COMPATLINKTARGET=../../lib/values-xpg6.o
+$(ROOT)/usr/ccs/lib/$(MACH64)/values-Xa.o:= \
+	COMPATLINKTARGET=../../../lib/$(MACH64)/values-Xa.o
+$(ROOT)/usr/ccs/lib/$(MACH64)/values-Xc.o:= \
+	COMPATLINKTARGET=../../../lib/$(MACH64)/values-Xc.o
+$(ROOT)/usr/ccs/lib/$(MACH64)/values-Xs.o:= \
+	COMPATLINKTARGET=../../../lib/$(MACH64)/values-Xs.o
+$(ROOT)/usr/ccs/lib/$(MACH64)/values-Xt.o:= \
+	COMPATLINKTARGET=../../../lib/$(MACH64)/values-Xt.o
+$(ROOT)/usr/ccs/lib/$(MACH64)/values-xpg4.o:= \
+	COMPATLINKTARGET=../../../lib/$(MACH64)/values-xpg4.o
+$(ROOT)/usr/ccs/lib/$(MACH64)/values-xpg6.o:= \
+	COMPATLINKTARGET=../../../lib/$(MACH64)/values-xpg6.o
 
 .KEEP_STATE:
 
@@ -62,10 +99,6 @@ all:	$(OBJECTS)
 clean clobber:
 	$(RM) $(OBJECTS)
 
-%.lint: ../common/%.c
-	$(LINT.c) $(LINTCHECKFLAGS) $<
-
-lint:	$(VALUES:%.o=%.lint) $(COMMON_CRT:%.o=%.lint)
 
 $(CRT1): $(COMMON_CRT) $(MACH_CRT)
 	$(LD) -r $(MACH_CRT) $(COMMON_CRT) -o $(CRT1)
@@ -95,4 +128,5 @@ $(ROOTLIB64)/%.o: %.o
 $(ROOTLIB64)/gcrt1.o:
 	$(RM) $(ROOTLIB64)/gcrt1.o; $(SYMLINK) crt1.o $(ROOTLIB64)/gcrt1.o
 
-FRC:
+$(ROOTCOMPATLINKS) $(ROOTCOMPATLINKS64):
+	$(RM) $@; $(SYMLINK) $(COMPATLINKTARGET) $@

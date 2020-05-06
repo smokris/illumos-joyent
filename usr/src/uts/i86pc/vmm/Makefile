@@ -11,7 +11,7 @@
 
 #
 # Copyright 2013 Pluribus Networks Inc.
-# Copyright 2018 Joyent, Inc.
+# Copyright 2019 Joyent, Inc.
 #
 
 #
@@ -27,6 +27,7 @@ OBJECTS		= $(VMM_OBJS:%=$(OBJS_DIR)/%)
 LINTS		= $(VMM_OBJS:%.o=$(LINTS_DIR)/%.ln)
 ROOTMODULE	= $(USR_DRV_DIR)/$(MODULE)
 CONF_SRCDIR	= $(UTSBASE)/i86pc/io/vmm
+MAPFILE		= $(UTSBASE)/i86pc/io/vmm/vmm.mapfile
 
 #
 #	Include common rules.
@@ -76,6 +77,15 @@ LINTTAGS	+= -erroff=E_ZERO_OR_NEGATIVE_SUBSCRIPT
 
 CERRWARN	+= -_gcc=-Wno-empty-body
 
+# 3rd party code
+SMOFF += all_func_returns
+
+# needs work
+$(OBJS_DIR)/vmm_sol_dev.o := SMOFF += signed_integer_overflow_check
+
+# a can't happen: vmx_setcap() warn: variable dereferenced before check 'pptr'
+$(OBJS_DIR)/vmx.o := SMOFF += deref_check
+
 # These sources only compile with gcc.  Workaround a confluence of cruft
 # regarding dmake and shadow compilation by neutering the sun compiler.
 #amd64_CC	= $(ONBLD_TOOLS)/bin/$(MACH)/cw -_gcc
@@ -99,7 +109,8 @@ $(OBJS_DIR)/svm.o := CERRWARN += -_gcc=-Wno-pointer-sign -_gcc=-Wno-type-limits
 $(OBJS_DIR)/vmx.o := CERRWARN += -_gcc=-Wno-unused-variable
 $(OBJS_DIR)/iommu.o := CERRWARN += -_gcc=-Wno-unused-variable
 
-LDFLAGS         += -dy -N misc/acpica -N misc/pcie -N fs/dev
+LDFLAGS         += -N misc/acpica -N misc/pcie -N fs/dev -z type=kmod
+LDFLAGS         += -M $(MAPFILE)
 
 OFFSETS_VMX	= $(CONF_SRCDIR)/intel/offsets.in
 OFFSETS_SVM	= $(CONF_SRCDIR)/amd/offsets.in
@@ -108,9 +119,6 @@ ASSYM_SVM	= $(OBJS_DIR)/svm_assym.h
 ASSYM_H		= $(ASSYM_VMX) $(ASSYM_SVM)
 
 CLEANFILES	+= $(ASSYM_H)
-
-# create linker set start/stop symbols, needed by VMM stats
-POST_PROCESS	+= ; $(GENSETDEFS) $@
 
 #
 #	Default build targets.

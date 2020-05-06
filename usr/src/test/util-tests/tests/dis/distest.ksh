@@ -11,7 +11,7 @@
 #
 
 #
-# Copyright 2016 Joyent, Inc.
+# Copyright 2020 Joyent, Inc.
 #
 
 #
@@ -50,6 +50,7 @@ dt_nodefault=
 dt_tests=
 dt_tnum=0
 dt_tfail=0
+dt_txfail=0
 dt_tsuc=0
 dt_origwd=
 dt_root=
@@ -78,6 +79,7 @@ Usage: $dt_arg0  [-n] [ -p platform=pathtoas ]... [ test ]...
 				either be an absolute path or a command on the
 				path.
 USAGE
+	exit 2
 }
 
 #
@@ -140,10 +142,25 @@ handle_failure()
 	mv $dir $faildir
 	cp $source $faildir/
 	cp $out $faildir/
-	printf "%s " "failed "
+
+	#
+	# Our pkgsrc gas is too old (2.26.1) to assemble these.
+	#
+	xfails=("32.vaes.s" "32.gfni.s" "32.avx512_vpclmulqdq.s"
+	    "64.vaes.s" "64.gfni.s" "64.avx512_vpclmulqdq.s")
+	testname=$(basename $source)
+	printf '%s\n' ${xfails[@]} | grep "^$testname$" >/dev/null
+
+	if [[ $? -eq 0 ]]; then
+		printf "%s " "expected fail "
+		((dt_txfail++))
+	else
+		printf "%s " "failed "
+		((dt_tfail++))
+	fi
+
 	[[ -n $reason ]] && printf "%s " $reason
 	printf "%s\n" "$faildir"
-	((dt_tfail++))
 }
 
 #
@@ -196,6 +213,7 @@ test_one()
 run_single_file()
 {
 	typeset sfile base cmpfile prefix arch gas p flags
+	typeset asflags32 asflags64
 	sfile=$1
 
 	base=${sfile##*/}
@@ -207,16 +225,31 @@ run_single_file()
 	gas=${dt_platforms[$arch]}
 	[[ -n $gas ]] || fatal "encountered test $sfile, but missing assembler"
 
+	case "$arch" in
+	"risc-v")
+		asflags32="-march=rv32g"
+		asflags64="-march=rv64g"
+		;;
+	"risc-v-c")
+		asflags32="-march=rv32gc"
+		asflags64="-march=rv64gc"
+		;;
+	*)
+		asflags32="-32"
+		asflags64="-64"
+		;;
+	esac
+
 	case "$prefix" in
 	32)
-		test_one "-32" $sfile $cmpfile
+		test_one $asflags32 $sfile $cmpfile
 		;;
 	64)
-		test_one "-64" $sfile $cmpfile
+		test_one $asflags64 $sfile $cmpfile
 		;;
 	tst)
-		test_one "-32" $sfile $cmpfile "(32-bit)"
-		test_one "-64" $sfile $cmpfile "(64-bit)"
+		test_one $asflags32 $sfile $cmpfile "(32-bit)"
+		test_one $asflags64 $sfile $cmpfile "(64-bit)"
 		;;
 	esac
 }
@@ -254,6 +287,7 @@ libdis Results
 
 Tests passed: $dt_tsuc
 Tests failed: $dt_tfail
+Tests expected to fail: $dt_txfail
 Tests ran:    $dt_tnum
 EOF
 }
@@ -270,9 +304,10 @@ while getopts ":np:" c $@; do
 		dt_nodefault="y"
 		;;
 	p)
+		OLDIFS=$IFS
 		IFS="="
 		set -A split $OPTARG
-		IFS=" "
+		IFS=$OLDIFS
 		[[ ${#split[@]} -eq 2 ]] || usage "malformed -p option: $OPTARG"
 		dt_platforms[${split[0]}]=${split[1]}
 		;;

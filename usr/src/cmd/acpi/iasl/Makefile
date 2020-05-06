@@ -8,7 +8,8 @@
 # source.  A copy of the CDDL is also available via the Internet at
 # http://www.illumos.org/license/CDDL.
 #
-# Copyright (c) 2018, Joyent, Inc.
+# Copyright 2020 Joyent, Inc.
+# Copyright 2019 OmniOS Community Edition (OmniOSce) Association.
 #
 # Adapted from acpica/generate/unix/iasl/Makefile, which lacked a copyright
 # notice.
@@ -31,17 +32,20 @@ OBJS =	aslanalyze.o aslascii.o aslbtypes.o aslcodegen.o aslcompile.o \
 	asltransform.o asltree.o aslutils.o asluuid.o aslwalks.o aslxref.o \
 	aslxrefout.o dtcompile.o dtexpress.o dtfield.o dtio.o \
 	dtsubtable.o dttable.o dttable1.o dttable2.o dttemplate.o dtutils.o \
-	prexpress.o prmacros.o prscan.o prutils.o
+	prexpress.o prmacros.o prscan.o prutils.o \
+	aslallocate.o aslcache.o aslhelp.o aslparseop.o cvcompiler.o \
+	cvparser.o cvdisasm.o
 # ../common
 OBJS +=	adfile.o acfileio.o adisasm.o adwalk.o ahids.o ahtable.o ahpredef.o \
-	ahuuids.o dmextern.o dmrestag.o dmtbinfo.o dmtable.o dmtbdump.o \
-	getopt.o osl.o osunixxf.o
+	ahuuids.o dmextern.o dmrestag.o dmtbinfo.o dmtbinfo1.o dmtbinfo2.o \
+	dmtbinfo3.o dmtable.o dmtbdump.o dmtbdump1.o dmtbdump2.o dmtbdump3.o \
+	getopt.o osl.o osunixxf.o dmswitch.o
 # usr/src/common/acpica/disassembler
 OBJS += dmbuffer.o dmcstyle.o dmdeferred.o dmnames.o dmopcode.o dmresrc.o \
 	dmresrcl.o dmresrcl2.o dmresrcs.o dmtables.o dmutils.o dmwalk.o
 # usr/src/common/acpica/dispatcher
 OBJS += dsargs.o dscontrol.o dsfield.o dsobject.o dsopcode.o dsutils.o \
-	dswload.o dswload2.o dswexec.o dswscope.o dswstate.o
+	dswload.o dswload2.o dswexec.o dswscope.o dswstate.o dspkginit.o
 # usr/src/common/acpica/executer
 OBJS += exconcat.o exconvrt.o excreate.o exdump.o exmisc.o exmutex.o exnames.o \
 	exoparg1.o exoparg2.o exoparg3.o exoparg6.o exprep.o exresolv.o \
@@ -59,8 +63,8 @@ OBJS +=	tbdata.o tbfadt.o tbinstal.o tbprint.o tbutils.o tbxface.o
 OBJS += utaddress.o utalloc.o utascii.o utbuffer.o utcache.o utcopy.o \
 	utdebug.o utdecode.o utdelete.o uterror.o utexcep.o utglobal.o uthex.o \
 	utinit.o utlock.o utmath.o utmisc.o utmutex.o utnonansi.o utobject.o \
-	utownerid.o utpredef.o utprint.o utresrc.o utstate.o utstring.o \
-	utuuid.o utxface.o utxferror.o
+	utownerid.o utpredef.o utresdecode.o utresrc.o utstate.o \
+	utstring.o utstrsuppt.o utstrtoul64.o utuuid.o utxface.o utxferror.o
 
 SRCS = $(OBJS:.o=.c)
 
@@ -97,7 +101,8 @@ INTERMEDIATES = \
 	dtparser.y.h \
 	prparser.y.h
 
-CERRWARN += -_gcc=-Wno-unused-function
+# too much noise
+SMATCH=off
 
 CPPFLAGS += -I$(SRC)/uts/intel/sys/acpi -DACPI_ASL_COMPILER -I.
 
@@ -119,6 +124,8 @@ $(LEX_C_FILES) := LEXFILE = $(LY_BASE).l
 $(LEX_C_FILES) := LEXFILE = $(LY_BASE).l
 $(YACC_FILES) := YTABC = $(LY_BASE)parse.c
 
+$(YACC_C_FILES:.c=.o) := CERRWARN += -_gcc=-Wno-char-subscripts
+
 OBJS += $(LEX_C_FILES:.c=.o) $(YACC_C_FILES:.c=.o)
 
 GM4FLAGS = -P
@@ -139,7 +146,7 @@ $(LEX_C_FILES):
 %parse.c %.y.h: %.y
 	_suffix=`echo $@ | awk -F. '{print $$NF}'` && \
 	_d=`mktemp -d $(PARSER).XXXXXX` && \
-	(cd $$_d && $(BISON) -y -v -d -p$(PARSER) ../$(LY_BASE).y) && \
+	(cd $$_d && $(BISON) -o y.tab.c -v -d -p$(PARSER) ../$(LY_BASE).y) && \
 	mv $$_d/y.tab.$$_suffix $@; \
 	_ret=$$?; \
 	rm -rf $$_d; \
@@ -154,7 +161,5 @@ install: all $(ROOTUSRSBINPROG)
 clean:
 	$(RM) $(OBJS) $(INTERMEDIATES) $(PROG)
 	$(RM) -r AslCompiler.?????? DtParser.?????? PrParser.??????
-
-lint:	lint_SRCS
 
 include ../../Makefile.targ

@@ -22,6 +22,7 @@
 #
 # Copyright (c) 2010, Oracle and/or its affiliates. All rights reserved.
 # Copyright (c) 2012, 2016 by Delphix. All rights reserved.
+# Copyright 2019 Joyent, Inc.
 #
 
 set name=pkg.fmri value=pkg:/system/dtrace/tests@$(PKGVERS)
@@ -115,6 +116,7 @@ dir path=opt/SUNWdtrt/tst/common/struct
 dir path=opt/SUNWdtrt/tst/common/sugar
 dir path=opt/SUNWdtrt/tst/common/syscall
 dir path=opt/SUNWdtrt/tst/common/sysevent
+dir path=opt/SUNWdtrt/tst/common/threadname
 dir path=opt/SUNWdtrt/tst/common/tick-n
 dir path=opt/SUNWdtrt/tst/common/trace
 dir path=opt/SUNWdtrt/tst/common/tracemem
@@ -156,6 +158,12 @@ $(sparc_ONLY)file \
 $(sparc_ONLY)file \
     path=opt/SUNWdtrt/tst/$(ARCH)/pid/err.D_PROC_ALIGN.misaligned.exe \
     mode=0555
+$(i386_ONLY)file path=opt/SUNWdtrt/tst/$(ARCH)/pid/err.uregswrite1.d mode=0444
+$(i386_ONLY)file path=opt/SUNWdtrt/tst/$(ARCH)/pid/err.uregswrite1.exe \
+    mode=0555
+$(i386_ONLY)file path=opt/SUNWdtrt/tst/$(ARCH)/pid/err.uregswrite2.d mode=0444
+$(i386_ONLY)file path=opt/SUNWdtrt/tst/$(ARCH)/pid/err.uregswrite2.exe \
+    mode=0555
 $(i386_ONLY)file path=opt/SUNWdtrt/tst/$(ARCH)/pid/tst.badinstr.d mode=0444
 $(i386_ONLY)file path=opt/SUNWdtrt/tst/$(ARCH)/pid/tst.badinstr.exe mode=0555
 $(sparc_ONLY)file path=opt/SUNWdtrt/tst/$(ARCH)/pid/tst.br.d mode=0444
@@ -169,6 +177,9 @@ $(i386_ONLY)file path=opt/SUNWdtrt/tst/$(ARCH)/pid/tst.ret.d mode=0444
 $(i386_ONLY)file path=opt/SUNWdtrt/tst/$(ARCH)/pid/tst.ret.exe mode=0555
 $(i386_ONLY)file path=opt/SUNWdtrt/tst/$(ARCH)/pid/tst.retlist.exe mode=0555
 $(i386_ONLY)file path=opt/SUNWdtrt/tst/$(ARCH)/pid/tst.retlist.ksh mode=0444
+$(i386_ONLY)file path=opt/SUNWdtrt/tst/$(ARCH)/pid/tst.uregswrite.d mode=0444
+$(i386_ONLY)file path=opt/SUNWdtrt/tst/$(ARCH)/pid/tst.uregswrite.exe \
+    mode=0555
 $(sparc_ONLY)file path=opt/SUNWdtrt/tst/$(ARCH)/usdt/tst.tailcall.ksh \
     mode=0444
 file path=opt/SUNWdtrt/tst/$(ARCH)/ustack/tst.annotated.d mode=0444
@@ -1145,8 +1156,6 @@ file path=opt/SUNWdtrt/tst/common/pid/tst.float.d mode=0444
 file path=opt/SUNWdtrt/tst/common/pid/tst.float.exe mode=0555
 file path=opt/SUNWdtrt/tst/common/pid/tst.fork.d mode=0444
 file path=opt/SUNWdtrt/tst/common/pid/tst.fork.exe mode=0555
-file path=opt/SUNWdtrt/tst/common/pid/tst.gcc.d mode=0444
-file path=opt/SUNWdtrt/tst/common/pid/tst.gcc.exe mode=0555
 file path=opt/SUNWdtrt/tst/common/pid/tst.killonerror.ksh mode=0444
 file path=opt/SUNWdtrt/tst/common/pid/tst.main.ksh mode=0444
 file path=opt/SUNWdtrt/tst/common/pid/tst.manypids.ksh mode=0444
@@ -1589,8 +1598,6 @@ file path=opt/SUNWdtrt/tst/common/scalars/tst.16kglobal.d mode=0444
 file path=opt/SUNWdtrt/tst/common/scalars/tst.16klocal.d mode=0444
 file path=opt/SUNWdtrt/tst/common/scalars/tst.basicvar.d mode=0444
 file path=opt/SUNWdtrt/tst/common/scalars/tst.basicvar.d.out mode=0444
-file path=opt/SUNWdtrt/tst/common/scalars/err.bigglobal.d mode=0444
-file path=opt/SUNWdtrt/tst/common/scalars/err.biglocal.d mode=0444
 file path=opt/SUNWdtrt/tst/common/scalars/tst.localvar.d mode=0444
 file path=opt/SUNWdtrt/tst/common/scalars/tst.misc.d mode=0444
 file path=opt/SUNWdtrt/tst/common/scalars/tst.self.d mode=0444
@@ -1841,6 +1848,8 @@ file path=opt/SUNWdtrt/tst/common/sysevent/tst.post.d mode=0444
 file path=opt/SUNWdtrt/tst/common/sysevent/tst.post.exe mode=0555
 file path=opt/SUNWdtrt/tst/common/sysevent/tst.post_chan.d mode=0444
 file path=opt/SUNWdtrt/tst/common/sysevent/tst.post_chan.exe mode=0555
+file path=opt/SUNWdtrt/tst/common/threadname/tst.threadname.d mode=0444
+file path=opt/SUNWdtrt/tst/common/threadname/tst.threadname.exe mode=0555
 file path=opt/SUNWdtrt/tst/common/tick-n/err.D_PDESC_ZERO.tick.d mode=0444
 file path=opt/SUNWdtrt/tst/common/tick-n/err.D_PDESC_ZEROonens.d mode=0444
 file path=opt/SUNWdtrt/tst/common/tick-n/err.D_PDESC_ZEROonensec.d mode=0444

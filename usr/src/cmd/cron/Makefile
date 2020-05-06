@@ -22,6 +22,8 @@
 # Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
 # Use is subject to license terms.
 #
+# Copyright 2020 Joyent, Inc.
+# Copyright 2019 OmniOS Community Edition (OmniOSce) Association.
 
 DEFAULTFILES =	cron.dfl
 
@@ -36,14 +38,18 @@ ROOTMETHOD =	$(ROOTLIBSVCMETHOD)/svc-cron
 CPPFLAGS +=	-D_FILE_OFFSET_BITS=64 -I $(SRC)/common/util
 CERRWARN +=	-_gcc=-Wno-parentheses
 CERRWARN +=	-_gcc=-Wno-unused-label
-CERRWARN +=	-_gcc=-Wno-uninitialized
+CERRWARN +=	$(CNOWARN_UNINIT)
 CERRWARN +=	-_gcc=-Wno-unused-variable
 CERRWARN +=	-_gcc=-Wno-unused-value
+
+# not linted
+SMATCH=off
 
 ROOTVAR =	$(ROOT)/var
 
 ROOTSPCRON =	$(ROOTVAR)/spool/cron
 ROOTCROND =	$(ROOTETC)/cron.d
+ROOTCRONDCRONTABS = $(ROOTCROND)/crontabs
 ROOTCRONTABS =	$(ROOTSPCRON)/crontabs
 ROOTATJOBS =	$(ROOTSPCRON)/atjobs
 ROOTLIBCRON =	$(ROOTLIB)/cron
@@ -53,6 +59,7 @@ PROG2 =		at atq atrm crontab
 XPG6PROG =	crontab
 XPG4PROG =	at crontab
 PROG =		$(PROG1) $(PROG2)
+PARSETEST =	parsetest
 
 SCRIPT =	batch
 XPG4SCRIPT =	batch.xpg4
@@ -61,9 +68,6 @@ POFILE=		$(PROG1)_cmd.po
 POFILES1=	at.po crontab.po funcs.po batch.po
 POFILES=	$(POFILES1) atrm.po
 $(POFILES1) :=	XGETFLAGS= -a -x $(PROG1).xcl
-
-ROOTDIRS =	$(ROOTSPCRON) $(ROOTCROND) \
-		$(ROOTCRONTABS) $(ROOTATJOBS)
 
 ROOTPROG =	$(PROG1:%=$(ROOTUSRSBIN)/%) $(PROG2:%=$(ROOTBIN)/%)	\
 		$(SCRIPT:%=$(ROOTBIN)/%) \
@@ -78,14 +82,15 @@ GETRESPOBJ=	getresponse.o
 COMMONOBJ1=	permit.o
 COMMONOBJ2=	funcs.o
 COMMONOBJS=	$(COMMONOBJ1) $(COMMONOBJ2)
-CRONOBJS=	cron.o elm.o
+CRONOBJS=	cron.o elm.o parse.o
 ATOBJS=		at.o att1.o att2.o
 XPG4OBJS=	values-xpg4.o
 ATRMOBJS1=	atrm.o
 ATRMOBJS=	$(ATRMOBJS1) $(GETRESPOBJ)
 ATQOBJS=	atq.o
-CRONTABOBJS1=	crontab.o
+CRONTABOBJS1=	crontab.o parse.o
 CRONTABOBJS=	$(CRONTABOBJS1) $(GETRESPOBJ)
+PARSETESTOBJS=	parse.o
 
 # /usr/xpg*/bin/crontab isn't linked with values-xpg*.o since it isn't
 # required by any specific behavior differences; this makes these
@@ -105,6 +110,7 @@ atq :=		OBJS = $(ATQOBJS) $(COMMONOBJS)
 crontab :=	OBJS = $(CRONTABOBJS) $(COMMONOBJS)
 crontab.xpg4 :=	OBJS = $(XPG4CTOBJS) $(XPG4COMMONOBJS)
 crontab.xpg6 :=	OBJS = $(XPG6CTOBJS) $(XPG6COMMONOBJS)
+parsetest :=	OBJS = $(PARSETESTOBJS)
 
 CFLAGS += $(CCVERBOSE)
 
@@ -129,23 +135,19 @@ $(ROOTXPG6BIN)/crontab :=	FILEMODE = 04555
 $(ROOTXPG4BIN)/crontab :=	FILEMODE = 04555
 $(ROOTUSRSBIN)/cron :=		FILEMODE = 0555
 
-LDLIBS +=	-lbsm
+at :=		LDLIBS += -lbsm -lproject -lsecdb
+at.xpg4 :=	LDLIBS += -lbsm -lproject -lsecdb
+atq :=		LDLIBS += -lbsm -lsecdb
+atrm :=		LDLIBS += -lbsm -lsecdb
+cron :=		LDLIBS += -lbsm -lpam -lproject -lcontract -lzoneinfo -lcustr
+crontab :=	LDLIBS += -lbsm -lsecdb -lpam -lzoneinfo -lcustr
+crontab.xpg6 :=	LDLIBS += -lbsm -lsecdb -lpam -lzoneinfo -lcustr
+crontab.xpg4 :=	LDLIBS += -lbsm -lsecdb -lpam -lzoneinfo -lcustr
+parsetest :=	LDLIBS += -lcustr
 
-at :=		LDLIBS += -lproject -lsecdb
-at.xpg4 :=	LDLIBS += -lproject -lsecdb
-atq :=		LDLIBS += -lsecdb
-atrm :=		LDLIBS += -lsecdb
-cron :=		LDLIBS += -lpam -lproject -lcontract -lzoneinfo
-crontab :=	LDLIBS += -lsecdb -lpam -lzoneinfo
-crontab.xpg6 :=	LDLIBS += -lsecdb -lpam -lzoneinfo
-crontab.xpg4 :=	LDLIBS += -lsecdb -lpam -lzoneinfo
-
-lint :=		LDLIBS += -lproject -lsecdb -lcontract -lpam
-
-$(XPG4) := CFLAGS += -DXPG4
-$(XPG6) := CFLAGS += -DXPG6
-
-LINTFLAGS += -u
+$(XPG4) :=	CFLAGS += -DXPG4
+$(XPG6) :=	CFLAGS += -DXPG6
+parsetest :=	CFLAGS += -DPARSETEST
 
 $(ROOTSVCSYSTEM)/cron.xml := FILEMODE = 0444
 $(ROOTLIBSVCMETHOD)/svc-cron := FILEMODE = 0555
@@ -153,12 +155,13 @@ $(ROOTLIBSVCMETHOD)/svc-cron := FILEMODE = 0555
 
 .KEEP_STATE:
 
-all :		$(PROG) $(XPG4) $(XPG6) $(SCRIPT) $(XPG4SCRIPT) $(FILES)
+all :		$(PROG) $(XPG4) $(XPG6) $(SCRIPT) $(XPG4SCRIPT) $(FILES) \
+		$(PARSETEST)
 
 install :	all $(ROOTPROG) $(ROOTETCDEFAULTFILES) $(ROOTSYMLINK) \
-		$(ROOTMANIFEST) $(ROOTMETHOD)
+		$(ROOTMANIFEST) $(ROOTMETHOD) $(ROOTCRONDCRONTABS)/root
 
-$(PROG) :	$$(OBJS)
+$(PROG) $(PARSETEST):	$$(OBJS)
 		$(LINK.c) $(OBJS) -o $@ $(LDLIBS)
 		$(POST_PROCESS)
 
@@ -210,12 +213,13 @@ att2.c :	att2.l att2.ed att1.c
 		ed - lex.yy.c < att2.ed
 		$(MV) lex.yy.c att2.c
 
-# Don't re-install directories installed by Targetdirs
-#$(ROOTDIRS):
-#		$(INS.dir)
-
 $(ROOTSYMLINK) :
 		$(RM) $@; $(SYMLINK) $(SYMLNKDEST) $@
+
+$(ROOTCRONDCRONTABS)/root: crontab.root
+	$(RM) $@; \
+	$(INS) -s -m $(FILEMODE) -f $(@D) crontab.root; \
+	$(MV) $(@D)/crontab.root $@
 
 check:		$(CHKMANIFEST)
 
@@ -224,8 +228,6 @@ $(POFILE):	$(POFILES)
 
 clean :
 		$(RM) $(COBJS) att1.h att1.c att2.c
-
-lint :		lint_SRCS
 
 strip :
 		$(STRIP) $(PROG) $(XPG4) $(XPG6)

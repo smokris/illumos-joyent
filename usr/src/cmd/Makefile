@@ -21,13 +21,14 @@
 
 #
 # Copyright (c) 1989, 2010, Oracle and/or its affiliates. All rights reserved.
-# Copyright (c) 2018, Joyent, Inc.
-# Copyright (c) 2012 by Delphix. All rights reserved.
+# Copyright 2019 Joyent, Inc.
+# Copyright (c) 2012, 2015 by Delphix. All rights reserved.
 # Copyright (c) 2013 DEY Storage Systems, Inc. All rights reserved.
 # Copyright 2014 Garrett D'Amore <garrett@damore.org>
 # Copyright 2016 Toomas Soome <tsoome@me.com>
 # Copyright 2018 Nexenta Systems, Inc.
 # Copyright 2018 Gary Mills
+# Copyright 2019 Peter Tribble
 #
 
 include ../Makefile.master
@@ -61,7 +62,6 @@ COMMON_SUBDIRS=		\
 	adbgen		\
 	acct		\
 	acctadm		\
-	ahciem		\
 	arch		\
 	asa		\
 	ast		\
@@ -83,6 +83,7 @@ COMMON_SUBDIRS=		\
 	cal		\
 	captoinfo	\
 	cat		\
+	ccidadm		\
 	cdrw		\
 	cfgadm		\
 	checkeq		\
@@ -98,6 +99,7 @@ COMMON_SUBDIRS=		\
 	col		\
 	column		\
 	compress	\
+	connstat	\
 	consadm		\
 	coreadm		\
 	cpio		\
@@ -113,11 +115,11 @@ COMMON_SUBDIRS=		\
 	ctrun		\
 	ctstat		\
 	ctwatch		\
-	cxgbetool	\
 	datadm		\
 	date		\
 	dc		\
 	dd		\
+	demangle	\
 	deroff		\
 	devfsadm	\
 	syseventd	\
@@ -152,6 +154,7 @@ COMMON_SUBDIRS=		\
 	enhance		\
 	env		\
 	eqn		\
+	etdump		\
 	expand		\
 	expr		\
 	exstr		\
@@ -248,6 +251,7 @@ COMMON_SUBDIRS=		\
 	logger		\
 	login		\
 	logins		\
+	logname		\
 	look		\
 	ls		\
 	luxadm		\
@@ -303,6 +307,7 @@ COMMON_SUBDIRS=		\
 	pathchk		\
 	pbind		\
 	pcidr		\
+	pcieb		\
 	pcitool		\
 	pfexec		\
 	pfexecd		\
@@ -312,7 +317,6 @@ COMMON_SUBDIRS=		\
 	picl		\
 	plimit		\
 	policykit	\
-	pools		\
 	power		\
 	powertop	\
 	ppgsz		\
@@ -376,6 +380,7 @@ COMMON_SUBDIRS=		\
 	sgs		\
 	sh		\
 	shcomp		\
+	sleep		\
 	smbios		\
 	smbsrv		\
 	smserverd	\
@@ -482,18 +487,20 @@ i386_SUBDIRS=		\
 	acpi		\
 	acpihpd		\
 	addbadsec	\
+	ahciem		\
 	bhyve		\
 	bhyvectl	\
 	biosdev		\
+	cxgbetool	\
 	diskscan	\
 	nvmeadm		\
+	rdmsr		\
 	rtc		\
 	ucodeadm	\
 	xhci		\
 	xvm
 
 sparc_SUBDIRS=		\
-	cvcd		\
 	dcs		\
 	device_remap	\
 	drd		\
@@ -509,8 +516,12 @@ sparc_SUBDIRS=		\
 	vntsd
 
 #
-# Commands that are messaged.  Note that 'lp' comes first
-# (see previous comment about 'lp'.)
+# Commands that are messaged.  Note that 'lp' comes first (see previous comment
+# about 'lp'.)
+#
+# We purposefully leave out auditrecord's messages from illumos-joyent: it
+# attempts to use Perl modules constructed as part of the build alongside the
+# native Perl.
 #
 MSGSUBDIRS=		\
 	abi		\
@@ -521,7 +532,6 @@ MSGSUBDIRS=		\
 	audit		\
 	auditconfig	\
 	auditd		\
-	auditrecord	\
 	auditset	\
 	auths		\
 	autopush	\
@@ -547,6 +557,7 @@ MSGSUBDIRS=		\
 	cmd-inet	\
 	col		\
 	compress	\
+	connstat	\
 	consadm		\
 	coreadm		\
 	cpio		\
@@ -648,7 +659,6 @@ MSGSUBDIRS=		\
 	pg		\
 	pgrep		\
 	picl            \
-	pools		\
 	power		\
 	pr		\
 	praudit		\
@@ -750,6 +760,7 @@ sparc_MSGSUBDIRS=	\
 	vntsd
 
 i386_MSGSUBDIRS=	\
+	rdmsr		\
 	ucodeadm
 
 #
@@ -781,7 +792,7 @@ AUDITSUBDIRS=		\
 	auditreduce	\
 	auditset	\
 	auditstat	\
-	praudit		
+	praudit
 
 #
 # commands not owned by the systems group

@@ -19,7 +19,6 @@
  * CDDL HEADER END
  */
 /*
- * Copyright 2016 Toomas Soome <tsoome@me.com>
  * Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
  * Copyright 2011 Joyent, Inc.  All rights reserved.
@@ -27,6 +26,8 @@
 /*
  * Copyright (c) 2013, Joyent, Inc. All rights reserved.
  * Copyright (c) 2015 by Delphix. All rights reserved.
+ * Copyright 2016 Toomas Soome <tsoome@me.com>
+ * Copyright 2018 OmniOS Community Edition (OmniOSce) Association.
  */
 
 /*	Copyright (c) 1984, 1986, 1987, 1988, 1989 AT&T	*/
@@ -645,6 +646,19 @@ validate_disk(char *arg, char *mountpoint)
 	if (rc != 0)
 		return (rc);
 
+	/*
+	 * Check for the usual case: 64-bit kernel
+	 */
+	(void) snprintf(kernpath, MAXPATHLEN,
+	    "%s/platform/i86pc/kernel/amd64/unix", mountpoint);
+	if (stat64(kernpath, &statbuf) == 0)
+		return (0);
+
+	/*
+	 * We no longer build 32-bit kernel but in a case we are trying to boot
+	 * some ancient filesystem with 32-bit only kernel we should be able to
+	 * proceed too
+	 */
 	(void) snprintf(kernpath, MAXPATHLEN, "%s/platform/i86pc/kernel/unix",
 	    mountpoint);
 
@@ -1150,7 +1164,7 @@ parse_fastboot_args(char *bootargs_buf, size_t buf_size,
 	} else if (mplen != 0) {
 		/*
 		 * No unix argument, but mountpoint is not empty, use
-		 * /platform/i86pc/$ISADIR/kernel/unix as default.
+		 * /platform/i86pc/kernel/$ISADIR/unix as default.
 		 */
 		char isa[20];
 
@@ -1274,7 +1288,7 @@ main(int argc, char *argv[])
 	int qflag = 0, needlog = 1, nosync = 0;
 	int fast_reboot = 0;
 	int prom_reboot = 0;
-	uintptr_t mdep = NULL;
+	uintptr_t mdep = 0;
 	int cmd, fcn, c, aval, r;
 	const char *usage;
 	const char *optstring;
@@ -1595,18 +1609,10 @@ main(int argc, char *argv[])
 	 * handle a SIGTERM and clean up properly.
 	 */
 	if (cmd != A_DUMP) {
-		int	start, end, delta;
-
-		(void) kill(-1, SIGTERM);
-		start = time(NULL);
-
 		if (zoneid == GLOBAL_ZONEID && !nosync)
 			do_archives_update(fast_reboot);
-
-		end = time(NULL);
-		delta = end - start;
-		if (delta < 5)
-			(void) sleep(5 - delta);
+		(void) kill(-1, SIGTERM);
+		(void) sleep(5);
 	}
 
 	(void) signal(SIGINT, SIG_IGN);
@@ -1628,7 +1634,7 @@ main(int argc, char *argv[])
 	}
 
 	if (cmd == A_DUMP && nosync != 0)
-		(void) uadmin(A_DUMP, AD_NOSYNC, NULL);
+		(void) uadmin(A_DUMP, AD_NOSYNC, 0);
 
 	if (fast_reboot)
 		fcn = AD_FASTREBOOT;

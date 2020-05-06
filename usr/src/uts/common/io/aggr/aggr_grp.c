@@ -20,7 +20,7 @@
  */
 /*
  * Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright 2018 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 /*
@@ -617,17 +617,22 @@ aggr_grp_add_port(aggr_grp_t *grp, datalink_id_t port_linkid, boolean_t force,
 }
 
 /*
- * This is called in response to either our LACP state machine or a MAC
- * notification that the link has gone down via aggr_send_port_disable(). At
- * this point, we may need to update our default ring. To that end, we go
- * through the set of ports (underlying datalinks in an aggregation) that are
- * currently enabled to transmit data. If all our links have been disabled for
- * transmit, then we don't do anything.
+ * This is called when the 'lg_tx_ports' arrangement has changed and
+ * we need to update the corresponding 'mi_default_tx_ring'. This
+ * happens for several reasons.
  *
- * Note, because we only have a single TX group, we don't have to worry about
- * the rings moving between groups and the chance that mac will reassign it
- * unless someone removes a port, at which point, we play it safe and call this
- * again.
+ *     - A pseudo TX mac group was added or removed.
+ *     - An LACP message has changed the port's state.
+ *     - A link event has changed the port's state.
+ *
+ * In any case, we see if there is at least one port enabled (see
+ * 'aggr_send_port_enable()'), and if so we use its first ring as the
+ * mac's default TX ring.
+ *
+ * Note, because we only have a single TX group, we don't have to
+ * worry about the rings moving between groups and the chance that mac
+ * will reassign it unless someone removes a port, at which point, we
+ * play it safe and call this again.
  */
 void
 aggr_grp_update_default(aggr_grp_t *grp)
@@ -748,6 +753,8 @@ aggr_add_pseudo_rx_group(aggr_port_t *port, aggr_pseudo_rx_group_t *rx_grp)
 	ASSERT3U(g_idx, <, MAX_GROUPS_PER_PORT);
 	mac_perim_enter_by_mh(port->lp_mh, &pmph);
 
+	i = 0;
+	addr = NULL;
 	/*
 	 * This function must be called after the aggr registers its
 	 * MAC and its Rx groups have been initialized.
@@ -1437,8 +1444,7 @@ aggr_grp_create(datalink_id_t linkid, uint32_t key, uint_t nports,
 
 	grp->lg_rx_group_count = 1;
 
-	for (i = 0, port = grp->lg_ports; port != NULL;
-	     i++, port = port->lp_next) {
+	for (port = grp->lg_ports; port != NULL; port = port->lp_next) {
 		uint_t num_rgroups;
 
 		mac_perim_enter_by_mh(port->lp_mh, &mph);
@@ -3049,7 +3055,7 @@ static int
 aggr_set_port_sdu(aggr_grp_t *grp, aggr_port_t *port, uint32_t sdu,
     uint32_t *old_mtu)
 {
-	boolean_t 		removed = B_FALSE;
+	boolean_t		removed = B_FALSE;
 	mac_perim_handle_t	mph;
 	mac_diag_t		diag;
 	int			err, rv, retry = 0;
@@ -3138,12 +3144,12 @@ static int
 aggr_m_setprop(void *m_driver, const char *pr_name, mac_prop_id_t pr_num,
     uint_t pr_valsize, const void *pr_val)
 {
-	int 		err = ENOTSUP;
-	aggr_grp_t 	*grp = m_driver;
+	int		err = ENOTSUP;
+	aggr_grp_t	*grp = m_driver;
 
 	switch (pr_num) {
 	case MAC_PROP_MTU: {
-		uint32_t 	mtu;
+		uint32_t	mtu;
 
 		if (pr_valsize < sizeof (mtu)) {
 			err = EINVAL;
@@ -3276,8 +3282,8 @@ aggr_grp_possible_mtu_range(aggr_grp_t *grp, mac_propval_uint32_range_t **prval,
 	mac_propval_range_t		**vals;
 	aggr_port_t			*port;
 	mac_perim_handle_t		mph;
-	uint_t 				i, numr;
-	int 				err = 0;
+	uint_t				i, numr;
+	int				err = 0;
 	size_t				sz_propval, sz_range32;
 	size_t				size;
 

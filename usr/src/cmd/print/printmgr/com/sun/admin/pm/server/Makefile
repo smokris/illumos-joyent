@@ -22,6 +22,7 @@
 # Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
 # Use is subject to license terms.
 #
+# Copyright (c) 2018, Joyent, Inc.
 
 #
 # Makefile for Java Print Manager server
@@ -34,7 +35,7 @@ JNIHDR_FILES =	com_sun_admin_pm_server_DoPrinterNS.h
 
 OBJECTS =	DoPrinterNS.o NS.o
 
-CLASSFILES = 	Printer.class \
+CLASSFILES =	Printer.class \
 		Host.class \
 		SysCommand.class \
 		NameService.class \
@@ -84,11 +85,14 @@ ROOTLIBS=       $(LIBS:%=$(ROOTLIBDIR)/%)
 CPPFLAGS +=	-I$(JAVA_ROOT)/include -I$(JAVA_ROOT)/include/solaris -I.
 
 CERRWARN +=	-_gcc=-Wno-unused-variable
-CERRWARN +=	-_gcc=-Wno-uninitialized
+CERRWARN +=	$(CNOWARN_UNINIT)
+
+# not linted
+SMATCH=off
 
 LDLIBS +=	-lprint -lnsl -lsocket -lc
 
-CLEANFILES=	*.class $(LINTLIB) $(LINTOUT)
+CLEANFILES=	*.class
 CLOBBERFILES=	$(JNIHDR_FILES) $(LIBLINKS)
 
 all: $(CLASSFILES) $(JNIHDR_FILES) $(DYNLIB)
@@ -107,10 +111,10 @@ $(JNIHDR_FILES): $(JNICLASSFILES)
 # Build standalone programs for testing
 #
 NS: NS.c
-	$(CC) NS.c -g $(ILDOFF) -o NS -DMAIN=1 $(ENVLDLIBS1) $(ENVLIBS2) \
+	$(CC) NS.c $(CCGDEBUG) $(ILDOFF) -o NS -DMAIN=1 $(ENVLDLIBS1) $(ENVLIBS2) \
 	    -lprint -lnsl -lsocket
 
-lint: $(JNIHDR_FILES) lintcheck
+lint: $(JNIHDR_FILES)
 
 cstyle:
 	cstyle $(SRCS)

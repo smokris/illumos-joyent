@@ -23,8 +23,9 @@
  * Copyright (c) 1989, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 2012 by Delphix. All rights reserved.
  * Copyright 2014 Igor Kozhukhov <ikozhukhov@gmail.com>.
- * Copyright 2018 Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  * Copyright 2017 RackTop Systems.
+ * Copyright 2019 Joyent, Inc.
  */
 
 #ifndef _SYS_CPUVAR_H
@@ -99,11 +100,11 @@ typedef struct cpu {
 	/*
 	 * Links to other CPUs.  It is safe to walk these lists if
 	 * one of the following is true:
-	 * 	- cpu_lock held
-	 * 	- preemption disabled via kpreempt_disable
-	 * 	- PIL >= DISP_LEVEL
-	 * 	- acting thread is an interrupt thread
-	 * 	- all other CPUs are paused
+	 *	- cpu_lock held
+	 *	- preemption disabled via kpreempt_disable
+	 *	- PIL >= DISP_LEVEL
+	 *	- acting thread is an interrupt thread
+	 *	- all other CPUs are paused
 	 */
 	struct cpu	*cpu_next;		/* next existing CPU */
 	struct cpu	*cpu_prev;		/* prev existing CPU */
@@ -131,7 +132,7 @@ typedef struct cpu {
 	 */
 	char		cpu_runrun;	/* scheduling flag - set to preempt */
 	char		cpu_kprunrun;		/* force kernel preemption */
-	pri_t		cpu_chosen_level; 	/* priority at which cpu */
+	pri_t		cpu_chosen_level;	/* priority at which cpu */
 						/* was chosen for scheduling */
 	kthread_t	*cpu_dispthread; /* thread selected for dispatch */
 	disp_lock_t	cpu_thread_lock; /* dispatcher lock on current thread */
@@ -287,7 +288,7 @@ extern cpu_core_t cpu_core[];
  * list in avintr.c.
  */
 #define	INTR_ACTIVE(cpup, level)	\
-	((level) <= LOCK_LEVEL ? 	\
+	((level) <= LOCK_LEVEL ?	\
 	((cpup)->cpu_intr_actv & (1 << (level))) : (CPU_ON_INTR(cpup)))
 
 /*
@@ -329,10 +330,13 @@ extern cpu_core_t cpu_core[];
  * suspended (in the suspend path), or have yet to be resumed (in the resume
  * case).
  *
+ * CPU_DISABLED is used for disabling SMT. It is similar to CPU_OFFLINE, but
+ * cannot be onlined without being forced.
+ *
  * On some platforms CPUs can be individually powered off.
  * The following flags are set for powered off CPUs: CPU_QUIESCED,
  * CPU_OFFLINE, and CPU_POWEROFF.  The following flags are cleared:
- * CPU_RUNNING, CPU_READY, CPU_EXISTS, and CPU_ENABLE.
+ * CPU_RUNNING, CPU_READY, CPU_EXISTS, CPU_DISABLED and CPU_ENABLE.
  */
 #define	CPU_RUNNING	0x001		/* CPU running */
 #define	CPU_READY	0x002		/* CPU ready for cross-calls */
@@ -344,10 +348,7 @@ extern cpu_core_t cpu_core[];
 #define	CPU_FROZEN	0x080		/* CPU is frozen via CPR suspend */
 #define	CPU_SPARE	0x100		/* CPU offline available for use */
 #define	CPU_FAULTED	0x200		/* CPU offline diagnosed faulty */
-
-#define	FMT_CPU_FLAGS							\
-	"\20\12fault\11spare\10frozen"					\
-	"\7poweroff\6offline\5enable\4exist\3quiesced\2ready\1run"
+#define	CPU_DISABLED	0x400		/* CPU explicitly disabled (HT) */
 
 #define	CPU_ACTIVE(cpu)	(((cpu)->cpu_flags & CPU_OFFLINE) == 0)
 
@@ -423,24 +424,24 @@ extern void	cpuset_free(cpuset_t *);
  * private when some cpuset_t handling was performed in the CPUSET_* macros.
  * They are now acceptable to use in non-_MACHDEP code.
  */
-extern	void	cpuset_all(cpuset_t *);
-extern	void	cpuset_all_but(cpuset_t *, const uint_t);
-extern	int	cpuset_isnull(cpuset_t *);
-extern	int	cpuset_isequal(cpuset_t *, cpuset_t *);
-extern	void	cpuset_only(cpuset_t *, const uint_t);
-extern	long	cpu_in_set(cpuset_t *, const uint_t);
-extern	void	cpuset_add(cpuset_t *, const uint_t);
-extern	void	cpuset_del(cpuset_t *, const uint_t);
-extern	uint_t	cpuset_find(cpuset_t *);
-extern	void	cpuset_bounds(cpuset_t *, uint_t *, uint_t *);
-extern	void	cpuset_atomic_del(cpuset_t *, const uint_t);
-extern	void	cpuset_atomic_add(cpuset_t *, const uint_t);
-extern	long	cpuset_atomic_xadd(cpuset_t *, const uint_t);
-extern	long	cpuset_atomic_xdel(cpuset_t *, const uint_t);
-extern	void	cpuset_or(cpuset_t *, cpuset_t *);
-extern	void	cpuset_xor(cpuset_t *, cpuset_t *);
-extern	void	cpuset_and(cpuset_t *, cpuset_t *);
-extern	void	cpuset_zero(cpuset_t *);
+extern void	cpuset_all(cpuset_t *);
+extern void	cpuset_all_but(cpuset_t *, const uint_t);
+extern int	cpuset_isnull(const cpuset_t *);
+extern int	cpuset_isequal(const cpuset_t *, const cpuset_t *);
+extern void	cpuset_only(cpuset_t *, const uint_t);
+extern long	cpu_in_set(const cpuset_t *, const uint_t);
+extern void	cpuset_add(cpuset_t *, const uint_t);
+extern void	cpuset_del(cpuset_t *, const uint_t);
+extern uint_t	cpuset_find(const cpuset_t *);
+extern void	cpuset_bounds(const cpuset_t *, uint_t *, uint_t *);
+extern void	cpuset_atomic_del(cpuset_t *, const uint_t);
+extern void	cpuset_atomic_add(cpuset_t *, const uint_t);
+extern long	cpuset_atomic_xadd(cpuset_t *, const uint_t);
+extern long	cpuset_atomic_xdel(cpuset_t *, const uint_t);
+extern void	cpuset_or(cpuset_t *, cpuset_t *);
+extern void	cpuset_xor(cpuset_t *, cpuset_t *);
+extern void	cpuset_and(cpuset_t *, cpuset_t *);
+extern void	cpuset_zero(cpuset_t *);
 
 
 #if defined(_MACHDEP)
@@ -503,16 +504,8 @@ extern	void	cpuset_zero(cpuset_t *);
 
 #define	CPUSET_ZERO(set)	cpuset_zero(&(set))
 
-#endif /* _MACHDEP */
-#endif /* _KERNEL || _KMEMUSER || _BOOT */
+#endif /* defined(_MACHDEP) */
 
-#define	CPU_CPR_OFFLINE		0x0
-#define	CPU_CPR_ONLINE		0x1
-#define	CPU_CPR_IS_OFFLINE(cpu)	(((cpu)->cpu_cpr_flags & CPU_CPR_ONLINE) == 0)
-#define	CPU_CPR_IS_ONLINE(cpu)	((cpu)->cpu_cpr_flags & CPU_CPR_ONLINE)
-#define	CPU_SET_CPR_FLAGS(cpu, flag)	((cpu)->cpu_cpr_flags |= flag)
-
-#if defined(_KERNEL) || defined(_KMEMUSER)
 
 extern cpuset_t cpu_seqid_inuse;
 
@@ -524,6 +517,7 @@ extern cpuset_t		cpu_active_set;	/* cached set of active CPUs */
 extern cpuset_t		cpu_available;	/* cached set of available CPUs */
 extern int		ncpus;		/* number of CPUs present */
 extern int		ncpus_online;	/* number of CPUs not quiesced */
+extern int		ncpus_intr_enabled; /* nr of CPUs taking I/O intrs */
 extern int		max_ncpus;	/* max present before ncpus is known */
 extern int		boot_max_ncpus;	/* like max_ncpus but for real */
 extern int		boot_ncpus;	/* # cpus present @ boot */
@@ -589,6 +583,12 @@ extern struct cpu *curcpup(void);
 
 #endif /* defined(_KERNEL) || defined(_KMEMUSER) */
 
+#define	CPU_CPR_OFFLINE		0x0
+#define	CPU_CPR_ONLINE		0x1
+#define	CPU_CPR_IS_OFFLINE(cpu)	(((cpu)->cpu_cpr_flags & CPU_CPR_ONLINE) == 0)
+#define	CPU_CPR_IS_ONLINE(cpu)	((cpu)->cpu_cpr_flags & CPU_CPR_ONLINE)
+#define	CPU_SET_CPR_FLAGS(cpu, flag)	((cpu)->cpu_cpr_flags |= flag)
+
 /*
  * CPU support routines (not for genassym.c)
  */
@@ -635,12 +635,12 @@ int	cpus_paused(void);
 void	cpu_pause_init(void);
 cpu_t	*cpu_get(processorid_t cpun);	/* get the CPU struct associated */
 
-int	cpu_online(cpu_t *cp);			/* take cpu online */
-int	cpu_offline(cpu_t *cp, int flags);	/* take cpu offline */
-int	cpu_spare(cpu_t *cp, int flags);	/* take cpu to spare */
-int	cpu_faulted(cpu_t *cp, int flags);	/* take cpu to faulted */
-int	cpu_poweron(cpu_t *cp);		/* take powered-off cpu to offline */
-int	cpu_poweroff(cpu_t *cp);	/* take offline cpu to powered-off */
+int	cpu_online(cpu_t *, int);	/* take cpu online */
+int	cpu_offline(cpu_t *, int);	/* take cpu offline */
+int	cpu_spare(cpu_t *, int);	/* take cpu to spare */
+int	cpu_faulted(cpu_t *, int);	/* take cpu to faulted */
+int	cpu_poweron(cpu_t *);		/* take powered-off cpu to offline */
+int	cpu_poweroff(cpu_t *);		/* take offline cpu to powered-off */
 
 cpu_t	*cpu_intr_next(cpu_t *cp);	/* get next online CPU taking intrs */
 int	cpu_intr_count(cpu_t *cp);	/* count # of CPUs handling intrs */
@@ -673,7 +673,7 @@ int	cpu_flagged_poweredoff(cpu_flag_t); /* flags show CPU is powered off */
  */
 void	cpu_set_state(cpu_t *);		/* record/timestamp current state */
 int	cpu_get_state(cpu_t *);		/* get current cpu state */
-const char *cpu_get_state_str(cpu_t *);	/* get current cpu state as string */
+const char *cpu_get_state_str(cpu_flag_t);
 
 
 void	cpu_set_curr_clock(uint64_t);	/* indicate the current CPU's freq */

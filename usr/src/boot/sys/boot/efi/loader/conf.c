@@ -1,4 +1,4 @@
-/*-
+/*
  * Copyright (c) 2006 Marcel Moolenaar
  * All rights reserved.
  *
@@ -24,6 +24,10 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+/*
+ * Copyright (c) 2019, Joyent, Inc.
+ */
+
 #include <sys/cdefs.h>
 
 #include <stand.h>
@@ -32,11 +36,16 @@
 #include <efilib.h>
 #include <libzfs.h>
 
+extern struct devsw vdisk_dev;
+
 struct devsw *devsw[] = {
 	&efipart_fddev,
 	&efipart_cddev,
 	&efipart_hddev,
+#ifndef LOADER_DISABLE_SNP
 	&efinet_dev,
+#endif
+	&vdisk_dev,
 	&zfs_dev,
 	NULL
 };
@@ -57,7 +66,9 @@ struct fs_ops *file_system[] = {
 };
 
 struct netif_driver *netif_drivers[] = {
+#ifndef LOADER_DISABLE_SNP
 	&efinetif,
+#endif
 	NULL
 };
 
@@ -90,7 +101,7 @@ extern struct file_format multiboot2;
 
 struct file_format *file_formats[] = {
 #if defined(__amd64__) || defined(__i386__)
-        &multiboot2,
+	&multiboot2,
 #endif
-        NULL
+	NULL
 };

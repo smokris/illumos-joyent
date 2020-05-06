@@ -21,8 +21,8 @@
 #
 # Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
 # Use is subject to license terms.
-# Copyright 2016 Joyent, Inc.
 #
+# Copyright (c) 2019, Joyent, Inc.
 #
 
 # libc build rules
@@ -32,7 +32,7 @@
 #
 pics/%.o: $(OPTIMIZED_LIBCBASE)/gen/%.s
 	$(BUILD.s)
-	$(POST_PROCESS_O)
+	$(POST_PROCESS_S_O)
 
 pics/%.o: $(LIBCBASE)/crt/%.c
 	$(COMPILE.c) -o $@ $<
@@ -40,7 +40,7 @@ pics/%.o: $(LIBCBASE)/crt/%.c
 
 pics/%.o: $(LIBCBASE)/crt/%.s
 	$(BUILD.s)
-	$(POST_PROCESS_O)
+	$(POST_PROCESS_S_O)
 
 pics/%.o: $(LIBCBASE)/gen/%.c
 	$(COMPILE.c) -o $@ $<
@@ -48,15 +48,15 @@ pics/%.o: $(LIBCBASE)/gen/%.c
 
 pics/%.o: $(LIBCBASE)/gen/%.s
 	$(BUILD.s)
-	$(POST_PROCESS_O)
+	$(POST_PROCESS_S_O)
 
 pics/%.o: $(LIBCBASE)/../$(TARGET_ARCH)/gen/%.s
 	$(BUILD.s)
-	$(POST_PROCESS_O)
+	$(POST_PROCESS_S_O)
 
 pics/_stack_grow.o: $(LIBCBASE)/../$(TARGET_ARCH)/gen/_stack_grow.s
 	$(BUILD.s) $(LIBCBASE)/../$(TARGET_ARCH)/gen/_stack_grow.s
-	$(POST_PROCESS_O)
+	$(POST_PROCESS_S_O)
 
 pics/%.o: $(LIBCBASE)/fp/%.c
 	$(COMPILE.c) -o $@ $<
@@ -68,7 +68,7 @@ pics/%.o: $(LIBCBASE)/../$(MACH)/fp/%.c
 
 pics/%.o: $(LIBCBASE)/fp/%.s
 	$(BUILD.s)
-	$(POST_PROCESS_O)
+	$(POST_PROCESS_S_O)
 
 pics/%.o: $(LIBCBASE)/../$(TARGET_ARCH)/fp/%.c
 	$(COMPILE.c) -o $@ $<
@@ -76,7 +76,7 @@ pics/%.o: $(LIBCBASE)/../$(TARGET_ARCH)/fp/%.c
 
 pics/%.o: $(LIBCBASE)/../$(TARGET_ARCH)/fp/%.s
 	$(BUILD.s)
-	$(POST_PROCESS_O)
+	$(POST_PROCESS_S_O)
 
 pics/%.o: $(LIBCBASE)/sys/%.c
 	$(COMPILE.c) -o $@ $<
@@ -84,15 +84,15 @@ pics/%.o: $(LIBCBASE)/sys/%.c
 
 pics/%.o: $(LIBCBASE)/../common/sys/%.s
 	$(BUILD.s)
-	$(POST_PROCESS_O)
+	$(POST_PROCESS_S_O)
 
 pics/%.o: $(LIBCBASE)/sys/%.s
 	$(BUILD.s)
-	$(POST_PROCESS_O)
+	$(POST_PROCESS_S_O)
 
 pics/%.o: $(LIBCBASE)/../$(MACH)/sys/%.s
 	$(BUILD.s)
-	$(POST_PROCESS_O)
+	$(POST_PROCESS_S_O)
 
 pics/%.o: $(LIBCBASE)/../$(MACH)/sys/%.c
 	$(COMPILE.c) -o $@ $<
@@ -104,17 +104,17 @@ pics/%.o: $(LIBCBASE)/../$(TARGET_ARCH)/sys/%.c
 
 pics/%.o: $(LIBCBASE)/../$(TARGET_ARCH)/sys/%.s
 	$(BUILD.s)
-	$(POST_PROCESS_O)
+	$(POST_PROCESS_S_O)
 
 # rules to build large file aware objects (xxx64.o from xxx.s or xxx.c)
 
 pics/%64.o: $(LIBCBASE)/../common/sys/%.s
 	$(BUILD.s)
-	$(POST_PROCESS_O)
+	$(POST_PROCESS_S_O)
 
 pics/%64.o: $(LIBCBASE)/sys/%.s
 	$(BUILD.s)
-	$(POST_PROCESS_O)
+	$(POST_PROCESS_S_O)
 
 pics/%64.o: $(LIBCBASE)/gen/%.c
 	$(COMPILE.c) -o $@ $<
@@ -245,7 +245,7 @@ pics/%.o: $(LIBCBASE)/threads/%.c
 
 pics/%.o: $(LIBCBASE)/threads/%.s
 	$(BUILD.s)
-	$(POST_PROCESS_O)
+	$(POST_PROCESS_S_O)
 
 pics/%.o: $(LIBCBASE)/../$(TARGET_ARCH)/threads/%.c
 	$(COMPILE.c) -o $@ $<
@@ -253,7 +253,7 @@ pics/%.o: $(LIBCBASE)/../$(TARGET_ARCH)/threads/%.c
 
 pics/%.o: $(LIBCBASE)/../$(TARGET_ARCH)/threads/%.s
 	$(BUILD.s)
-	$(POST_PROCESS_O)
+	$(POST_PROCESS_S_O)
 
 pics/%.o: $(LIBCBASE)/../$(TARGET_ARCH)/unwind/%.c
 	$(COMPILE.c) -o $@ $<
@@ -261,7 +261,7 @@ pics/%.o: $(LIBCBASE)/../$(TARGET_ARCH)/unwind/%.c
 
 pics/%.o: $(LIBCBASE)/../$(TARGET_ARCH)/unwind/%.s
 	$(BUILD.s)
-	$(POST_PROCESS_O)
+	$(POST_PROCESS_S_O)
 
 pics/%.o: $(LIBCBASE)/../port/unwind/%.c
 	$(COMPILE.c) -o $@ $<
@@ -269,7 +269,7 @@ pics/%.o: $(LIBCBASE)/../port/unwind/%.c
 
 pics/%.o: $(LIBCBASE)/../$(MACH)/unwind/%.s
 	$(BUILD.s)
-	$(POST_PROCESS_O)
+	$(POST_PROCESS_S_O)
 
 pics/%.o: $(LIBCBASE)/../port/sys/%.c
 	$(COMPILE.c) -o $@ $<
@@ -281,12 +281,12 @@ pics/%.o: $(LIBCBASE)/../../crt/common/%.c
 
 pics/%.o: $(LIBCBASE)/$(CRTSRCS)/%.s
 	$(BUILD.s)
-	$(POST_PROCESS_O)
+	$(POST_PROCESS_S_O)
 
 # $(SRC)/common rules
 pics/%.o: $(SRC)/common/atomic/$(TARGETMACH)/%.s
 	$(BUILD.s)
-	$(POST_PROCESS_O)
+	$(POST_PROCESS_S_O)
 
 $(COMOBJS:%=pics/%): $(SRC)/common/util/$$(@F:.o=.c)
 	$(COMPILE.c) -o $@ $(SRC)/common/util/$(@F:.o=.c)
@@ -317,5 +317,26 @@ $(CHACHAOBJS:%=pics/%): $(SRC)/common/crypto/chacha/$$(@F:.o=.c)
 pics/%.o: $(LIBCBASE)/../port/threads/%.d $(THREADSOBJS:%=pics/%)
 	$(COMPILE.d) -C -xlazyload -s $< -o $@ $(THREADSOBJS:%=pics/%)
 	$(POST_PROCESS_O)
+
+# assym rules
+
+LDFLAGS.native = $(LDASSERTS) $(ZASSERTDEFLIB)=libc.so $(BDIRECT)
+
+#
+# genassym is a funny fish: it's run on the build machine, so should use the
+# native compilers, but its job is to reflect the proto area header definitions,
+# so we need to use $(CPPFLAGS) not $(CPPFLAGS.native) to make sure we pick up
+# those headers.
+#
+genassym: $(GENASSYM_C)
+	$(NATIVECC) $(NATIVE_CFLAGS) $(CPPFLAGS) $(LDFLAGS.native) \
+	-o $@ $(GENASSYM_C)
+
+# shared between 32- and 64-bit
+OFFSETS = $(LIBCDIR)/$(MACH)/offsets.in
+
+assym.h: $(OFFSETS) genassym
+	$(OFFSETS_CREATE) <$(OFFSETS) >$@
+	./genassym >>$@
 
 include $(SRC)/lib/Makefile.targ

@@ -398,6 +398,8 @@ mdb_tgt_aread(mdb_tgt_t *t, mdb_tgt_as_t as,
 
 	switch ((uintptr_t)as) {
 	case (uintptr_t)MDB_TGT_AS_VIRT:
+	case (uintptr_t)MDB_TGT_AS_VIRT_I:
+	case (uintptr_t)MDB_TGT_AS_VIRT_S:
 		return (t->t_ops->t_vread(t, buf, n, addr));
 	case (uintptr_t)MDB_TGT_AS_PHYS:
 		return (t->t_ops->t_pread(t, buf, n, addr));
@@ -421,6 +423,8 @@ mdb_tgt_awrite(mdb_tgt_t *t, mdb_tgt_as_t as,
 
 	switch ((uintptr_t)as) {
 	case (uintptr_t)MDB_TGT_AS_VIRT:
+	case (uintptr_t)MDB_TGT_AS_VIRT_I:
+	case (uintptr_t)MDB_TGT_AS_VIRT_S:
 		return (t->t_ops->t_vwrite(t, buf, n, addr));
 	case (uintptr_t)MDB_TGT_AS_PHYS:
 		return (t->t_ops->t_pwrite(t, buf, n, addr));
@@ -1449,7 +1453,7 @@ mdb_tgt_vespec_info(mdb_tgt_t *t, int vid, mdb_tgt_spec_desc_t *sp,
 	sp->spec_limit = vep->ve_limit;
 	sp->spec_state = sep->se_state;
 	sp->spec_errno = sep->se_errno;
-	sp->spec_base = NULL;
+	sp->spec_base = 0;
 	sp->spec_size = 0;
 	sp->spec_data = vep->ve_data;
 

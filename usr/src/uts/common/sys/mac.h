@@ -21,7 +21,7 @@
 
 /*
  * Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2017, Joyent, Inc.
+ * Copyright 2018 Joyent, Inc.
  * Copyright (c) 2015 Garrett D'Amore <garrett@damore.org>
  */
 
@@ -406,7 +406,7 @@ typedef enum {
 typedef void		(*mac_notify_t)(void *, mac_notify_type_t);
 typedef void		(*mac_rx_t)(void *, mac_resource_handle_t, mblk_t *,
 			    boolean_t);
-typedef	mblk_t		*(*mac_receive_t)(void *, int);
+typedef	mblk_t		*(*mac_receive_t)(void *, size_t);
 
 /*
  * MAC resource types
@@ -623,6 +623,38 @@ typedef struct mactype_register_s {
 } mactype_register_t;
 
 /*
+ * Flags to describe the hardware emulation desired from a client when
+ * calling mac_hw_emul().
+ *
+ * MAC_HWCKSUM_EMUL
+ *
+ *	If an mblk is marked with HCK_* flags, then calculate those
+ *	checksums and update the checksum flags.
+ *
+ * MAC_IPCKSUM_EMUL
+ *
+ *	Like MAC_HWCKSUM_EMUL, except only calculate the IPv4 header
+ *	checksum. We still update both the IPv4 and ULP checksum
+ *	flags.
+ *
+ * MAC_LSO_EMUL
+ *
+ *	If an mblk is marked with HW_LSO, then segment the LSO mblk
+ *	into a new chain of mblks which reference the original data
+ *	block. This flag DOES NOT imply MAC_HWCKSUM_EMUL. If the
+ *	caller needs both then it must set both.
+ */
+typedef enum mac_emul {
+	MAC_HWCKSUM_EMUL = (1 << 0),
+	MAC_IPCKSUM_EMUL = (1 << 1),
+	MAC_LSO_EMUL = (1 << 2)
+} mac_emul_t;
+
+#define	MAC_HWCKSUM_EMULS	(MAC_HWCKSUM_EMUL | MAC_IPCKSUM_EMUL)
+#define	MAC_ALL_EMULS		(MAC_HWCKSUM_EMUL | MAC_IPCKSUM_EMUL | \
+				MAC_LSO_EMUL)
+
+/*
  * Driver interface functions.
  */
 extern int			mac_open_by_linkid(datalink_id_t,
@@ -643,7 +675,7 @@ extern uint_t			mac_addr_len(mac_handle_t);
 extern int			mac_type(mac_handle_t);
 extern int			mac_nativetype(mac_handle_t);
 
-extern void 			mac_unicst_update(mac_handle_t,
+extern void			mac_unicst_update(mac_handle_t,
 				    const uint8_t *);
 extern void			mac_capab_update(mac_handle_t);
 extern int			mac_pdata_update(mac_handle_t, void *,

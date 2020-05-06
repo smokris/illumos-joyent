@@ -10,7 +10,7 @@
 #
 
 #
-# Copyright 2018 Joyent, Inc.
+# Copyright 2020 Joyent, Inc.
 #
 
 LIBRARY =	libvarpd_files.a

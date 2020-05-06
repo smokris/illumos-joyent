@@ -5,7 +5,7 @@
  *
  * Copyright (c) 2003, 2010, Oracle and/or its affiliates. All rights reserved.
  *
- * Copyright 2018 Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  */
 
 #if !defined(lint)
@@ -22,6 +22,7 @@ static const char rcsid[] = "@(#)$Id: ip_fil_solaris.c,v 2.62.2.19 2005/07/13 21
 #include <sys/filio.h>
 #include <sys/systm.h>
 #include <sys/strsubr.h>
+#include <sys/strsun.h>
 #include <sys/cred.h>
 #include <sys/ddi.h>
 #include <sys/sunddi.h>
@@ -92,8 +93,18 @@ static	int	ipf_hookvndl3v4_out __P((hook_event_token_t, hook_data_t,
     void *));
 static	int	ipf_hookvndl3v6_out __P((hook_event_token_t, hook_data_t,
     void *));
+
+static	int	ipf_hookviona_in __P((hook_event_token_t, hook_data_t, void *));
+static	int	ipf_hookviona_out __P((hook_event_token_t, hook_data_t,
+    void *));
+
 extern	int	ipf_geniter __P((ipftoken_t *, ipfgeniter_t *, ipf_stack_t *));
 extern	int	ipf_frruleiter __P((void *, int, void *, ipf_stack_t *));
+
+static int	ipf_hook_protocol_notify __P((hook_notify_cmd_t, void *,
+    const char *, const char *, const char *));
+static int	ipf_hook_instance_notify __P((hook_notify_cmd_t, void *,
+    const char *, const char *, const char *));
 
 #if SOLARIS2 < 10
 #if SOLARIS2 >= 7
@@ -113,7 +124,7 @@ u_long		*ip_forwarding = NULL;
 #endif
 
 vmem_t	*ipf_minor;	/* minor number arena */
-void 	*ipf_state;	/* DDI state */
+void	*ipf_state;	/* DDI state */
 
 /*
  * GZ-controlled and per-zone stacks:
@@ -138,28 +149,28 @@ void 	*ipf_state;	/* DDI state */
  */
 
 /* IPv4 hook names */
-char *hook4_nicevents = 	"ipfilter_hook4_nicevents";
-char *hook4_nicevents_gz = 	"ipfilter_hook4_nicevents_gz";
-char *hook4_in = 		"ipfilter_hook4_in";
-char *hook4_in_gz = 		"ipfilter_hook4_in_gz";
-char *hook4_out = 		"ipfilter_hook4_out";
-char *hook4_out_gz = 		"ipfilter_hook4_out_gz";
-char *hook4_loop_in = 		"ipfilter_hook4_loop_in";
-char *hook4_loop_in_gz = 	"ipfilter_hook4_loop_in_gz";
-char *hook4_loop_out = 		"ipfilter_hook4_loop_out";
-char *hook4_loop_out_gz = 	"ipfilter_hook4_loop_out_gz";
+char *hook4_nicevents =		"ipfilter_hook4_nicevents";
+char *hook4_nicevents_gz =	"ipfilter_hook4_nicevents_gz";
+char *hook4_in =		"ipfilter_hook4_in";
+char *hook4_in_gz =		"ipfilter_hook4_in_gz";
+char *hook4_out =		"ipfilter_hook4_out";
+char *hook4_out_gz =		"ipfilter_hook4_out_gz";
+char *hook4_loop_in =		"ipfilter_hook4_loop_in";
+char *hook4_loop_in_gz =	"ipfilter_hook4_loop_in_gz";
+char *hook4_loop_out =		"ipfilter_hook4_loop_out";
+char *hook4_loop_out_gz =	"ipfilter_hook4_loop_out_gz";
 
 /* IPv6 hook names */
-char *hook6_nicevents = 	"ipfilter_hook6_nicevents";
-char *hook6_nicevents_gz = 	"ipfilter_hook6_nicevents_gz";
-char *hook6_in = 		"ipfilter_hook6_in";
-char *hook6_in_gz = 		"ipfilter_hook6_in_gz";
-char *hook6_out = 		"ipfilter_hook6_out";
-char *hook6_out_gz = 		"ipfilter_hook6_out_gz";
-char *hook6_loop_in = 		"ipfilter_hook6_loop_in";
-char *hook6_loop_in_gz = 	"ipfilter_hook6_loop_in_gz";
-char *hook6_loop_out = 		"ipfilter_hook6_loop_out";
-char *hook6_loop_out_gz = 	"ipfilter_hook6_loop_out_gz";
+char *hook6_nicevents =		"ipfilter_hook6_nicevents";
+char *hook6_nicevents_gz =	"ipfilter_hook6_nicevents_gz";
+char *hook6_in =		"ipfilter_hook6_in";
+char *hook6_in_gz =		"ipfilter_hook6_in_gz";
+char *hook6_out =		"ipfilter_hook6_out";
+char *hook6_out_gz =		"ipfilter_hook6_out_gz";
+char *hook6_loop_in =		"ipfilter_hook6_loop_in";
+char *hook6_loop_in_gz =	"ipfilter_hook6_loop_in_gz";
+char *hook6_loop_out =		"ipfilter_hook6_loop_out";
+char *hook6_loop_out_gz =	"ipfilter_hook6_loop_out_gz";
 
 /* vnd IPv4/v6 hook names */
 char *hook4_vnd_in =		"ipfilter_hookvndl3v4_in";
@@ -170,6 +181,45 @@ char *hook4_vnd_out =		"ipfilter_hookvndl3v4_out";
 char *hook4_vnd_out_gz =	"ipfilter_hookvndl3v4_out_gz";
 char *hook6_vnd_out =		"ipfilter_hookvndl3v6_out";
 char *hook6_vnd_out_gz =	"ipfilter_hookvndl3v6_out_gz";
+
+/* viona hook names */
+char *hook_viona_in =		"ipfilter_hookviona_in";
+char *hook_viona_in_gz =	"ipfilter_hookviona_in_gz";
+char *hook_viona_out =		"ipfilter_hookviona_out";
+char *hook_viona_out_gz =	"ipfilter_hookviona_out_gz";
+
+/*
+ * For VIONA. The net_{instance,protocol}_notify_register() functions only
+ * deal with per-callback-function granularity. We need two wrapper functions
+ * for GZ-controlled and per-zone instances.
+ */
+static int
+ipf_hook_instance_notify_gz(hook_notify_cmd_t command, void *arg,
+    const char *netid, const char *dummy, const char *instance)
+{
+	return (ipf_hook_instance_notify(command, arg, netid, dummy, instance));
+}
+
+static int
+ipf_hook_instance_notify_ngz(hook_notify_cmd_t command, void *arg,
+    const char *netid, const char *dummy, const char *instance)
+{
+	return (ipf_hook_instance_notify(command, arg, netid, dummy, instance));
+}
+
+static int
+ipf_hook_protocol_notify_gz(hook_notify_cmd_t command, void *arg,
+    const char *name, const char *dummy, const char *he_name)
+{
+	return (ipf_hook_protocol_notify(command, arg, name, dummy, he_name));
+}
+
+static int
+ipf_hook_protocol_notify_ngz(hook_notify_cmd_t command, void *arg,
+    const char *name, const char *dummy, const char *he_name)
+{
+	return (ipf_hook_protocol_notify(command, arg, name, dummy, he_name));
+}
 
 /* ------------------------------------------------------------------------ */
 /* Function:    ipldetach                                                   */
@@ -292,7 +342,48 @@ ipf_stack_t *ifs;
 		ifs->ifs_ipf_vndl3v6 = NULL;
 	}
 
+	/*
+	 * Remove notification of viona hooks
+	 */
+	net_instance_notify_unregister(ifs->ifs_netid,
+	    ifs->ifs_gz_controlled ? ipf_hook_instance_notify_gz :
+	    ipf_hook_instance_notify_ngz);
+
 #undef UNDO_HOOK
+
+	/*
+	 * Normally, viona will unregister itself before ipldetach() is called,
+	 * so these will be no-ops, but out of caution, we try to make sure
+	 * we've removed any of our references.
+	 *
+	 * For now, the _gz and _ngz versions are both wrappers to what's
+	 * below.  Just call it directly, but if that changes fix here as
+	 * well.
+	 */
+	(void) ipf_hook_protocol_notify(HN_UNREGISTER, ifs, Hn_VIONA, NULL,
+	    NH_PHYSICAL_IN);
+	(void) ipf_hook_protocol_notify(HN_UNREGISTER, ifs, Hn_VIONA, NULL,
+	    NH_PHYSICAL_OUT);
+
+	{
+		char netidstr[12]; /* Large enough for INT_MAX + NUL */
+		(void) snprintf(netidstr, sizeof (netidstr), "%d",
+		    ifs->ifs_netid);
+
+		/*
+		 * The notify callbacks expect the netid value passed as a
+		 * string in the third argument.  To prevent confusion if
+		 * traced, we pass the same value the nethook framework would
+		 * pass, even though the callback does not currently use the
+		 * value.
+		 *
+		 * For now, the _gz and _ngz versions are both wrappers to
+		 * what's below.  Just call it directly, but if that changes
+		 * fix here as well.
+		 */
+		(void) ipf_hook_instance_notify(HN_UNREGISTER, ifs, netidstr,
+		    NULL, Hn_VIONA);
+	}
 
 #ifdef	IPFDEBUG
 	cmn_err(CE_CONT, "ipldetach()\n");
@@ -530,6 +621,28 @@ ipf_stack_t *ifs;
 	    NH_PHYSICAL_OUT, ifs->ifs_ipfhookvndl3v6_out) == 0);
 	if (!ifs->ifs_hookvndl3v6_physical_out)
 		goto hookup_failed;
+
+	/*
+	 * VIONA INET hooks.  While the nethook framework allows us to register
+	 * hooks for events that haven't been registered yet, we instead
+	 * register and unregister our hooks in response to notifications
+	 * about the viona hooks from the nethook framework.  This prevents
+	 * problems when the viona module gets unloaded while the ipf module
+	 * does not.  If we do not unregister our hooks after the viona module
+	 * is unloaded, the viona module cannot later re-register them if it
+	 * gets reloaded.  As the ip, vnd, and ipf modules are rarely unloaded
+	 * even on DEBUG kernels, they do not experience this issue.
+	 *
+	 * Today, the per-zone ones don't matter for a BHYVE-branded zone, BUT
+	 * the ipf_hook_protocol_notify() function is GZ vs. per-zone aware.
+	 * Employ two different versions of ipf_hook_instance_notify(), one for
+	 * the GZ-controlled, and one for the per-zone one.
+	 */
+	if (net_instance_notify_register(id, ifs->ifs_gz_controlled ?
+	    ipf_hook_instance_notify_gz : ipf_hook_instance_notify_ngz, ifs) !=
+	    0)
+		goto hookup_failed;
+
 	/*
 	 * Reacquire ipf_global, now it is safe.
 	 */
@@ -591,6 +704,157 @@ ipf_stack_t *ifs;
 hookup_failed:
 	WRITE_ENTER(&ifs->ifs_ipf_global);
 	return -1;
+}
+
+/* ------------------------------------------------------------------------ */
+/*
+ * Called whenever a nethook protocol is registered or unregistered.  Currently
+ * only used to add or remove the hooks for viona.
+ *
+ * While the function signature requires returning int, nothing
+ * in usr/src/uts/common/io/hook.c that invokes the callbacks
+ * captures the return value (nor is there currently any documentation
+ * on what return values should be).  For now at least, we'll return 0
+ * on success (or 'not applicable') or an error value.  Even if the
+ * nethook framework doesn't use the return address, it can be observed via
+ * dtrace if needed.
+ */
+static int
+ipf_hook_protocol_notify(hook_notify_cmd_t command, void *arg,
+    const char *name, const char *dummy __unused, const char *he_name)
+{
+	ipf_stack_t *ifs = arg;
+	hook_t **hookpp;
+	char *hook_name, *hint_name;
+	hook_func_t hookfn;
+	boolean_t *hookedp;
+	hook_hint_t hint;
+	boolean_t out;
+	int ret = 0;
+	const boolean_t gz = ifs->ifs_gz_controlled;
+
+	/* We currently only care about viona hooks notifications */
+	if (strcmp(name, Hn_VIONA) != 0)
+		return (0);
+
+	if (strcmp(he_name, NH_PHYSICAL_IN) == 0) {
+		out = B_FALSE;
+	} else if (strcmp(he_name, NH_PHYSICAL_OUT) == 0) {
+		out = B_TRUE;
+	} else {
+		/*
+		 * If we've added more hook events to viona, we must add
+		 * the corresponding handling here (even if it's just to
+		 * ignore it) to prevent the firewall from not working as
+		 * intended.
+		 */
+		cmn_err(CE_PANIC, "%s: unhandled hook event %s", __func__,
+		    he_name);
+
+		return (0);
+	}
+
+	if (out) {
+		hookpp = &ifs->ifs_ipfhookviona_out;
+		hookfn = ipf_hookviona_out;
+		hookedp = &ifs->ifs_hookviona_physical_out;
+		name = gz ? hook_viona_out_gz : hook_viona_out;
+		hint = gz ? HH_AFTER : HH_BEFORE;
+		hint_name = gz ? hook_viona_out : hook_viona_out_gz;
+	} else {
+		hookpp = &ifs->ifs_ipfhookviona_in;
+		hookfn = ipf_hookviona_in;
+		hookedp = &ifs->ifs_hookviona_physical_in;
+		name = gz ? hook_viona_in_gz : hook_viona_in;
+		hint = gz ? HH_BEFORE : HH_AFTER;
+		hint_name = gz ? hook_viona_in : hook_viona_in_gz;
+	}
+
+	switch (command) {
+	default:
+	case HN_NONE:
+		break;
+	case HN_REGISTER:
+		HOOK_INIT(*hookpp, hookfn, (char *)name, ifs);
+		(*hookpp)->h_hint = hint;
+		(*hookpp)->h_hintvalue = (uintptr_t)hint_name;
+		ret = net_hook_register(ifs->ifs_ipf_viona,
+		    (char *)he_name, *hookpp);
+		if (ret != 0) {
+			cmn_err(CE_NOTE, "%s: could not register hook "
+			    "(hook family=%s hook=%s) err=%d", __func__,
+			    name, he_name, ret);
+			*hookedp = B_FALSE;
+			return (ret);
+		}
+		*hookedp = B_TRUE;
+		break;
+	case HN_UNREGISTER:
+		if (ifs->ifs_ipf_viona == NULL)
+			break;
+
+		ret = *hookedp ? net_hook_unregister(ifs->ifs_ipf_viona,
+		    (char *)he_name, *hookpp) : 0;
+		if ((ret == 0 || ret == ENXIO)) {
+			if (*hookpp != NULL) {
+				hook_free(*hookpp);
+				*hookpp = NULL;
+			}
+			*hookedp = B_FALSE;
+		}
+		break;
+	}
+
+	return (ret);
+}
+
+/*
+ * Called whenever a new nethook instance is created.  Currently only used
+ * with the Hn_VIONA nethooks.  Similar to ipf_hook_protocol_notify, the out
+ * function signature must return an int, though the result is never used.
+ * We elect to return 0 on success (or not applicable) or a non-zero value
+ * on error.
+ */
+static int
+ipf_hook_instance_notify(hook_notify_cmd_t command, void *arg,
+    const char *netid, const char *dummy __unused, const char *instance)
+{
+	ipf_stack_t *ifs = arg;
+	int ret = 0;
+	const boolean_t gz = ifs->ifs_gz_controlled;
+
+	/* We currently only care about viona hooks */
+	if (strcmp(instance, Hn_VIONA) != 0)
+		return (0);
+
+	switch (command) {
+	case HN_NONE:
+	default:
+		return (0);
+	case HN_REGISTER:
+		ifs->ifs_ipf_viona = net_protocol_lookup(ifs->ifs_netid,
+		    NHF_VIONA);
+
+		if (ifs->ifs_ipf_viona == NULL)
+			return (EPROTONOSUPPORT);
+
+		ret = net_protocol_notify_register(ifs->ifs_ipf_viona,
+		    gz ? ipf_hook_protocol_notify_gz :
+		    ipf_hook_protocol_notify_ngz, ifs);
+		VERIFY(ret == 0 || ret == ESHUTDOWN);
+		break;
+	case HN_UNREGISTER:
+		if (ifs->ifs_ipf_viona == NULL)
+			break;
+		VERIFY0(net_protocol_notify_unregister(ifs->ifs_ipf_viona,
+		    gz ? ipf_hook_protocol_notify_gz :
+		    ipf_hook_protocol_notify_ngz));
+		VERIFY0(net_protocol_release(ifs->ifs_ipf_viona));
+		ifs->ifs_ipf_viona = NULL;
+		break;
+	}
+
+	return (ret);
 }
 
 static	int	fr_setipfloopback(set, ifs)
@@ -692,6 +956,9 @@ int *rp;
 	if (isp == NULL)
 		return ENXIO;
 	unit = isp->ipfs_minor;
+
+	if (unit == IPL_LOGEV)
+		return (ipf_cfwlog_ioctl(dev, cmd, data, mode, cp, rp));
 
 	zid = crgetzoneid(cp);
 	if (cmd == SIOCIPFZONESET) {
@@ -1001,14 +1268,14 @@ ipf_stack_t *ifs;
 {
 	net_handle_t nif;
  
-  	if (v == 4)
- 		nif = ifs->ifs_ipf_ipv4;
-  	else if (v == 6)
- 		nif = ifs->ifs_ipf_ipv6;
-  	else
- 		return 0;
+ 	if (v == 4)
+		nif = ifs->ifs_ipf_ipv4;
+ 	else if (v == 6)
+		nif = ifs->ifs_ipf_ipv6;
+ 	else
+		return 0;
 
- 	return (net_phylookup(nif, name));
+	return (net_phylookup(nif, name));
 }
 
 /*
@@ -1033,11 +1300,35 @@ cred_t *cred;
 	if (IPL_LOGMAX < min)
 		return ENXIO;
 
+	/* Special-case ipfev: global-zone-open only. */
+	if (min == IPL_LOGEV) {
+		if (crgetzoneid(cred) != GLOBAL_ZONEID)
+			return (ENXIO);
+		/*
+		 * Else enable the CFW logging of events.
+		 * NOTE: For now, we only allow one open at a time.
+		 * Use atomic_cas to confirm/deny. And also for now,
+		 * assume sizeof (boolean_t) == sizeof (uint_t).
+		 *
+		 * Per the *_{refrele,REFRELE}() in other parts of inet,
+		 * ensure all loads/stores complete before calling cas.
+		 * membar_exit() does this.
+		 */
+		membar_exit();
+		if (atomic_cas_uint(&ipf_cfwlog_enabled, 0, 1) != 0)
+			return (EBUSY);
+	}
+
 	minor = (minor_t)(uintptr_t)vmem_alloc(ipf_minor, 1,
 	    VM_BESTFIT | VM_SLEEP);
 
 	if (ddi_soft_state_zalloc(ipf_state, minor) != 0) {
 		vmem_free(ipf_minor, (void *)(uintptr_t)minor, 1);
+		if (min == IPL_LOGEV) {
+			/* See above... */
+			membar_exit();
+			VERIFY(atomic_cas_uint(&ipf_cfwlog_enabled, 1, 0) == 1);
+		}
 		return ENXIO;
 	}
 
@@ -1059,6 +1350,7 @@ int flags, otype;
 cred_t *cred;
 {
 	minor_t	min = getminor(dev);
+	ipf_devstate_t *isp;
 
 #ifdef	IPFDEBUG
 	cmn_err(CE_CONT, "iplclose(%x,%x,%x,%x)\n", dev, flags, otype, cred);
@@ -1066,6 +1358,15 @@ cred_t *cred;
 
 	if (IPL_LOGMAX < min)
 		return ENXIO;
+
+	isp = ddi_get_soft_state(ipf_state, min);
+	if (isp != NULL && isp->ipfs_minor == IPL_LOGEV) {
+		/*
+		 * Disable CFW logging.  See iplopen() for details.
+		 */
+		membar_exit();
+		VERIFY(atomic_cas_uint(&ipf_cfwlog_enabled, 1, 0) == 1);
+	}
 
 	ddi_soft_state_free(ipf_state, min);
 	vmem_free(ipf_minor, (void *)(uintptr_t)min, 1);
@@ -1096,6 +1397,9 @@ cred_t *cp;
 	if (isp == NULL)
 		return ENXIO;
 	unit = isp->ipfs_minor;
+
+	if (unit == IPL_LOGEV)
+		return (ipf_cfwlog_read(dev, uio, cp));
 
         /*
 	 * ipf_find_stack returns with a read lock on ifs_ipf_global
@@ -1147,6 +1451,9 @@ cred_t *cp;
 	if (isp == NULL)
 		return ENXIO;
 	unit = isp->ipfs_minor;
+
+	if (unit == IPL_LOGEV)
+		return (EIO);	/* ipfev doesn't support write yet. */
 
         /*
 	 * ipf_find_stack returns with a read lock on ifs_ipf_global
@@ -2167,6 +2474,124 @@ int ipf_hookvndl3v6_out(hook_event_token_t token, hook_data_t info, void *arg)
 	return ipf_hook6_out(token, info, arg);
 }
 
+/* Static constants used by ipf_hook_ether */
+static uint8_t ipf_eth_bcast_addr[ETHERADDRL] = {
+	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF
+};
+static uint8_t ipf_eth_ipv4_mcast[3] = { 0x01, 0x00, 0x5E };
+static uint8_t ipf_eth_ipv6_mcast[2] = { 0x33, 0x33 };
+
+/* ------------------------------------------------------------------------ */
+/* Function:	ipf_hook_ether                                              */
+/* Returns:	int - 0 == packet ok, else problem, free packet if not done */
+/* Parameters:	token(I)     - pointer to event                             */
+/*              info(I)      - pointer to hook information for firewalling  */
+/*                                                                          */
+/* The ipf_hook_ether hook is currently private to illumos.  It represents  */
+/* a layer 2 datapath generally used by virtual machines.  Currently the    */
+/* hook is only used by the viona driver to pass along L2 frames for        */
+/* inspection.  It requires that the L2 ethernet header is contained within */
+/* a single dblk_t (however layers above the L2 header have no restrctions  */
+/* in ipf).  ipf does not currently support filtering on L2 fields (e.g.    */
+/* filtering on a MAC address or ethertype), however virtual machines do    */
+/* not have native IP stack instances where ipf traditionally hooks in.     */
+/* Instead this entry point is used to determine if the packet is unicast,  */
+/* broadcast, or multicast. The IPv4 or IPv6 packet is then passed to the   */
+/* traditional ip hooks for filtering.  Non IPv4 or non IPv6 packets are    */
+/* not subject to examination.                                              */
+/* ------------------------------------------------------------------------ */
+int ipf_hook_ether(hook_event_token_t token, hook_data_t info, void *arg,
+    boolean_t out)
+{
+	struct ether_header *ethp;
+	hook_pkt_event_t *hpe = (hook_pkt_event_t *)info;
+	mblk_t *mp;
+	size_t offset, len;
+	uint16_t etype;
+	boolean_t v6;
+
+	/*
+	 * viona will only pass us mblks with the L2 header contained in a
+	 * single data block.
+	 */
+	mp = *hpe->hpe_mp;
+	len = MBLKL(mp);
+
+	VERIFY3S(len, >=, sizeof (struct ether_header));
+
+	ethp = (struct ether_header *)mp->b_rptr;
+	if ((etype = ntohs(ethp->ether_type)) == ETHERTYPE_VLAN) {
+		struct ether_vlan_header *evh =
+		    (struct ether_vlan_header *)ethp;
+
+		VERIFY3S(len, >=, sizeof (struct ether_vlan_header));
+
+		etype = ntohs(evh->ether_type);
+		offset = sizeof (*evh);
+	} else {
+		offset = sizeof (*ethp);
+	}
+
+	/*
+	 * ipf only support filtering IPv4 and IPv6.  Ignore other types.
+	 */
+	if (etype == ETHERTYPE_IP)
+		v6 = B_FALSE;
+	else if (etype == ETHERTYPE_IPV6)
+		v6 = B_TRUE;
+	else
+		return (0);
+
+	if (bcmp(ipf_eth_bcast_addr, ethp, ETHERADDRL) == 0)
+		hpe->hpe_flags |= HPE_BROADCAST;
+	else if (bcmp(ipf_eth_ipv4_mcast, ethp,
+	    sizeof (ipf_eth_ipv4_mcast)) == 0)
+		hpe->hpe_flags |= HPE_MULTICAST;
+	else if (bcmp(ipf_eth_ipv6_mcast, ethp,
+	    sizeof (ipf_eth_ipv6_mcast)) == 0)
+		hpe->hpe_flags |= HPE_MULTICAST;
+
+	/* Find the start of the IPv4 or IPv6 header */
+	for (; offset >= len; len = MBLKL(mp)) {
+		offset -= len;
+		mp = mp->b_cont;
+		if (mp == NULL) {
+			freemsg(*hpe->hpe_mp);
+			*hpe->hpe_mp = NULL;
+			return (-1);
+		}
+	}
+	hpe->hpe_mb = mp;
+	hpe->hpe_hdr = mp->b_rptr + offset;
+
+	return (v6 ? ipf_hook6(info, out, 0, arg) :
+	    ipf_hook(info, out, 0, arg));
+}
+
+/* ------------------------------------------------------------------------ */
+/* Function:    ipf_hookviona_{in,out}                                      */
+/* Returns:     int - 0 == packet ok, else problem, free packet if not done */
+/* Parameters:  event(I)     - pointer to event                             */
+/*              info(I)      - pointer to hook information for firewalling  */
+/*                                                                          */
+/* The viona hooks are private hooks to illumos. They represents a layer 2  */
+/* datapath generally used to implement virtual machines.                   */
+/* along L2 packets.                                                        */
+/*                                                                          */
+/* They end up calling the appropriate traditional ip hooks.                */
+/* ------------------------------------------------------------------------ */
+int
+ipf_hookviona_in(hook_event_token_t token, hook_data_t info, void *arg)
+{
+	return (ipf_hook_ether(token, info, arg, B_FALSE));
+}
+
+int
+ipf_hookviona_out(hook_event_token_t token, hook_data_t info, void *arg)
+{
+	return (ipf_hook_ether(token, info, arg, B_TRUE));
+}
+
 /* ------------------------------------------------------------------------ */
 /* Function:    ipf_hook4_loop_in                                           */
 /* Returns:     int - 0 == packet ok, else problem, free packet if not done */
@@ -2510,7 +2935,7 @@ fr_info_t *fin;
 #ifdef USE_INET6
 	struct in6_addr	tmp_src6;
 #endif
-	
+
 	ASSERT(fin->fin_p == IPPROTO_TCP);
 
 	/*
@@ -2552,7 +2977,7 @@ fr_info_t *fin;
 #endif
 
 	if (tcp != NULL) {
-		/* 
+		/*
 		 * Adjust TCP header:
 		 *	swap ports,
 		 *	set flags,
@@ -2909,16 +3334,16 @@ fr_info_t *fin;
 /* both IP versions. The details are going to be explained here.	    */
 /*                                                                          */
 /* The packet looks as follows:						    */
-/*    xxx | IP hdr | IP payload    ...	| 				    */
-/*    ^   ^        ^            	^				    */
-/*    |   |        |            	|				    */
+/*    xxx | IP hdr | IP payload    ...	|				    */
+/*    ^   ^        ^           	        ^				    */
+/*    |   |        |           	        |				    */
 /*    |   |        |		fin_m->b_wptr = fin->fin_dp + fin->fin_dlen */
 /*    |   |        |							    */
 /*    |   |        `- fin_m->fin_dp (in case of IPv4 points to L4 header)   */
 /*    |   |								    */
 /*    |   `- fin_m->b_rptr + fin_ipoff (fin_ipoff is most likely 0 in case  */
 /*    |      of loopback)						    */
-/*    |   								    */
+/*    |  								    */
 /*    `- fin_m->b_rptr -  points to L2 header in case of physical NIC	    */
 /*                                                                          */
 /* All relevant IP headers are pulled up into the first mblk. It happened   */

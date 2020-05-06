@@ -20,7 +20,7 @@
  */
 /*
  * Copyright (c) 2001, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2013, Joyent, Inc. All rights reserved.
+ * Copyright 2019 Joyent, Inc.
  *
  * logadm/main.c -- main routines for logadm
  *
@@ -41,6 +41,8 @@
 #include <sys/sysmacros.h>
 #include <time.h>
 #include <utime.h>
+#include <poll.h>
+#include <errno.h>
 #include "err.h"
 #include "lut.h"
 #include "fn.h"
@@ -601,17 +603,14 @@ rotatelog(struct fn *fnp, struct opts *opts)
 		if (opts_count(opts, "N"))
 			return (1);
 		err(EF_WARN|EF_SYS, "%s", fname);
-		return (B_FALSE);
 	}
 
 	if ((stbuf.st_mode & S_IFMT) == S_IFLNK) {
 		err(EF_WARN, "%s is a symlink", fname);
-		return (B_FALSE);
 	}
 
 	if ((stbuf.st_mode & S_IFMT) != S_IFREG) {
 		err(EF_WARN, "%s is not a regular file", fname);
-		return (B_FALSE);
 	}
 
 	/* even if size condition is not met, this entry is "done" */
@@ -831,7 +830,7 @@ rotateto(struct fn *fnp, struct opts *opts, int n, struct fn *recentlog,
 	fn_free(dirname);
 
 	/* do the rename */
-	if (n == 0 && opts_count(opts, "c") != NULL) {
+	if (n == 0 && opts_count(opts, "c") != 0) {
 		docopytruncate(opts, fn_s(fnp), fn_s(newfile));
 	} else if (n == 0 && opts_count(opts, "M")) {
 		struct fn *rawcmd = fn_new(opts_optarg(opts, "M"));
@@ -1030,16 +1029,11 @@ docmd(struct opts *opts, const char *msg, const char *cmd,
 		return;		/* -n means don't really do it */
 
 	/*
-	 * run the cmd and see if it failed.  this function is *not* a
-	 * generic command runner -- we depend on some knowledge we
-	 * have about the commands we run.  first of all, we expect
-	 * errors to spew something to stderr, and that something is
-	 * typically short enough to fit into a pipe so we can wait()
-	 * for the command to complete and then fetch the error text
-	 * from the pipe.  we also expect the exit codes to make sense.
-	 * notice also that we only allow a command name which is an
-	 * absolute pathname, and two args must be supplied (the
-	 * second may be NULL, or they may both be NULL).
+	 * Run the cmd and see if it failed.  This function is *not* a generic
+	 * command runner.  The command name must be an absolute pathname, and
+	 * two args must be supplied (the second may be NULL, or they may both
+	 * be NULL).  Any output (stdout and stderr) from the child process is
+	 * logged to stderr and perhaps sent to an email recipient.
 	 */
 	if (pipe(errpipe) < 0)
 		err(EF_SYS, "pipe");
@@ -1048,25 +1042,49 @@ docmd(struct opts *opts, const char *msg, const char *cmd,
 		err(EF_SYS, "fork");
 	else if (pid) {
 		int wstat;
-		int count;
+		struct pollfd pfd;
+		boolean_t first = B_TRUE;
 
 		/* parent */
 		(void) close(errpipe[1]);
-		if (waitpid(pid, &wstat, 0) < 0)
-			err(EF_SYS, "waitpid");
 
-		/* check for stderr output */
-		if (ioctl(errpipe[0], FIONREAD, &count) >= 0 && count) {
-			err(EF_WARN, "command failed: %s%s%s%s%s%s%s",
-			    cmd,
-			    (arg1) ? " " : "",
-			    (arg1) ? arg1 : "",
-			    (arg2) ? " " : "",
-			    (arg2) ? arg2 : "",
-			    (arg3) ? " " : "",
-			    (arg3) ? arg3 : "");
-			err_fromfd(errpipe[0]);
-		} else if (WIFSIGNALED(wstat))
+		pfd.fd = errpipe[0];
+		pfd.events = POLLIN | POLLRDNORM | POLLRDBAND | POLLPRI;
+		for (;;) {
+
+			pfd.revents = 0;
+			if (poll(&pfd, 1, -1) == -1) {
+				if (errno == EINTR) {
+					continue;
+				}
+				err(EF_SYS, "poll");
+				break;
+			}
+			if ((pfd.events & pfd.revents) != 0) {
+				if (first) {
+					err(EF_WARN,
+					    "command failed: %s%s%s%s%s%s%s",
+					    cmd,
+					    (arg1) ? " " : "",
+					    (arg1) ? arg1 : "",
+					    (arg2) ? " " : "",
+					    (arg2) ? arg2 : "",
+					    (arg3) ? " " : "",
+					    (arg3) ? arg3 : "");
+				}
+				err_fromfd(pfd.fd);
+			}
+			if ((pfd.revents & (POLLERR | POLLHUP)) != 0) {
+				break;
+			}
+		}
+		if (waitpid(pid, &wstat, 0) < 0) {
+			err(EF_SYS, "waitpid");
+		}
+
+		if (!first) {
+			/* Assume the command gave a useful error */
+		} else if (WIFSIGNALED(wstat)) {
 			err(EF_WARN,
 			    "command died, signal %d: %s%s%s%s%s%s%s",
 			    WTERMSIG(wstat),
@@ -1077,7 +1095,7 @@ docmd(struct opts *opts, const char *msg, const char *cmd,
 			    (arg2) ? arg2 : "",
 			    (arg3) ? " " : "",
 			    (arg3) ? arg3 : "");
-		else if (WIFEXITED(wstat) && WEXITSTATUS(wstat))
+		} else if (WIFEXITED(wstat) && WEXITSTATUS(wstat)) {
 			err(EF_WARN,
 			    "command error, exit %d: %s%s%s%s%s%s%s",
 			    WEXITSTATUS(wstat),
@@ -1088,6 +1106,7 @@ docmd(struct opts *opts, const char *msg, const char *cmd,
 			    (arg2) ? arg2 : "",
 			    (arg3) ? " " : "",
 			    (arg3) ? arg3 : "");
+		}
 
 		(void) close(errpipe[0]);
 	} else {
@@ -1112,7 +1131,7 @@ docopytruncate(struct opts *opts, const char *file, const char *file_copy)
 	ssize_t len;
 
 	/* print info if necessary */
-	if (opts_count(opts, "vn") != NULL) {
+	if (opts_count(opts, "vn") != 0) {
 		(void) out("# log rotation via atomic copy and truncation"
 		    " (-c flag):\n");
 		(void) out("# copy %s to %s\n", file, file_copy);
@@ -1125,20 +1144,15 @@ docopytruncate(struct opts *opts, const char *file, const char *file_copy)
 	/* open log file to be rotated and remember its chmod mask */
 	if ((fi = open(file, O_RDWR)) < 0) {
 		err(EF_SYS, "cannot open file %s", file);
-		return;
 	}
 
 	if (fstat(fi, &s) < 0) {
 		err(EF_SYS, "cannot access: %s", file);
-		(void) close(fi);
-		return;
 	}
 
 	/* create new file for copy destination with correct attributes */
 	if ((fo = open(file_copy, O_CREAT|O_TRUNC|O_WRONLY, s.st_mode)) < 0) {
 		err(EF_SYS, "cannot create file: %s", file_copy);
-		(void) close(fi);
-		return;
 	}
 
 	(void) fchown(fo, s.st_uid, s.st_gid);
@@ -1164,10 +1178,6 @@ docopytruncate(struct opts *opts, const char *file, const char *file_copy)
 	do {
 		if (fstat(fi, &s) < 0) {
 			err(EF_SYS, "cannot stat: %s", file);
-			(void) close(fi);
-			(void) close(fo);
-			(void) remove(file_copy);
-			return;
 		}
 
 		if ((rem = s.st_size - written) < thresh) {
@@ -1207,10 +1217,6 @@ docopytruncate(struct opts *opts, const char *file, const char *file_copy)
 			}
 
 			err(EF_SYS, "cannot write into file %s", file_copy);
-			(void) close(fi);
-			(void) close(fo);
-			(void) remove(file_copy);
-			return;
 		}
 	} while (len >= 0);
 
@@ -1225,12 +1231,6 @@ docopytruncate(struct opts *opts, const char *file, const char *file_copy)
 	while ((len = read(fi, buf, sizeof (buf))) > 0)
 		if (write(fo, buf, len) != len) {
 			err(EF_SYS, "cannot write into file %s", file_copy);
-			(void) lockf(fi, F_ULOCK, 0);
-			(void) fchmod(fi, s.st_mode);
-			(void) close(fi);
-			(void) close(fo);
-			(void) remove(file_copy);
-			return;
 		}
 
 	(void) ftruncate(fi, 0);

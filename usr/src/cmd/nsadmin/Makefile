@@ -22,58 +22,92 @@
 # Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
 # Use is subject to license terms.
 #
+# Copyright 2019 Joyent, Inc.
+#
 
-PROG= profile .login ksh.kshrc system
-PROGSKEL= .profile .kshrc
-PROGROOT= .profile .bashrc
+ETCFILES = profile .login ksh.kshrc system zshrc
+ETCSKELFILES = .profile .kshrc .bashrc
+ETCBASHFILES = bash_completion
+ETCBASHCOMPLETIONDFILES = dladm zones zone_alias
+ROOTFILES = .profile .bashrc .bash_profile
 
 include ../Makefile.cmd
 
-ROOTROOT= $(ROOT)/root
+ROOTETCFILES = $(ETCFILES:%=$(ROOTETC)/%)
 ROOTETCSKEL= $(ROOTETC)/skel
-ROOTETCSKELPROG= $(PROGSKEL:%=$(ROOTETCSKEL)/%)
-ROOTROOTPROG= $(PROGROOT:%=$(ROOTROOT)/%)
+ROOTETCSKELFILES = $(ETCSKELFILES:%=$(ROOTETCSKEL)/%)
+ROOTETCVERSIONS= $(ROOTETC)/versions
+ROOTETCVERSIONSFILES = $(ROOTETCVERSIONS)/build
+ETCBASHDIR = $(ROOTETC)/bash
+ROOTETCBASHFILES = $(ETCBASHFILES:%=$(ETCBASHDIR)/%)
+ETCBASHCOMPLETIONDDIR = $(ETCBASHDIR)/bash_completion.d
+ROOTETCBASHCOMPLETIONDFILES = \
+    $(ETCBASHCOMPLETIONDFILES:%=$(ETCBASHCOMPLETIONDDIR)/%)
+ROOTROOT= $(ROOT)/root
+ROOTROOTFILES = $(ROOTFILES:%=$(ROOTROOT)/%)
+
+FILES = $(ROOTETCFILES) $(ROOTETCSKELFILES) \
+    $(ROOTETCBASHFILES) $(ROOTETCBASHCOMPLETIONDFILES) \
+    $(ROOTROOTFILES) $(ROOTETCVERSIONSFILES)
+
 FILEMODE= 0644
-
-CLOBBERFILES = profile .bashrc .profile .login .kshrc
-
-.login: login.csh
-	$(RM) .login
-	$(CP) login.csh .login
-
-profile: etc-profile.sh
-	$(RM) profile
-	$(CP) etc-profile.sh $@
-
-.profile: dot-profile.sh
-	$(RM) .profile
-	$(CP) dot-profile.sh $@
-
-.kshrc: dot-kshrc.sh
-	$(RM) .kshrc
-	$(CP) dot-kshrc.sh $@
-
-.bashrc: bashrc.sh
-	$(RM) .bashrc
-	$(CP) bashrc.sh $@
 
 .KEEP_STATE:
 
-all: $(PROG) $(PROGSKEL)
+all:
 
-$(ROOTROOT)/% \
-$(ROOTETCSKEL)/%: %
-	$(INS.file)
+# Use $^ instead of $< - it's broken without %
+INS.file = $(RM) $@; $(INS) -s -m $(FILEMODE) -f $(@D) $^
+INS.rename = $(INS.file); $(MV) $(@D)/$(^F) $@
 
 $(ROOTROOT) \
+$(ROOTETCVERSIONS) \
+$(ETCBASHDIR) \
+$(ROOTETCBASHCOMPLETIONDDIR) \
 $(ROOTETCSKEL):
 	$(INS.dir)
 
-install: all $(ROOTETCSKEL) $(ROOTETCPROG) $(ROOTETCSKELPROG) $(ROOTROOTPROG)
+$(ROOTETC)/profile: etc-profile.sh
+	$(INS.rename)
+
+$(ROOTETC)/.login: login.csh
+	$(INS.rename)
+
+# skel file and root's default
+$(ROOTROOT)/.kshrc $(ROOTETCSKEL)/.kshrc: dot-kshrc.sh
+	$(INS.rename)
+
+# skel file and root's default
+$(ROOTROOT)/.profile $(ROOTETCSKEL)/.profile: dot-profile.sh
+	$(INS.rename)
+
+$(ROOTETCSKEL)/.bashrc: etc-skel-bashrc.sh
+	$(INS.rename)
+
+$(ROOTROOT)/.bash_profile: dot-bash_profile.sh
+	$(INS.rename)
+
+$(ROOTROOT)/.bashrc: dot-bashrc.sh
+	$(INS.rename)
+
+$(ROOTETCBASHDIR)/%: %
+	$(INS.file)
+
+$(ROOTETCBASHCOMPLETIONDDIR)/%: %
+	$(INS.file)
+
+$(ROOTETCVERSIONSFILES): $(ROOTETCVERSIONS) FRC
+	if [[ -n "$$BUILDVERSION_EXEC" ]]; then \
+		$$BUILDVERSION_EXEC >$(ROOTETCVERSIONSFILES) ; \
+	else \
+		touch $(ROOTETCVERSIONSFILES) ; \
+	fi
+
+install: all $(FILES)
 
 clean:
 
 clobber:
 	$(RM) $(CLOBBERFILES)
 
-lint:
+FRC:

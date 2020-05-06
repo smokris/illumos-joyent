@@ -21,7 +21,7 @@
 
 /*
  * Copyright (c) 1992, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright 2017, Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 /*
  * Copyright (c) 2010, Intel Corporation.
@@ -262,7 +262,7 @@ mdboot(int cmd, int fcn, char *mdep, boolean_t invoke_cb)
 	devtree_freeze();
 
 	if (invoke_cb)
-		(void) callb_execute_class(CB_CL_MDBOOT, NULL);
+		(void) callb_execute_class(CB_CL_MDBOOT, 0);
 
 	/*
 	 * Clear any unresolved UEs from memory.
@@ -409,7 +409,7 @@ stop_other_cpus(void)
 	cpuset_t xcset;
 
 	CPUSET_ALL_BUT(xcset, CPU->cpu_id);
-	xc_priority(0, 0, 0, CPUSET2BV(xcset), (xc_func_t)mach_cpu_halt);
+	xc_priority(0, 0, 0, CPUSET2BV(xcset), mach_cpu_halt);
 	restore_int_flag(s);
 }
 
@@ -1417,7 +1417,7 @@ dtrace_linear_pc(struct regs *rp, proc_t *p, caddr_t *linearp)
  * and posts the softint for x86.
  */
 static ddi_softint_hdl_impl_t lbolt_softint_hdl =
-	{0, NULL, NULL, NULL, 0, NULL, NULL, NULL};
+	{0, 0, NULL, NULL, 0, NULL, NULL, NULL};
 
 void
 lbolt_softint_add(void)
@@ -1471,14 +1471,6 @@ hotinline_smap(hotinline_desc_t *hid)
 {
 	if (is_x86_feature(x86_featureset, X86FSET_SMAP) == B_FALSE)
 		return;
-
-/*
- * We should never hit this since SMAP feature detection is behind
- * an AMD64 header guard.
- */
-#if defined(__i386)
-	panic("illumos only suppports SMAP on the AMD64 architecture.");
-#endif
 
 	if (strcmp(hid->hid_symname, "smap_enable") == 0) {
 		bcopy(clac_instr, (void *)hid->hid_instr_offset,

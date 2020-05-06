@@ -22,7 +22,7 @@
  * Copyright (c) 1991, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 2013 by Delphix. All rights reserved.
  * Copyright 2014, OmniTI Computer Consulting, Inc. All rights reserved.
- * Copyright 2016 Joyent, Inc.
+ * Copyright (c) 2018, Joyent, Inc.
  */
 /* Copyright (c) 1990 Mentat Inc. */
 
@@ -102,7 +102,7 @@ static void	icmp_bind_proto(icmp_t *icmp);
 static int	icmp_build_hdr_template(conn_t *, const in6_addr_t *,
     const in6_addr_t *, uint32_t);
 static void	icmp_capability_req(queue_t *q, mblk_t *mp);
-static int	icmp_close(queue_t *q, int flags);
+static int	icmp_close(queue_t *q, int flags, cred_t *);
 static void	icmp_close_free(conn_t *);
 static void	icmp_tpi_connect(queue_t *q, mblk_t *mp);
 static void	icmp_tpi_disconnect(queue_t *q, mblk_t *mp);
@@ -116,7 +116,7 @@ static void	icmp_icmp_error_ipv6(conn_t *connp, mblk_t *mp,
     ip_recv_attr_t *);
 static void	icmp_info_req(queue_t *q, mblk_t *mp);
 static void	icmp_input(void *, mblk_t *, void *, ip_recv_attr_t *);
-static conn_t 	*icmp_open(int family, cred_t *credp, int *err, int flags);
+static conn_t	*icmp_open(int family, cred_t *credp, int *err, int flags);
 static int	icmp_openv4(queue_t *q, dev_t *devp, int flag, int sflag,
 		    cred_t *credp);
 static int	icmp_openv6(queue_t *q, dev_t *devp, int flag, int sflag,
@@ -138,8 +138,8 @@ static int	icmp_snmp_set(queue_t *q, t_scalar_t level, t_scalar_t name,
 		    uchar_t *ptr, int len);
 static void	icmp_ud_err(queue_t *q, mblk_t *mp, t_scalar_t err);
 static void	icmp_tpi_unbind(queue_t *q, mblk_t *mp);
-static void	icmp_wput(queue_t *q, mblk_t *mp);
-static void	icmp_wput_fallback(queue_t *q, mblk_t *mp);
+static int	icmp_wput(queue_t *q, mblk_t *mp);
+static int	icmp_wput_fallback(queue_t *q, mblk_t *mp);
 static void	icmp_wput_other(queue_t *q, mblk_t *mp);
 static void	icmp_wput_iocdata(queue_t *q, mblk_t *mp);
 static void	icmp_wput_restricted(queue_t *q, mblk_t *mp);
@@ -183,12 +183,12 @@ static struct qinit icmprinitv6 = {
 };
 
 static struct qinit icmpwinit = {
-	(pfi_t)icmp_wput, (pfi_t)ip_wsrv, NULL, NULL, NULL, &icmp_mod_info
+	icmp_wput, ip_wsrv, NULL, NULL, NULL, &icmp_mod_info
 };
 
 /* ICMP entry point during fallback */
 static struct qinit icmp_fallback_sock_winit = {
-	(pfi_t)icmp_wput_fallback, NULL, NULL, NULL, NULL, &icmp_mod_info
+	icmp_wput_fallback, NULL, NULL, NULL, NULL, &icmp_mod_info
 };
 
 /* For AF_INET aka /dev/icmp */
@@ -722,7 +722,7 @@ rawip_do_connect(conn_t *connp, const struct sockaddr *sa, socklen_t len,
 	sin_t		*sin;
 	sin6_t		*sin6;
 	int		error;
-	uint16_t 	dstport;
+	uint16_t	dstport;
 	ipaddr_t	v4dst;
 	in6_addr_t	v6dst;
 	uint32_t	flowinfo;
@@ -739,6 +739,11 @@ rawip_do_connect(conn_t *connp, const struct sockaddr *sa, socklen_t len,
 	}
 
 	ASSERT(sa != NULL && len != 0);
+	sin = NULL;
+	sin6 = NULL;
+	dstport = 0;
+	flowinfo = 0;
+	v4dst = INADDR_ANY;
 
 	/*
 	 * Determine packet type based on type of address passed in
@@ -981,8 +986,9 @@ rawip_do_close(conn_t *connp)
 	ipcl_conn_destroy(connp);
 }
 
+/* ARGSUSED */
 static int
-icmp_close(queue_t *q, int flags)
+icmp_close(queue_t *q, int flags, cred_t *credp __unused)
 {
 	conn_t  *connp;
 
@@ -1966,7 +1972,7 @@ int
 icmp_tpi_opt_get(queue_t *q, int level, int name, uchar_t *ptr)
 {
 	conn_t		*connp = Q_TO_CONN(q);
-	int 		err;
+	int		err;
 
 	err = icmp_opt_get(connp, level, name, ptr);
 	return (err);
@@ -2293,9 +2299,9 @@ icmp_opt_set(conn_t *connp, uint_t optset_context, int level, int name,
 		/*
 		 * Note: Implies T_CHECK semantics for T_OPTCOM_REQ
 		 * inlen != 0 implies value supplied and
-		 * 	we have to "pretend" to set it.
+		 *	we have to "pretend" to set it.
 		 * inlen == 0 implies that there is no
-		 * 	value part in T_CHECK request and just validation
+		 *	value part in T_CHECK request and just validation
 		 * done elsewhere should be enough, we just return here.
 		 */
 		if (inlen == 0) {
@@ -3591,6 +3597,7 @@ icmp_output_ancillary(conn_t *connp, sin_t *sin, sin6_t *sin6, mblk_t *mp,
 		}
 	} else {
 		/* Connected case */
+		dstport = connp->conn_fport;
 		v6dst = connp->conn_faddr_v6;
 		flowinfo = connp->conn_flowinfo;
 	}
@@ -4234,7 +4241,7 @@ icmp_prepend_header_template(conn_t *connp, ip_xmit_attr_t *ixa, mblk_t *mp,
  * consumes the message or passes it downstream; it never queues a
  * a message.
  */
-void
+int
 icmp_wput(queue_t *q, mblk_t *mp)
 {
 	sin6_t		*sin6;
@@ -4261,7 +4268,7 @@ icmp_wput(queue_t *q, mblk_t *mp)
 		/* sockfs never sends down M_DATA */
 		BUMP_MIB(&is->is_rawip_mib, rawipOutErrors);
 		freemsg(mp);
-		return;
+		return (0);
 
 	case M_PROTO:
 	case M_PCPROTO:
@@ -4269,13 +4276,13 @@ icmp_wput(queue_t *q, mblk_t *mp)
 		if (MBLKL(mp) < sizeof (*tudr) ||
 		    ((t_primp_t)mp->b_rptr)->type != T_UNITDATA_REQ) {
 			icmp_wput_other(q, mp);
-			return;
+			return (0);
 		}
 		break;
 
 	default:
 		icmp_wput_other(q, mp);
-		return;
+		return (0);
 	}
 
 	/* Handle valid T_UNITDATA_REQ here */
@@ -4391,7 +4398,7 @@ icmp_wput(queue_t *q, mblk_t *mp)
 		}
 		if (error == 0) {
 			freeb(mp);
-			return;
+			return (0);
 		}
 		break;
 
@@ -4417,7 +4424,7 @@ icmp_wput(queue_t *q, mblk_t *mp)
 			error = icmp_output_hdrincl(connp, data_mp, cr, pid);
 			if (error == 0) {
 				freeb(mp);
-				return;
+				return (0);
 			}
 			/* data_mp consumed above */
 			data_mp = NULL;
@@ -4466,14 +4473,14 @@ icmp_wput(queue_t *q, mblk_t *mp)
 		}
 		if (error == 0) {
 			freeb(mp);
-			return;
+			return (0);
 		}
 		break;
 	}
 	ASSERT(mp != NULL);
 	/* mp is freed by the following routine */
 	icmp_ud_err(q, mp, (t_scalar_t)error);
-	return;
+	return (0);
 
 ud_error2:
 	BUMP_MIB(&is->is_rawip_mib, rawipOutErrors);
@@ -4481,6 +4488,7 @@ ud_error2:
 	ASSERT(mp != NULL);
 	/* mp is freed by the following routine */
 	icmp_ud_err(q, mp, (t_scalar_t)error);
+	return (0);
 }
 
 /*
@@ -4817,13 +4825,14 @@ ud_error:
 }
 
 /* ARGSUSED */
-static void
+static int
 icmp_wput_fallback(queue_t *q, mblk_t *mp)
 {
 #ifdef DEBUG
 	cmn_err(CE_CONT, "icmp_wput_fallback: Message during fallback \n");
 #endif
 	freemsg(mp);
+	return (0);
 }
 
 static void
@@ -5187,7 +5196,7 @@ rawip_kstat_update(kstat_t *ksp, int rw)
 	netstack_t	*ns;
 	icmp_stack_t	*is;
 
-	if ((ksp == NULL) || (ksp->ks_data == NULL))
+	if (ksp->ks_data == NULL)
 		return (EIO);
 
 	if (rw == KSTAT_WRITE)
@@ -5499,7 +5508,7 @@ rawip_activate(sock_lower_handle_t proto_handle,
     sock_upper_handle_t sock_handle, sock_upcalls_t *sock_upcalls, int flags,
     cred_t *cr)
 {
-	conn_t 			*connp = (conn_t *)proto_handle;
+	conn_t *connp = (conn_t *)proto_handle;
 	struct sock_proto_props sopp;
 
 	/* All Solaris components should pass a cred for this operation. */
@@ -5688,7 +5697,7 @@ int
 rawip_ioctl(sock_lower_handle_t proto_handle, int cmd, intptr_t arg,
     int mode, int32_t *rvalp, cred_t *cr)
 {
-	conn_t  	*connp = (conn_t *)proto_handle;
+	conn_t		*connp = (conn_t *)proto_handle;
 	int		error;
 
 	/* All Solaris components should pass a cred for this operation. */

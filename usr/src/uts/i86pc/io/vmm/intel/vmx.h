@@ -126,6 +126,14 @@ enum {
 	GUEST_MSR_NUM		/* must be the last enumeration */
 };
 
+#ifndef	__FreeBSD__
+typedef enum {
+	VS_NONE		= 0x0,
+	VS_LAUNCHED	= 0x1,
+	VS_LOADED	= 0x2
+} vmcs_state_t;
+#endif /* __FreeBSD__ */
+
 /* virtual machine softc */
 struct vmx {
 	struct vmcs	vmcs[VM_MAXCPU];	/* one vmcs per virtual cpu */
@@ -136,7 +144,7 @@ struct vmx {
 #ifndef	__FreeBSD__
 	uint64_t	host_msrs[VM_MAXCPU][GUEST_MSR_NUM];
 	uint64_t	tsc_offset_active[VM_MAXCPU];
-	boolean_t	ctx_loaded[VM_MAXCPU];
+	vmcs_state_t	vmcs_state[VM_MAXCPU];
 #endif
 	struct vmxctx	ctx[VM_MAXCPU];
 	struct vmxcap	cap[VM_MAXCPU];
@@ -156,9 +164,6 @@ CTASSERT((offsetof(struct vmx, pir_desc[0]) & 63) == 0);
 #define	VMX_VMWRITE_ERROR	4
 int	vmx_enter_guest(struct vmxctx *ctx, struct vmx *vmx, int launched);
 void	vmx_call_isr(uintptr_t entry);
-#ifndef __FreeBSD__
-void	vmx_call_trap(uint64_t);
-#endif
 
 u_long	vmx_fix_cr0(u_long cr0);
 u_long	vmx_fix_cr4(u_long cr4);

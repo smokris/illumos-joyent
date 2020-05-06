@@ -647,7 +647,7 @@ Paddr_to_text_map(struct ps_prochandle *P, uintptr_t addr)
 		 * section.
 		 */
 		if (fptr != NULL && fptr->file_lo != NULL &&
-		    (fptr->file_lo->rl_data_base == NULL ||
+		    (fptr->file_lo->rl_data_base == (uintptr_t)NULL ||
 		    pmp->pr_vaddr + pmp->pr_size <=
 		    fptr->file_lo->rl_data_base))
 			return (pmp);
@@ -2170,9 +2170,8 @@ Pbuild_file_symtab(struct ps_prochandle *P, file_info_t *fptr)
 	 * figure out where we might find this. Originally, GNU used the
 	 * .gnu_debuglink solely, but then they added a .note.gnu.build-id. The
 	 * build-id is some size, usually 16 or 20 bytes, often a SHA1 sum of
-	 * the old, but not present file. All that you have to do to compare
-	 * things is see if the sections are less, in theory saving you from
-	 * doing lots of expensive I/O.
+	 * parts of the original file. This is maintained across all versions of
+	 * the subsequent file.
 	 *
 	 * For the .note.gnu.build-id, we're going to check a few things before
 	 * using it, first that the name is 4 bytes, and is GNU and that the
@@ -3355,7 +3354,7 @@ Psymbol_iter_by_lmid(struct ps_prochandle *P, Lmid_t lmid,
     const char *object_name, int which, int mask, proc_sym_f *func, void *cd)
 {
 	return (Psymbol_iter_com(P, lmid, object_name, which, mask,
-	    PRO_NATURAL, (proc_xsym_f *)func, cd));
+	    PRO_NATURAL, (proc_xsym_f *)(uintptr_t)func, cd));
 }
 
 int
@@ -3363,7 +3362,7 @@ Psymbol_iter(struct ps_prochandle *P,
     const char *object_name, int which, int mask, proc_sym_f *func, void *cd)
 {
 	return (Psymbol_iter_com(P, PR_LMID_EVERY, object_name, which, mask,
-	    PRO_NATURAL, (proc_xsym_f *)func, cd));
+	    PRO_NATURAL, (proc_xsym_f *)(uintptr_t)func, cd));
 }
 
 int
@@ -3371,7 +3370,7 @@ Psymbol_iter_by_addr(struct ps_prochandle *P,
     const char *object_name, int which, int mask, proc_sym_f *func, void *cd)
 {
 	return (Psymbol_iter_com(P, PR_LMID_EVERY, object_name, which, mask,
-	    PRO_BYADDR, (proc_xsym_f *)func, cd));
+	    PRO_BYADDR, (proc_xsym_f *)(uintptr_t)func, cd));
 }
 
 int
@@ -3379,7 +3378,7 @@ Psymbol_iter_by_name(struct ps_prochandle *P,
     const char *object_name, int which, int mask, proc_sym_f *func, void *cd)
 {
 	return (Psymbol_iter_com(P, PR_LMID_EVERY, object_name, which, mask,
-	    PRO_BYNAME, (proc_xsym_f *)func, cd));
+	    PRO_BYNAME, (proc_xsym_f *)(uintptr_t)func, cd));
 }
 
 /*
@@ -3574,7 +3573,7 @@ Penv_iter(struct ps_prochandle *P, proc_env_f *func, void *data)
 			nenv = 0;
 		}
 
-		if ((envoff = envp[nenv++]) == NULL)
+		if ((envoff = envp[nenv++]) == (uintptr_t)NULL)
 			break;
 
 		/*

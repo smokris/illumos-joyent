@@ -20,7 +20,7 @@
  */
 /*
  * Copyright (c) 2004, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2012, Joyent, Inc.  All rights reserved.
+ * Copyright (c) 2018, Joyent, Inc.  All rights reserved.
  */
 
 #include <mdb/mdb_param.h>
@@ -52,7 +52,8 @@ char *zone_status_names[] = {
 	"empty",		/* ZONE_IS_EMPTY */
 	"down",			/* ZONE_IS_DOWN */
 	"dying",		/* ZONE_IS_DYING */
-	"dead"			/* ZONE_IS_DEAD */
+	"dead",			/* ZONE_IS_DEAD */
+	"free"			/* ZONE_IS_FREE */
 };
 
 static int
@@ -280,7 +281,7 @@ zone_walk_init(mdb_walk_state_t *wsp)
 {
 	GElf_Sym sym;
 
-	if (wsp->walk_addr == NULL) {
+	if (wsp->walk_addr == 0) {
 		if (mdb_lookup_by_name("zone_active", &sym) == -1) {
 			mdb_warn("failed to find 'zone_active'");
 			return (WALK_ERR);
@@ -304,7 +305,7 @@ zone_walk_step(mdb_walk_state_t *wsp)
 int
 zsd_walk_init(mdb_walk_state_t *wsp)
 {
-	if (wsp->walk_addr == NULL) {
+	if (wsp->walk_addr == 0) {
 		mdb_warn("global walk not supported\n");
 		return (WALK_ERR);
 	}

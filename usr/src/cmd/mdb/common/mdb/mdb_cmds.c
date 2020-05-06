@@ -26,9 +26,10 @@
 
 /*
  * Copyright (c) 2012 by Delphix. All rights reserved.
- * Copyright (c) 2018 Joyent, Inc. All rights reserved.
+ * Copyright 2019 Joyent, Inc.
  * Copyright (c) 2013 Josef 'Jeff' Sipek <jeffpc@josefsipek.net>
  * Copyright (c) 2015, 2017 by Delphix. All rights reserved.
+ * Copyright 2018 OmniOS Community Edition (OmniOSce) Association.
  */
 
 #include <sys/elf.h>
@@ -1519,9 +1520,9 @@ map_name(const mdb_map_t *map, const char *name)
 		return ("[ stack ]");
 	if (map->map_flags & MDB_TGT_MAP_ANON)
 		return ("[ anon ]");
-	if (map->map_name != NULL)
-		return (map->map_name);
-	return ("[ unknown ]");
+	if (map->map_name[0] == '\0')
+		return ("[ unknown ]");
+	return (map->map_name);
 }
 
 /*ARGSUSED*/
@@ -2089,7 +2090,7 @@ cmd_dis(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 	if (opt_f)
 		as = MDB_TGT_AS_FILE;
 	else
-		as = MDB_TGT_AS_VIRT;
+		as = MDB_TGT_AS_VIRT_I;
 
 	if (opt_w == FALSE) {
 		n++;
@@ -2162,6 +2163,46 @@ cmd_dis(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 
 	mdb_set_dot(addr);
 	return (DCMD_OK);
+}
+
+static void
+dis_help(void)
+{
+	static const char dis_desc[] =
+"Disassembles instructions starting at the final argument or the current\n"
+"value of dot. If the address is the start of a function, the entire\n"
+"function is disassembled, or else a window of instructions before and after\n"
+"the disassembled address are displayed.\n"
+"\n";
+
+	static const char dis_opts[] =
+"  -a         Print instruction addresses as numeric values instead of \n"
+"             symbolic values.\n"
+"  -b         Print instruction addresses as both numeric and symbolic "
+"values.\n"
+"  -f         Read instructions from the target's object file instead of the \n"
+"             target's virtual address space.\n"
+"  -n instr   Display 'instr' instructions before and after the given "
+"address.\n"
+"  -w         Force window behavior, even at the start of a function.\n"
+"\n";
+
+	static const char dis_examples[] =
+"  ::dis\n"
+"  clock::dis\n"
+"  ::dis gethrtime\n"
+"  set_freemem+0x16::dis -n 4\n"
+"\n";
+
+	mdb_printf("%s", dis_desc);
+	(void) mdb_dec_indent(2);
+	mdb_printf("%<b>OPTIONS%</b>\n");
+	(void) mdb_inc_indent(2);
+	mdb_printf("%s", dis_opts);
+	(void) mdb_dec_indent(2);
+	mdb_printf("%<b>EXAMPLES%</b>\n");
+	(void) mdb_inc_indent(2);
+	(void) mdb_printf("%s", dis_examples);
 }
 
 /*ARGSUSED*/
@@ -2342,7 +2383,7 @@ cmd_head(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 	const char *c;
 	mdb_pipe_t p;
 
-	if (!flags & DCMD_PIPE)
+	if (!(flags & DCMD_PIPE))
 		return (DCMD_USAGE);
 
 	if (argc == 1 || argc == 2) {
@@ -2634,8 +2675,9 @@ tgt_status(const mdb_tgt_status_t *tsp)
 		return (DCMD_OK);
 
 	if (tsp->st_pc != 0) {
-		if (mdb_dis_ins2str(mdb.m_disasm, mdb.m_target, MDB_TGT_AS_VIRT,
-		    buf, sizeof (buf), tsp->st_pc) != tsp->st_pc)
+		if (mdb_dis_ins2str(mdb.m_disasm, mdb.m_target,
+		    MDB_TGT_AS_VIRT_I, buf, sizeof (buf), tsp->st_pc) !=
+		    tsp->st_pc)
 			format = "target stopped at:\n%-#16a%8T%s\n";
 		else
 			format = "target stopped at %a:\n";
@@ -2788,7 +2830,7 @@ cmd_run(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 			mdb_warn("failed to create new target");
 		return (DCMD_ERR);
 	}
-	return (cmd_cont(NULL, 0, 0, NULL));
+	return (cmd_cont(0, 0, 0, NULL));
 }
 #endif
 
@@ -2808,7 +2850,7 @@ ve_delete(mdb_tgt_t *t, mdb_tgt_spec_desc_t *sp, int vid, void *data)
 	if (vid < 0)
 		return (0); /* skip over target implementation events */
 
-	if (sp->spec_base != NULL) {
+	if (sp->spec_base != 0) {
 		(void) mdb_tgt_vespec_info(t, vid, &spec, NULL, 0);
 		if (sp->spec_base - spec.spec_base < spec.spec_size)
 			status = mdb_tgt_vespec_delete(t, vid);
@@ -2835,7 +2877,7 @@ ve_delete_spec(mdb_tgt_spec_desc_t *sp)
 	    (mdb_tgt_vespec_f *)ve_delete, sp);
 
 	if (sp->spec_size == 0) {
-		if (sp->spec_id != 0 || sp->spec_base != NULL)
+		if (sp->spec_id != 0 || sp->spec_base != 0)
 			mdb_warn("no traced events matched description\n");
 	}
 
@@ -3100,9 +3142,11 @@ const mdb_dcmd_t mdb_dcmd_builtins[] = {
 	    "address", cmd_array },
 	{ "bp", "?[+/-dDestT] [-c cmd] [-n count] sym ...", "breakpoint at the "
 	    "specified addresses or symbols", cmd_bp, bp_help },
-	{ "dcmds", NULL, "list available debugger commands", cmd_dcmds },
+	{ "dcmds", "[[-n] pattern]",
+	    "list available debugger commands", cmd_dcmds, cmd_dcmds_help },
 	{ "delete", "?[id|all]", "delete traced software events", cmd_delete },
-	{ "dis", "?[-abfw] [-n cnt] [addr]", "disassemble near addr", cmd_dis },
+	{ "dis", "?[-abfw] [-n cnt] [addr]", "disassemble near addr", cmd_dis,
+	    dis_help },
 	{ "disasms", NULL, "list available disassemblers", cmd_disasms },
 	{ "dismode", "[mode]", "get/set disassembly mode", cmd_dismode },
 	{ "dmods", "[-l] [mod]", "list loaded debugger modules", cmd_dmods },
@@ -3161,6 +3205,7 @@ const mdb_dcmd_t mdb_dcmd_builtins[] = {
 	{ "typeset", "[+/-t] var ...", "set variable attributes", cmd_typeset },
 	{ "typedef", "[-c model | -d | -l | -r file | -w file ] [type] [name]",
 		"create synthetic types", cmd_typedef, cmd_typedef_help },
+	{ "typelist", NULL, "list known types", cmd_typelist },
 	{ "unset", "[name ...]", "unset variables", cmd_unset },
 	{ "vars", "[-npt]", "print listing of variables", cmd_vars },
 	{ "version", NULL, "print debugger version string", cmd_version },
@@ -3168,7 +3213,8 @@ const mdb_dcmd_t mdb_dcmd_builtins[] = {
 	    cmd_vtop },
 	{ "walk", "?name [variable]", "walk data structure", cmd_walk, NULL,
 	    cmd_walk_tab },
-	{ "walkers", NULL, "list available walkers", cmd_walkers },
+	{ "walkers", "[[-n] pattern]", "list available walkers",
+	    cmd_walkers, cmd_walkers_help },
 	{ "whatis", ":[-aikqv]", "given an address, return information",
 	    cmd_whatis, whatis_help },
 	{ "whence", "[-v] name ...", "show source of walk or dcmd", cmd_which },
@@ -3204,8 +3250,8 @@ const mdb_dcmd_t mdb_dcmd_builtins[] = {
 	 */
 	{ "?", "fmt-list", "format data from object file", cmd_print_object },
 	{ "$>", "[file]", "log session to a file", cmd_old_log },
-	{ "$g", "?", "get/set C++ demangling options", cmd_demflags },
-	{ "$G", NULL, "enable/disable C++ demangling support", cmd_demangle },
+	{ "$g", "?", "get/set demangling options", cmd_demflags },
+	{ "$G", NULL, "enable/disable demangling support", cmd_demangle },
 	{ "$i", NULL, "print signals that are ignored", cmd_notsup },
 	{ "$l", NULL, "print the representative thread's lwp id", cmd_notsup },
 	{ "$p", ":", "change debugger target context", cmd_context },

@@ -27,13 +27,15 @@
 
 include		$(SRC)/Makefile.master
 
-FILES=	\
-		$(MACH)_cc_map.noexeglobs \
-		$(MACH)_gcc_map.noexeglobs
 
-$(BUILD64)FILES += \
-		$(MACH64)_cc_map.noexeglobs \
-		$(MACH64)_gcc_map.noexeglobs
+$(__GNUC)FILES=	$(MACH)_gcc_map.noexeglobs
+$(__SUNC)FILES= $(MACH)_cc_map.noexeglobs
+
+NATIVE_LIBS	+= libc.so
+LDFLAGS		+= $(BDIRECT)
+
+$(__GNUC)$(BUILD64)FILES += $(MACH64)_gcc_map.noexeglobs
+$(__SUNC)$(BUILD64)FILES += $(MACH64)_cc_map.noexeglobs
 
 SYMS1=		syms.1
 SYMS2=		syms.2
@@ -44,8 +46,6 @@ TEMPLATE1=	map.noexeglobs.1.template
 TEMPLATE2=	map.noexeglobs.2.template
 
 all install:	$(FILES)
-
-lint:
 
 clean:
 		$(RM) $(SYMS1) $(SYMS2) $(MAIN1) $(MAIN2)
@@ -73,12 +73,9 @@ clobber:	clean
 
 $(MACH)_cc_map.noexeglobs :=	LINK =	$(LINK.c)
 $(MACH64)_cc_map.noexeglobs :=	LINK =	$(LINK64.c)
-
-$(MACH)_gcc_map.noexeglobs :=	CC =	$(ONBLD_TOOLS)/bin/$(MACH)/cw -_gcc
 $(MACH)_gcc_map.noexeglobs :=	LINK =	$(LINK.c)
-$(MACH64)_gcc_map.noexeglobs :=	CC =	$(ONBLD_TOOLS)/bin/$(MACH)/cw -_gcc
 $(MACH64)_gcc_map.noexeglobs :=	LINK =	$(LINK64.c)
- 
+
 # This generic target creates two dynamic executables from an empty "main"
 # program.  These objects are not executed, but are analyzed to determine the
 # global symbols each provides.

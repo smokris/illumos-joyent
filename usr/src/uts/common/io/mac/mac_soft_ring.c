@@ -152,8 +152,8 @@ mac_soft_ring_create(int id, clock_t wait, uint16_t type,
     processorid_t cpuid, mac_direct_rx_t rx_func, void *x_arg1,
     mac_resource_handle_t x_arg2)
 {
-	mac_soft_ring_t 	*ringp;
-	char 			name[S_RING_NAMELEN];
+	mac_soft_ring_t		*ringp;
+	char			name[S_RING_NAMELEN];
 
 	bzero(name, 64);
 	ringp = kmem_cache_alloc(mac_soft_ring_cache, KM_SLEEP);
@@ -242,7 +242,7 @@ mac_soft_ring_free(mac_soft_ring_t *softring)
 	ASSERT((softring->s_ring_state &
 	    (S_RING_CONDEMNED | S_RING_CONDEMNED_DONE | S_RING_PROC)) ==
 	    (S_RING_CONDEMNED | S_RING_CONDEMNED_DONE));
-	mac_pkt_drop(NULL, NULL, softring->s_ring_first, B_FALSE);
+	mac_drop_chain(softring->s_ring_first, "softring free");
 	softring->s_ring_tx_arg2 = NULL;
 	mac_soft_ring_stat_delete(softring);
 	mac_callback_free(softring->s_ring_notify_cb_list);
@@ -353,7 +353,7 @@ mac_rx_soft_ring_drain(mac_soft_ring_t *ringp)
 	mblk_t		*mp;
 	void		*arg1;
 	mac_resource_handle_t arg2;
-	timeout_id_t 	tid;
+	timeout_id_t	tid;
 	mac_direct_rx_t	proc;
 	size_t		sz;
 	int		cnt;
@@ -494,7 +494,7 @@ done:
  * Enabling is allow the processing thread to send packets to the
  * client while disabling does the opposite.
  */
-void
+int
 mac_soft_ring_intr_enable(void *arg)
 {
 	mac_soft_ring_t *ringp = (mac_soft_ring_t *)arg;
@@ -503,6 +503,7 @@ mac_soft_ring_intr_enable(void *arg)
 	if (ringp->s_ring_first != NULL)
 		mac_soft_ring_worker_wakeup(ringp);
 	mutex_exit(&ringp->s_ring_lock);
+	return (0);
 }
 
 boolean_t
@@ -532,7 +533,7 @@ mac_soft_ring_intr_disable(void *arg)
  * setup.
  */
 mblk_t *
-mac_soft_ring_poll(mac_soft_ring_t *ringp, int bytes_to_pickup)
+mac_soft_ring_poll(mac_soft_ring_t *ringp, size_t bytes_to_pickup)
 {
 	mblk_t	*head, *tail;
 	mblk_t	*mp;
@@ -644,10 +645,10 @@ mac_soft_ring_signal(mac_soft_ring_t *softring, uint_t sr_flag)
 static void
 mac_tx_soft_ring_drain(mac_soft_ring_t *ringp)
 {
-	mblk_t 			*mp;
-	void 			*arg1;
-	void 			*arg2;
-	mblk_t 			*tail;
+	mblk_t			*mp;
+	void			*arg1;
+	void			*arg2;
+	mblk_t			*tail;
 	uint_t			saved_pkt_count, saved_size;
 	mac_tx_stats_t		stats;
 	mac_soft_ring_set_t	*mac_srs = ringp->s_ring_set;

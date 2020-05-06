@@ -21,7 +21,7 @@
 
 /*
  * Copyright (c) 2003, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright 2018, Joyent Inc.
+ * Copyright 2019 Joyent, Inc.
  * Copyright (c) 2016 by Delphix. All rights reserved.
  * Copyright 2018 OmniOS Community Edition (OmniOSce) Association.
  */
@@ -106,14 +106,16 @@
  *   removed from the list of active zones.  zone_destroy() returns, and
  *   the zone can be recreated.
  *
- *   ZONE_IS_FREE (internal state): zone_ref goes to 0, ZSD destructor
- *   callbacks are executed, and all memory associated with the zone is
- *   freed.
+ *   ZONE_IS_FREE (internal state): All references have been dropped and
+ *   the zone_t is no longer in the zone_active nor zone_deathrow lists.
+ *   The zone_t is in the process of being freed.  This state exists
+ *   only for publishing a sysevent to indicate that the zone by this
+ *   name can be booted again.
  *
- *   Threads can wait for the zone to enter a requested state by using
- *   zone_status_wait() or zone_status_timedwait() with the desired
- *   state passed in as an argument.  Zone state transitions are
- *   uni-directional; it is not possible to move back to an earlier state.
+ *   Threads can wait for the zone to enter a requested state (other than
+ *   ZONE_IS_FREE) by using zone_status_wait() or zone_status_timedwait()
+ *   with the desired state passed in as an argument.  Zone state transitions
+ *   are uni-directional; it is not possible to move back to an earlier state.
  *
  *
  *   Zone-Specific Data:
@@ -170,7 +172,7 @@
  *
  *   Ordering requirements:
  *       pool_lock --> cpu_lock --> zonehash_lock --> zone_status_lock -->
- *       	zone_lock --> zsd_key_lock --> pidlock --> p_lock
+ *       zone_lock --> zsd_key_lock --> pidlock --> p_lock
  *
  *   When taking zone_mem_lock or zone_nlwps_lock, the lock ordering is:
  *	zonehash_lock --> a_lock --> pidlock --> p_lock --> zone_mem_lock
@@ -353,6 +355,7 @@ const char  *zone_status_table[] = {
 	ZONE_EVENT_SHUTTING_DOWN,	/* down */
 	ZONE_EVENT_SHUTTING_DOWN,	/* dying */
 	ZONE_EVENT_UNINITIALIZED,	/* dead */
+	ZONE_EVENT_FREE,		/* free */
 };
 
 /*
@@ -396,6 +399,7 @@ static int zone_remove_datalink(zoneid_t, datalink_id_t);
 static int zone_list_datalink(zoneid_t, int *, datalink_id_t *);
 static int zone_set_network(zoneid_t, zone_net_data_t *);
 static int zone_get_network(zoneid_t, zone_net_data_t *);
+static void zone_status_set(zone_t *, zone_status_t);
 
 typedef boolean_t zsd_applyfn_t(kmutex_t *, boolean_t, zone_t *, zone_key_t);
 
@@ -2360,20 +2364,26 @@ zone_misc_kstat_update(kstat_t *ksp, int rw)
 {
 	zone_t *zone = ksp->ks_private;
 	zone_misc_kstat_t *zmp = ksp->ks_data;
-	hrtime_t tmp;
+	hrtime_t hrtime;
+	uint64_t tmp;
 
 	if (rw == KSTAT_WRITE)
 		return (EACCES);
 
-	tmp = zone->zone_utime;
-	scalehrtime(&tmp);
-	zmp->zm_utime.value.ui64 = tmp;
-	tmp = zone->zone_stime;
-	scalehrtime(&tmp);
-	zmp->zm_stime.value.ui64 = tmp;
-	tmp = zone->zone_wtime;
-	scalehrtime(&tmp);
-	zmp->zm_wtime.value.ui64 = tmp;
+	tmp = cpu_uarray_sum(zone->zone_ustate, ZONE_USTATE_STIME);
+	hrtime = UINT64_OVERFLOW_TO_INT64(tmp);
+	scalehrtime(&hrtime);
+	zmp->zm_stime.value.ui64 = hrtime;
+
+	tmp = cpu_uarray_sum(zone->zone_ustate, ZONE_USTATE_UTIME);
+	hrtime = UINT64_OVERFLOW_TO_INT64(tmp);
+	scalehrtime(&hrtime);
+	zmp->zm_utime.value.ui64 = hrtime;
+
+	tmp = cpu_uarray_sum(zone->zone_ustate, ZONE_USTATE_WTIME);
+	hrtime = UINT64_OVERFLOW_TO_INT64(tmp);
+	scalehrtime(&hrtime);
+	zmp->zm_wtime.value.ui64 = hrtime;
 
 	zmp->zm_avenrun1.value.ui32 = zone->zone_avenrun[0];
 	zmp->zm_avenrun5.value.ui32 = zone->zone_avenrun[1];
@@ -2389,6 +2399,7 @@ zone_misc_kstat_update(kstat_t *ksp, int rw)
 	zmp->zm_nested_intp.value.ui32 = zone->zone_nested_intp;
 
 	zmp->zm_init_pid.value.ui32 = zone->zone_proc_initpid;
+	zmp->zm_init_restarts.value.ui32 = zone->zone_proc_init_restarts;
 	zmp->zm_boot_time.value.ui64 = (uint64_t)zone->zone_boot_time;
 
 	return (0);
@@ -2434,6 +2445,8 @@ zone_misc_kstat_create(zone_t *zone)
 	kstat_named_init(&zmp->zm_nested_intp, "nested_interp",
 	    KSTAT_DATA_UINT32);
 	kstat_named_init(&zmp->zm_init_pid, "init_pid", KSTAT_DATA_UINT32);
+	kstat_named_init(&zmp->zm_init_restarts, "init_restarts",
+	    KSTAT_DATA_UINT32);
 	kstat_named_init(&zmp->zm_boot_time, "boot_time", KSTAT_DATA_UINT64);
 
 	ksp->ks_update = zone_misc_kstat_update;
@@ -2568,9 +2581,6 @@ zone_zsd_init(void)
 	zone0.zone_swapresv_kstat = NULL;
 	zone0.zone_physmem_kstat = NULL;
 	zone0.zone_nprocs_kstat = NULL;
-	zone0.zone_stime = 0;
-	zone0.zone_utime = 0;
-	zone0.zone_wtime = 0;
 
 	zone_pdata[0].zpers_zfsp = &zone0_zp_zfs;
 	zone_pdata[0].zpers_zfsp->zpers_zfs_io_pri = 1;
@@ -2815,6 +2825,8 @@ zone_init(void)
 	 */
 	rw_init(&zone0.zone_mntfs_db_lock, NULL, RW_DEFAULT, NULL);
 
+	zone0.zone_ustate = cpu_uarray_zalloc(ZONE_USTATE_MAX, KM_SLEEP);
+
 	mutex_enter(&zonehash_lock);
 	zone_uniqid(&zone0);
 	ASSERT(zone0.zone_uniqid == GLOBAL_ZONEUNIQID);
@@ -2917,6 +2929,17 @@ zone_free(zone_t *zone)
 	}
 	list_destroy(&zone->zone_dl_list);
 
+	/*
+	 * This zone_t can no longer inhibit creation of another zone_t
+	 * with the same name or debug ID.  Generate a sysevent so that
+	 * userspace tools know it is safe to carry on.
+	 */
+	mutex_enter(&zone_status_lock);
+	zone_status_set(zone, ZONE_IS_FREE);
+	mutex_exit(&zone_status_lock);
+
+	cpu_uarray_free(zone->zone_ustate);
+
 	if (zone->zone_rootvp != NULL)
 		VN_RELE(zone->zone_rootvp);
 	if (zone->zone_rootpath)
@@ -2964,8 +2987,8 @@ zone_status_set(zone_t *zone, zone_status_t status)
 
 	nvlist_t *nvl = NULL;
 	ASSERT(MUTEX_HELD(&zone_status_lock));
-	ASSERT(status > ZONE_MIN_STATE && status <= ZONE_MAX_STATE &&
-	    status >= zone_status_get(zone));
+	ASSERT((status > ZONE_MIN_STATE && status <= ZONE_MAX_STATE ||
+	    status == ZONE_IS_FREE) && status >= zone_status_get(zone));
 
 	/* Current time since Jan 1 1970 but consumers expect NS */
 	gethrestime(&now);
@@ -2984,6 +3007,8 @@ zone_status_set(zone_t *zone, zone_status_t status)
 #ifdef DEBUG
 		(void) printf(
 		    "Failed to allocate and send zone state change event.\n");
+#else
+		/* EMPTY */
 #endif
 	}
 	nvlist_free(nvl);
@@ -3001,6 +3026,38 @@ zone_status_t
 zone_status_get(zone_t *zone)
 {
 	return (zone->zone_status);
+}
+
+/*
+ * Publish a zones-related sysevent for purposes other than zone state changes.
+ * While it is unfortunate that zone_event_chan is associated with
+ * "com.sun:zones:status" (rather than "com.sun:zones") state changes should be
+ * the only ones with class "status" and subclass "change".
+ */
+void
+zone_sysevent_publish(zone_t *zone, const char *class, const char *subclass,
+    nvlist_t *ev_nvl)
+{
+	nvlist_t *nvl = NULL;
+	timestruc_t now;
+	uint64_t t;
+
+	gethrestime(&now);
+	t = (now.tv_sec * NANOSEC) + now.tv_nsec;
+
+	if (nvlist_dup(ev_nvl, &nvl, KM_SLEEP) != 0 ||
+	    nvlist_add_string(nvl, ZONE_CB_NAME, zone->zone_name) != 0 ||
+	    nvlist_add_uint64(nvl, ZONE_CB_ZONEID, zone->zone_id) != 0 ||
+	    nvlist_add_uint64(nvl, ZONE_CB_TIMESTAMP, t) != 0 ||
+	    sysevent_evc_publish(zone_event_chan, class, subclass, "sun.com",
+	    "kernel", nvl, EVCH_SLEEP) != 0) {
+#ifdef DEBUG
+		(void) printf("Failed to allocate and send zone misc event.\n");
+#else
+		/* EMPTY */
+#endif
+	}
+	nvlist_free(nvl);
 }
 
 static int
@@ -3737,12 +3794,13 @@ zone_find_by_path(const char *path)
  * Based on loadavg_update(), genloadavg() and calcloadavg() from clock.c.
  */
 void
-zone_loadavg_update()
+zone_loadavg_update(void)
 {
 	zone_t *zp;
 	zone_status_t status;
 	struct loadavg_s *lavg;
 	hrtime_t zone_total;
+	uint64_t tmp;
 	int i;
 	hrtime_t hr_avg;
 	int nrun;
@@ -3767,7 +3825,9 @@ zone_loadavg_update()
 		 */
 		lavg = &zp->zone_loadavg;
 
-		zone_total = zp->zone_utime + zp->zone_stime + zp->zone_wtime;
+		tmp = cpu_uarray_sum_all(zp->zone_ustate);
+		zone_total = UINT64_OVERFLOW_TO_INT64(tmp);
+
 		scalehrtime(&zone_total);
 
 		/* The zone_total should always be increasing. */
@@ -4417,9 +4477,13 @@ zsched(void *arg)
 	bcopy("zsched", PTOU(pp)->u_psargs, sizeof ("zsched"));
 	bcopy("zsched", PTOU(pp)->u_comm, sizeof ("zsched"));
 	PTOU(pp)->u_argc = 0;
-	PTOU(pp)->u_argv = NULL;
-	PTOU(pp)->u_envp = NULL;
-	PTOU(pp)->u_commpagep = NULL;
+	PTOU(pp)->u_argv = 0;
+	PTOU(pp)->u_argvstrs = 0;
+	PTOU(pp)->u_argvstrsize = 0;
+	PTOU(pp)->u_envp = 0;
+	PTOU(pp)->u_envstrs = 0;
+	PTOU(pp)->u_envstrsize = 0;
+	PTOU(pp)->u_commpagep = 0;
 	closeall(P_FINFO(pp));
 
 	/*
@@ -4822,8 +4886,8 @@ zone_set_privset(zone_t *zone, const priv_set_t *zone_privs,
  * Where each element of the nvpair_list_array is of the form:
  *
  * [(name = "privilege", value = RCPRIV_PRIVILEGED),
- * 	(name = "limit", value = uint64_t),
- * 	(name = "action", value = (RCTL_LOCAL_NOACTION || RCTL_LOCAL_DENY))]
+ *	(name = "limit", value = uint64_t),
+ *	(name = "action", value = (RCTL_LOCAL_NOACTION || RCTL_LOCAL_DENY))]
  */
 static int
 parse_rctls(caddr_t ubuf, size_t buflen, nvlist_t **nvlp)
@@ -5118,10 +5182,7 @@ zone_create(const char *zone_name, const char *zone_root,
 	zone->zone_bootargs = NULL;
 	zone->zone_fs_allowed = NULL;
 
-	secflags_zero(&zone0.zone_secflags.psf_lower);
-	secflags_zero(&zone0.zone_secflags.psf_effective);
-	secflags_zero(&zone0.zone_secflags.psf_inherit);
-	secflags_fullset(&zone0.zone_secflags.psf_upper);
+	psecflags_default(&zone->zone_secflags);
 
 	zone->zone_initname =
 	    kmem_alloc(strlen(zone_default_initname) + 1, KM_SLEEP);
@@ -5143,6 +5204,8 @@ zone_create(const char *zone_name, const char *zone_root,
 	zone_pdata[zoneid].zpers_zfsp =
 	    kmem_zalloc(sizeof (zone_zfs_io_t), KM_SLEEP);
 	zone_pdata[zoneid].zpers_zfsp->zpers_zfs_io_pri = 1;
+
+	zone->zone_ustate = cpu_uarray_zalloc(ZONE_USTATE_MAX, KM_SLEEP);
 
 	/*
 	 * Zsched initializes the rctls.
@@ -6960,6 +7023,7 @@ zone_list(zoneid_t *zoneidlist, uint_t *numzones)
 		return (set_errno(EFAULT));
 
 	myzone = curproc->p_zone;
+	ASSERT(zonecount > 0);
 	if (myzone != global_zone) {
 		bslabel_t *mybslab;
 
@@ -6973,28 +7037,25 @@ zone_list(zoneid_t *zoneidlist, uint_t *numzones)
 			mutex_enter(&zonehash_lock);
 			real_nzones = zonecount;
 			domi_nzones = 0;
-			if (real_nzones > 0) {
-				zoneids = kmem_alloc(real_nzones *
-				    sizeof (zoneid_t), KM_SLEEP);
-				mybslab = label2bslabel(myzone->zone_slabel);
-				for (zone = list_head(&zone_active);
-				    zone != NULL;
-				    zone = list_next(&zone_active, zone)) {
-					if (zone->zone_id == GLOBAL_ZONEID)
-						continue;
-					if (zone != myzone &&
-					    (zone->zone_flags & ZF_IS_SCRATCH))
-						continue;
-					/*
-					 * Note that a label always dominates
-					 * itself, so myzone is always included
-					 * in the list.
-					 */
-					if (bldominates(mybslab,
-					    label2bslabel(zone->zone_slabel))) {
-						zoneids[domi_nzones++] =
-						    zone->zone_id;
-					}
+			zoneids = kmem_alloc(real_nzones *
+			    sizeof (zoneid_t), KM_SLEEP);
+			mybslab = label2bslabel(myzone->zone_slabel);
+			for (zone = list_head(&zone_active);
+			    zone != NULL;
+			    zone = list_next(&zone_active, zone)) {
+				if (zone->zone_id == GLOBAL_ZONEID)
+					continue;
+				if (zone != myzone &&
+				    (zone->zone_flags & ZF_IS_SCRATCH))
+					continue;
+				/*
+				 * Note that a label always dominates
+				 * itself, so myzone is always included
+				 * in the list.
+				 */
+				if (bldominates(mybslab,
+				    label2bslabel(zone->zone_slabel))) {
+					zoneids[domi_nzones++] = zone->zone_id;
 				}
 			}
 			mutex_exit(&zonehash_lock);
@@ -7003,14 +7064,12 @@ zone_list(zoneid_t *zoneidlist, uint_t *numzones)
 		mutex_enter(&zonehash_lock);
 		real_nzones = zonecount;
 		domi_nzones = 0;
-		if (real_nzones > 0) {
-			zoneids = kmem_alloc(real_nzones * sizeof (zoneid_t),
-			    KM_SLEEP);
-			for (zone = list_head(&zone_active); zone != NULL;
-			    zone = list_next(&zone_active, zone))
-				zoneids[domi_nzones++] = zone->zone_id;
-			ASSERT(domi_nzones == real_nzones);
-		}
+		zoneids = kmem_alloc(real_nzones * sizeof (zoneid_t), KM_SLEEP);
+		for (zone = list_head(&zone_active); zone != NULL;
+		    zone = list_next(&zone_active, zone))
+			zoneids[domi_nzones++] = zone->zone_id;
+
+		ASSERT(domi_nzones == real_nzones);
 		mutex_exit(&zonehash_lock);
 	}
 
@@ -7030,8 +7089,7 @@ zone_list(zoneid_t *zoneidlist, uint_t *numzones)
 			error = EFAULT;
 	}
 
-	if (real_nzones > 0)
-		kmem_free(zoneids, real_nzones * sizeof (zoneid_t));
+	kmem_free(zoneids, real_nzones * sizeof (zoneid_t));
 
 	if (error != 0)
 		return (set_errno(error));

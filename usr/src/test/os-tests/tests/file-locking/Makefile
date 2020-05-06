@@ -10,13 +10,13 @@
 #
 
 #
-# Copyright 2016 Joyent, Inc.
+# Copyright 2020 Joyent, Inc.
 #
 
 include $(SRC)/cmd/Makefile.cmd
 include $(SRC)/test/Makefile.com
 
-UTILS = util.c
+OBJECTS=util.o runtests.32.o runtests.64.o acquire-lock.32.o acquire-lock.64.o
 
 PROGS = \
 	runtests \
@@ -24,16 +24,9 @@ PROGS = \
 
 CSTD = $(CSTD_GNU99)
 
-SRCS = $(PROGS:%=%.c) $(UTILS)
+SRCS = $(PROGS:%=%.c) $(UTILS:%.o=%.c)
 PROGS32 = $(PROGS:%=%.32)
 PROGS64 = $(PROGS:%=%.64)
-
-runtests.32 :=	LDLIBS += -lgen
-runtests.64 :=	LDLIBS64 += -lgen
-
-LINTS = $(PROGS:%=%.ln)
-LINTFLAGS += -erroff=E_NAME_DEF_NOT_USED2
-LINTFLAGS += -erroff=E_NAME_USED_NOT_DEF2
 
 ROOTOPTDIR = $(ROOT)/opt/os-tests/tests/file-locking
 ROOTOPTPROGS = $(PROGS32:%=$(ROOTOPTDIR)/%) \
@@ -43,15 +36,12 @@ all     :=      TARGET = all
 install :=      TARGET = install
 clean   :=      TARGET = clean
 clobber :=      TARGET = clobber
-lint    :=      TARGET = lint
 
 .KEEP_STATE:
 
 install: $(ROOTOPTPROGS)
 
 all: $(PROGS32) $(PROGS64)
-
-lint: $(LINTS)
 
 clean:
 	-rm $(PROGS32) $(PROGS64)
@@ -67,15 +57,18 @@ $(ROOTOPTDIR)/%: %
 $(ROOTOPTDIR)/%: %.ksh
 	$(INS.rename)
 
-%.ln: %.c
-	$(LINT.c) $< $(UTILS) $(LDLIBS)
+%.64.o: %.c
+	$(COMPILE64.c) $< -o $@
 
-%.64: %.c
-	$(LINK64.c) -o $@ $< $(UTILS) $(LDLIBS64)
+%.32.o: %.c
+	$(COMPILE.c) $< -o $@
+
+%.64: %.64.o util.64.o
+	$(LINK64.c) -o $@ $< util.64.o $(LDLIBS64)
 	$(POST_PROCESS)
 
-%.32: %.c
-	$(LINK.c) -o $@ $< $(UTILS) $(LDLIBS)
+%.32: %.32.o util.32.o
+	$(LINK.c) -o $@ $< util.32.o $(LDLIBS)
 	$(POST_PROCESS)
 
 clobber:

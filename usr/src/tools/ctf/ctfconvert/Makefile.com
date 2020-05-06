@@ -9,17 +9,19 @@
 # http://www.illumos.org/license/CDDL.
 #
 
-PROG = ctfconvert-altexec
+PROG = ctfconvert
 SRCS = ctfconvert.c
 
 include ../../Makefile.ctf
 
 CFLAGS += $(CCVERBOSE)
 LDLIBS += -lctf -lelf
+NATIVE_LIBS += libelf.so libc.so
 
 LDFLAGS = \
 	-L$(ROOTONBLDLIBMACH) \
 	'-R$$ORIGIN/../../lib/$(MACH)' \
+	$(BDIRECT) $(ZLAZYLOAD)
 
 CPPFLAGS += -include ../../common/ctf_headers.h
 

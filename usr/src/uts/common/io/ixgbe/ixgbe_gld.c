@@ -27,7 +27,7 @@
  * Copyright (c) 2008, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright 2012 Nexenta Systems, Inc. All rights reserved.
  * Copyright 2016 OmniTI Computer Consulting, Inc. All rights reserved.
- * Copyright (c) 2017, Joyent, Inc.
+ * Copyright (c) 2019, Joyent, Inc.
  */
 
 #include "ixgbe_sw.h"
@@ -304,8 +304,10 @@ ixgbe_m_getcapab(void *arg, mac_capab_t cap, void *cap_data)
 		mac_capab_lso_t *cap_lso = cap_data;
 
 		if (ixgbe->lso_enable) {
-			cap_lso->lso_flags = LSO_TX_BASIC_TCP_IPV4;
+			cap_lso->lso_flags = LSO_TX_BASIC_TCP_IPV4 |
+			    LSO_TX_BASIC_TCP_IPV6;
 			cap_lso->lso_basic_tcp_ipv4.lso_max = IXGBE_LSO_MAXLEN;
+			cap_lso->lso_basic_tcp_ipv6.lso_max = IXGBE_LSO_MAXLEN;
 			break;
 		} else {
 			return (B_FALSE);
@@ -817,11 +819,11 @@ ixgbe_m_propinfo(void *arg, const char *pr_name, mac_prop_id_t pr_num,
 			value = DEFAULT_TX_OVERLOAD_THRESHOLD;
 		} else if (strcmp(pr_name, "_tx_resched_thresh") == 0) {
 			value = DEFAULT_TX_RESCHED_THRESHOLD;
-		} else 	if (strcmp(pr_name, "_rx_copy_thresh") == 0) {
+		} else if (strcmp(pr_name, "_rx_copy_thresh") == 0) {
 			value = DEFAULT_RX_COPY_THRESHOLD;
-		} else 	if (strcmp(pr_name, "_rx_limit_per_intr") == 0) {
+		} else if (strcmp(pr_name, "_rx_limit_per_intr") == 0) {
 			value = DEFAULT_RX_LIMIT_PER_INTR;
-		} 	if (strcmp(pr_name, "_intr_throttling") == 0) {
+		} else if (strcmp(pr_name, "_intr_throttling") == 0) {
 			value = ixgbe->capab->def_intr_throttle;
 		} else {
 			return;

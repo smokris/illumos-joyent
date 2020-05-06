@@ -21,6 +21,7 @@
 #
 # Copyright (c) 2010, Oracle and/or its affiliates. All rights reserved.
 #
+# Copyright (c) 2018, Joyent, Inc.
 
 include $(SRC)/lib/Makefile.lib
 
@@ -52,6 +53,9 @@ CPPFLAGS +=	-D_REENTRANT \
 			-I$(SRC)/cmd/sgs/include \
 			-I$(SRC)/cmd/sgs/include/$(MACH)
 
+# not linted
+SMATCH=off
+
 ROOTLIBDIR =	$(ROOT)/usr/lib/brand/$(BRAND)
 ROOTLIBDIR64 =	$(ROOT)/usr/lib/brand/$(BRAND)/$(MACH64)
 
@@ -67,7 +71,6 @@ DTEXTDOM =
 
 all: $(LIBS)
 
-lint: lintcheck
 
 pics/%64.o:	$(BRAND_SHARED)/librtld_db/common/%.c
 		$(COMPILE.c) -D_ELF64 $(PICFLAGS) -o $@ $<

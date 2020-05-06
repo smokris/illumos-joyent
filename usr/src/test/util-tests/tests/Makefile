@@ -13,9 +13,13 @@
 # Copyright (c) 2012 by Delphix. All rights reserved.
 # Copyright 2014 Garrett D'Amore <garrett@damore.org>
 # Copyright 2014 Nexenta Systems, Inc. All rights reserved.
+# Copyright 2017 Jason King
+# Copyright 2020 Joyent, Inc.
+# Copyright 2019 OmniOS Community Edition (OmniOSce) Association.
 #
 
-SUBDIRS = date dis dladm iconv libnvpair_json libsff printf xargs bunyan \
-	 mergeq workq grep_xpg4
+SUBDIRS = date dis dladm iconv libnvpair_json libsff printf xargs grep_xpg4
+SUBDIRS += demangle mergeq workq chown ctf smbios libjedec awk make sleep
+SUBDIRS += bunyan libcustr find mdb
 
 include $(SRC)/test/Makefile.com

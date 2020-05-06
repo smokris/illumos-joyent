@@ -25,19 +25,21 @@
  */
 
 /*	Copyright (c) 1984, 1986, 1987, 1988, 1989 AT&T	*/
-/*	  All Rights Reserved  	*/
+/*	  All Rights Reserved	*/
 
 
 /*
  * Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ *
+ * Copyright 2019 Nexenta by DDN, Inc. All rights reserved.
  */
 
 #include	<stdio.h>
 #include	<stdio_ext.h>
-#include 	<limits.h>
-#include 	<fcntl.h>
-#include 	<unistd.h>
+#include	<limits.h>
+#include	<fcntl.h>
+#include	<unistd.h>
 #include	<stdlib.h>
 #include	<string.h>
 #include	<stdarg.h>
@@ -57,6 +59,7 @@
 #include	<sys/conf.h>
 #include	<locale.h>
 #include	<zone.h>
+#include	<priv.h>
 #include	"fslib.h"
 
 #define	VFS_PATH	"/usr/lib/fs"
@@ -73,9 +76,9 @@
 
 #define	READONLY	0
 #define	READWRITE	1
-#define	SUID 		2
+#define	SUID		2
 #define	NOSUID		3
-#define	SETUID 		4
+#define	SETUID		4
 #define	NOSETUID	5
 #define	DEVICES		6
 #define	NODEVICES	7
@@ -722,7 +725,7 @@ flags(char *mntopts, int flag)
 
 	/*
 	 * The assumed assertion
-	 * 	assert (strlen(mntflags) < sizeof mntflags);
+	 *	assert (strlen(mntflags) < sizeof mntflags);
 	 * is valid at this point in the code. Note that a call to "assert"
 	 * is not appropriate in production code since it halts the program.
 	 */
@@ -826,6 +829,17 @@ doexec(char *fstype, char *newargv[])
 	}
 
 	/*
+	 * Some file system types need pfexec.
+	 */
+	if (strcmp(fstype, "smbfs") == 0 &&
+	    setpflags(PRIV_PFEXEC, 1) != 0) {
+		(void) fprintf(stderr,
+		    gettext("mount: unable to set PFEXEC flag: %s\n"),
+		    strerror(errno));
+		exit(1);
+	}
+
+	/*
 	 * Try to exec the fstype dependent portion of the mount.
 	 * See if the directory is there before trying to exec dependent
 	 * portion.  This is only useful for eliminating the
@@ -875,7 +889,7 @@ ignore(char *opts)
 	char *saveptr, *my_opts;
 	int rval = 0;
 
-	if (opts == NULL || *opts == NULL)
+	if (opts == NULL || *opts == '\0')
 		return (0);
 
 	/*
@@ -908,8 +922,8 @@ ignore(char *opts)
 int
 parmount(char **mntlist, int count, char *fstype)
 {
-	int 		maxfd =	OPEN_MAX;
-	struct 		rlimit rl;
+	int		maxfd =	OPEN_MAX;
+	struct		rlimit rl;
 	vfsent_t	**vl, *vp;
 
 	/*
@@ -1009,7 +1023,7 @@ vfsent_t *
 getvfsall(char *fstype, int takeall)
 {
 	vfsent_t	*vhead, *vtail;
-	struct vfstab 	vget;
+	struct vfstab	vget;
 	FILE		*fp;
 	int		cnt = 0, ret;
 
@@ -1078,7 +1092,7 @@ getvfsall(char *fstype, int takeall)
 vfsent_t **
 make_vfsarray(char **mntlist, int count)
 {
-	vfsent_t 	*vp, *vmark, *vpprev, **vpp;
+	vfsent_t	*vp, *vmark, *vpprev, **vpp;
 	int		ndx, found;
 
 	if (vfsll == NULL)
@@ -1189,8 +1203,8 @@ make_vfsarray(char **mntlist, int count)
 void
 do_mounts(void)
 {
-	int 		i, isave, cnt;
-	vfsent_t 	*vp, *vpprev, **vl;
+	int		i, isave, cnt;
+	vfsent_t	*vp, *vpprev, **vl;
 	char		*newargv[ARGV_MAX];
 	pid_t		child;
 

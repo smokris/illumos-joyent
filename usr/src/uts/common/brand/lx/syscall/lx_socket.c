@@ -22,7 +22,8 @@
 /*
  * Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
- * Copyright 2018 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
+ * Copyright 2019 OmniOS Community Edition (OmniOSce) Association.
  */
 
 #include <sys/errno.h>
@@ -53,6 +54,7 @@
 #include <netinet/tcp.h>
 #include <netinet/igmp.h>
 #include <netinet/icmp6.h>
+#include <inet/cc.h>
 #include <inet/tcp_impl.h>
 #include <lx_errno.h>
 
@@ -110,6 +112,9 @@ typedef struct lx_group_req32 {
 /* lxsad_flags */
 #define	LXSAD_FL_STRCRED	0x1
 #define	LXSAD_FL_EMULSEQPKT	0x2
+/* These two work together to implement Linux SO_REUSEADDR semantics. */
+#define	LXSAD_FL_EMULRUADDR	0x4
+#define	LXSAD_FL_EMULRUPORT	0x8
 
 static lx_socket_aux_data_t *lx_sad_acquire(vnode_t *);
 
@@ -1009,7 +1014,7 @@ stol_cmsgs_copyout(void *input, socklen_t inlen, void *addr,
 		goto finish;
 	}
 
-	VERIFY(inlen > sizeof (struct cmsghdr));
+	VERIFY(inlen >= sizeof (struct cmsghdr));
 
 	/*
 	 * First determine how much space we need for the conversion and
@@ -1396,6 +1401,18 @@ lx_socket_create(int domain, int type, int protocol, int options, file_t **fpp,
 	vnode_t *vp;
 	file_t *fp;
 	int err, fd;
+
+	/*
+	 * EACCES is returned in Linux when the user isn't allowed to use a
+	 * "ping socket". EACCES is also used by the iputils-ping userland
+	 * application to determine if fallback to SOCK_RAW is necessary.
+	 *
+	 * This can be removed if we ever implement SOCK_DGRAM + IPPROTO_ICMP.
+	 */
+	if ((domain == AF_INET && type == SOCK_DGRAM && protocol ==
+	    IPPROTO_ICMP) || (domain == AF_INET6 && type == SOCK_DGRAM &&
+	    protocol == IPPROTO_ICMPV6))
+		return (EACCES);
 
 	/* logic cloned from so_socket */
 	so = socket_create(domain, type, protocol, NULL, NULL, SOCKET_SLEEP,
@@ -2103,6 +2120,120 @@ noiov:
 	return (res);
 }
 
+long
+lx_recvmmsg(int sock, void *msg, uint_t vlen, int flags, timespec_t *timeoutp)
+{
+	hrtime_t deadline = 0;
+	uint_t rcvd = 0;
+	long ret = 0;
+	boolean_t waitforone;
+
+	waitforone = ((flags & LX_MSG_WAITFORONE) != 0);
+	flags &= ~LX_MSG_WAITFORONE;
+
+	/*
+	 * We want to limit the work that a thread calling recvmmsg() can
+	 * perform in the kernel so that it cannot accrue too high a priority.
+	 * Artificially capping vlen means that the thread will return to
+	 * userspace after processing at most IOV_MAX messages, giving the
+	 * system a chance to reset the thread priority.
+	 *
+	 * Linux does not cap vlen here and recvmmsg() is expected to return
+	 * once vlen messages have been received, a timeout occurs, or if an
+	 * error is encountered; the artificial cap adds another case.
+	 *
+	 * It is possible that returning "early" in this emulation will
+	 * cause problems with some applications however a properly written
+	 * recvmmsg() consumer should consume only the received datagrams
+	 * and try again if it wants more. This may need revisiting in the
+	 * future.
+	 */
+	if (vlen > IOV_MAX)
+		vlen = IOV_MAX;
+
+	if (timeoutp != NULL) {
+		timespec_t timeout;
+		uhrtime_t utime = (uhrtime_t)gethrtime();
+
+		if (get_udatamodel() == DATAMODEL_NATIVE) {
+			if (copyin(timeoutp, &timeout, sizeof (timestruc_t)))
+				return (set_errno(EFAULT));
+		} else {
+			timestruc32_t timeout32;
+			if (copyin(timeoutp, &timeout32,
+			    sizeof (timestruc32_t)))
+				return (set_errno(EFAULT));
+			timeout.tv_sec = (time_t)timeout32.tv_sec;
+			timeout.tv_nsec = timeout32.tv_nsec;
+		}
+
+		if (itimerspecfix(&timeout))
+			return (set_errno(EINVAL));
+
+		/*
+		 * Make sure that deadline will not overflow. itimerspecfix()
+		 * has already checked for negative values and too big a value
+		 * in tv_nsec
+		 */
+		if (timeout.tv_sec >= HRTIME_MAX / NANOSEC)
+			return (set_errno(EINVAL));
+
+		utime += timeout.tv_sec * NANOSEC;
+		utime += timeout.tv_nsec;
+
+		if (utime > HRTIME_MAX)
+			return (set_errno(EINVAL));
+
+		deadline = (hrtime_t)utime;
+	}
+
+	for (rcvd = 0; rcvd < vlen; rcvd++) {
+		uint_t *ptr;
+
+		if (get_udatamodel() == DATAMODEL_NATIVE) {
+			lx_mmsghdr_t *hdr = (lx_mmsghdr_t *)msg;
+			hdr += rcvd;
+			ret = lx_recvmsg(sock, (lx_msghdr_t *)hdr, flags);
+			ptr = &hdr->msg_len;
+		} else {
+			lx_mmsghdr32_t *hdr = (lx_mmsghdr32_t *)msg;
+			hdr += rcvd;
+			ret = lx_recvmsg(sock, (lx_msghdr32_t *)hdr, flags);
+			ptr = &hdr->msg_len;
+		}
+		if (ttolwp(curthread)->lwp_errno != 0)
+			break;
+		copyout(&ret, ptr, sizeof (*ptr));
+		/*
+		 * If MSG_WAITFORONE is set, set MSG_DONTWAIT after the
+		 * first packet has been received.
+		 */
+		if (waitforone) {
+			flags |= LX_MSG_DONTWAIT;
+			waitforone = B_FALSE;
+		}
+		/*
+		 * The Linux man page documents the timeout option as
+		 * only being checked after each datagram is received.
+		 * The man page does not document ETIMEDOUT as a return
+		 * code so we do not set an errno.
+		 */
+		if (deadline > 0 && gethrtime() >= deadline)
+			break;
+	}
+
+	if (rcvd > 0) {
+		/*
+		 * Any error code is deliberately discarded if any message
+		 * was successfully received.
+		 */
+		ttolwp(curthread)->lwp_errno = 0;
+		return (rcvd);
+	}
+
+	return (ret);
+}
+
 /*
  * Custom version of socket_sendmsg for error-handling overrides.
  */
@@ -2442,6 +2573,50 @@ lx_sendmsg(int sock, void *msg, int flags)
 	return (res);
 }
 
+long
+lx_sendmmsg(int sock, void *msg, uint_t vlen, int flags)
+{
+	long ret = 0;
+	uint_t sent = 0;
+
+	/*
+	 * Linux caps vlen to UIO_MAXIOV (1024).
+	 */
+	if (vlen > IOV_MAX)
+		vlen = IOV_MAX;
+
+	if (get_udatamodel() == DATAMODEL_NATIVE) {
+		lx_mmsghdr_t *hdr = msg;
+
+		for (sent = 0; sent < vlen; sent++, hdr++) {
+			ret = lx_sendmsg(sock, (lx_msghdr_t *)hdr, flags);
+			if (ttolwp(curthread)->lwp_errno != 0)
+				break;
+			copyout(&ret, &hdr->msg_len, sizeof (hdr->msg_len));
+		}
+	} else {
+		lx_mmsghdr32_t *hdr = msg;
+
+		for (sent = 0; sent < vlen; sent++, hdr++) {
+			ret = lx_sendmsg(sock, (lx_msghdr32_t *)hdr, flags);
+			if (ttolwp(curthread)->lwp_errno != 0)
+				break;
+			copyout(&ret, &hdr->msg_len, sizeof (hdr->msg_len));
+		}
+	}
+
+	if (sent > 0) {
+		/*
+		 * Any error code is deliberately discarded if any message
+		 * was successfully sent.
+		 */
+		ttolwp(curthread)->lwp_errno = 0;
+		return (sent);
+	}
+
+	return (ret);
+}
+
 /*
  * Linux socket option type definitions
  *
@@ -2648,7 +2823,7 @@ static const lx_sockopt_map_t ltos_tcp_sockopts[LX_TCP_NOTSENT_LOWAT + 1] = {
 	{ OPTNOTSUP, 0 },			/* TCP_WINDOW_CLAMP - in code */
 	{ OPTNOTSUP, 0 },			/* TCP_INFO		*/
 	{ OPTNOTSUP, 0 },			/* TCP_QUICKACK - in code */
-	{ OPTNOTSUP, 0 },			/* TCP_CONGESTION	*/
+	{ TCP_CONGESTION, CC_ALGO_NAME_MAX },	/* TCP_CONGESTION	*/
 	{ OPTNOTSUP, 0 },			/* TCP_MD5SIG		*/
 	{ OPTNOTSUP, 0 },
 	{ OPTNOTSUP, 0 },			/* TCP_THIN_LINEAR_TIMEOUTS */
@@ -2856,6 +3031,220 @@ lx_mcast_common(sonode_t *so, int level, int optname, void *optval,
 
 	error = socket_setsockopt(so, level, optname, &gr,
 	    optlen, CRED());
+	return (error);
+}
+
+
+/*
+ * NOTE: For now, the following mess applies to TCP (i.e. AF_INET{,6} +
+ * SOCK_STREAM) only, until we enable SO_REUSEPORT for other socket/protocol
+ * types as well.  The lx_so_needs_reusehandling() macro indicates what
+ * socket(s) apply to the following mess.
+ */
+#define	lx_so_needs_reusehandling(so)	((so)->so_type == SOCK_STREAM && \
+	((so)->so_family == AF_INET || (so)->so_family == AF_INET6))
+
+/*
+ * So in Linux, the SO_REUSEADDR includes, essentially, SO_REUSEPORT as part
+ * of its functionality.  Experiments on CentOS 7 with a 3.10-ish kernel show
+ * that querying on SO_REUSEPORT show it's "off" if SO_REUSEADDR gets set.
+ * This means we can't count on directly querying the native socket state. We
+ * munge things here in LX-land to essentially turn on both REUSEADDR and
+ * REUSEPORT in native conn_t state for LX processes that set SO_REUSEADDR.
+ *
+ * We also keep track if the wily Linux app sends BOTH REUSEADDR and REUSEPORT
+ * down. We can return that both are on, or if it uses just REUSEADDR, we
+ * don't return yes for a check of REUSEPORT.  This means our conn_t state may
+ * be different than what an LX process will see.  "REUSEPORT" for LX may be
+ * off, but internally it will be on.
+ *
+ * BEGIN CSTYLED
+ * State table for internal conn_reuse{addr,port}:
+ *
+ * LX ADDR,PORT  Int. ADDR,PORT  New ADDR  New LX    New Int.  LXchg?  Intchg?
+ * ============  ==============  ========  ======    ========  ======  =======
+ *
+ * off,off       off,off         off       off,off   off,off   NO      NO
+ *
+ * off,off       off,off         on        on,off    on,on     YES     YES(2)
+ *
+ * off,on        off,on          off       off,on    off,on    NO      NO
+ *
+ * off,on        off,on          on        on,on     on,on     YES     YES
+ *
+ * on,off        on,on           off       off,off   off,off   YES     YES(2)
+ *
+ * on,off        on,on           on        on,off    on,on     NO      NO
+ *
+ * on,on         on,on           off       off,on    off,on    YES     YES
+ *
+ * on,on         on,on           on        on,on     on,on     NO      NO
+ *
+ *
+ * LX ADDR,PORT  Int. ADDR,PORT  New PORT  New LX    New Int.  LXchg?  Intchg?
+ * ============  ==============  ========  ======    ========  ======  =======
+ *
+ * off,off       off,off         off       off,off   off,off   NO      NO
+ *
+ * off,off       off,off         on        off,on    off,on    YES     YES
+ *
+ * off,on        off,on          off       off,off   off,off   YES     YES
+ *
+ * off,on        off,on          on        off,on    off,on    NO      NO
+ *
+ * on,off        on,on           off       on,off    on,on     NO      NO
+ *
+ * on,off        on,on           on        on,on     on,on     YES     NO
+ *
+ * on,on         on,on           off       on,off    on,on     YES     NO
+ *
+ * on,on         on,on           on        on,on     on,on     NO      NO
+ *
+ * END CSTYLED
+ *
+ * For setting these options, we need to obey the state table above.
+ * For getting REUSEADDR, the native stack handles it already.
+ * For getting REUSEPORT, we'll have to track the auxiliary data's flags.
+ */
+static int
+lx_set_reuse_handler(sonode_t *so, int optname, void *optval, socklen_t optlen)
+{
+	lx_socket_aux_data_t *sad;
+	boolean_t enable;
+	int error;
+
+	if (optlen != sizeof (int))
+		return (EINVAL);
+	enable = (*((int *)optval) != 0);
+
+	ASSERT(optname == LX_SO_REUSEADDR || optname == LX_SO_REUSEPORT);
+	sad = lx_sad_acquire(SOTOV(so));
+
+	/*
+	 * lx_sad_acquire() holds its mutex for us.  This protects us
+	 * against racing option-setters on the same socket.
+	 */
+	if (optname == LX_SO_REUSEADDR) {
+		/* Check if already set to what we want! */
+		if (enable ==
+		    ((sad->lxsad_flags & LXSAD_FL_EMULRUADDR) != 0)) {
+			mutex_exit(&sad->lxsad_lock);
+			return (0);
+		}
+
+		/*
+		 * At this point, we know we need to change SO_REUSEADDR,
+		 * Linux-style.  We know these are supported options too,
+		 * so we don't bother with any lookup.
+		 */
+		error = socket_setsockopt(so, SOL_SOCKET, SO_REUSEADDR,
+		    optval, optlen, CRED());
+		if (error != 0) {
+			mutex_exit(&sad->lxsad_lock);
+			return (error);
+		}
+		if (enable)
+			sad->lxsad_flags |= LXSAD_FL_EMULRUADDR;
+		else
+			sad->lxsad_flags &= ~LXSAD_FL_EMULRUADDR;
+
+		/*
+		 * At THIS point, we need to figure out if we ALSO need to
+		 * toggle the native-side SO_REUSEPORT state because Linux's
+		 * SO_REUSEADDR ALSO include the moral equivalent of
+		 * SO_REUSEPORT.  There may be further subtleties, but for now
+		 * assume a Linux app that uses SO_REUSEADDR wants that
+		 * SO_REUSEPORT functionality thrown in for free.
+		 *
+		 * Check for SO_REUSEPORT already enabled first.
+		 */
+		if ((sad->lxsad_flags & LXSAD_FL_EMULRUPORT) != 0) {
+			/* Someone turned on REUSEPORT first, we're good. */
+			mutex_exit(&sad->lxsad_lock);
+			return (0);
+		}
+
+		/*
+		 * Fall through to REUSEPORT setting, it'll know it's a
+		 * supplement based on (optname == SO_REUSEADDR).
+		 */
+	} else if (enable ==
+	    ((sad->lxsad_flags & LXSAD_FL_EMULRUPORT) != 0)) {
+		/*
+		 * If we reach here, we're setting REUSEPORT to what it's
+		 * already set.
+		 */
+		ASSERT3U(optname, ==, LX_SO_REUSEPORT);
+		mutex_exit(&sad->lxsad_lock);
+		return (0);
+	}
+
+	if (optname == LX_SO_REUSEPORT &&
+	    ((sad->lxsad_flags & LXSAD_FL_EMULRUADDR) != 0)) {
+		/*
+		 * Corner case: REUSEPORT change *but* REUSEADDR is still
+		 * enabled.  We must not alter conn_t/native state here, as
+		 * REUSEADDR *needs* REUSEPORT enabled on conn_t/native state.
+		 * If we want to enable REUSEPORT, the setsockopt would be a
+		 * NOP.  If want to disable it, we MUST NOT turn off native
+		 * REUSEPORT lest we break Linux-like behavior, and instead
+		 * merely turn off the LXSAD_FL_EMULRUPORT flag.
+		 */
+		error = 0;
+	} else {
+		/*
+		 * At this point, we need to change REUSEPORT.  We may be
+		 * doing it for an actual REUSEPORT change, OR for Linux
+		 * REUSEADDR semantics.  As earlier, we know the option map
+		 * lookup is superfluous.
+		 */
+		error = socket_setsockopt(so, SOL_SOCKET, SO_REUSEPORT, optval,
+		    optlen, CRED());
+	}
+
+	if (error != 0 && optname == LX_SO_REUSEADDR) {
+		int addr_error, revert_to_optval;
+
+		ASSERT0(sad->lxsad_flags & LXSAD_FL_EMULRUPORT);
+		/*
+		 * We need more cleanup if the REUSEPORT change fails during
+		 * an actual REUSEADDR set.
+		 */
+		if (enable) {
+			sad->lxsad_flags &= ~LXSAD_FL_EMULRUADDR;
+			revert_to_optval = 0;
+		} else {
+			sad->lxsad_flags |= LXSAD_FL_EMULRUADDR;
+			revert_to_optval = 1;
+		}
+
+		/* Just hardwire it, we're in trouble! */
+		addr_error = socket_setsockopt(so, SOL_SOCKET, SO_REUSEADDR,
+		    &revert_to_optval, optlen, CRED());
+		if (addr_error != 0) {
+			/*
+			 * Well this sucks, we really shot ourselves in the
+			 * foot.  We should somehow signal a catastrophic
+			 * error. For now, just return the one we had earlier.
+			 */
+			DTRACE_PROBE1(lx__reuse__seconderr, int, addr_error);
+			mutex_exit(&sad->lxsad_lock);
+			return (error);
+		}
+		/*
+		 * Else we managed successfully to clean up and can fall
+		 * through the normal error path.
+		 */
+	} else if (error == 0 && optname == LX_SO_REUSEPORT) {
+		/* We successfully changed REUSEPORT explicitly. */
+		if (enable)
+			sad->lxsad_flags |= LXSAD_FL_EMULRUPORT;
+		else
+			sad->lxsad_flags &= ~LXSAD_FL_EMULRUPORT;
+	}
+	/* Else it's an error for an explicit REUSEPORT, just return. */
+
+	mutex_exit(&sad->lxsad_lock);
 	return (error);
 }
 
@@ -3243,6 +3632,18 @@ lx_setsockopt_socket(sonode_t *so, int optname, void *optval, socklen_t optlen)
 		 */
 		return (0);
 
+	case LX_SO_REUSEADDR:
+	case LX_SO_REUSEPORT:
+		if (lx_so_needs_reusehandling(so)) {
+			/*
+			 * See lx_set_reuse_handler's comments for the oddness
+			 * of REUSE* in some cases.
+			 */
+			return (lx_set_reuse_handler(so, optname, optval,
+			    optlen));
+		}
+		break;
+
 	case LX_SO_PASSCRED:
 		/*
 		 * In many cases, the Linux SO_PASSCRED is mapped to the SunOS
@@ -3435,6 +3836,16 @@ lx_getsockopt_icmpv6(sonode_t *so, int optname, void *optval,
 	return (error);
 }
 
+/*
+ * When attempting to get socket options on AF_UNIX sockets we need to be a bit
+ * careful with the returned errno values. It turns out different OSes return
+ * different errno values here:
+ *     - illumos: ENOPROTOOPT
+ *     - Linux: EOPNOTSUPP
+ *     - FreeBSD: EINVAL
+ * Therefore we remap ENOPROTOOPT to EOPNOTSUPP when a userland program attempts
+ * to get one of the various TCP_XXX options under this condition.
+ */
 static int
 lx_getsockopt_tcp(sonode_t *so, int optname, void *optval, socklen_t *optlen)
 {
@@ -3454,7 +3865,10 @@ lx_getsockopt_tcp(sonode_t *so, int optname, void *optval, socklen_t *optlen)
 		 * oath.
 		 */
 		if (*optlen < sizeof (int)) {
-			error = EINVAL;
+			return (EINVAL);
+		}
+		if (so->so_family == AF_UNIX) {
+			return (EOPNOTSUPP);
 		} else {
 			*intval = 0;
 		}
@@ -3476,12 +3890,12 @@ lx_getsockopt_tcp(sonode_t *so, int optname, void *optval, socklen_t *optlen)
 			    TCP_CONN_NOTIFY_THRESHOLD, &syn_backoff, &len, 0,
 			    cr);
 			if (error != 0)
-				return (error);
+				goto out;
 			error = socket_getsockopt(so, IPPROTO_TCP,
 			    TCP_CONN_ABORT_THRESHOLD, &syn_abortconn, &len, 0,
 			    cr);
 			if (error != 0)
-				return (error);
+				goto out;
 
 			syn_cnt = 0;
 			while (syn_backoff < syn_abortconn) {
@@ -3495,7 +3909,7 @@ lx_getsockopt_tcp(sonode_t *so, int optname, void *optval, socklen_t *optlen)
 			*optlen = sizeof (int);
 		}
 
-		return (error);
+		goto out;
 
 	case LX_TCP_DEFER_ACCEPT:
 		/*
@@ -3513,7 +3927,7 @@ lx_getsockopt_tcp(sonode_t *so, int optname, void *optval, socklen_t *optlen)
 			if ((error = socket_getsockopt(so, SOL_FILTER,
 			    FIL_LIST, fi, &len, 0, cr)) != 0) {
 				*optlen = sizeof (int);
-				return (error);
+				goto out;
 			}
 
 			*intval = 0;
@@ -3527,17 +3941,26 @@ lx_getsockopt_tcp(sonode_t *so, int optname, void *optval, socklen_t *optlen)
 			}
 		}
 		*optlen = sizeof (int);
-		return (error);
+		goto out;
 	default:
 		break;
 	}
 
 	if (!lx_sockopt_lookup(sockopts_tbl, &optname, optlen)) {
+		if (optname <= sockopts_tbl.lpo_max &&
+		    so->so_family == AF_UNIX) {
+			return (EOPNOTSUPP);
+		}
 		return (ENOPROTOOPT);
 	}
 
 	error = socket_getsockopt(so, IPPROTO_TCP, optname, optval, optlen, 0,
 	    cr);
+
+out:
+	if (error == ENOPROTOOPT && so->so_family == AF_UNIX) {
+		return (EOPNOTSUPP);
+	}
 	return (error);
 }
 
@@ -3548,6 +3971,7 @@ lx_getsockopt_socket(sonode_t *so, int optname, void *optval,
 	int error = 0;
 	int *intval = (int *)optval;
 	lx_proto_opts_t sockopts_tbl = PROTO_SOCKOPTS(ltos_socket_sockopts);
+	lx_socket_aux_data_t *sad;
 
 	switch (optname) {
 	case LX_SO_TYPE:
@@ -3557,8 +3981,6 @@ lx_getsockopt_socket(sonode_t *so, int optname, void *optval,
 		 */
 		if (so->so_family == AF_UNIX &&
 		    (so->so_mode & SM_CONNREQUIRED) == 0) {
-			lx_socket_aux_data_t *sad;
-
 			if (*optlen < sizeof (int))
 				return (EINVAL);
 			sad = lx_sad_acquire(SOTOV(so));
@@ -3592,8 +4014,6 @@ lx_getsockopt_socket(sonode_t *so, int optname, void *optval,
 		 */
 		if (so->so_family == AF_UNIX &&
 		    (so->so_mode & SM_CONNREQUIRED) != 0) {
-			lx_socket_aux_data_t *sad;
-
 			if (*optlen < sizeof (int)) {
 				return (EINVAL);
 			}
@@ -3605,6 +4025,23 @@ lx_getsockopt_socket(sonode_t *so, int optname, void *optval,
 			return (0);
 		}
 		break;
+
+	case LX_SO_REUSEPORT:
+		/*
+		 * See lx_so_needs_reusehandling() and lx_set_reuse_handler()
+		 * for the sordid details.
+		 */
+		if (!lx_so_needs_reusehandling(so))
+			break;
+
+		if (*optlen < sizeof (int))
+			return (EINVAL);
+		sad = lx_sad_acquire(SOTOV(so));
+		*optlen = sizeof (int);
+		*intval =
+		    (sad->lxsad_flags & LXSAD_FL_EMULRUPORT) == 0 ? 0 : 1;
+		mutex_exit(&sad->lxsad_lock);
+		return (0);
 
 	case LX_SO_PEERCRED:
 		if (*optlen < sizeof (struct lx_ucred)) {
@@ -4318,8 +4755,8 @@ static struct {
 	lx_sendmsg,	3,	/* sendmsg */
 	lx_recvmsg,	3,	/* recvmsg */
 	lx_accept4,	4,	/* accept4 */
-	NULL,		5,	/* recvmmsg */
-	NULL,		4	/* sendmmsg */
+	lx_recvmmsg,	5,	/* recvmmsg */
+	lx_sendmmsg,	4	/* sendmmsg */
 };
 
 long

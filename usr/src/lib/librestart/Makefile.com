@@ -22,6 +22,7 @@
 # Copyright 2008 Sun Microsystems, Inc.  All rights reserved.
 # Use is subject to license terms.
 #
+# Copyright (c) 2018, Joyent, Inc.
 
 LIBRARY =	librestart.a
 VERS =		.1
@@ -31,21 +32,22 @@ OBJECTS = \
 include ../../Makefile.lib
 include ../../Makefile.rootfs
 
-LIBS =		$(DYNLIB) $(LINTLIB)
+LIBS =		$(DYNLIB)
 
 LDLIBS +=	-lpool -lproject -lsecdb -lnvpair -lsysevent -lscf -luutil -lc
 
 SRCDIR =	../common
-$(LINTLIB) :=	SRCS = $(SRCDIR)/$(LINTSRC)
 
 CFLAGS +=	$(CCVERBOSE) -Wp,$(CSTD_GNU99)
 
 CPPFLAGS +=
 
+# not linted
+SMATCH=off
+
 .KEEP_STATE:
 
 all:
 
-lint: lintcheck
 
 include ../../Makefile.targ

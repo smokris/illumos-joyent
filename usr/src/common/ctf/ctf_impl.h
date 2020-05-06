@@ -25,7 +25,7 @@
  * Use is subject to license terms.
  */
 /*
- * Copyright (c) 2015, Joyent, Inc.  All rights reserved.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #ifndef	_CTF_IMPL_H
@@ -167,11 +167,11 @@ typedef struct ctf_dtdef {
 } ctf_dtdef_t;
 
 typedef struct ctf_dsdef {
-	ctf_list_t dts_list;	/* list forward/back pointers */
-	ulong_t dts_symidx;	/* symbol id */
-	ctf_id_t dts_tid;	/* type for obj, 0 if function */
-	uint_t dts_nargs;
-	ctf_id_t *dts_argc;	/* function argv */
+	ctf_list_t dsd_list;	/* list forward/back pointers */
+	ulong_t dsd_symidx;	/* symbol id */
+	ctf_id_t dsd_tid;	/* type for obj, 0 if function */
+	uint_t dsd_nargs;
+	ctf_id_t *dsd_argc;	/* function argv */
 } ctf_dsdef_t;
 
 typedef struct ctf_dldef {
@@ -254,6 +254,8 @@ struct ctf_file {
 extern ssize_t ctf_get_ctt_size(const ctf_file_t *, const ctf_type_t *,
     ssize_t *, ssize_t *);
 
+extern void ctf_set_ctt_size(ctf_type_t *, ssize_t);
+
 extern const ctf_type_t *ctf_lookup_by_id(ctf_file_t **, ctf_id_t);
 
 extern ctf_file_t *ctf_fdcreate_int(int, int *, ctf_sect_t *);
@@ -314,6 +316,9 @@ extern ctf_id_t ctf_add_reftype(ctf_file_t *, uint_t, const char *, ctf_id_t,
     uint_t);
 extern boolean_t ctf_sym_valid(uintptr_t, int, uint16_t, uint64_t,
     uint32_t);
+
+extern const ctf_type_t *ctf_dyn_lookup_by_id(ctf_file_t *, ctf_id_t);
+extern int ctf_dyn_array_info(ctf_file_t *, ctf_id_t, ctf_arinfo_t *);
 
 extern const char _CTF_SECTION[];	/* name of CTF ELF section */
 extern const char _CTF_NULLSTR[];	/* empty string */

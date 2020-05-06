@@ -22,6 +22,7 @@
 # Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
 # Use is subject to license terms.
 #
+# Copyright (c) 2018, Joyent, Inc.
 
 LIBRARY =		psm-lpd.a
 VERS =			.1
@@ -30,7 +31,6 @@ OBJECTS = job.o library.o lpd-cancel.o lpd-job.o lpd-query.o printer.o \
 	service.o $(COMMON_OBJS)
 
 include ../../../Makefile.lib
-include ../../../Makefile.rootfs
 
 SRCDIR =	../common
 
@@ -43,13 +43,15 @@ $(EXTRALINKS):	$(ROOTLINKS)
 
 LIBS =			$(DYNLIB)
 
-$(LINTLIB):=	SRCS = $(SRCDIR)/$(LINTSRC)
 
 CFLAGS +=	$(CCVERBOSE)
 CPPFLAGS +=	-I$(SRCDIR)
 CPPFLAGS +=	-I../../libpapi-common/common
 
 CERRWARN +=	-_gcc=-Wno-unused-variable
+
+# not linted
+SMATCH=off
 
 MAPFILES =	$(SRCDIR)/mapfile
 
@@ -61,7 +63,6 @@ CLOBBERFILES += $(PROG)
 
 all:	$(LIBS) $(PROG)
 
-lint:	lintcheck
 
 include ../../../Makefile.targ
 

@@ -22,6 +22,7 @@
  * Copyright (c) 1991, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 1990 Mentat Inc.
  * Copyright 2017 OmniTI Computer Consulting, Inc. All rights reserved.
+ * Copyright 2019 Joyent, Inc.
  */
 
 #include <sys/types.h>
@@ -2116,7 +2117,7 @@ ip_set_destination_v6(in6_addr_t *src_addrp, const in6_addr_t *dst_addr,
 	}
 	if (!(ire->ire_flags & (RTF_REJECT|RTF_BLACKHOLE))) {
 		/* Get an nce to cache. */
-		nce = ire_to_nce(ire, NULL, firsthop);
+		nce = ire_to_nce(ire, 0, firsthop);
 		if (nce == NULL) {
 			/* Allocation failure? */
 			ixa->ixa_ire_generation = IRE_GENERATION_VERIFY;
@@ -2730,108 +2731,15 @@ done:
 }
 
 /*
- * Try to determine where and what are the IPv6 header length and
- * pointer to nexthdr value for the upper layer protocol (or an
- * unknown next hdr).
- *
- * Parameters returns a pointer to the nexthdr value;
- * Must handle malformed packets of various sorts.
- * Function returns failure for malformed cases.
- */
-boolean_t
-ip_hdr_length_nexthdr_v6(mblk_t *mp, ip6_t *ip6h, uint16_t *hdr_length_ptr,
-    uint8_t **nexthdrpp)
-{
-	uint16_t length;
-	uint_t	ehdrlen;
-	uint8_t	*nexthdrp;
-	uint8_t *whereptr;
-	uint8_t *endptr;
-	ip6_dest_t *desthdr;
-	ip6_rthdr_t *rthdr;
-	ip6_frag_t *fraghdr;
-
-	ASSERT(IPH_HDR_VERSION(ip6h) == IPV6_VERSION);
-	length = IPV6_HDR_LEN;
-	whereptr = ((uint8_t *)&ip6h[1]); /* point to next hdr */
-	endptr = mp->b_wptr;
-
-	nexthdrp = &ip6h->ip6_nxt;
-	while (whereptr < endptr) {
-		/* Is there enough left for len + nexthdr? */
-		if (whereptr + MIN_EHDR_LEN > endptr)
-			break;
-
-		switch (*nexthdrp) {
-		case IPPROTO_HOPOPTS:
-		case IPPROTO_DSTOPTS:
-			/* Assumes the headers are identical for hbh and dst */
-			desthdr = (ip6_dest_t *)whereptr;
-			ehdrlen = 8 * (desthdr->ip6d_len + 1);
-			if ((uchar_t *)desthdr +  ehdrlen > endptr)
-				return (B_FALSE);
-			nexthdrp = &desthdr->ip6d_nxt;
-			break;
-		case IPPROTO_ROUTING:
-			rthdr = (ip6_rthdr_t *)whereptr;
-			ehdrlen =  8 * (rthdr->ip6r_len + 1);
-			if ((uchar_t *)rthdr +  ehdrlen > endptr)
-				return (B_FALSE);
-			nexthdrp = &rthdr->ip6r_nxt;
-			break;
-		case IPPROTO_FRAGMENT:
-			fraghdr = (ip6_frag_t *)whereptr;
-			ehdrlen = sizeof (ip6_frag_t);
-			if ((uchar_t *)&fraghdr[1] > endptr)
-				return (B_FALSE);
-			nexthdrp = &fraghdr->ip6f_nxt;
-			break;
-		case IPPROTO_NONE:
-			/* No next header means we're finished */
-		default:
-			*hdr_length_ptr = length;
-			*nexthdrpp = nexthdrp;
-			return (B_TRUE);
-		}
-		length += ehdrlen;
-		whereptr += ehdrlen;
-		*hdr_length_ptr = length;
-		*nexthdrpp = nexthdrp;
-	}
-	switch (*nexthdrp) {
-	case IPPROTO_HOPOPTS:
-	case IPPROTO_DSTOPTS:
-	case IPPROTO_ROUTING:
-	case IPPROTO_FRAGMENT:
-		/*
-		 * If any know extension headers are still to be processed,
-		 * the packet's malformed (or at least all the IP header(s) are
-		 * not in the same mblk - and that should never happen.
-		 */
-		return (B_FALSE);
-
-	default:
-		/*
-		 * If we get here, we know that all of the IP headers were in
-		 * the same mblk, even if the ULP header is in the next mblk.
-		 */
-		*hdr_length_ptr = length;
-		*nexthdrpp = nexthdrp;
-		return (B_TRUE);
-	}
-}
-
-/*
  * Return the length of the IPv6 related headers (including extension headers)
  * Returns a length even if the packet is malformed.
  */
-int
+uint16_t
 ip_hdr_length_v6(mblk_t *mp, ip6_t *ip6h)
 {
 	uint16_t hdr_len;
-	uint8_t	*nexthdrp;
 
-	(void) ip_hdr_length_nexthdr_v6(mp, ip6h, &hdr_len, &nexthdrp);
+	(void) ip_hdr_length_nexthdr_v6(mp, ip6h, &hdr_len, NULL);
 	return (hdr_len);
 }
 
@@ -2858,7 +2766,7 @@ ip_process_options_v6(mblk_t *mp, ip6_t *ip6h,
     uint8_t *optptr, uint_t optlen, uint8_t hdr_type, ip_recv_attr_t *ira)
 {
 	uint8_t opt_type;
-	uint_t optused;
+	uint_t optused = 0;
 	int ret = 0;
 	const char *errtype;
 	ill_t		*ill = ira->ira_ill;
@@ -3083,7 +2991,7 @@ ip_process_rthdr(mblk_t *mp, ip6_t *ip6h, ip6_rthdr_t *rth,
 /*
  * Read side put procedure for IPv6 module.
  */
-void
+int
 ip_rput_v6(queue_t *q, mblk_t *mp)
 {
 	ill_t		*ill;
@@ -3104,7 +3012,7 @@ ip_rput_v6(queue_t *q, mblk_t *mp)
 		if ((mp->b_datap->db_type != M_PCPROTO) ||
 		    (dl->dl_primitive == DL_UNITDATA_IND)) {
 			inet_freemsg(mp);
-			return;
+			return (0);
 		}
 	}
 	if (DB_TYPE(mp) == M_DATA) {
@@ -3115,6 +3023,7 @@ ip_rput_v6(queue_t *q, mblk_t *mp)
 	} else {
 		ip_rput_notdata(ill, mp);
 	}
+	return (0);
 }
 
 /*
@@ -4828,9 +4737,9 @@ void
 	kstat_t *ksp;
 
 	ip6_stat_t template = {
-		{ "ip6_udp_fannorm", 	KSTAT_DATA_UINT64 },
-		{ "ip6_udp_fanmb", 	KSTAT_DATA_UINT64 },
-		{ "ip6_recv_pullup", 		KSTAT_DATA_UINT64 },
+		{ "ip6_udp_fannorm",	KSTAT_DATA_UINT64 },
+		{ "ip6_udp_fanmb",	KSTAT_DATA_UINT64 },
+		{ "ip6_recv_pullup",		KSTAT_DATA_UINT64 },
 		{ "ip6_db_ref",			KSTAT_DATA_UINT64 },
 		{ "ip6_notaligned",		KSTAT_DATA_UINT64 },
 		{ "ip6_multimblk",		KSTAT_DATA_UINT64 },

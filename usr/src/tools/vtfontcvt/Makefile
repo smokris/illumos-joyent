@@ -11,6 +11,7 @@
 
 #
 # Copyright 2017 Toomas Soome <tsoome@me.com>
+# Copyright 2019 Joyent, Inc.
 #
 
 CMDDIR=		$(SRC)/cmd/vtfontcvt
@@ -18,6 +19,8 @@ CMDDIR=		$(SRC)/cmd/vtfontcvt
 include		../Makefile.tools
 include		$(CMDDIR)/Makefile.common
 
+NATIVE_LIBS	+= libumem.so
+CPPFLAGS	+= -I../../uts/common
 .KEEP_STATE:
 
 all:		$(PROG)
@@ -31,7 +34,13 @@ $(PROG):	$(OBJS)
 		$(LINK.c) $(OBJS) -o $@ $(LDLIBS)
 		$(POST_PROCESS)
 
+#
+# In order to build on older platforms, we specifically use the
+# source-tree version of queue.h. When building as part of
+# $SRC/cmd, we'll be using the $PROTO copy of queue.h anyway,
+# so this is a $SRC/tools workaround only.
+#
 %.o:		$(CMDDIR)/%.c
-		$(COMPILE.c) -o $@ $<
+		$(COMPILE.c) -I$(SRC)/uts/common -o $@ $<
 
 include		../Makefile.targ

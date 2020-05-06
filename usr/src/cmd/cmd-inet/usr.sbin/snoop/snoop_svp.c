@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2018 Joyent, Inc.  All rights reserved.
+ * Copyright 2019 Joyent, Inc.
  */
 
 /*
@@ -19,113 +19,118 @@
 
 #include <inttypes.h>
 #include <sys/crc32.h>
+#include <uuid/uuid.h>
+#include <arpa/inet.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <libvarpd_svp_prot.h>
 #include "snoop.h"
 
-#define	UUID_SIZE 16
+/*
+ * String size large enough for an IPv6 address + / + a 3 digit (or less)
+ * prefix length
+ */
+#define	ADDRSTR_LEN (INET6_ADDRSTRLEN + 4)
+
+/*
+ * Large enough for all currently known status strings as well as a
+ * 16-bit hex value.
+ */
+#define	STATUSSTR_LEN	32
+
+/*
+ * Large enough for all currently known op strings, as well as a
+ * 16-bit hex value.
+ */
+#define	OPSTR_LEN	32
+
+/*
+ * Large enough for VL3 types and bulk types, as well as a 32-bit
+ * hex value.
+ */
+#define	TYPESTR_LEN	32
 
 static uint32_t svp_crc32_tab[] = { CRC32_TABLE };
 
-#define	NUM_BUFS 4
-#define	BUF_LEN 64
-static const char *
-buf_printf(const char *fmt, ...)
-{
-	static char buf[NUM_BUFS][BUF_LEN];
-	static size_t i = 0;
-	char *bufp = buf[i++];
-	va_list ap;
+#define	STR(_x, _buf, _len)				\
+	case _x:					\
+		(void) strlcpy(_buf, #_x, _len);	\
+		break
 
-	va_start(ap, fmt);
-	(void) vsnprintf(bufp, BUF_LEN, fmt, ap);
-	va_end(ap);
-
-	i %= NUM_BUFS;
-	return (bufp);
-}
-
-#define	STR(x) case x: return(#x)
-static const char *
-svp_op_str(uint16_t op)
+static void
+svp_op_str(uint16_t op, char *buf, size_t buflen)
 {
 	switch (op) {
-	STR(SVP_R_UNKNOWN);
-	STR(SVP_R_PING);
-	STR(SVP_R_PONG);
-	STR(SVP_R_VL2_REQ);
-	STR(SVP_R_VL2_ACK);
-	STR(SVP_R_VL3_REQ);
-	STR(SVP_R_VL3_ACK);
-	STR(SVP_R_BULK_REQ);
-	STR(SVP_R_BULK_ACK);
-	STR(SVP_R_LOG_REQ);
-	STR(SVP_R_LOG_ACK);
-	STR(SVP_R_LOG_RM);
-	STR(SVP_R_LOG_RM_ACK);
-	STR(SVP_R_SHOOTDOWN);
-	STR(SVP_R_ROUTE_REQ);
-	STR(SVP_R_ROUTE_ACK);
+	STR(SVP_R_UNKNOWN, buf, buflen);
+	STR(SVP_R_PING, buf, buflen);
+	STR(SVP_R_PONG, buf, buflen);
+	STR(SVP_R_VL2_REQ, buf, buflen);
+	STR(SVP_R_VL2_ACK, buf, buflen);
+	STR(SVP_R_VL3_REQ, buf, buflen);
+	STR(SVP_R_VL3_ACK, buf, buflen);
+	STR(SVP_R_BULK_REQ, buf, buflen);
+	STR(SVP_R_BULK_ACK, buf, buflen);
+	STR(SVP_R_LOG_REQ, buf, buflen);
+	STR(SVP_R_LOG_ACK, buf, buflen);
+	STR(SVP_R_LOG_RM, buf, buflen);
+	STR(SVP_R_LOG_RM_ACK, buf, buflen);
+	STR(SVP_R_SHOOTDOWN, buf, buflen);
 	default:
-		return (buf_printf("0x%hx", op));
+		(void) snprintf(buf, buflen, "0x%hx", op);
 	}
 }
 
-static const char *
-svp_status_str(uint16_t status)
+static void
+svp_status_str(uint16_t status, char *buf, size_t buflen)
 {
 	switch (status) {
-	STR(SVP_S_OK);
-	STR(SVP_S_FATAL);
-	STR(SVP_S_NOTFOUND);
-	STR(SVP_S_BADL3TYPE);
-	STR(SVP_S_BADBULK);
+	STR(SVP_S_OK, buf, buflen);
+	STR(SVP_S_FATAL, buf, buflen);
+	STR(SVP_S_NOTFOUND, buf, buflen);
+	STR(SVP_S_BADL3TYPE, buf, buflen);
+	STR(SVP_S_BADBULK, buf, buflen);
 	default:
-		return (buf_printf("0x%hx", status));
+		(void) snprintf(buf, buflen, "0x%hx", status);
 	}
 }
 
-static const char *
-svp_vl3_type_str(uint32_t type)
+static void
+svp_vl3_type_str(uint32_t type, char *buf, size_t buflen)
 {
 	switch (type) {
-	STR(SVP_VL3_IP);
-	STR(SVP_VL3_IPV6);
+	STR(SVP_VL3_IP, buf, buflen);
+	STR(SVP_VL3_IPV6, buf, buflen);
 	default:
-		return (buf_printf("0x%x", type));
+		(void) snprintf(buf, buflen, "0x%x", type);
 	}
 }
 
-static const char *
-svp_bulk_type_str(uint32_t type)
+static void
+svp_bulk_type_str(uint32_t type, char *buf, size_t buflen)
 {
 	switch (type) {
-	STR(SVP_BULK_VL2);
-	STR(SVP_BULK_VL3);
+	STR(SVP_BULK_VL2, buf, buflen);
+	STR(SVP_BULK_VL3, buf, buflen);
 	default:
-		return (buf_printf("0x%x", type));
+		(void) snprintf(buf, buflen, "0x%x", type);
 	}
 }
 
-static const char *
-svp_log_type_str(uint32_t type)
+static void
+svp_log_type_str(uint32_t type, char *buf, size_t buflen)
 {
 	switch (type) {
-	STR(SVP_LOG_VL2);
-	STR(SVP_LOG_VL3);
-	STR(SVP_LOG_ROUTE);
+	STR(SVP_LOG_VL2, buf, buflen);
+	STR(SVP_LOG_VL3, buf, buflen);
 	default:
-		return (buf_printf("0x%x", type));
+		(void) snprintf(buf, buflen, "0x%x", type);
 	}
 }
 #undef STR
 
-static const char *
-svp_addr_str(void *addrp, uint8_t *prefixp)
+static void
+svp_addr_str(void *addrp, uint8_t *prefixp, char *buf, size_t buflen)
 {
-	/* Include space for optional /ddd prefix length */
-	static char buf[INET6_ADDRSTRLEN + 5];
 	struct in_addr v4;
 	int af = AF_INET6;
 
@@ -135,11 +140,11 @@ svp_addr_str(void *addrp, uint8_t *prefixp)
 		addrp = &v4;
 	}
 
-	if (inet_ntop(af, addrp, buf, sizeof (buf)) == NULL) {
+	if (inet_ntop(af, addrp, buf, buflen) == NULL) {
 		uint8_t *p = addrp;
 		size_t i;
 
-		(void) strlcpy(buf, "0x", sizeof (buf));
+		(void) strlcpy(buf, "0x", buflen);
 		for (i = 0; i < 16; i++) {
 			(void) snprintf(buf + 2 + i * 2,
 			    sizeof (buf) - 2 - i * 2, "%02hhx", p[i]);
@@ -153,32 +158,8 @@ svp_addr_str(void *addrp, uint8_t *prefixp)
 			*prefixp -= 96;
 
 		(void) snprintf(buf2, sizeof (buf2), "/%hhu", *prefixp);
-		(void) strlcat(buf, buf2, sizeof (buf));
+		(void) strlcat(buf, buf2, buflen);
 	}
-
-	return (buf);
-}
-
-static const char *
-svp_uuid_str(uint8_t *uuid)
-{
-	char *bufp = (char *)buf_printf("");
-	char val[3];
-	size_t i;
-
-	for (i = 0; i < UUID_SIZE; i++) {
-		(void) snprintf(val, sizeof (val), "%02hhx", uuid[i]);
-		switch (i) {
-		case 4:
-		case 6:
-		case 8:
-		case 10:
-			(void) strlcat(bufp, "-", BUF_LEN);
-			break;
-		}
-		(void) strlcat(bufp, val, BUF_LEN);
-	}
-	return (bufp);
 }
 
 static boolean_t
@@ -209,9 +190,14 @@ static void
 do_svp_vl2_ack(void *data, int len)
 {
 	svp_vl2_ack_t *vl2a = data;
+	char status[STATUSSTR_LEN];
+	char addr[ADDRSTR_LEN];
 
-	show_printf("Status = %s", svp_status_str(ntohs(vl2a->sl2a_status)));
-	show_printf("UL3 Address = %s", svp_addr_str(vl2a->sl2a_addr, NULL));
+	svp_status_str(ntohs(vl2a->sl2a_status), status, sizeof (status));
+	svp_addr_str(vl2a->sl2a_addr, NULL, addr, sizeof (addr));
+
+	show_printf("Status = %s", status);
+	show_printf("UL3 Address = %s", addr);
 	show_printf("UL3 Port = %hu", ntohs(vl2a->sl2a_port));
 }
 
@@ -219,21 +205,31 @@ static void
 do_svp_vl3_req(void *data, int len)
 {
 	svp_vl3_req_t *req = data;
+	char type[TYPESTR_LEN];
+	char addr[ADDRSTR_LEN];
 
-	show_printf("Vnet = %u", ntohl(req->sl3r_vnetid));
-	show_printf("Type = %s", svp_vl3_type_str(ntohl(req->sl3r_type)));
-	show_printf("VL3 Address = %s", svp_addr_str(req->sl3r_ip, NULL));
+	svp_vl3_type_str(ntohl(req->sl3r_type), type, sizeof (type));
+	svp_addr_str(req->sl3r_ip, NULL, addr, sizeof (addr));
+
+	show_printf("Virtual network id = %u", ntohl(req->sl3r_vnetid));
+	show_printf("Type = %s", type);
+	show_printf("VL3 Address = %s", addr);
 }
 
 static void
 do_svp_vl3_ack(void *data, int len)
 {
 	svp_vl3_ack_t *vl3a = data;
+	char status[STATUSSTR_LEN];
+	char addr[ADDRSTR_LEN];
 
-	show_printf("Status = %s", svp_status_str(ntohl(vl3a->sl3a_status)));
+	svp_status_str(ntohl(vl3a->sl3a_status), status, sizeof (status));
+	svp_addr_str(vl3a->sl3a_uip, NULL, addr, sizeof (addr));
+
+	show_printf("Status = %s", status);
 	show_printf("MAC = %s",
 	    ether_ntoa((struct ether_addr *)vl3a->sl3a_mac));
-	show_printf("UL3 Address = %s", svp_addr_str(vl3a->sl3a_uip, NULL));
+	show_printf("UL3 Address = %s", addr);
 	show_printf("UL3 Port = %hu", ntohs(vl3a->sl3a_uport));
 }
 
@@ -241,34 +237,46 @@ static void
 do_svp_bulk_req(void *data, int len)
 {
 	svp_bulk_req_t *req = data;
+	char type[TYPESTR_LEN];
 
 	if (len < sizeof (svp_bulk_req_t)) {
-		show_printf("%s runt", svp_op_str(SVP_R_BULK_REQ));
+		show_printf("SVP_R_BULK_REQ runt");
 		return;
 	}
 
-	show_printf("Type = %s", svp_bulk_type_str(ntohl(req->svbr_type)));
+	svp_bulk_type_str(ntohl(req->svbr_type), type, sizeof (type));
+	show_printf("Type = %s", type);
 }
 
 static void
 do_svp_bulk_ack(void *data, int len)
 {
 	svp_bulk_ack_t *ack = data;
-	uint32_t status;
-	size_t i, n;
+	char status[STATUSSTR_LEN];
+	char type[TYPESTR_LEN];
 
-	show_printf("Status = %s", svp_status_str(status));
-	show_printf("Type = %s", svp_bulk_type_str(ntohl(ack->svba_type)));
+	svp_status_str(ntohl(ack->svba_status), status, sizeof (status));
+	svp_bulk_type_str(ntohl(ack->svba_type), type, sizeof (type));
 
+	show_printf("Status = %s", status);
+	show_printf("Type = %s", type);
+
+	/*
+	 * Currently the data format is undefined (see libvarp_svp_prot.h),
+	 * so there is nothing else we can display.
+	 */
 }
 
 static void
 do_svp_log_req(void *data, int len)
 {
 	svp_log_req_t *svlr = data;
+	char addr[ADDRSTR_LEN];
+
+	svp_addr_str(svlr->svlr_ip, NULL, addr, sizeof (addr));
 
 	show_printf("Count = %u", ntohl(svlr->svlr_count));
-	show_printf("Address = %s", svp_addr_str(svlr->svlr_ip, NULL));
+	show_printf("Address = %s", addr);
 }
 
 static void
@@ -278,25 +286,34 @@ do_svp_log_ack(void *data, int len)
 	union {
 		svp_log_vl2_t *vl2;
 		svp_log_vl3_t *vl3;
-		svp_log_route_t *vr;
 		uint32_t	*vtype;
 		void		*vd;
-	} u = { .vd = (ack + 1) };
-	uint32_t type;
+	} u;
 	size_t total = 0, rlen = 0;
 	uint8_t prefixlen;
 	boolean_t is_host;
+	char status[STATUSSTR_LEN];
+	char typestr[TYPESTR_LEN];
+	char uuid[UUID_PRINTABLE_STRING_LENGTH];
+	char addr[ADDRSTR_LEN];
 
-	show_printf("Status = %s", svp_status_str(ntohl(ack->svla_status)));
+	u.vd = (ack + 1);
+
+	svp_status_str(ntohl(ack->svla_status), status, sizeof (status));
+
+	show_printf("Status = %s", status);
 	len -= sizeof (*ack);
 
 	while (len > 0) {
+		uint32_t type;
+
 		if (len < sizeof (uint32_t)) {
 			show_printf("    Trailing runt");
 			break;
 		}
 
 		type = ntohl(*u.vtype);
+		svp_log_type_str(type, typestr, sizeof (typestr));
 
 		switch (type) {
 		case SVP_LOG_VL2:
@@ -305,30 +322,32 @@ do_svp_log_ack(void *data, int len)
 		case SVP_LOG_VL3:
 			rlen = sizeof (svp_log_vl3_t);
 			break;
+#if 0	/* XXX KEBE SAYS ROUTE */
 		case SVP_LOG_ROUTE:
 			rlen = sizeof (svp_log_route_t);
 			break;
+#endif
 		default:
 			/*
-			 * If we don't know the type, we cannot determine
-			 * the size of the record, so we cannot continue past
-			 * this.
+			 * If we don't know the type of log record we have,
+			 * we cannot determine the size of the record, so we
+			 * cannot continue past this.
 			 */
-			show_printf("Log %-4s: Log type = 0x%x",
-			    buf_printf("%zu", ++total), type);
+			show_printf("Log %-4zu: Log type = %s", ++total,
+			    typestr);
 			return;
 		}
 
 		if (len < rlen) {
-			show_printf("Log %-4s %s runt",
-			    buf_printf("%zu", ++total), svp_log_type_str(type));
+			show_printf("Log %-4zu %s runt", ++total, typestr);
 			return;
 		}
 
-		/* These are the same in all three records */
-		show_printf("Log %-4s Log type = %s",
-		    buf_printf("%zu", ++total), svp_log_type_str(type));
-		show_printf("%8s UUID = %s", "", svp_uuid_str(u.vl2->svl2_id));
+		/* These are the same in SVP_LOG_VL2 and SVP_LOG_VL3 records */
+		show_printf("Log %-4zu Log type = %s", ++total, typestr);
+
+		uuid_parse(uuid, u.vl2->svl2_id);
+		show_printf("%8s UUID = %s", "", uuid);
 
 		switch (type) {
 		case SVP_LOG_VL2:
@@ -339,14 +358,16 @@ do_svp_log_ack(void *data, int len)
 			u.vl2++;
 			break;
 		case SVP_LOG_VL3:
+			svp_addr_str(u.vl3->svl3_ip, NULL, addr, sizeof (addr));
+
 			show_printf("%8s VLAN = %hu", "",
 			    ntohs(u.vl3->svl3_vlan));
-			show_printf("%8s Address = %s", "",
-			    svp_addr_str(u.vl3->svl3_ip, NULL));
+			show_printf("%8s Address = %s", "", addr);
 			show_printf("%8s Vnet = %u", "",
 			    ntohl(u.vl3->svl3_vnetid));
 			u.vl3++;
 			break;
+#if 0	/* XXX KEBE SAYS ROUTE */
 		case SVP_LOG_ROUTE:
 			show_printf("%8s Source Vnet = %u", "",
 			    ntohl(u.vr->svlr_src_vnetid));
@@ -372,6 +393,7 @@ do_svp_log_ack(void *data, int len)
 			    svp_addr_str(u.vr->svlr_dstip, &prefixlen));
 			u.vr++;
 			break;
+#endif
 		}
 
 		len -= rlen;
@@ -383,6 +405,11 @@ do_svp_log_ack(void *data, int len)
 static void
 do_svp_lrm_req(void *data, int len)
 {
+	/*
+	 * Sized large enough to hold the expected size message
+	 * (formatted below) if there's a length mismatch.
+	 */
+	char mismatch_str[64] = { 0 };
 	svp_lrm_req_t *req = data;
 	size_t expected_sz = sizeof (*req);
 	size_t i, n;
@@ -390,15 +417,21 @@ do_svp_lrm_req(void *data, int len)
 	n = ntohl(req->svrr_count);
 
 	/* IDs are 16-byte UUIDs */
-	expected_sz += n * UUID_SIZE;
-	show_printf("ID Count = %u%s", n,
-	    (len == expected_sz) ? "" : buf_printf(" (size mismatch)"));
+	expected_sz += n * UUID_LEN;
+	if (len != expected_sz) {
+		(void) snprintf(mismatch_str, sizeof (mismatch_str),
+		    " (expected %zu bytes, actual size is %d bytes)",
+		    expected_sz, len);
+	}
+	show_printf("ID Count = %u%s", n, mismatch_str);
 	if (len != expected_sz)
 		return;
 
 	for (i = 0; i < n; i++) {
-		show_printf("%-4s %s", (i == 0) ? "IDs:" : "",
-		    svp_uuid_str(&req->svrr_ids[UUID_SIZE * i]));
+		char uuid[UUID_PRINTABLE_STRING_LENGTH];
+
+		uuid_parse(uuid, &req->svrr_ids[UUID_LEN * i]);
+		show_printf("%-4s %s", (i == 0) ? "IDs:" : "", uuid);
 	}
 }
 
@@ -406,8 +439,10 @@ static void
 do_svp_lrm_ack(void *data, int len)
 {
 	svp_lrm_ack_t *ack = data;
+	char status[STATUSSTR_LEN];
 
-	show_printf("Status = %s", svp_status_str(ntohl(ack->svra_status)));
+	svp_status_str(ntohl(ack->svra_status), status, sizeof (status));
+	show_printf("Status = %s", status);
 }
 
 static void
@@ -420,6 +455,7 @@ do_svp_shootdown(void *data, int len)
 	    ether_ntoa((struct ether_addr *)sd->svsd_mac));
 }
 
+#if 0	/* XXX KEBE SAYS ROUTE */
 static void
 do_svp_route_req(void *data, int len)
 {
@@ -450,6 +486,7 @@ do_svp_route_ack(void *data, int len)
 	show_printf("Source IP Prefix = %hhu", ack->sra_src_pfx);
 	show_printf("Destination IP Prefix = %hhu", ack->sra_dst_pfx);
 }
+#endif
 
 static struct svp_len_tbl {
 	uint16_t slt_op;
@@ -469,18 +506,23 @@ static struct svp_len_tbl {
 	{ SVP_R_LOG_RM,		sizeof (svp_lrm_req_t) },
 	{ SVP_R_LOG_RM_ACK,	sizeof (svp_lrm_ack_t) },
 	{ SVP_R_SHOOTDOWN,	sizeof (svp_shootdown_t) },
+#if 0	/* XXX KEBE SAYS ROUTE */
 	{ SVP_R_ROUTE_REQ,	sizeof (svp_route_req_t) },
 	{ SVP_R_ROUTE_ACK,	sizeof (svp_route_ack_t) }
+#endif
 };
 
 static boolean_t
 svp_check_runt(uint16_t op, int len)
 {
-	if (op > SVP_R_ROUTE_ACK)
+	if (op > SVP_R_SHOOTDOWN)
 		return (B_FALSE);
 
 	if (len < svp_len_tbl[op].slt_len) {
-		show_printf("%s Runt", svp_op_str(op));
+		char opstr[OPSTR_LEN];
+
+		svp_op_str(op, opstr, sizeof (opstr));
+		show_printf("%s Runt", opstr);
 		show_space();
 		return (B_TRUE);
 	}
@@ -491,6 +533,8 @@ int
 interpret_svp(int flags, char *data, int fraglen)
 {
 	svp_req_t *req = (svp_req_t *)data;
+	char opstr[OPSTR_LEN];
+	uint16_t op;
 	boolean_t crc_ok;
 
 	if (fraglen < sizeof (svp_req_t)) {
@@ -503,22 +547,22 @@ interpret_svp(int flags, char *data, int fraglen)
 		return (fraglen);
 	}
 
+	op = ntohs(req->svp_op);
+	svp_op_str(op, opstr, sizeof (opstr));
+
 	crc_ok = svp_check_crc(data, fraglen);
 
 	if (flags & F_SUM) {
 		(void) snprintf(get_sum_line(), MAXLINE,
-		    "SVP V=%hu OP=%s ID=%u%s", ntohs(req->svp_ver),
-		    svp_op_str(ntohs(req->svp_op)),
+		    "SVP V=%hu OP=%s ID=%u%s", ntohs(req->svp_ver), opstr,
 		    ntohl(req->svp_id), crc_ok ? "" : " (BAD CRC)");
 	}
 
 	if (flags & F_DTAIL) {
-		uint16_t op = ntohs(req->svp_op);
-
 		show_header("SVP:    ", "SVP Header", sizeof (svp_req_t));
 		show_space();
 		show_printf("Version = %hu", ntohs(req->svp_ver));
-		show_printf("Op = %s", svp_op_str(op));
+		show_printf("Op = %s", opstr);
 		show_printf("Packet length = %u bytes%s", ntohl(req->svp_size),
 		    (ntohl(req->svp_size) == fraglen - sizeof (*req)) ?
 		    "" : " (mismatch)");
@@ -530,6 +574,12 @@ interpret_svp(int flags, char *data, int fraglen)
 		req++;
 		fraglen -= sizeof (*req);
 
+		/*
+		 * Since we cannot know the length of an unknown op,
+		 * svp_check_runt() returns B_TRUE for both truncated packets
+		 * and unknown packets -- we have nothing meaningful besides
+		 * the header we could print anyway.
+		 */
 		if (svp_check_runt(op, fraglen))
 			return (fraglen);
 
@@ -567,12 +617,14 @@ interpret_svp(int flags, char *data, int fraglen)
 		case SVP_R_SHOOTDOWN:
 			do_svp_shootdown(req, fraglen);
 			break;
+#if 0	/* XXX KEBE SAYS ROUTE */
 		case SVP_R_ROUTE_REQ:
 			do_svp_route_req(req, fraglen);
 			break;
 		case SVP_R_ROUTE_ACK:
 			do_svp_route_ack(req, fraglen);
 			break;
+#endif
 		}
 
 		show_space();

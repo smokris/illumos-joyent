@@ -18,6 +18,7 @@ LIBRARY =	libfakekernel.a
 VERS =		.1
 
 COBJS = \
+	callout.o \
 	clock.o \
 	cond.o \
 	copy.o \
@@ -48,18 +49,20 @@ include ../../Makefile.rootfs
 
 SRCDIR=		../common
 
-LIBS =		$(DYNLIB) $(LINTLIB)
+LIBS =		$(DYNLIB)
 SRCS=   $(COBJS:%.o=$(SRCDIR)/%.c)
 
-$(LINTLIB) :=	SRCS = $(SRCDIR)/$(LINTSRC)
-
 CSTD =       $(CSTD_GNU99)
-C99LMODE =      -Xc99=%all
-
-# Note: need our sys includes _before_ ENVCPPFLAGS, proto etc.
-CPPFLAGS.first += -I../common
 
 CFLAGS +=	$(CCVERBOSE)
+
+# Note: need our sys includes _before_ ENVCPPFLAGS, proto etc.
+# Also Note: intentionally override CPPFLAGS, not +=
+CPPFLAGS.first += -I../common
+CPPFLAGS= $(CPPFLAGS.first)
+
+INCS += -I$(SRC)/uts/common
+
 CPPFLAGS += $(INCS) -D_REENTRANT -D_FAKE_KERNEL
 CPPFLAGS += -D_FILE_OFFSET_BITS=64
 
@@ -67,16 +70,11 @@ CPPFLAGS += -D_FILE_OFFSET_BITS=64
 # this library is for debugging, let's always define DEBUG here.
 CPPFLAGS += -DDEBUG
 
-LINTCHECKFLAGS += -erroff=E_INCONS_ARG_DECL2
-LINTCHECKFLAGS += -erroff=E_INCONS_VAL_TYPE_DECL2
-LINTCHECKFLAGS += -erroff=E_INCONS_VAL_TYPE_USED2
-
 LDLIBS += -lumem -lcryptoutil -lsocket -lc
 
 .KEEP_STATE:
 
 all: $(LIBS)
 
-lint: lintcheck
 
 include ../../Makefile.targ

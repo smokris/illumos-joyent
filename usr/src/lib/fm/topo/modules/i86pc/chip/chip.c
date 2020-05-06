@@ -22,7 +22,7 @@
 /*
  * Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
- * Copyright (c) 2018, Joyent, Inc.
+ * Copyright 2019, Joyent, Inc.
  */
 
 #include <unistd.h>
@@ -403,6 +403,13 @@ create_core(topo_mod_t *mod, tnode_t *pnode, nvlist_t *cpu,
 		if (topo_node_range_create(mod, core, STRAND_NODE_NAME,
 		    0, 255) != 0)
 			return (-1);
+
+		/*
+		 * Creating a temperature sensor may fail because the sensor
+		 * doesn't exist or due to internal reasons. At the moment, we
+		 * swallow any such errors that occur.
+		 */
+		(void) chip_create_core_temp_sensor(mod, core);
 	}
 
 	if (!is_xpv()) {
@@ -469,13 +476,13 @@ create_core(topo_mod_t *mod, tnode_t *pnode, nvlist_t *cpu,
 static int
 create_chip(topo_mod_t *mod, tnode_t *pnode, topo_instance_t min,
     topo_instance_t max, nvlist_t *cpu, nvlist_t *auth,
-    int mc_offchip)
+    int mc_offchip, kstat_ctl_t *kc)
 {
 	tnode_t *chip;
 	nvlist_t *fmri = NULL;
 	int err, perr, nerr = 0;
 	int32_t chipid, procnodeid, procnodes_per_pkg;
-	const char *vendor;
+	const char *vendor, *brand;
 	int32_t family, model;
 	boolean_t create_mc = B_FALSE;
 	uint16_t smbios_id;
@@ -540,6 +547,18 @@ create_chip(topo_mod_t *mod, tnode_t *pnode, topo_instance_t min,
 		    CHIP_VENDOR_ID, NULL);
 		nerr -= add_nvlist_longprops(mod, chip, cpu, PGNAME(CHIP),
 		    NULL, CHIP_FAMILY, CHIP_MODEL, CHIP_STEPPING, NULL);
+
+		/*
+		 * Attempt to lookup the processor brand string in kstats.
+		 * and add it as a prop, if found.
+		 */
+		brand = get_chip_brand(mod, kc, chipid);
+		if (brand != NULL && topo_prop_set_string(chip, PGNAME(CHIP),
+		    CHIP_BRAND, TOPO_PROP_IMMUTABLE, brand, &perr) != 0) {
+			whinge(mod, &nerr, "failed to set prop %s/%s",
+			    PGNAME(CHIP), CHIP_BRAND);
+		}
+		topo_mod_strfree(mod, (char *)brand);
 
 		if (FM_AWARE_SMBIOS(mod)) {
 			int fru = 0;
@@ -632,6 +651,13 @@ create_chip(topo_mod_t *mod, tnode_t *pnode, topo_instance_t min,
 		}
 
 		create_mc = B_TRUE;
+
+		/*
+		 * Creating a temperature sensor may fail because the sensor
+		 * doesn't exist or due to internal reasons. At the moment, we
+		 * swallow any such errors that occur.
+		 */
+		(void) chip_create_chip_temp_sensor(mod, chip);
 	}
 
 	if (FM_AWARE_SMBIOS(mod)) {
@@ -685,6 +711,7 @@ create_chips(topo_mod_t *mod, tnode_t *pnode, const char *name,
 	nvlist_t **cpus;
 	int nerr = 0;
 	uint_t i, ncpu;
+	kstat_ctl_t *kc;
 
 	if (strcmp(name, CHIP_NODE_NAME) != 0)
 		return (0);
@@ -699,11 +726,17 @@ create_chips(topo_mod_t *mod, tnode_t *pnode, const char *name,
 	}
 	fmd_agent_close(hdl);
 
+	if ((kc = kstat_open()) == NULL) {
+		whinge(mod, NULL, "kstat_open() failed");
+		return (topo_mod_seterrno(mod, EMOD_PARTIAL_ENUM));
+	}
+
 	for (i = 0; i < ncpu; i++) {
 		nerr -= create_chip(mod, pnode, min, max, cpus[i], auth,
-		    mc_offchip);
+		    mc_offchip, kc);
 		nvlist_free(cpus[i]);
 	}
+	(void) kstat_close(kc);
 	umem_free(cpus, sizeof (nvlist_t *) * ncpu);
 
 	if (nerr == 0) {

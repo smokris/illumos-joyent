@@ -22,13 +22,17 @@
 # Copyright (c) 1999, 2010, Oracle and/or its affiliates. All rights reserved.
 #
 # Copyright 2010, Richard Lowe
-# Copyright 2017 Joyent, Inc.
+#
+# Copyright 2020 Joyent, Inc.
 
 SHELL=/usr/bin/ksh93
 
+SCRIPTS= \
+	bldenv \
+	nightly
+
 SHFILES= \
 	Install \
-	bldenv \
 	build_cscope \
 	bringovercheck \
 	checkpaths \
@@ -36,7 +40,6 @@ SHFILES= \
 	elfcmp \
 	flg.flp \
 	genoffsets \
-	nightly \
 	onu \
 	protocmp.terse \
 	sccscheck \
@@ -48,7 +51,6 @@ SHFILES= \
 PERLFILES= \
 	check_rtime \
 	find_elf \
-	gensetdefs \
 	interface_check \
 	interface_cmp \
 	jstyle \
@@ -116,9 +118,6 @@ EXCEPTFILES= \
 
 CLEANFILES = $(SHFILES) $(PERLFILES) $(PYFILES) bldenv.1onbld onu.sh
 
-onu.sh:	onu.sh.in
-	$(SED) -e "s:@PYTHON_VERSION@:$(PYTHON_VERSION):g" < onu.sh.in > $@
-
 include ../Makefile.tools
 
 ROOTONBLDSCRIPTLINKS = $(SCRIPTLINKS:%=$(ROOTONBLDBIN)/%)
@@ -133,7 +132,10 @@ $(ROOTONBLDMAN1ONBLDFILES)	:= FILEMODE=	644
 .KEEP_STATE:
 
 all:	$(SHFILES) $(PERLFILES) $(PERLMODULES) $(PYFILES) \
-	$(MAN1ONBLDFILES) $(MAKEFILES)
+	$(MAN1ONBLDFILES) $(MAKEFILES) $(SCRIPTS)
+
+onu.sh:	onu.sh.in
+	$(SED) -e "s:@PYTHON_VERSION@:$(PYTHON_VERSION):g" < onu.sh.in > $@
 
 $(ROOTONBLDBIN)/git-nits:
 	$(RM) $(ROOTONBLDBIN)/git-nits
@@ -147,31 +149,24 @@ install: all .WAIT $(ROOTONBLDSHFILES) $(ROOTONBLDPERLFILES)		\
 		$(ROOTONBLDPERLMODULES) $(ROOTONBLDPYFILES)		\
 		$(ROOTONBLDSCRIPTLINKS) $(ROOTONBLDMAN1ONBLDFILES)	\
 		$(ROOTONBLDMAKEFILES) $(ROOTONBLDETCFILES)		\
-		$(ROOTONBLDEXCEPTFILES) $(ROOTONBLDMAN1ONBLDLINKS)
+		$(ROOTONBLDEXCEPTFILES) $(ROOTONBLDMAN1ONBLDLINKS)	\
+		$(ROOTONBLDSCRIPTS)
 
 clean:
 	$(RM) $(CLEANFILES)
-
-bldenv: bldenv.sh stdenv.sh
-	$(RM) "$@"
-	sed -e '/# STDENV_START/ r stdenv.sh' bldenv.sh > "$@"
-	# Check for shell lint and fail if we hit warnings
-	shlintout="$$( /usr/bin/ksh93 -n "$@" 2>&1 )" ; \
-		[[ "$${shlintout}" != "" ]] && \
-		{ print -r -- "$${shlintout}" ;	false ; } || true
-	$(CHMOD) +x "$@"
 
 bldenv.1onbld: bldenv
 	$(RM) "$@"
 	(set +o errexit ; ksh93 $? --nroff ; true) 2>&1 | \
 	sed -e 's/\.DS/.nf/g;s/\.DE/.fi/' \
-	-e 's/\.TH BLDENV 1/.TH BLDENV 1ONBLD/' \
+	-e 's/\.TH BLDENV 1/.TH BLDENV 1ONBLD "September 4, 2018"/' \
+	-e 's/.OP \([a-z]\) - flag -/.OP \\-\1/g' \
 	-e 's/(1)/(1ONBLD)/' > "$@"
 
-nightly: nightly.sh stdenv.sh
-	$(RM) "$@"
-	sed -e '/# STDENV_START/ r stdenv.sh' nightly.sh > nightly
-	$(CHMOD) +x "$@"
+#
+# Not run by default: bootstrap...
+check:
+	$(ROOTONBLDBINMACH)/mandoc -Tlint -Wwarning $(MAN1ONBLDFILES)
 
 include ../Makefile.targ
 

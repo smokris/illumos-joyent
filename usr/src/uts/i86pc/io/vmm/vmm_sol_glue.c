@@ -36,7 +36,7 @@
  * http://www.illumos.org/license/CDDL.
  *
  * Copyright 2014 Pluribus Networks Inc.
- * Copyright 2018 Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  */
 
 #include <sys/types.h>
@@ -99,7 +99,8 @@ pmap_invalidate_cache(void)
 
 	kpreempt_disable();
 	cpuset_all_but(&cpuset, CPU->cpu_id);
-	xc_call(NULL, NULL, NULL, CPUSET2BV(cpuset), (xc_func_t)invalidate_cache);
+	xc_call((xc_arg_t)NULL, (xc_arg_t)NULL, (xc_arg_t)NULL,
+	    CPUSET2BV(cpuset), (xc_func_t)invalidate_cache);
 	invalidate_cache();
 	kpreempt_enable();
 }
@@ -125,34 +126,24 @@ pmap_kextract(vm_offset_t va)
 int
 cpusetobj_ffs(const cpuset_t *set)
 {
-#if	CPUSET_WORDS > 1
-	int	i, cbit;
+	uint_t large, small;
 
-	cbit = 0;
-	for (i = 0; i < CPUSET_WORDS; i++) {
-		if (set->cpub[i] != 0) {
-			cbit = ffsl(set->cpub[i]);
-			cbit += i * sizeof (set->cpub[0]);
-			break;
-		}
+	/*
+	 * Rather than reaching into the cpuset_t ourselves, leave that task to
+	 * cpuset_bounds().  The simplicity is worth the extra wasted work to
+	 * find the upper bound.
+	 */
+	cpuset_bounds(set, &small, &large);
+
+	if (small == CPUSET_NOTINSET) {
+		/* The FreeBSD version returns 0 if it find nothing */
+		return (0);
 	}
-	return (cbit);
-#else
-	return (ffsl(*set));
-#endif
-}
 
-void
-smp_rendezvous(void (* setup_func)(void *), void (* action_func)(void *),
-    void (* teardown_func)(void *), void *arg)
-{
-	cpuset_t cpuset;
+	ASSERT3U(small, <=, INT_MAX);
 
-	ASSERT(setup_func == NULL);
-	ASSERT(teardown_func == NULL);
-
-	CPUSET_ALL(cpuset);
-	xc_sync((xc_arg_t)arg, 0, 0, CPUSET2BV(cpuset), (xc_func_t)action_func);
+	/* Least significant bit index starts at 1 for valid results */
+	return (small + 1);
 }
 
 struct kmem_item {
@@ -294,12 +285,15 @@ contigfree(void *addr, unsigned long size, struct malloc_type *type)
 void
 mtx_init(struct mtx *mtx, char *name, const char *type_name, int opts)
 {
-	if (opts & MTX_SPIN) {
-		mutex_init(&mtx->m, name, MUTEX_SPIN,
-		    (ddi_iblock_cookie_t)ipltospl(DISP_LEVEL));
-	} else {
-		mutex_init(&mtx->m, name, MUTEX_DRIVER, NULL);
-	}
+	/*
+	 * Requests that a mutex be initialized to the MTX_SPIN type are
+	 * ignored.  The limitations which may have required spinlocks on
+	 * FreeBSD do not apply to how bhyve has been structured here.
+	 *
+	 * Adaptive mutexes are required to avoid deadlocks when certain
+	 * cyclics behavior interacts with interrupts and contended locks.
+	 */
+	mutex_init(&mtx->m, name, MUTEX_ADAPTIVE, NULL);
 }
 
 void

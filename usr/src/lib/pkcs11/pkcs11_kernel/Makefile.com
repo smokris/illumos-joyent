@@ -22,20 +22,21 @@
 # Copyright 2007 Sun Microsystems, Inc.  All rights reserved.
 # Use is subject to license terms.
 #
+# Copyright (c) 2018, Joyent, Inc.
 
 LIBRARY= pkcs11_kernel.a
 VERS= .1
 
 CORE_OBJECTS= \
-	kernelGeneral.o 	\
-	kernelSlottable.o 	\
-	kernelSlotToken.o 	\
-	kernelObject.o 		\
-	kernelDigest.o	 	\
-	kernelSign.o 		\
-	kernelVerify.o 		\
-	kernelDualCrypt.o 	\
-	kernelKeys.o 		\
+	kernelGeneral.o		\
+	kernelSlottable.o	\
+	kernelSlotToken.o	\
+	kernelObject.o		\
+	kernelDigest.o		\
+	kernelSign.o		\
+	kernelVerify.o		\
+	kernelDualCrypt.o	\
+	kernelKeys.o		\
 	kernelRand.o		\
 	kernelSession.o		\
 	kernelSessionUtil.o	\
@@ -85,8 +86,11 @@ LDLIBS  +=      -lc -lcryptoutil -lmd
 
 CFLAGS  +=      $(CCVERBOSE)
 
-CERRWARN +=	-_gcc=-Wno-uninitialized
+CERRWARN +=	$(CNOWARN_UNINIT)
 CERRWARN +=	-_gcc=-Wno-unused-label
+
+# not linted
+SMATCH=off
 
 ROOTLIBDIR=     $(ROOT)/usr/lib/security
 ROOTLIBDIR64=   $(ROOT)/usr/lib/security/$(MACH64)
@@ -95,15 +99,6 @@ ROOTLIBDIR64=   $(ROOT)/usr/lib/security/$(MACH64)
 
 all:    $(LIBS)
 
-# we don't need to lint ST_OBJECTS since they are linted elsewhere.
-lintcheck := SRCS = $(CORESRCS)
-lintother := OSRCS = ../common/kernelSoftCommon.c
-lintother := CPPFLAGS = -I$(ST_DIR) $(CPPFLAGS.master)
-
-lintother: $$(OSRCS)
-	$(LINT.c) $(LINTCHECKFLAGS) $(OSRCS) $(LDLIBS)
-
-lint: lintcheck lintother
 
 pics/%.o:	$(ST_DIR)/%.c
 	$(COMPILE.c) -o $@ $< -I$(ST_DIR)

@@ -32,7 +32,7 @@ SRCS = $(OBJS:%.o=%.c)
 include ../Makefile.cmd
 
 CFLAGS += $(CCVERBOSE)
-LDLIBS += -lsmbios
+LDLIBS += -lsmbios -ljedec
 
 FILEMODE = 0555
 STRIPFLAG =
@@ -51,7 +51,5 @@ clean:
 	$(RM) $(OBJS)
 
 install: $(ROOTUSRSBINPROG)
-
-lint: lint_SRCS
 
 include ../Makefile.targ

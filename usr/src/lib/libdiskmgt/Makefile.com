@@ -23,7 +23,7 @@
 # Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
 # Use is subject to license terms.
 # Copyright 2016 Nexenta Systems, Inc.
-#
+# Copyright (c) 2018, Joyent, Inc.
 
 LIBRARY =	libdiskmgt.a
 VERS =		.1
@@ -49,7 +49,7 @@ OBJECTS =	alias.o \
 
 include ../../Makefile.lib
 
-LIBS =		$(DYNLIB) $(LINTLIB)
+LIBS =		$(DYNLIB)
 i386_LDLIBS =   -lfdisk
 sparc_LDLIBS =
 LDLIBS +=       -ldevinfo -ladm -ldevid -lkstat -lsysevent \
@@ -57,18 +57,19 @@ LDLIBS +=       -ldevinfo -ladm -ldevid -lkstat -lsysevent \
 DYNFLAGS +=	-R/opt/VRTSvxvm/lib
 
 SRCDIR =	../common
-$(LINTLIB) :=	SRCS = $(SRCDIR)/$(LINTSRC)
 
 CFLAGS +=	$(CCVERBOSE)
 CERRWARN +=	-_gcc=-Wno-switch
 CERRWARN +=	-_gcc=-Wno-parentheses
-CERRWARN +=	-_gcc=-Wno-uninitialized
+CERRWARN +=	$(CNOWARN_UNINIT)
 CPPFLAGS +=	-D_REENTRANT -I$(SRC)/lib/libdiskmgt/common
+
+# not linted
+SMATCH=off
 
 .KEEP_STATE:
 
 all: $(LIBS)
 
-lint: lintcheck
 
 include ../../Makefile.targ

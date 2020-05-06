@@ -22,6 +22,7 @@
 # Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
 # Use is subject to license terms.
 #
+# Copyright (c) 2018, Joyent, Inc.
 
 LIBRARY=	libMPAPI.a
 VERS=		.1
@@ -30,12 +31,11 @@ OBJECTS=	mpapi.o mpapi-sun.o
 include ../../../Makefile.lib
 include ../../../Makefile.rootfs
 
-SRCDIR = 	../common
+SRCDIR =	../common
 
-LIBS =		$(DYNLIB) $(LINTLIB)
+LIBS =		$(DYNLIB)
 LDLIBS +=	-lc
 
-$(LINTLIB) :=	SRCS = $(SRCDIR)/$(LINTSRC)
 
 CFLAGS +=	$(CCVERBOSE)
 CPPFLAGS +=	-I$(SRCDIR) -mt $(CCVERBOSE) -D_POSIX_PTHREAD_SEMANTICS
@@ -45,7 +45,10 @@ DYNFLAGS +=	-z initarray=InitLibrary
 
 CERRWARN +=	-_gcc=-Wno-type-limits
 CERRWARN +=	-_gcc=-Wno-unused-variable
-CERRWARN +=	-_gcc=-Wno-uninitialized
+CERRWARN +=	$(CNOWARN_UNINIT)
+
+# not linted
+SMATCH=off
 
 ROOTETC =	$(ROOT)/etc
 CONFDIR =	../common
@@ -57,7 +60,6 @@ $(IETCFILES) := FILEMODE = 0644
 
 all: $(LIBS) $(IETCFILES)
 
-lint:
 
 $(ROOTETC)/%:	$(CONFDIR)/%
 	$(INS.file)

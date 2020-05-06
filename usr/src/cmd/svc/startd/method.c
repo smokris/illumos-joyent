@@ -21,7 +21,7 @@
 
 /*
  * Copyright (c) 2004, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright 2012 Joyent, Inc. All rights reserved.
+ * Copyright 2018 Joyent, Inc.
  */
 
 /*
@@ -698,7 +698,7 @@ method_run(restarter_inst_t **instp, int type, int *exit_code)
 	if (inst->ri_mi_deleted)
 		return (ECANCELED);
 
-	*exit_code = 0;
+	*exit_code = SMF_EXIT_OK;
 
 	assert(0 <= type && type <= 2);
 	mname = method_names[type];
@@ -963,7 +963,7 @@ method_run(restarter_inst_t **instp, int type, int *exit_code)
 		MUTEX_UNLOCK(&inst->ri_lock);
 
 		do {
-			r = waitpid(pid, &ret_status, NULL);
+			r = waitpid(pid, &ret_status, 0);
 		} while (r == -1 && errno == EINTR);
 		if (r == -1)
 			err = errno;
@@ -1034,7 +1034,8 @@ method_run(restarter_inst_t **instp, int type, int *exit_code)
 		}
 
 		*exit_code = WEXITSTATUS(ret_status);
-		if (*exit_code != 0 && *exit_code != SMF_EXIT_NODAEMON) {
+		if (*exit_code != SMF_EXIT_OK &&
+		    *exit_code != SMF_EXIT_NODAEMON) {
 			log_error(LOG_WARNING,
 			    "%s: Method \"%s\" failed with exit status %d.\n",
 			    inst->ri_i.i_fmri, method, WEXITSTATUS(ret_status));
@@ -1044,7 +1045,7 @@ method_run(restarter_inst_t **instp, int type, int *exit_code)
 		    "%d.", mname, *exit_code);
 
 		/* Note: we will take this path for SMF_EXIT_NODAEMON */
-		if (*exit_code != 0)
+		if (*exit_code != SMF_EXIT_OK)
 			goto contract_out;
 
 		end_time = time(NULL);
@@ -1095,7 +1096,7 @@ contract_out:
 	 * SMF_EXIT_NODAEMON & methods that fail.
 	 */
 	transient = method_is_transient(inst, type);
-	if ((transient || *exit_code != 0 || result != 0) &&
+	if ((transient || *exit_code != SMF_EXIT_OK || result != 0) &&
 	    (restarter_is_kill_method(method) < 0))
 		method_remove_contract(inst, !transient, B_TRUE);
 
@@ -1134,6 +1135,8 @@ method_thread(void *arg)
 	int r, exit_code;
 	boolean_t retryable;
 	restarter_str_t reason;
+
+	(void) pthread_setname_np(pthread_self(), "method");
 
 	assert(0 <= info->sf_method_type && info->sf_method_type <= 2);
 
@@ -1189,7 +1192,8 @@ retry:
 
 	r = method_run(&inst, info->sf_method_type, &exit_code);
 
-	if (r == 0 && (exit_code == 0 || exit_code == SMF_EXIT_NODAEMON)) {
+	if (r == 0 &&
+	    (exit_code == SMF_EXIT_OK || exit_code == SMF_EXIT_NODAEMON)) {
 		/* Success! */
 		assert(inst->ri_i.i_next_state != RESTARTER_STATE_NONE);
 

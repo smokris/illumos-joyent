@@ -22,7 +22,7 @@
 /*
  * Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
- * Copyright (c) 2018, Joyent, Inc.
+ * Copyright 2019, Joyent, Inc.
  */
 
 /*
@@ -230,7 +230,7 @@ mkrsrc(topo_mod_t *mod, tnode_t *pnode, const char *name, int inst,
 {
 	*nvl = topo_mod_hcfmri(mod, pnode, FM_HC_SCHEME_VERSION, name,
 	    inst, NULL, auth, NULL, NULL, NULL);
-	return (nvl != NULL ? 0 : -1);	/* caller must free nvlist */
+	return (*nvl != NULL ? 0 : -1);	/* caller must free nvlist */
 }
 
 /*
@@ -863,4 +863,20 @@ chip_fmri_replaced(topo_mod_t *mod, tnode_t *node, topo_version_t version,
 out:
 	nvlist_free(rsrc);
 	return (set_retnvl(mod, out, TOPO_METH_REPLACED_RET, ret));
+}
+
+const char *
+get_chip_brand(topo_mod_t *mod, kstat_ctl_t *kc, int32_t chipid)
+{
+	kstat_t *ksp;
+	kstat_named_t *ks;
+
+	if ((ksp = kstat_lookup(kc, "cpu_info", chipid, NULL)) == NULL ||
+	    kstat_read(kc, ksp, NULL) == -1 ||
+	    (ks = kstat_data_lookup(ksp, "brand")) == NULL) {
+		topo_mod_dprintf(mod, "failed to read stat cpu_info:%d:brand",
+		    chipid);
+		return (NULL);
+	}
+	return (topo_mod_strdup(mod, ks->value.str.addr.ptr));
 }

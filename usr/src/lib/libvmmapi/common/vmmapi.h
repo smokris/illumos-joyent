@@ -38,6 +38,7 @@
  * http://www.illumos.org/license/CDDL.
  *
  * Copyright 2015 Pluribus Networks Inc.
+ * Copyright 2019 Joyent, Inc.
  */
 
 #ifndef _VMMAPI_H_
@@ -113,6 +114,13 @@ int	vm_mmap_getnext(struct vmctx *ctx, vm_paddr_t *gpa, int *segid,
 void	*vm_create_devmem(struct vmctx *ctx, int segid, const char *name,
 	    size_t len);
 
+#ifndef __FreeBSD__
+/*
+ * Return the map offset for the device memory segment 'segid'.
+ */
+int	vm_get_devmem_offset(struct vmctx *ctx, int segid, off_t *mapoff);
+#endif
+
 /*
  * Map the memory segment identified by 'segid' into the guest address space
  * at [gpa,gpa+len) with protection 'prot'.
@@ -123,6 +131,9 @@ int	vm_mmap_memseg(struct vmctx *ctx, vm_paddr_t gpa, int segid,
 int	vm_create(const char *name);
 int	vm_get_device_fd(struct vmctx *ctx);
 struct vmctx *vm_open(const char *name);
+#ifndef __FreeBSD__
+void	vm_close(struct vmctx *ctx);
+#endif
 void	vm_destroy(struct vmctx *ctx);
 int	vm_parse_memsize(const char *optarg, size_t *memsize);
 int	vm_setup_memory(struct vmctx *ctx, size_t len, enum vm_mmap_style s);
@@ -260,6 +271,11 @@ int	vm_set_topology(struct vmctx *ctx, uint16_t sockets, uint16_t cores,
 	    uint16_t threads, uint16_t maxcpus);
 int	vm_get_topology(struct vmctx *ctx, uint16_t *sockets, uint16_t *cores,
 	    uint16_t *threads, uint16_t *maxcpus);
+
+#ifndef	__FreeBSD__
+/* illumos-specific APIs */
+int	vm_wrlock_cycle(struct vmctx *ctx);
+#endif	/* __FreeBSD__ */
 
 #ifdef	__FreeBSD__
 /*

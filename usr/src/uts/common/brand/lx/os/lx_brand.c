@@ -25,7 +25,7 @@
  */
 
 /*
- * Copyright 2017, Joyent, Inc. All rights reserved.
+ * Copyright 2020 Joyent, Inc.
  */
 
 /*
@@ -235,7 +235,7 @@ void (*lx_cgrp_freelwp)(vfs_t *, uint_t, id_t, pid_t);
 uint64_t lx_maxstack64 = LX_MAXSTACK64;
 
 static int lx_elfexec(struct vnode *vp, struct execa *uap, struct uarg *args,
-    struct intpdata *idata, int level, long *execsz, int setid,
+    struct intpdata *idata, int level, size_t *execsz, int setid,
     caddr_t exec_file, struct cred *cred, int *brand_action);
 
 static boolean_t lx_native_exec(uint8_t, const char **);
@@ -379,8 +379,6 @@ lx_setbrand(proc_t *p)
 {
 	/* Send SIGCHLD to parent by default when child exits */
 	ptolxproc(p)->l_signal = stol_signo[SIGCHLD];
-
-	lx_read_argv_bounds(p);
 }
 
 /* ARGSUSED */
@@ -824,7 +822,7 @@ lx_savecontext32(ucontext32_t *ucp)
 			flags |= LX_UC_RESTART_SYSCALL;
 		}
 	} else {
-		ucp->uc_brand_data[2] = NULL;
+		ucp->uc_brand_data[2] = (caddr32_t)(uintptr_t)NULL;
 	}
 
 	ucp->uc_brand_data[0] = flags;
@@ -920,7 +918,7 @@ lx_zvol_props(ldi_handle_t lh, zfs_cmd_t *zc, uint64_t *vsz, uint64_t *bsz)
 	ASSERT(rc == 0);
 
 	kmem_free((void *)(uintptr_t)zc->zc_nvlist_dst, size);
-	zc->zc_nvlist_dst = NULL;
+	zc->zc_nvlist_dst = (uintptr_t)NULL;
 	zc->zc_nvlist_dst_size = 0;
 
 	if ((rc = nvlist_lookup_nvlist(nv, "volsize", &nv2)) == 0) {
@@ -1404,8 +1402,15 @@ lx_brandsys(int cmd, int64_t *rval, uintptr_t arg1, uintptr_t arg2,
 	if (p->p_brand == NULL)
 		return (ENOSYS);
 
-	VERIFY(p->p_brand == &lx_brand);
-	VERIFY(p->p_brand_data != NULL);
+	/*
+	 * Certain native applications may wish to start the lx_lockd process.
+	 * Every other process that's not branded should be denied.
+	 */
+	if (p->p_brand != &lx_brand && cmd != B_START_NFS_LOCKD)
+		return (ENOSYS);
+
+	if (cmd != B_START_NFS_LOCKD)
+		VERIFY(p->p_brand_data != NULL);
 
 	switch (cmd) {
 	case B_REGISTER:
@@ -1727,7 +1732,7 @@ lx_brandsys(int cmd, int64_t *rval, uintptr_t arg1, uintptr_t arg2,
 		 * arg1 = ucontext_t pointer for jump state
 		 */
 
-		if (arg1 == NULL)
+		if (arg1 == (uintptr_t)NULL)
 			return (EINVAL);
 
 		switch (lwpd->br_stack_mode) {
@@ -1892,6 +1897,16 @@ lx_brandsys(int cmd, int64_t *rval, uintptr_t arg1, uintptr_t arg2,
 		mutex_exit(&p->p_lock);
 		return (result);
 	}
+
+	case B_ALL_SIGS_BLOCKED: {
+		uint_t result;
+
+		mutex_enter(&p->p_lock);
+		pd = ptolxproc(p);
+		result = pd->l_block_all_signals;
+		mutex_exit(&p->p_lock);
+		return (result);
+	}
 	}
 
 	return (EINVAL);
@@ -2033,12 +2048,6 @@ restoreexecenv(struct execenv *ep, stack_t *sp)
 	lwp->lwp_sigaltstack.ss_flags = sp->ss_flags;
 }
 
-extern int elfexec(vnode_t *, execa_t *, uarg_t *, intpdata_t *, int,
-    long *, int, caddr_t, cred_t *, int *);
-
-extern int elf32exec(struct vnode *, execa_t *, uarg_t *, intpdata_t *, int,
-    long *, int, caddr_t, cred_t *, int *);
-
 static uintptr_t
 lx_map_vdso(struct uarg *args, struct cred *cred)
 {
@@ -2057,8 +2066,8 @@ lx_map_vdso(struct uarg *args, struct cred *cred)
 	/*
 	 * The comm page should have been mapped in already.
 	 */
-	if (args->commpage == NULL) {
-		return (NULL);
+	if (args->commpage == (uintptr_t)NULL) {
+		return ((uintptr_t)NULL);
 	}
 
 	/*
@@ -2071,7 +2080,7 @@ lx_map_vdso(struct uarg *args, struct cred *cred)
 	fpath++;
 	if (lookupnameat(fpath, UIO_SYSSPACE, FOLLOW, NULLVPP, &vp,
 	    curzone->zone_rootvp) != 0) {
-		return (NULL);
+		return ((uintptr_t)NULL);
 	}
 
 	/*
@@ -2084,14 +2093,14 @@ lx_map_vdso(struct uarg *args, struct cred *cred)
 	if (VOP_GETATTR(vp, &attr, 0, cred, NULL) != 0 ||
 	    attr.va_size > LX_VDSO_SIZE) {
 		VN_RELE(vp);
-		return (NULL);
+		return ((uintptr_t)NULL);
 	}
 
 	err = execmap(vp, addr, attr.va_size, 0, 0,
 	    PROT_USER|PROT_READ|PROT_EXEC, 1, 0);
 	VN_RELE(vp);
 	if (err != 0) {
-		return (NULL);
+		return ((uintptr_t)NULL);
 	}
 	return ((uintptr_t)addr);
 }
@@ -2103,16 +2112,16 @@ lx_map_vdso(struct uarg *args, struct cred *cred)
 /* ARGSUSED4 */
 static int
 lx_elfexec(struct vnode *vp, struct execa *uap, struct uarg *args,
-    struct intpdata *idata, int level, long *execsz, int setid,
+    struct intpdata *idata, int level, size_t *execsz, int setid,
     caddr_t exec_file, struct cred *cred, int *brand_action)
 {
-	int		error, i;
+	int		error;
 	vnode_t		*nvp;
 	Ehdr		ehdr;
 	Addr		uphdr_vaddr;
 	intptr_t	voffset;
 	char		*interp = NULL;
-	uintptr_t	ldaddr = NULL;
+	uintptr_t	ldaddr = (uintptr_t)NULL;
 	proc_t		*p = ttoproc(curthread);
 	klwp_t		*lwp = ttolwp(curthread);
 	lx_proc_data_t	*lxpd = ptolxproc(p);
@@ -2173,8 +2182,8 @@ lx_elfexec(struct vnode *vp, struct execa *uap, struct uarg *args,
 		Ehdr ehdr;
 		Phdr *phdrp;
 		caddr_t phdrbase = NULL;
-		ssize_t phdrsize = 0;
-		int nphdrs, hsize;
+		size_t phdrsize = 0;
+		uint_t nphdrs, hsize;
 
 		if ((error = elfreadhdr(vp, cred, &ehdr, &nphdrs, &phdrbase,
 		    &phdrsize)) != 0) {
@@ -2184,7 +2193,7 @@ lx_elfexec(struct vnode *vp, struct execa *uap, struct uarg *args,
 		hsize = ehdr.e_phentsize;
 		/* LINTED: alignment */
 		phdrp = (Phdr *)phdrbase;
-		for (i = nphdrs; i > 0; i--) {
+		for (uint_t i = nphdrs; i > 0; i--) {
 			switch (phdrp->p_type) {
 			case PT_GNU_STACK:
 				if ((phdrp->p_flags & PF_X) == 0) {
@@ -2202,8 +2211,8 @@ lx_elfexec(struct vnode *vp, struct execa *uap, struct uarg *args,
 		Elf32_Ehdr ehdr;
 		Elf32_Phdr *phdrp;
 		caddr_t phdrbase = NULL;
-		ssize_t phdrsize = 0;
-		int nphdrs, hsize;
+		size_t phdrsize = 0;
+		uint_t nphdrs, hsize;
 
 		if ((error = elf32readhdr(vp, cred, &ehdr, &nphdrs, &phdrbase,
 		    &phdrsize)) != 0) {
@@ -2213,7 +2222,7 @@ lx_elfexec(struct vnode *vp, struct execa *uap, struct uarg *args,
 		hsize = ehdr.e_phentsize;
 		/* LINTED: alignment */
 		phdrp = (Elf32_Phdr *)phdrbase;
-		for (i = nphdrs; i > 0; i--) {
+		for (uint_t i = nphdrs; i > 0; i--) {
 			switch (phdrp->p_type) {
 			case PT_GNU_STACK:
 				if ((phdrp->p_flags & PF_X) == 0) {
@@ -2448,27 +2457,36 @@ lx_elfexec(struct vnode *vp, struct execa *uap, struct uarg *args,
 			 * decision is made after the linker loads and inspects
 			 * elf properties of the target executable being run.)
 			 *
-			 * So for ET_DYN Linux executables, we also don't know
-			 * where the heap should go, so we'll set the brk and
-			 * base to 0.  But in this case the Solaris linker will
-			 * not initialize the heap, so when the Linux linker
-			 * starts running there is no heap allocated.  This
-			 * seems to be ok on Linux 2.4 based systems because the
-			 * Linux linker/libc fall back to using mmap() to
-			 * allocate memory. But on 2.6 systems, running
-			 * applications by specifying them as command line
-			 * arguments to the linker results in segfaults for an
-			 * as yet undetermined reason (which seems to indicatej
-			 * that a more permanent fix for heap initalization in
-			 * these cases may be necessary).
+			 * The Linux linker does not do this, though, and
+			 * doesn't understand the semantics that we give the
+			 * native linker (namely, that the first non-zero arg
+			 * call to brk() will *set* the brkbase but leave
+			 * brksize at 0 -- Linux binaries instead expect that
+			 * this would extend the brk from 0 upto that arg).
+			 *
+			 * So we should never leave here with ex_brkbase == 0
+			 * or else we will get segfaults as Linux binaries
+			 * misinterpret what we return from brk().
+			 *
+			 * It's probably not great, but we'll just set brkbase
+			 * to PAGESIZE. If there's something down there in the
+			 * way then libc/malloc should fall back to mmap() when
+			 * we fail to extend the brk for them.
 			 */
 			if (ehdr.e_type == ET_DYN) {
-				env.ex_bssbase = (caddr_t)0;
-				env.ex_brkbase = (caddr_t)0;
+				env.ex_bssbase = (caddr_t)PAGESIZE;
+				env.ex_brkbase = (caddr_t)PAGESIZE;
 				env.ex_brksize = 0;
 			}
 		}
 	}
+
+	/*
+	 * Never leave this code with a 0 brkbase, or else we expose the
+	 * native linker semantics of initial brk() to Linux binaries which
+	 * will misinterpret them.
+	 */
+	ASSERT3U(env.ex_brkbase, !=, (caddr_t)0);
 
 	env.ex_vp = vp;
 	setexecenv(&env);
@@ -2528,7 +2546,7 @@ lx_elfexec(struct vnode *vp, struct execa *uap, struct uarg *args,
 	 * So we set AT_ENTRY to be the entry point of the linux executable,
 	 * but leave AT_BASE to be the address of the Solaris linker.
 	 */
-	for (i = 0; i < __KERN_NAUXV_IMPL; i++) {
+	for (uint_t i = 0; i < __KERN_NAUXV_IMPL; i++) {
 		switch (up->u_auxv[i].a_type) {
 		case AT_ENTRY:
 			up->u_auxv[i].a_un.a_val = edp.ed_entry;

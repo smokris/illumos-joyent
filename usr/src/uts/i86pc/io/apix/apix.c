@@ -325,7 +325,7 @@ apix_softinit()
 	iptr = (int *)&apic_irq_table[0];
 	for (i = 0; i <= APIC_MAX_VECTOR; i++) {
 		apic_level_intr[i] = 0;
-		*iptr++ = NULL;
+		*iptr++ = 0;
 	}
 	mutex_init(&airq_mutex, NULL, MUTEX_DEFAULT, NULL);
 
@@ -357,7 +357,7 @@ apix_get_intr_handler(int cpu, short vec)
 
 	ASSERT(cpu < apic_nproc && vec < APIX_NVECTOR);
 	if (cpu >= apic_nproc || vec >= APIX_NVECTOR)
-		return (NULL);
+		return (0);
 
 	apix_vector = apixs[cpu]->x_vectbl[vec];
 
@@ -612,7 +612,7 @@ apix_picinit(void)
 	/* add nmi handler - least priority nmi handler */
 	LOCK_INIT_CLEAR(&apic_nmi_lock);
 
-	if (!psm_add_nmintr(0, (avfunc) apic_nmi_intr,
+	if (!psm_add_nmintr(0, apic_nmi_intr,
 	    "apix NMI handler", (caddr_t)NULL))
 		cmn_err(CE_WARN, "apix: Unable to add nmi handler");
 
@@ -646,7 +646,7 @@ apix_send_eoi(void)
  *	Called at the beginning of the interrupt service routine, but unlike
  *	pcplusmp, does not mask interrupts. An EOI is given to the interrupt
  *	controller to enable other HW interrupts but interrupts are still
- * 	masked by the IF flag.
+ *	masked by the IF flag.
  *
  *	Return -1 for spurious interrupts
  *
@@ -2167,10 +2167,10 @@ apix_level_intr_pre_eoi(int irq)
 	if (apix_mul_ioapic_method == APIC_MUL_IOAPIC_IOXAPIC) {
 		/*
 		 * This is a IOxAPIC and there is EOI register:
-		 * 	Change the vector to reserved unused vector, so that
-		 * 	the EOI	from Local APIC won't clear the Remote IRR for
-		 * 	this level trigger interrupt. Instead, we'll manually
-		 * 	clear it in apix_post_hardint() after ISR handling.
+		 *	Change the vector to reserved unused vector, so that
+		 *	the EOI	from Local APIC won't clear the Remote IRR for
+		 *	this level trigger interrupt. Instead, we'll manually
+		 *	clear it in apix_post_hardint() after ISR handling.
 		 */
 		WRITE_IOAPIC_RDT_ENTRY_LOW_DWORD(apic_ix, intin_ix,
 		    (irqp->airq_rdt_entry & (~0xff)) | APIX_RESV_VECTOR);

@@ -18,12 +18,14 @@ VERS = .1
 OBJECTS = ld_file.o lock.o
 
 include $(SRC)/lib/Makefile.lib
+include $(SRC)/tools/Makefile.tools
 include ../../../Makefile.com
 
 LIBS = $(DYNLIB)
 SRCDIR = $(SRC)/cmd/make/lib/makestate
 MAPFILES = $(SRCDIR)/mapfile-vers
 LDLIBS += -lc
+NATIVE_LIBS += libc.so
 
 FILEMODE= 755
 

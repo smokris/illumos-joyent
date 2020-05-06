@@ -79,6 +79,7 @@ emulate_wrmsr(struct vmctx *ctx, int vcpu, uint32_t num, uint64_t val)
 			return (0);
 
 		case MSR_NB_CFG1:
+		case MSR_LS_CFG:
 		case MSR_IC_CFG:
 			return (0);	/* Ignore writes */
 
@@ -148,6 +149,7 @@ emulate_rdmsr(struct vmctx *ctx, int vcpu, uint32_t num, uint64_t *val)
 			break;
 
 		case MSR_NB_CFG1:
+		case MSR_LS_CFG:
 		case MSR_IC_CFG:
 			/*
 			 * The reset value is processor family dependent so
@@ -202,6 +204,17 @@ emulate_rdmsr(struct vmctx *ctx, int vcpu, uint32_t num, uint64_t *val)
 		case 0xC0011029:
 			*val = 1;
 			break;
+
+#ifndef	__FreeBSD__
+		case MSR_VM_CR:
+			/*
+			 * We currently don't support nested virt.
+			 * Windows seems to ignore the cpuid bits and reads this
+			 * MSR anyways.
+			 */
+			*val = VM_CR_SVMDIS;
+			break;
+#endif
 
 		default:
 			error = -1;

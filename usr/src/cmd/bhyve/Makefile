@@ -11,7 +11,7 @@
 
 #
 # Copyright 2014 Pluribus Networks Inc.
-# Copyright (c) 2018, Joyent, Inc.
+# Copyright 2020 Joyent, Inc.
 #
 
 PROG =		bhyve
@@ -44,6 +44,7 @@ SRCS =	acpi.c			\
 	mem.c			\
 	mevent.c		\
 	mptbl.c			\
+	net_utils.c		\
 	pci_ahci.c		\
 	pci_e82545.c		\
 	pci_emul.c		\
@@ -51,6 +52,7 @@ SRCS =	acpi.c			\
 	pci_hostbridge.c	\
 	pci_irq.c		\
 	pci_lpc.c		\
+	pci_nvme.c		\
 	pci_passthru.c		\
 	pci_uart.c		\
 	pci_virtio_block.c	\
@@ -76,14 +78,31 @@ SRCS =	acpi.c			\
 	vmm_instruction_emul.c	\
 	xmsr.c			\
 	spinup_ap.c		\
+	iov.c			\
 	bhyve_sol_glue.c
+
+# The virtio-scsi driver appears to include  a slew of materials from FreeBSD's
+# native SCSI implementation.  We will omit that complexity for now.
+	#ctl_util.c		\
+	#ctl_scsi_all.c		\
+	#pci_virtio_scsi.c	\
+
+# The audio backend in FreeBSD is different than the one found in audio_oss.h
+	#audio.c		\
+	#hda_codec.c		\
+	#pci_hda.c		\
+
+# The bhyve generic net-backend stuff has been ignored by us at the moment
+# because SmartOS users prefer to use viona for its superior network perf.
+	#net_backends.c		\
+
 
 OBJS = $(SRCS:.c=.o)
 
 CLOBBERFILES =	$(ROOTUSRSBINPROG) $(ZHYVE)
 
 ZHYVE_DIR =	$(ROOT)/usr/lib/brand/bhyve
-ZHYVE_PROG = 	zhyve
+ZHYVE_PROG =	zhyve
 ZHYVE =		$(ZHYVE_DIR)/$(ZHYVE_PROG)
 
 MEVENT_TEST_PROG = mevent_test
@@ -106,14 +125,26 @@ CPPFLAGS =	-I$(COMPAT)/freebsd -I$(CONTRIB)/freebsd \
 		-I$(SRC)/lib/libdladm/common \
 		-DWITHOUT_CAPSICUM
 
-# Disable the crypto code until it is wired up
-CPPFLAGS +=	-DNO_OPENSSL
+pci_nvme.o := CERRWARN += -_gcc=-Wno-pointer-sign
 
-LDLIBS +=	-lsocket -lnsl -ldlpi -ldladm -lmd -luuid -lvmmapi -lz
+SMOFF += all_func_returns,leaks,no_if_block
 
-zhyve := LDLIBS = -lnvpair
+# Force c99 for everything
+CSTD=		$(CSTD_GNU99)
+C99MODE=	-xc99=%all
 
-POST_PROCESS += ; $(GENSETDEFS) $@
+$(PROG) := LDLIBS +=	\
+	-lsocket	\
+	-lnsl		\
+	-ldlpi		\
+	-ldladm		\
+	-lmd		\
+	-lsunw_crypto	\
+	-luuid		\
+	-lvmmapi	\
+	-lz
+$(ZHYVE_PROG) := LDLIBS += -lnvpair
+$(MEVENT_TEST_PROG) := LDLIBS += -lsocket
 
 .KEEP_STATE:
 
@@ -124,7 +155,7 @@ $(PROG): $(OBJS)
 	$(POST_PROCESS)
 
 $(MEVENT_TEST_PROG): $(MEVENT_TEST_OBJS)
-	$(LINK.c) -o $@ $(MEVENT_TEST_OBJS) -lsocket
+	$(LINK.c) -o $@ $(MEVENT_TEST_OBJS) $(LDFLAGS) $(LDLIBS)
 
 install: all $(ZHYVE) $(ROOTUSRSBINPROG) $(SUBDIRS)
 
@@ -133,8 +164,6 @@ clean: $(SUBDIRS)
 
 clobber: clean $(SUBDIRS)
 	$(RM) $(CLOBBERFILES)
-
-lint:	lint_SRCS $(SUBDIRS)
 
 $(SUBDIRS): FRC
 	@cd $@; pwd; $(MAKE) $(TARGET)

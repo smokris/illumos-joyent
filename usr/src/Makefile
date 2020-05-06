@@ -25,8 +25,8 @@
 # Copyright 2014 Garrett D'Amore <garrett@damore.org>
 # Copyright 2015 OmniTI Computer Consulting, Inc. All rights reserved.
 # Copyright 2016 Toomas Soome <tsoome@me.com>
-# Copyright 2017 Joyent, Inc.
-# Copyright 2018 OmniOS Community Edition (OmniOSce) Association.
+# Copyright 2019 Joyent, Inc.
+# Copyright 2019 OmniOS Community Edition (OmniOSce) Association.
 #
 
 #
@@ -143,7 +143,10 @@ clobber_local:
 
 # If the tarballs are included inside ON_CLOSED_BINS, use those to extract and
 # preserve the permissions (in case a distro ships them).
-
+#
+# intel_nhmex hard codes the use of older smbios structures. Therefore,
+# we disable its use of smbios. See OS-4435 for more information.
+#
 closedbins: bldtools $(ROOTDIRS) FRC
 	@CLOSED_ROOT="$$ON_CLOSED_BINS/root_$(MACH)$${RELEASE_BUILD+-nd}"; \
 	if [ -f "$$ON_CLOSED_BINS/on-closed-bins$${RELEASE_BUILD+-nd}.$(MACH).tar.bz2" ]; then \
@@ -163,9 +166,14 @@ closedbins: bldtools $(ROOTDIRS) FRC
 	(cd $$CLOSED_ROOT; \
 	    $(TAR) cfX - $(CODEMGR_WS)/exception_lists/closed-bins .) | \
 	    (cd $(ROOT); $(TAR) xBpf -); \
+	$(ECHO) "Stripping CTF from closed-bins in $$ROOT"; \
 	( cd $(ROOT); $(CTFSTRIP) $$(cd $$CLOSED_ROOT; $(FIND) \
 	    ./kernel ./usr/kernel ./platform/*/kernel -type f -a -perm -u+x | \
-	    $(EGREP) -vf $(CODEMGR_WS)/exception_lists/closed-bins) )
+	    $(EGREP) -vf $(CODEMGR_WS)/exception_lists/closed-bins) ); \
+	$(ECHO) "Fixing intel_nhmex.conf in $$ROOT"; \
+	(cd $(ROOT); \
+	   echo "no-smbios=1;" >> kernel/drv/intel_nhmex.conf)
+
 
 #
 # Declare what parts can be built in parallel
@@ -193,16 +201,24 @@ sgs: rootdirs .WAIT sysheaders userheaders .WAIT \
 #
 setup: closedbins bldtools sgs mapfiles
 
+#
+# Always build tools as non-DEBUG.
+# When nightly launches a build it first builds non-DEBUG tools and then
+# configures the environment so that these tools are used for building
+# subsequently. If a recursive build from usr/src then builds DEBUG tools,
+# the tools will be rebuilt using themselves resulting in a race condition
+# that can cause the build to fail - see https://www.illumos.org/issues/10462
+# for more details.
+# A manual build in usr/src/tools in a DEBUG bldenv will still do a DEBUG
+# tools build.
+#
 bldtools:
-	@cd tools; pwd; $(MAKE) install
+	@cd tools; pwd; $(MAKE) RELEASE_BUILD= install
 
 # /var/mail/:saved is a special case because of the colon in the name.
 #
 rootdirs: $(ROOTDIRS)
 	$(INS) -d -m 775 $(ROOT)/var/mail/:saved
-
-lint: FRC
-	$(MAKE) -f Makefile.lint
 
 _msgdirs:       $(MSGDIRS)
 
@@ -240,47 +256,12 @@ cscope.out tags: FRC
 
 FRC:
 
-#
-# Targets for reporting compiler versions; nightly uses these.
-#
-
+# used by nightly
 cc-version:
-	@if $($(MACH)_CC) -_versions >/dev/null 2>/dev/null; then \
-		$(ECHO) 32-bit compiler;			\
-		$(ECHO) $($(MACH)_CC);				\
-		$($(MACH)_CC) -_versions 2>&1 |			\
-		    $(EGREP) '^(cw|cc|gcc|primary|shadow)';	\
-	else							\
-		__COMPILER=`$($(MACH)_CC) -_compiler 2>/dev/null || $(TRUE)`;\
-		if [ -z "$$__COMPILER" ]; then			\
-			$(ECHO) No 32-bit compiler found;	\
-			exit 1;					\
-		else						\
-			$(ECHO) 32-bit compiler;		\
-			$(ECHO) $($(MACH)_CC);			\
-			$(ECHO) $$__COMPILER;			\
-			$($(MACH)_CC) -V 2>&1 | head -1;	\
-		fi;						\
-	fi
+	@$(CW) --versions $(CW_CC_COMPILERS) 2>&1
 
+# for older nightlies
 cc64-version:
-	@if $($(MACH64)_CC) -_versions >/dev/null 2>/dev/null; then \
-		$(ECHO) 64-bit compiler;			\
-		$(ECHO) $($(MACH64)_CC);			\
-		$($(MACH64)_CC) -_versions 2>&1 |		\
-		    $(EGREP) '^(cw|cc|gcc|primary|shadow)';	\
-	else							\
-		__COMPILER=`$($(MACH64)_CC) -_compiler 2>/dev/null || $(TRUE)`;\
-		if [ -z "$$__COMPILER" ]; then			\
-			$(ECHO) No 64-bit compiler found;	\
-			exit 1;					\
-		else						\
-			$(ECHO) 64-bit compiler;		\
-			$(ECHO) $($(MACH64)_CC);		\
-			$(ECHO) $$__COMPILER;			\
-			$($(MACH64)_CC) -V 2>&1 | head -1;	\
-		fi;						\
-	fi
 
 java-version:
 	@if [ -x "$(JAVAC)" ]; then			\

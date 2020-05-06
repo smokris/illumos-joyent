@@ -22,7 +22,7 @@
  * Copyright (c) 1991, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 1990 Mentat Inc.
  * Copyright (c) 2013 by Delphix. All rights reserved.
- * Copyright (c) 2016, Joyent, Inc. All rights reserved.
+ * Copyright 2019 Joyent, Inc.
  * Copyright (c) 2014, OmniTI Computer Consulting, Inc. All rights reserved.
  */
 
@@ -194,8 +194,8 @@ static ip_v6mapinfo_func_t ip_ether_v6_mapping;
 static ip_v4mapinfo_func_t ip_ib_v4_mapping;
 static ip_v6mapinfo_func_t ip_ib_v6_mapping;
 static ip_v4mapinfo_func_t ip_mbcast_mapping;
-static void 	ip_cgtp_bcast_add(ire_t *, ip_stack_t *);
-static void 	ip_cgtp_bcast_delete(ire_t *, ip_stack_t *);
+static void	ip_cgtp_bcast_add(ire_t *, ip_stack_t *);
+static void	ip_cgtp_bcast_delete(ire_t *, ip_stack_t *);
 static void	phyint_free(phyint_t *);
 
 static void ill_capability_dispatch(ill_t *, mblk_t *, dl_capability_sub_t *);
@@ -1380,16 +1380,34 @@ ill_capability_probe(ill_t *ill)
 	ill->ill_dlpi_capab_state = IDCS_PROBE_SENT;
 }
 
-static void
+static boolean_t
 ill_capability_wait(ill_t *ill)
 {
-	while (ill->ill_capab_pending_cnt != 0) {
-		mutex_enter(&ill->ill_dlpi_capab_lock);
+	/*
+	 * I'm in this ill's squeue, aka a writer.  The ILL_CONDEMNED flag can
+	 * only be set by someone who is the writer.  Since we
+	 * drop-and-reacquire the squeue in this loop, we need to check for
+	 * ILL_CONDEMNED, which if set means nothing can signal our capability
+	 * condition variable.
+	 */
+	ASSERT(IAM_WRITER_ILL(ill));
+
+	while (ill->ill_capab_pending_cnt != 0 &&
+	    (ill->ill_state_flags & ILL_CONDEMNED) == 0) {
+		/* This may enable blocked callers of ill_capability_done(). */
 		ipsq_exit(ill->ill_phyint->phyint_ipsq);
-		cv_wait(&ill->ill_dlpi_capab_cv, &ill->ill_dlpi_capab_lock);
-		mutex_exit(&ill->ill_dlpi_capab_lock);
-		VERIFY(ipsq_enter(ill, B_FALSE, CUR_OP) == B_TRUE);
+		/* Pause a bit (1msec) before we re-enter the squeue. */
+		delay(drv_usectohz(1000000));
+
+		/*
+		 * If ipsq_enter() fails, someone set ILL_CONDEMNED
+		 * while we dropped the squeue. Indicate such to the caller.
+		 */
+		if (!ipsq_enter(ill, B_FALSE, CUR_OP))
+			return (B_FALSE);
 	}
+
+	return ((ill->ill_state_flags & ILL_CONDEMNED) == 0);
 }
 
 void
@@ -1491,9 +1509,9 @@ ill_capability_id_ack(ill_t *ill, mblk_t *mp, dl_capability_sub_t *outers)
 
 	id_ic = (dl_capab_id_t *)(outers + 1);
 
+	inners = &id_ic->id_subcap;
 	if (outers->dl_length < sizeof (*id_ic) ||
-	    (inners = &id_ic->id_subcap,
-	    inners->dl_length > (outers->dl_length - sizeof (*inners)))) {
+	    inners->dl_length > (outers->dl_length - sizeof (*inners))) {
 		cmn_err(CE_WARN, "ill_capability_id_ack: malformed "
 		    "encapsulated capab type %d too long for mblk",
 		    inners->dl_cap);
@@ -2094,7 +2112,7 @@ ill_capability_lso_enable(ill_t *ill)
 	dld_capab_lso_t	lso;
 	int rc;
 
-	ASSERT(!ill->ill_isv6 && IAM_WRITER_ILL(ill));
+	ASSERT(IAM_WRITER_ILL(ill));
 
 	if (ill->ill_lso_capab == NULL) {
 		ill->ill_lso_capab = kmem_zalloc(sizeof (ill_lso_capab_t),
@@ -2111,7 +2129,8 @@ ill_capability_lso_enable(ill_t *ill)
 	if ((rc = idc->idc_capab_df(idc->idc_capab_dh, DLD_CAPAB_LSO, &lso,
 	    DLD_ENABLE)) == 0) {
 		ill->ill_lso_capab->ill_lso_flags = lso.lso_flags;
-		ill->ill_lso_capab->ill_lso_max = lso.lso_max;
+		ill->ill_lso_capab->ill_lso_max_tcpv4 = lso.lso_max_tcpv4;
+		ill->ill_lso_capab->ill_lso_max_tcpv6 = lso.lso_max_tcpv6;
 		ill->ill_capabilities |= ILL_CAPAB_LSO;
 		ip1dbg(("ill_capability_lso_enable: interface %s "
 		    "has enabled LSO\n ", ill->ill_name));
@@ -2176,11 +2195,10 @@ ill_capability_dld_enable(ill_t *ill)
 	if (!ill->ill_isv6) {
 		ill_capability_direct_enable(ill);
 		ill_capability_poll_enable(ill);
-		ill_capability_lso_enable(ill);
 	}
 
 	ill_capability_ipcheck_enable(ill);
-
+	ill_capability_lso_enable(ill);
 	ill->ill_capabilities |= ILL_CAPAB_DLD;
 	ill_mac_perim_exit(ill, mph);
 }
@@ -2273,7 +2291,7 @@ ill_capability_dld_disable(ill_t *ill)
  *
  * state		next state		event, action
  *
- * IDCS_UNKNOWN 	IDCS_PROBE_SENT		ill_capability_probe
+ * IDCS_UNKNOWN		IDCS_PROBE_SENT		ill_capability_probe
  * IDCS_PROBE_SENT	IDCS_OK			ill_capability_ack
  * IDCS_PROBE_SENT	IDCS_FAILED		ip_rput_dlpi_writer (nack)
  * IDCS_OK		IDCS_RENEG		Receipt of DL_NOTE_CAPAB_RENEG
@@ -2293,7 +2311,7 @@ void
 ill_taskq_dispatch(ip_stack_t *ipst)
 {
 	callb_cpr_t cprinfo;
-	char 	name[64];
+	char	name[64];
 	mblk_t	*mp;
 
 	(void) snprintf(name, sizeof (name), "ill_taskq_dispatch_%d",
@@ -2312,7 +2330,8 @@ ill_taskq_dispatch(ip_stack_t *ipst)
 			mp->b_next = NULL;
 
 			VERIFY(taskq_dispatch(system_taskq,
-			    ill_capability_ack_thr, mp, TQ_SLEEP) != 0);
+			    ill_capability_ack_thr, mp, TQ_SLEEP) !=
+			    TASKQID_INVALID);
 			mutex_enter(&ipst->ips_capab_taskq_lock);
 			mp = ipst->ips_capab_taskq_head;
 		}
@@ -2419,7 +2438,7 @@ ill_capability_ack(ill_t *ill, mblk_t *mp)
 	ASSERT(mp->b_next == NULL);
 
 	if (taskq_dispatch(system_taskq, ill_capability_ack_thr, mp,
-	    TQ_NOSLEEP) != 0)
+	    TQ_NOSLEEP) != TASKQID_INVALID)
 		return;
 
 	/*
@@ -3206,10 +3225,10 @@ ill_alloc_ppa(ill_if_t *ifp, ill_t *ill)
 			ill->ill_ppa = --ppa;
 		} else {
 			ppa = (int)(uintptr_t)vmem_xalloc(ifp->illif_ppa_arena,
-			    1, 		/* size */
-			    1, 		/* align/quantum */
-			    0, 		/* phase */
-			    0, 		/* nocross */
+			    1,		/* size */
+			    1,		/* align/quantum */
+			    0,		/* phase */
+			    0,		/* nocross */
 			    (void *)(uintptr_t)(ill->ill_ppa + 1), /* minaddr */
 			    (void *)(uintptr_t)(ill->ill_ppa + 2), /* maxaddr */
 			    VM_NOSLEEP|VM_FIRSTFIT);
@@ -3494,9 +3513,6 @@ ill_init_common(ill_t *ill, queue_t *q, boolean_t isv6, boolean_t is_loopback,
 	ill->ill_xmit_count = ND_MAX_MULTICAST_SOLICIT;
 	ill->ill_max_buf = ND_MAX_Q;
 	ill->ill_refcnt = 0;
-
-	cv_init(&ill->ill_dlpi_capab_cv, NULL, NULL, NULL);
-	mutex_init(&ill->ill_dlpi_capab_lock, NULL, MUTEX_DEFAULT, NULL);
 
 	return (0);
 }
@@ -4009,6 +4025,7 @@ ill_get_next_ifindex(uint_t index, boolean_t isv6, ip_stack_t *ipst)
 	phyint_t *phyi_initial;
 	uint_t   ifindex;
 
+	phyi_initial = NULL;
 	rw_enter(&ipst->ips_ill_g_lock, RW_READER);
 
 	if (index == 0) {
@@ -4477,13 +4494,13 @@ ipif_comp_multi(ipif_t *old_ipif, ipif_t *new_ipif, boolean_t isv6)
  * condemned, not an underlying interface in an IPMP group, and
  * not a VNI interface.  Order of preference:
  *
- * 	1a. normal
- * 	1b. normal, but deprecated
- * 	2a. point to point
- * 	2b. point to point, but deprecated
- * 	3a. link local
- * 	3b. link local, but deprecated
- * 	4. loopback.
+ *	1a. normal
+ *	1b. normal, but deprecated
+ *	2a. point to point
+ *	2b. point to point, but deprecated
+ *	3a. link local
+ *	3b. link local, but deprecated
+ *	4. loopback.
  */
 static ipif_t *
 ipif_lookup_multicast(ip_stack_t *ipst, zoneid_t zoneid, boolean_t isv6)
@@ -5012,7 +5029,7 @@ ipif_ill_refrele_tail(ill_t *ill)
 	ASSERT(ipx->ipx_pending_mp != NULL && ipx->ipx_pending_ipif != NULL);
 
 	ipif = ipx->ipx_pending_ipif;
-	if (ipif->ipif_ill != ill) 	/* wait is for another ill; bail */
+	if (ipif->ipif_ill != ill)	/* wait is for another ill; bail */
 		goto unlock;
 
 	switch (ipx->ipx_waitfor) {
@@ -5451,7 +5468,7 @@ ip_mcast_mapping(ill_t *ill, uchar_t *addr, uchar_t *hwaddr)
  *
  * The netmask can be verified to be contiguous with 32 shifts and or
  * operations. Take the contiguous mask (in host byte order) and compute
- * 	mask | mask << 1 | mask << 2 | ... | mask << 31
+ *	mask | mask << 1 | mask << 2 | ... | mask << 31
  * the result will be the same as the 'mask' for contiguous mask.
  */
 static boolean_t
@@ -7936,7 +7953,7 @@ ip_sioctl_ip6addrpolicy(queue_t *q, mblk_t *mp)
 static void
 ip_sioctl_dstinfo(queue_t *q, mblk_t *mp)
 {
-	mblk_t 		*data_mp;
+	mblk_t		*data_mp;
 	struct dstinforeq	*dir;
 	uint8_t		*end, *cur;
 	in6_addr_t	*daddr, *saddr;
@@ -8687,7 +8704,7 @@ ip_sioctl_plink_ipmod(ipsq_t *ipsq, queue_t *q, mblk_t *mp, int ioccmd,
     struct linkblk *li)
 {
 	int		err = 0;
-	ill_t  		*ill;
+	ill_t		*ill;
 	queue_t		*ipwq, *dwq;
 	const char	*name;
 	struct qinit	*qinfo;
@@ -8706,12 +8723,12 @@ ip_sioctl_plink_ipmod(ipsq_t *ipsq, queue_t *q, mblk_t *mp, int ioccmd,
 		qinfo = ipwq->q_qinfo;
 		name = qinfo->qi_minfo->mi_idname;
 		if (name != NULL && strcmp(name, ip_mod_info.mi_idname) == 0 &&
-		    qinfo->qi_putp != (pfi_t)ip_lwput && ipwq->q_next != NULL) {
+		    qinfo->qi_putp != ip_lwput && ipwq->q_next != NULL) {
 			is_ip = B_TRUE;
 			break;
 		}
 		if (name != NULL && strcmp(name, arp_mod_info.mi_idname) == 0 &&
-		    qinfo->qi_putp != (pfi_t)ip_lwput && ipwq->q_next != NULL) {
+		    qinfo->qi_putp != ip_lwput && ipwq->q_next != NULL) {
 			break;
 		}
 	}
@@ -9355,7 +9372,7 @@ ip_sioctl_addif(ipif_t *dummy_ipif, sin_t *dummy_sin, queue_t *q, mblk_t *mp,
 	struct lifreq *lifr;
 	boolean_t	isv6;
 	boolean_t	exists;
-	char 	*name;
+	char	*name;
 	char	*endp;
 	char	*cp;
 	int	namelen;
@@ -10243,7 +10260,7 @@ ip_sioctl_flags_onoff(ipif_t *ipif, uint64_t flags, uint64_t *onp,
     uint64_t *offp)
 {
 	ill_t		*ill = ipif->ipif_ill;
-	phyint_t 	*phyi = ill->ill_phyint;
+	phyint_t	*phyi = ill->ill_phyint;
 	uint64_t	cantchange_flags, intf_flags;
 	uint64_t	turn_on, turn_off;
 
@@ -12227,7 +12244,7 @@ ipif_arp_down(ipif_t *ipif)
  * basic DAD related initialization for IPv6. Honors ILLF_NOARP.
  *
  * The enumerated value res_act tunes the behavior:
- * 	* Res_act_initial: set up all the resolver structures for a new
+ *	* Res_act_initial: set up all the resolver structures for a new
  *	  IP address.
  *	* Res_act_defend: tell ARP that it needs to send a single gratuitous
  *	  ARP message in defense of the address.
@@ -12790,8 +12807,11 @@ ill_dl_down(ill_t *ill)
 		ill_capability_reset(ill, B_FALSE);
 		ill_dlpi_send(ill, mp);
 
-		/* Wait for the capability reset to finish */
-		ill_capability_wait(ill);
+		/*
+		 * Wait for the capability reset to finish.
+		 * In this case, it doesn't matter WHY or HOW it finished.
+		 */
+		(void) ill_capability_wait(ill);
 	}
 }
 
@@ -12914,6 +12934,7 @@ void
 ill_capability_done(ill_t *ill)
 {
 	ASSERT(ill->ill_capab_pending_cnt != 0);
+	ASSERT(IAM_WRITER_ILL(ill));
 
 	ill_dlpi_done(ill, DL_CAPABILITY_REQ);
 
@@ -12921,10 +12942,6 @@ ill_capability_done(ill_t *ill)
 	if (ill->ill_capab_pending_cnt == 0 &&
 	    ill->ill_dlpi_capab_state == IDCS_OK)
 		ill_capability_reset_alloc(ill);
-
-	mutex_enter(&ill->ill_dlpi_capab_lock);
-	cv_broadcast(&ill->ill_dlpi_capab_cv);
-	mutex_exit(&ill->ill_dlpi_capab_lock);
 }
 
 /*
@@ -14398,7 +14415,7 @@ int
 ipif_up(ipif_t *ipif, queue_t *q, mblk_t *mp)
 {
 	ill_t		*ill = ipif->ipif_ill;
-	boolean_t 	isv6 = ipif->ipif_isv6;
+	boolean_t	isv6 = ipif->ipif_isv6;
 	int		err = 0;
 	boolean_t	success;
 	uint_t		ipif_orig_id;
@@ -14727,8 +14744,13 @@ ill_dl_up(ill_t *ill, ipif_t *ipif)
 	ill_dlpi_send(ill, bind_mp);
 	/* Send down link-layer capabilities probe if not already done. */
 	ill_capability_probe(ill);
-	/* Wait for DLPI to be bound and the capability probe to finish */
-	ill_capability_wait(ill);
+	/*
+	 * Wait for DLPI to be bound and the capability probe to finish.
+	 * The call drops-and-reacquires the squeue. If it couldn't because
+	 * ILL_CONDEMNED got set, bail.
+	 */
+	if (!ill_capability_wait(ill))
+		return (ENXIO);
 
 	/* DLPI failed to bind. Return the saved error */
 	if (!ill->ill_dl_up) {
@@ -15349,8 +15371,8 @@ ipif_good_addr(ill_t *ill, zoneid_t zoneid)
  */
 typedef enum {
 	IPIF_NONE,
-	IPIF_DIFFNET_DEPRECATED, 	/* deprecated and different subnet */
-	IPIF_SAMENET_DEPRECATED, 	/* deprecated and same subnet */
+	IPIF_DIFFNET_DEPRECATED,	/* deprecated and different subnet */
+	IPIF_SAMENET_DEPRECATED,	/* deprecated and same subnet */
 	IPIF_DIFFNET_ALLZONES,		/* allzones and different subnet */
 	IPIF_SAMENET_ALLZONES,		/* allzones and same subnet */
 	IPIF_DIFFNET,			/* normal and different subnet */
@@ -15675,7 +15697,7 @@ if_unitsel(ipif_t *dummy_ipif, sin_t *dummy_sin, queue_t *q, mblk_t *mp,
     ip_ioctl_cmd_t *ipip, void *dummy_ifreq)
 {
 	queue_t		*q1 = q;
-	char 		*cp;
+	char		*cp;
 	char		interf_name[LIFNAMSIZ];
 	uint_t		ppa = *(uint_t *)mp->b_cont->b_cont->b_rptr;
 
@@ -17459,7 +17481,7 @@ ip_ipmp_v6intfid(ill_t *ill, in6_addr_t *v6addr)
 	zone_t		*zp;
 	uint8_t		*addr;
 	uchar_t		hash[16];
-	ulong_t 	hostid;
+	ulong_t		hostid;
 	MD5_CTX		ctx;
 	ipmp_ifcookie_t	ic = { 0 };
 
@@ -18559,8 +18581,8 @@ arp_up_done:
 int
 ipif_arp_up(ipif_t *ipif, enum ip_resolver_action res_act, boolean_t was_dup)
 {
-	int 		err = 0;
-	ill_t 		*ill = ipif->ipif_ill;
+	int		err = 0;
+	ill_t		*ill = ipif->ipif_ill;
 	boolean_t	first_interface, wait_for_dlpi = B_FALSE;
 
 	DTRACE_PROBE3(ipif__downup, char *, "ipif_arp_up",
@@ -19057,8 +19079,7 @@ ipif_nce_down(ipif_t *ipif)
 	 * is going away.
 	 */
 	if (ill->ill_ipif_up_count == 0) {
-		ncec_walk(ill, (pfi_t)ncec_delete_per_ill,
-		    (uchar_t *)ill, ill->ill_ipst);
+		ncec_walk(ill, ncec_delete_per_ill, ill, ill->ill_ipst);
 		if (IS_UNDER_IPMP(ill))
 			nce_flush(ill, B_TRUE);
 	}

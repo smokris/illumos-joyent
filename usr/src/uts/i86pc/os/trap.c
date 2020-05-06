@@ -25,10 +25,10 @@
 
 /*	Copyright (c) 1990, 1991 UNIX System Laboratories, Inc. */
 /*	Copyright (c) 1984, 1986, 1987, 1988, 1989, 1990 AT&T   */
-/*		All Rights Reserved   				*/
+/*		All Rights Reserved				*/
 /*								*/
-/*	Copyright (c) 1987, 1988 Microsoft Corporation  	*/
-/*		All Rights Reserved   				*/
+/*	Copyright (c) 1987, 1988 Microsoft Corporation		*/
+/*		All Rights Reserved				*/
 /*								*/
 
 /*
@@ -114,24 +114,24 @@ static const char *trap_type_mnemonic[] = {
 };
 
 static const char *trap_type[] = {
-	"Divide error",				/* trap id 0 	*/
+	"Divide error",				/* trap id 0	*/
 	"Debug",				/* trap id 1	*/
 	"NMI interrupt",			/* trap id 2	*/
-	"Breakpoint",				/* trap id 3 	*/
-	"Overflow",				/* trap id 4 	*/
-	"BOUND range exceeded",			/* trap id 5 	*/
-	"Invalid opcode",			/* trap id 6 	*/
-	"Device not available",			/* trap id 7 	*/
-	"Double fault",				/* trap id 8 	*/
-	"Coprocessor segment overrun",		/* trap id 9 	*/
-	"Invalid TSS",				/* trap id 10 	*/
-	"Segment not present",			/* trap id 11 	*/
-	"Stack segment fault",			/* trap id 12 	*/
-	"General protection",			/* trap id 13 	*/
-	"Page fault",				/* trap id 14 	*/
-	"Reserved",				/* trap id 15 	*/
-	"x87 floating point error",		/* trap id 16 	*/
-	"Alignment check",			/* trap id 17 	*/
+	"Breakpoint",				/* trap id 3	*/
+	"Overflow",				/* trap id 4	*/
+	"BOUND range exceeded",			/* trap id 5	*/
+	"Invalid opcode",			/* trap id 6	*/
+	"Device not available",			/* trap id 7	*/
+	"Double fault",				/* trap id 8	*/
+	"Coprocessor segment overrun",		/* trap id 9	*/
+	"Invalid TSS",				/* trap id 10	*/
+	"Segment not present",			/* trap id 11	*/
+	"Stack segment fault",			/* trap id 12	*/
+	"General protection",			/* trap id 13	*/
+	"Page fault",				/* trap id 14	*/
+	"Reserved",				/* trap id 15	*/
+	"x87 floating point error",		/* trap id 16	*/
+	"Alignment check",			/* trap id 17	*/
 	"Machine check",			/* trap id 18	*/
 	"SIMD floating point exception",	/* trap id 19	*/
 };
@@ -489,6 +489,9 @@ trap(struct regs *rp, caddr_t addr, processorid_t cpuid)
 
 	ASSERT_STACK_ALIGNED();
 
+	errcode = 0;
+	mstate = 0;
+	rw = S_OTHER;
 	type = rp->r_trapno;
 	CPU_STATS_ADDQ(CPU, sys, trap, 1);
 	ASSERT(ct->t_schedflag & TS_DONT_SWAP);
@@ -2100,7 +2103,7 @@ dump_ttrace(void)
 
 	for (i = 0; i < n; i++) {
 		ttc = &trap_trace_ctl[i];
-		if (ttc->ttc_first == NULL)
+		if (ttc->ttc_first == (uintptr_t)NULL)
 			continue;
 
 		current = ttc->ttc_next - sizeof (trap_trace_rec_t);
@@ -2116,7 +2119,7 @@ dump_ttrace(void)
 				current =
 				    ttc->ttc_limit - sizeof (trap_trace_rec_t);
 
-			if (current == NULL)
+			if (current == (uintptr_t)NULL)
 				continue;
 
 			rec = (trap_trace_rec_t *)current;

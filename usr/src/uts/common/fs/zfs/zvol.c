@@ -23,10 +23,10 @@
  *
  * Portions Copyright 2010 Robert Milkowski
  *
- * Copyright 2011 Nexenta Systems, Inc.  All rights reserved.
- * Copyright (c) 2012, 2017 by Delphix. All rights reserved.
+ * Copyright 2017 Nexenta Systems, Inc.  All rights reserved.
+ * Copyright (c) 2012, 2020 by Delphix. All rights reserved.
  * Copyright (c) 2014 Integros [integros.com]
- * Copyright 2018 Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  */
 
 /*
@@ -78,9 +78,7 @@
 #include <sys/refcount.h>
 #include <sys/zfs_znode.h>
 #include <sys/zfs_rlock.h>
-#include <sys/vdev_disk.h>
 #include <sys/vdev_impl.h>
-#include <sys/vdev_raidz.h>
 #include <sys/zvol.h>
 #include <sys/dumphdr.h>
 #include <sys/zil_impl.h>
@@ -90,7 +88,9 @@
 #include <sys/zfeature.h>
 #include <sys/zio_checksum.h>
 #include <sys/zil_impl.h>
-#include <sys/ht.h>
+#include <sys/smt.h>
+#include <sys/dkioc_free_util.h>
+#include <sys/zfs_rlock.h>
 
 #include "zfs_namecheck.h"
 
@@ -129,7 +129,7 @@ typedef struct zvol_state {
 	uint32_t	zv_total_opens;	/* total open count */
 	zilog_t		*zv_zilog;	/* ZIL handle */
 	list_t		zv_extents;	/* List of extents for dump */
-	znode_t		zv_znode;	/* for range locking */
+	rangelock_t	zv_rangelock;
 	dnode_t		*zv_dn;		/* dnode hold */
 } zvol_state_t;
 
@@ -400,6 +400,7 @@ zvol_replay_truncate(void *arg1, void *arg2, boolean_t byteswap)
  * Replay a TX_WRITE ZIL transaction that didn't get committed
  * after a system failure
  */
+/* ARGSUSED */
 static int
 zvol_replay_write(void *arg1, void *arg2, boolean_t byteswap)
 {
@@ -508,7 +509,7 @@ zvol_create_minor(const char *name)
 	}
 
 	/* lie and say we're read-only */
-	error = dmu_objset_own(name, DMU_OST_ZVOL, B_TRUE, FTAG, &os);
+	error = dmu_objset_own(name, DMU_OST_ZVOL, B_TRUE, B_TRUE, FTAG, &os);
 
 	if (error) {
 		mutex_exit(&zfsdev_state_lock);
@@ -516,13 +517,13 @@ zvol_create_minor(const char *name)
 	}
 
 	if ((minor = zfsdev_minor_alloc()) == 0) {
-		dmu_objset_disown(os, FTAG);
+		dmu_objset_disown(os, 1, FTAG);
 		mutex_exit(&zfsdev_state_lock);
 		return (SET_ERROR(ENXIO));
 	}
 
 	if (ddi_soft_state_zalloc(zfsdev_state, minor) != DDI_SUCCESS) {
-		dmu_objset_disown(os, FTAG);
+		dmu_objset_disown(os, 1, FTAG);
 		mutex_exit(&zfsdev_state_lock);
 		return (SET_ERROR(EAGAIN));
 	}
@@ -534,7 +535,7 @@ zvol_create_minor(const char *name)
 	if (ddi_create_minor_node(zfs_dip, chrbuf, S_IFCHR,
 	    minor, DDI_PSEUDO, 0) == DDI_FAILURE) {
 		ddi_soft_state_free(zfsdev_state, minor);
-		dmu_objset_disown(os, FTAG);
+		dmu_objset_disown(os, 1, FTAG);
 		mutex_exit(&zfsdev_state_lock);
 		return (SET_ERROR(EAGAIN));
 	}
@@ -545,7 +546,7 @@ zvol_create_minor(const char *name)
 	    minor, DDI_PSEUDO, 0) == DDI_FAILURE) {
 		ddi_remove_minor_node(zfs_dip, chrbuf);
 		ddi_soft_state_free(zfsdev_state, minor);
-		dmu_objset_disown(os, FTAG);
+		dmu_objset_disown(os, 1, FTAG);
 		mutex_exit(&zfsdev_state_lock);
 		return (SET_ERROR(EAGAIN));
 	}
@@ -559,9 +560,7 @@ zvol_create_minor(const char *name)
 	zv->zv_objset = os;
 	if (dmu_objset_is_snapshot(os) || !spa_writeable(dmu_objset_spa(os)))
 		zv->zv_flags |= ZVOL_RDONLY;
-	mutex_init(&zv->zv_znode.z_range_lock, NULL, MUTEX_DEFAULT, NULL);
-	avl_create(&zv->zv_znode.z_range_avl, zfs_range_compare,
-	    sizeof (rl_t), offsetof(rl_t, r_node));
+	rangelock_init(&zv->zv_rangelock, NULL, NULL);
 	list_create(&zv->zv_extents, sizeof (zvol_extent_t),
 	    offsetof(zvol_extent_t, ze_node));
 	/* get and cache the blocksize */
@@ -575,7 +574,7 @@ zvol_create_minor(const char *name)
 		else
 			zil_replay(os, zv, zvol_replay_vector);
 	}
-	dmu_objset_disown(os, FTAG);
+	dmu_objset_disown(os, 1, FTAG);
 	zv->zv_objset = NULL;
 
 	zvol_minors++;
@@ -604,8 +603,7 @@ zvol_remove_zv(zvol_state_t *zv)
 	(void) snprintf(nmbuf, sizeof (nmbuf), "%u", minor);
 	ddi_remove_minor_node(zfs_dip, nmbuf);
 
-	avl_destroy(&zv->zv_znode.z_range_avl);
-	mutex_destroy(&zv->zv_znode.z_range_lock);
+	rangelock_fini(&zv->zv_rangelock);
 
 	kmem_free(zv, sizeof (zvol_state_t));
 
@@ -632,16 +630,16 @@ zvol_remove_minor(const char *name)
 }
 
 int
-zvol_first_open(zvol_state_t *zv)
+zvol_first_open(zvol_state_t *zv, boolean_t rdonly)
 {
 	objset_t *os;
 	uint64_t volsize;
 	int error;
 	uint64_t readonly;
+	boolean_t ro;
 
-	/* lie and say we're read-only */
-	error = dmu_objset_own(zv->zv_name, DMU_OST_ZVOL, B_TRUE,
-	    zvol_tag, &os);
+	ro = (rdonly || (strchr(zv->zv_name, '@') != NULL));
+	error = dmu_objset_own(zv->zv_name, DMU_OST_ZVOL, ro, B_TRUE, zv, &os);
 	if (error)
 		return (error);
 
@@ -649,13 +647,13 @@ zvol_first_open(zvol_state_t *zv)
 	error = zap_lookup(os, ZVOL_ZAP_OBJ, "size", 8, 1, &volsize);
 	if (error) {
 		ASSERT(error == 0);
-		dmu_objset_disown(os, zvol_tag);
+		dmu_objset_disown(os, 1, zv);
 		return (error);
 	}
 
 	error = dnode_hold(os, ZVOL_OBJ, zvol_tag, &zv->zv_dn);
 	if (error) {
-		dmu_objset_disown(os, zvol_tag);
+		dmu_objset_disown(os, 1, zv);
 		return (error);
 	}
 
@@ -689,7 +687,7 @@ zvol_last_close(zvol_state_t *zv)
 		txg_wait_synced(dmu_objset_pool(zv->zv_objset), 0);
 	dmu_objset_evict_dbufs(zv->zv_objset);
 
-	dmu_objset_disown(zv->zv_objset, zvol_tag);
+	dmu_objset_disown(zv->zv_objset, 1, zv);
 	zv->zv_objset = NULL;
 }
 
@@ -737,6 +735,7 @@ zvol_update_volsize(objset_t *os, uint64_t volsize)
 {
 	dmu_tx_t *tx;
 	int error;
+	uint64_t txg;
 
 	ASSERT(MUTEX_HELD(&zfsdev_state_lock));
 
@@ -748,10 +747,13 @@ zvol_update_volsize(objset_t *os, uint64_t volsize)
 		dmu_tx_abort(tx);
 		return (error);
 	}
+	txg = dmu_tx_get_txg(tx);
 
 	error = zap_update(os, ZVOL_ZAP_OBJ, "size", 8, 1,
 	    &volsize, tx);
 	dmu_tx_commit(tx);
+
+	txg_wait_synced(dmu_objset_pool(os), txg);
 
 	if (error == 0)
 		error = dmu_free_long_range(os,
@@ -857,7 +859,7 @@ zvol_set_volsize(const char *name, uint64_t volsize)
 	zv = zvol_minor_lookup(name);
 
 	if (zv == NULL || zv->zv_objset == NULL) {
-		if ((error = dmu_objset_own(name, DMU_OST_ZVOL, B_FALSE,
+		if ((error = dmu_objset_own(name, DMU_OST_ZVOL, B_FALSE, B_TRUE,
 		    FTAG, &os)) != 0) {
 			mutex_exit(&zfsdev_state_lock);
 			return (error);
@@ -879,7 +881,7 @@ zvol_set_volsize(const char *name, uint64_t volsize)
 		error = zvol_update_live_volsize(zv, volsize);
 out:
 	if (owned) {
-		dmu_objset_disown(os, FTAG);
+		dmu_objset_disown(os, B_TRUE, FTAG);
 		if (zv != NULL)
 			zv->zv_objset = NULL;
 	}
@@ -903,11 +905,12 @@ zvol_open(dev_t *devp, int flag, int otyp, cred_t *cr)
 	}
 
 	if (zv->zv_total_opens == 0)
-		err = zvol_first_open(zv);
+		err = zvol_first_open(zv, !(flag & FWRITE));
 	if (err) {
 		mutex_exit(&zfsdev_state_lock);
 		return (err);
 	}
+
 	if ((flag & FWRITE) && (zv->zv_flags & ZVOL_RDONLY)) {
 		err = SET_ERROR(EROFS);
 		goto out;
@@ -979,16 +982,14 @@ zvol_close(dev_t dev, int flag, int otyp, cred_t *cr)
 	return (error);
 }
 
+/* ARGSUSED */
 static void
 zvol_get_done(zgd_t *zgd, int error)
 {
 	if (zgd->zgd_db)
 		dmu_buf_rele(zgd->zgd_db, zgd);
 
-	zfs_range_unlock(zgd->zgd_rl);
-
-	if (error == 0 && zgd->zgd_bp)
-		zil_lwb_add_block(zgd->zgd_lwb, zgd->zgd_bp);
+	rangelock_exit(zgd->zgd_lr);
 
 	kmem_free(zgd, sizeof (zgd_t));
 }
@@ -1021,7 +1022,7 @@ zvol_get_data(void *arg, lr_write_t *lr, char *buf, struct lwb *lwb, zio_t *zio)
 	 * we don't have to write the data twice.
 	 */
 	if (buf != NULL) { /* immediate write */
-		zgd->zgd_rl = zfs_range_lock(&zv->zv_znode, offset, size,
+		zgd->zgd_lr = rangelock_enter(&zv->zv_rangelock, offset, size,
 		    RL_READER);
 		error = dmu_read_by_dnode(zv->zv_dn, offset, size, buf,
 		    DMU_READ_NO_PREFETCH);
@@ -1034,7 +1035,7 @@ zvol_get_data(void *arg, lr_write_t *lr, char *buf, struct lwb *lwb, zio_t *zio)
 		 */
 		size = zv->zv_volblocksize;
 		offset = P2ALIGN(offset, size);
-		zgd->zgd_rl = zfs_range_lock(&zv->zv_znode, offset, size,
+		zgd->zgd_lr = rangelock_enter(&zv->zv_rangelock, offset, size,
 		    RL_READER);
 		error = dmu_buf_hold_by_dnode(zv->zv_dn, offset, zgd, &db,
 		    DMU_READ_NO_PREFETCH);
@@ -1132,53 +1133,15 @@ static int
 zvol_dumpio_vdev(vdev_t *vd, void *addr, uint64_t offset, uint64_t origoffset,
     uint64_t size, boolean_t doread, boolean_t isdump)
 {
-	vdev_disk_t *dvd;
-	int c;
-	int numerrors = 0;
-
-	if (vd->vdev_ops == &vdev_mirror_ops ||
-	    vd->vdev_ops == &vdev_replacing_ops ||
-	    vd->vdev_ops == &vdev_spare_ops) {
-		for (c = 0; c < vd->vdev_children; c++) {
-			int err = zvol_dumpio_vdev(vd->vdev_child[c],
-			    addr, offset, origoffset, size, doread, isdump);
-			if (err != 0) {
-				numerrors++;
-			} else if (doread) {
-				break;
-			}
-		}
-	}
-
-	if (!vd->vdev_ops->vdev_op_leaf && vd->vdev_ops != &vdev_raidz_ops)
-		return (numerrors < vd->vdev_children ? 0 : EIO);
-
 	if (doread && !vdev_readable(vd))
 		return (SET_ERROR(EIO));
-	else if (!doread && !vdev_writeable(vd))
+	if (!doread && !vdev_writeable(vd))
+		return (SET_ERROR(EIO));
+	if (vd->vdev_ops->vdev_op_dumpio == NULL)
 		return (SET_ERROR(EIO));
 
-	if (vd->vdev_ops == &vdev_raidz_ops) {
-		return (vdev_raidz_physio(vd,
-		    addr, size, offset, origoffset, doread, isdump));
-	}
-
-	offset += VDEV_LABEL_START_SIZE;
-
-	if (ddi_in_panic() || isdump) {
-		ASSERT(!doread);
-		if (doread)
-			return (SET_ERROR(EIO));
-		dvd = vd->vdev_tsd;
-		ASSERT3P(dvd, !=, NULL);
-		return (ldi_dump(dvd->vd_lh, addr, lbtodb(offset),
-		    lbtodb(size)));
-	} else {
-		dvd = vd->vdev_tsd;
-		ASSERT3P(dvd, !=, NULL);
-		return (vdev_disk_ldi_physio(dvd->vd_lh, addr, size,
-		    offset, doread ? B_READ : B_WRITE));
-	}
+	return (vd->vdev_ops->vdev_op_dumpio(vd, addr, size,
+	    offset, origoffset, doread, isdump));
 }
 
 static int
@@ -1230,9 +1193,8 @@ zvol_strategy(buf_t *bp)
 	size_t resid;
 	char *addr;
 	objset_t *os;
-	rl_t *rl;
 	int error = 0;
-	boolean_t doread = bp->b_flags & B_READ;
+	boolean_t doread = !!(bp->b_flags & B_READ);
 	boolean_t is_dumpified;
 	boolean_t sync;
 
@@ -1282,13 +1244,13 @@ zvol_strategy(buf_t *bp)
 	    (zv->zv_objset->os_sync == ZFS_SYNC_ALWAYS)) &&
 	    !doread && !is_dumpified;
 
-	ht_begin_unsafe();
+	smt_begin_unsafe();
 
 	/*
 	 * There must be no buffer changes when doing a dmu_sync() because
 	 * we can't change the data whilst calculating the checksum.
 	 */
-	rl = zfs_range_lock(&zv->zv_znode, off, resid,
+	locked_range_t *lr = rangelock_enter(&zv->zv_rangelock, off, resid,
 	    doread ? RL_READER : RL_WRITER);
 
 	while (resid != 0 && off < volsize) {
@@ -1322,7 +1284,7 @@ zvol_strategy(buf_t *bp)
 		addr += size;
 		resid -= size;
 	}
-	zfs_range_unlock(rl);
+	rangelock_exit(lr);
 
 	if ((bp->b_resid = resid) == bp->b_bcount)
 		bioerror(bp, off > volsize ? EINVAL : error);
@@ -1331,7 +1293,7 @@ zvol_strategy(buf_t *bp)
 		zil_commit(zv->zv_zilog, ZVOL_OBJ);
 	biodone(bp);
 
-	ht_end_unsafe();
+	smt_end_unsafe();
 
 	return (0);
 }
@@ -1393,7 +1355,6 @@ zvol_read(dev_t dev, uio_t *uio, cred_t *cr)
 	minor_t minor = getminor(dev);
 	zvol_state_t *zv;
 	uint64_t volsize;
-	rl_t *rl;
 	int error = 0;
 	zone_t *zonep = curzone;
 	uint64_t tot_bytes;
@@ -1414,7 +1375,7 @@ zvol_read(dev_t dev, uio_t *uio, cred_t *cr)
 		return (error);
 	}
 
-	ht_begin_unsafe();
+	smt_begin_unsafe();
 
 	DTRACE_PROBE3(zvol__uio__start, dev_t, dev, uio_t *, uio, int, 0);
 
@@ -1424,8 +1385,8 @@ zvol_read(dev_t dev, uio_t *uio, cred_t *cr)
 	start = gethrtime();
 	tot_bytes = 0;
 
-	rl = zfs_range_lock(&zv->zv_znode, uio->uio_loffset, uio->uio_resid,
-	    RL_READER);
+	locked_range_t *lr = rangelock_enter(&zv->zv_rangelock,
+	    uio->uio_loffset, uio->uio_resid, RL_READER);
 	while (uio->uio_resid > 0 && uio->uio_loffset < volsize) {
 		uint64_t bytes = MIN(uio->uio_resid, DMU_MAX_ACCESS >> 1);
 
@@ -1442,7 +1403,7 @@ zvol_read(dev_t dev, uio_t *uio, cred_t *cr)
 			break;
 		}
 	}
-	zfs_range_unlock(rl);
+	rangelock_exit(lr);
 
 	mutex_enter(&zonep->zone_vfs_lock);
 	zonep->zone_vfs_rwstats.reads++;
@@ -1476,7 +1437,7 @@ zvol_read(dev_t dev, uio_t *uio, cred_t *cr)
 	DTRACE_PROBE4(zvol__uio__done, dev_t, dev, uio_t *, uio, int, 0, int,
 	    error);
 
-	ht_end_unsafe();
+	smt_end_unsafe();
 
 	return (error);
 }
@@ -1488,7 +1449,6 @@ zvol_write(dev_t dev, uio_t *uio, cred_t *cr)
 	minor_t minor = getminor(dev);
 	zvol_state_t *zv;
 	uint64_t volsize;
-	rl_t *rl;
 	int error = 0;
 	boolean_t sync;
 	zone_t *zonep = curzone;
@@ -1510,7 +1470,7 @@ zvol_write(dev_t dev, uio_t *uio, cred_t *cr)
 		return (error);
 	}
 
-	ht_begin_unsafe();
+	smt_begin_unsafe();
 
 	DTRACE_PROBE3(zvol__uio__start, dev_t, dev, uio_t *, uio, int, 1);
 
@@ -1528,8 +1488,8 @@ zvol_write(dev_t dev, uio_t *uio, cred_t *cr)
 	sync = !(zv->zv_flags & ZVOL_WCE) ||
 	    (zv->zv_objset->os_sync == ZFS_SYNC_ALWAYS);
 
-	rl = zfs_range_lock(&zv->zv_znode, uio->uio_loffset, uio->uio_resid,
-	    RL_WRITER);
+	locked_range_t *lr = rangelock_enter(&zv->zv_rangelock,
+	    uio->uio_loffset, uio->uio_resid, RL_WRITER);
 	while (uio->uio_resid > 0 && uio->uio_loffset < volsize) {
 		uint64_t bytes = MIN(uio->uio_resid, DMU_MAX_ACCESS >> 1);
 		uint64_t off = uio->uio_loffset;
@@ -1539,7 +1499,7 @@ zvol_write(dev_t dev, uio_t *uio, cred_t *cr)
 			bytes = volsize - off;
 
 		tot_bytes += bytes;
-		dmu_tx_hold_write(tx, ZVOL_OBJ, off, bytes);
+		dmu_tx_hold_write_by_dnode(tx, zv->zv_dn, off, bytes);
 		error = dmu_tx_assign(tx, TXG_WAIT);
 		if (error) {
 			dmu_tx_abort(tx);
@@ -1553,14 +1513,15 @@ zvol_write(dev_t dev, uio_t *uio, cred_t *cr)
 		if (error)
 			break;
 	}
-	zfs_range_unlock(rl);
+	rangelock_exit(lr);
+
 	if (sync)
 		zil_commit(zv->zv_zilog, ZVOL_OBJ);
 
 	DTRACE_PROBE4(zvol__uio__done, dev_t, dev, uio_t *, uio, int, 1, int,
 	    error);
 
-	ht_end_unsafe();
+	smt_end_unsafe();
 
 	mutex_enter(&zonep->zone_vfs_lock);
 	zonep->zone_vfs_rwstats.writes++;
@@ -1627,7 +1588,7 @@ zvol_getefi(void *arg, int flag, uint64_t vs, uint8_t bs)
 
 		gpt.efi_gpt_Signature = LE_64(EFI_SIGNATURE);
 		gpt.efi_gpt_Revision = LE_32(EFI_VERSION_CURRENT);
-		gpt.efi_gpt_HeaderSize = LE_32(sizeof (gpt));
+		gpt.efi_gpt_HeaderSize = LE_32(EFI_HEADER_SIZE);
 		gpt.efi_gpt_MyLBA = LE_64(1ULL);
 		gpt.efi_gpt_FirstUsableLBA = LE_64(34ULL);
 		gpt.efi_gpt_LastUsableLBA = LE_64((vs >> bs) - 1);
@@ -1637,7 +1598,7 @@ zvol_getefi(void *arg, int flag, uint64_t vs, uint8_t bs)
 		    LE_32(sizeof (efi_gpe_t));
 		CRC32(crc, &gpe, sizeof (gpe), -1U, crc32_table);
 		gpt.efi_gpt_PartitionEntryArrayCRC32 = LE_32(~crc);
-		CRC32(crc, &gpt, sizeof (gpt), -1U, crc32_table);
+		CRC32(crc, &gpt, EFI_HEADER_SIZE, -1U, crc32_table);
 		gpt.efi_gpt_HeaderCRC32 = LE_32(~crc);
 		if (ddi_copyout(&gpt, ptr, MIN(sizeof (gpt), length),
 		    flag))
@@ -1679,7 +1640,7 @@ zvol_get_volume_params(minor_t minor, uint64_t *blksize,
 	*minor_hdl = zv;
 	*objset_hdl = zv->zv_objset;
 	*zil_hdl = zv->zv_zilog;
-	*rl_hdl = &zv->zv_znode;
+	*rl_hdl = &zv->zv_rangelock;
 	*dnode_hdl = zv->zv_dn;
 	return (0);
 }
@@ -1757,8 +1718,8 @@ zvol_ioctl(dev_t dev, int cmd, intptr_t arg, int flag, cred_t *cr, int *rvalp)
 {
 	zvol_state_t *zv;
 	struct dk_callback *dkc;
-	int error = 0;
-	rl_t *rl;
+	int i, error = 0;
+	locked_range_t *lr;
 
 	mutex_enter(&zfsdev_state_lock);
 
@@ -1832,7 +1793,7 @@ zvol_ioctl(dev_t dev, int cmd, intptr_t arg, int flag, cred_t *cr, int *rvalp)
 		dkc = (struct dk_callback *)arg;
 		mutex_exit(&zfsdev_state_lock);
 
-		ht_begin_unsafe();
+		smt_begin_unsafe();
 
 		zil_commit(zv->zv_zilog, ZVOL_OBJ);
 		if ((flag & FKIOCTL) && dkc != NULL && dkc->dkc_callback) {
@@ -1840,7 +1801,7 @@ zvol_ioctl(dev_t dev, int cmd, intptr_t arg, int flag, cred_t *cr, int *rvalp)
 			error = 0;
 		}
 
-		ht_end_unsafe();
+		smt_end_unsafe();
 
 		return (error);
 
@@ -1866,9 +1827,9 @@ zvol_ioctl(dev_t dev, int cmd, intptr_t arg, int flag, cred_t *cr, int *rvalp)
 		} else {
 			zv->zv_flags &= ~ZVOL_WCE;
 			mutex_exit(&zfsdev_state_lock);
-			ht_begin_unsafe();
+			smt_begin_unsafe();
 			zil_commit(zv->zv_zilog, ZVOL_OBJ);
-			ht_end_unsafe();
+			smt_end_unsafe();
 		}
 		return (0);
 	}
@@ -1883,62 +1844,82 @@ zvol_ioctl(dev_t dev, int cmd, intptr_t arg, int flag, cred_t *cr, int *rvalp)
 		break;
 
 	case DKIOCDUMPINIT:
-		rl = zfs_range_lock(&zv->zv_znode, 0, zv->zv_volsize,
+		lr = rangelock_enter(&zv->zv_rangelock, 0, zv->zv_volsize,
 		    RL_WRITER);
 		error = zvol_dumpify(zv);
-		zfs_range_unlock(rl);
+		rangelock_exit(lr);
 		break;
 
 	case DKIOCDUMPFINI:
 		if (!(zv->zv_flags & ZVOL_DUMPIFIED))
 			break;
-		rl = zfs_range_lock(&zv->zv_znode, 0, zv->zv_volsize,
+		lr = rangelock_enter(&zv->zv_rangelock, 0, zv->zv_volsize,
 		    RL_WRITER);
 		error = zvol_dump_fini(zv);
-		zfs_range_unlock(rl);
+		rangelock_exit(lr);
 		break;
 
 	case DKIOCFREE:
 	{
-		dkioc_free_t df;
+		dkioc_free_list_t *dfl;
 		dmu_tx_t *tx;
 
 		if (!zvol_unmap_enabled)
 			break;
 
-		if (ddi_copyin((void *)arg, &df, sizeof (df), flag)) {
-			error = SET_ERROR(EFAULT);
-			break;
+		if (!(flag & FKIOCTL)) {
+			error = dfl_copyin((void *)arg, &dfl, flag, KM_SLEEP);
+			if (error != 0)
+				break;
+		} else {
+			dfl = (dkioc_free_list_t *)arg;
+			ASSERT3U(dfl->dfl_num_exts, <=, DFL_COPYIN_MAX_EXTS);
+			if (dfl->dfl_num_exts > DFL_COPYIN_MAX_EXTS) {
+				error = SET_ERROR(EINVAL);
+				break;
+			}
 		}
-
-		/*
-		 * Apply Postel's Law to length-checking.  If they overshoot,
-		 * just blank out until the end, if there's a need to blank
-		 * out anything.
-		 */
-		if (df.df_start >= zv->zv_volsize)
-			break;	/* No need to do anything... */
 
 		mutex_exit(&zfsdev_state_lock);
 
-		ht_begin_unsafe();
+		smt_begin_unsafe();
 
-		rl = zfs_range_lock(&zv->zv_znode, df.df_start, df.df_length,
-		    RL_WRITER);
-		tx = dmu_tx_create(zv->zv_objset);
-		dmu_tx_mark_netfree(tx);
-		error = dmu_tx_assign(tx, TXG_WAIT);
-		if (error != 0) {
-			dmu_tx_abort(tx);
-		} else {
-			zvol_log_truncate(zv, tx, df.df_start,
-			    df.df_length, B_TRUE);
-			dmu_tx_commit(tx);
-			error = dmu_free_long_range(zv->zv_objset, ZVOL_OBJ,
-			    df.df_start, df.df_length);
+		for (int i = 0; i < dfl->dfl_num_exts; i++) {
+			uint64_t start = dfl->dfl_exts[i].dfle_start,
+			    length = dfl->dfl_exts[i].dfle_length,
+			    end = start + length;
+
+			/*
+			 * Apply Postel's Law to length-checking.  If they
+			 * overshoot, just blank out until the end, if there's
+			 * a need to blank out anything.
+			 */
+			if (start >= zv->zv_volsize)
+				continue;	/* No need to do anything... */
+			if (end > zv->zv_volsize) {
+				end = DMU_OBJECT_END;
+				length = end - start;
+			}
+
+			lr = rangelock_enter(&zv->zv_rangelock, start, length,
+			    RL_WRITER);
+			tx = dmu_tx_create(zv->zv_objset);
+			error = dmu_tx_assign(tx, TXG_WAIT);
+			if (error != 0) {
+				dmu_tx_abort(tx);
+			} else {
+				zvol_log_truncate(zv, tx, start, length,
+				    B_TRUE);
+				dmu_tx_commit(tx);
+				error = dmu_free_long_range(zv->zv_objset,
+				    ZVOL_OBJ, start, length);
+			}
+
+			rangelock_exit(lr);
+
+			if (error != 0)
+				break;
 		}
-
-		zfs_range_unlock(rl);
 
 		/*
 		 * If the write-cache is disabled, 'sync' property
@@ -1951,14 +1932,26 @@ zvol_ioctl(dev_t dev, int cmd, intptr_t arg, int flag, cred_t *cr, int *rvalp)
 		if ((error == 0) && zvol_unmap_sync_enabled &&
 		    (!(zv->zv_flags & ZVOL_WCE) ||
 		    (zv->zv_objset->os_sync == ZFS_SYNC_ALWAYS) ||
-		    (df.df_flags & DF_WAIT_SYNC))) {
+		    (dfl->dfl_flags & DF_WAIT_SYNC))) {
 			zil_commit(zv->zv_zilog, ZVOL_OBJ);
 		}
 
-		ht_end_unsafe();
+		if (!(flag & FKIOCTL))
+			dfl_free(dfl);
+
+		smt_end_unsafe();
 
 		return (error);
 	}
+
+	case DKIOC_CANFREE:
+		i = zvol_unmap_enabled ? 1 : 0;
+		if (ddi_copyout(&i, (void *)arg, sizeof (int), flag) != 0) {
+			error = EFAULT;
+		} else {
+			error = 0;
+		}
+		break;
 
 	default:
 		error = SET_ERROR(ENOTTY);
@@ -2179,6 +2172,9 @@ zvol_dumpify(zvol_state_t *zv)
 
 	if (zv->zv_flags & ZVOL_RDONLY)
 		return (SET_ERROR(EROFS));
+
+	if (os->os_encrypted)
+		return (SET_ERROR(ENOTSUP));
 
 	if (zap_lookup(zv->zv_objset, ZVOL_ZAP_OBJ, ZVOL_DUMPSIZE,
 	    8, 1, &dumpsize) != 0 || dumpsize != zv->zv_volsize) {

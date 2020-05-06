@@ -1,4 +1,6 @@
 /*
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2016 Alexander Motin <mav@FreeBSD.org>
  * Copyright (c) 2015 Peter Grehan <grehan@freebsd.org>
  * Copyright (c) 2013 Jeremiah Lott, Avere Systems
@@ -44,6 +46,9 @@ __FBSDID("$FreeBSD$");
 #include <sys/filio.h>
 #endif
 
+#ifndef WITHOUT_CAPSICUM
+#include <capsicum_helpers.h>
+#endif
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -63,6 +68,7 @@ __FBSDID("$FreeBSD$");
 #include "bhyverun.h"
 #include "pci_emul.h"
 #include "mevent.h"
+#include "net_utils.h"
 
 /* Hardware/register definitions XXX: move some to common code. */
 #define E82545_VENDOR_ID_INTEL			0x8086
@@ -345,8 +351,8 @@ struct e82545_softc {
 #define E82545_NVM_MODE_OPADDR  0x0
 #define E82545_NVM_MODE_DATAIN  0x1
 #define E82545_NVM_MODE_DATAOUT 0x2
-        /* EEPROM data */
-        uint16_t eeprom_data[E82545_NVM_EEPROM_SIZE];
+	/* EEPROM data */
+	uint16_t eeprom_data[E82545_NVM_EEPROM_SIZE];
 };
 
 static void e82545_reset(struct e82545_softc *sc, int dev);
@@ -1495,7 +1501,7 @@ e82545_rx_disable(struct e82545_softc *sc)
 static void
 e82545_write_ra(struct e82545_softc *sc, int reg, uint32_t wval)
 {
-        struct eth_uni *eu;
+	struct eth_uni *eu;
 	int idx;
 
 	idx = reg >> 1;
@@ -1521,7 +1527,7 @@ e82545_write_ra(struct e82545_softc *sc, int reg, uint32_t wval)
 static uint32_t
 e82545_read_ra(struct e82545_softc *sc, int reg)
 {
-        struct eth_uni *eu;
+	struct eth_uni *eu;
 	uint32_t retval;
 	int idx;
 
@@ -1765,12 +1771,12 @@ e82545_read_register(struct e82545_softc *sc, uint32_t offset)
 {
 	uint32_t retval;
 	int ridx;
-	
+
 	if (offset & 0x3) {
 		DPRINTF("Unaligned register read offset:0x%x\r\n", offset);
 		return 0;
 	}
-		
+
 	DPRINTF("Register read: 0x%x\r\n", offset);
 
 	switch (offset) {
@@ -2247,7 +2253,7 @@ e82545_open_tap(struct e82545_softc *sc, char *opts)
 	sc->esc_tapfd = open(tbuf, O_RDWR);
 	if (sc->esc_tapfd == -1) {
 		DPRINTF("unable to open tap device %s\n", opts);
-		exit(1);
+		exit(4);
 	}
 
 	/*
@@ -2263,7 +2269,7 @@ e82545_open_tap(struct e82545_softc *sc, char *opts)
 
 #ifndef WITHOUT_CAPSICUM
 	cap_rights_init(&rights, CAP_EVENT, CAP_READ, CAP_WRITE);
-	if (cap_rights_limit(sc->esc_tapfd, &rights) == -1 && errno != ENOSYS)
+	if (caph_rights_limit(sc->esc_tapfd, &rights) == -1)
 		errx(EX_OSERR, "Unable to apply rights for sandbox");
 #endif
 	
@@ -2281,37 +2287,15 @@ e82545_open_tap(struct e82545_softc *sc, char *opts)
 }
 
 static int
-e82545_parsemac(char *mac_str, uint8_t *mac_addr)
-{
-	struct ether_addr *ea;
-	char *tmpstr;
-	char zero_addr[ETHER_ADDR_LEN] = { 0, 0, 0, 0, 0, 0 };
-
-	tmpstr = strsep(&mac_str,"=");
-	if ((mac_str != NULL) && (!strcmp(tmpstr,"mac"))) {
-		ea = ether_aton(mac_str);
-		if (ea == NULL || ETHER_IS_MULTICAST(ea->octet) ||
-		    memcmp(ea->octet, zero_addr, ETHER_ADDR_LEN) == 0) {
-			fprintf(stderr, "Invalid MAC %s\n", mac_str);
-			return (1);
-		} else
-			memcpy(mac_addr, ea->octet, ETHER_ADDR_LEN);
-	}
-	return (0);
-}
-
-static int
 e82545_init(struct vmctx *ctx, struct pci_devinst *pi, char *opts)
 {
-	DPRINTF("Loading with options: %s\r\n", opts);
-
-	MD5_CTX mdctx;
-	unsigned char digest[16];
 	char nstr[80];
 	struct e82545_softc *sc;
 	char *devname;
 	char *vtopts;
 	int mac_provided;
+
+	DPRINTF("Loading with options: %s\r\n", opts);
 
 	/* Setup our softc */
 	sc = calloc(1, sizeof(*sc));
@@ -2362,7 +2346,7 @@ e82545_init(struct vmctx *ctx, struct pci_devinst *pi, char *opts)
 		(void) strsep(&vtopts, ",");
 
 		if (vtopts != NULL) {
-			err = e82545_parsemac(vtopts, sc->esc_mac.octet);
+			err = net_parsemac(vtopts, sc->esc_mac.octet);
 			if (err != 0) {
 				free(devname);
 				return (err);
@@ -2377,24 +2361,8 @@ e82545_init(struct vmctx *ctx, struct pci_devinst *pi, char *opts)
 		free(devname);
 	}
 
-	/*
-	 * The default MAC address is the standard NetApp OUI of 00-a0-98,
-	 * followed by an MD5 of the PCI slot/func number and dev name
-	 */
 	if (!mac_provided) {
-		snprintf(nstr, sizeof(nstr), "%d-%d-%s", pi->pi_slot,
-		    pi->pi_func, vmname);
-
-		MD5Init(&mdctx);
-		MD5Update(&mdctx, nstr, strlen(nstr));
-		MD5Final(digest, &mdctx);
-
-		sc->esc_mac.octet[0] = 0x00;
-		sc->esc_mac.octet[1] = 0xa0;
-		sc->esc_mac.octet[2] = 0x98;
-		sc->esc_mac.octet[3] = digest[0];
-		sc->esc_mac.octet[4] = digest[1];
-		sc->esc_mac.octet[5] = digest[2];
+		net_genmac(pi, sc->esc_mac.octet);
 	}
 
 	/* H/w initiated reset */

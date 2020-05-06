@@ -22,7 +22,7 @@
  * Copyright (c) 1991, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright 2013 Nexenta Systems, Inc.  All rights reserved.
  * Copyright 2014, OmniTI Computer Consulting, Inc. All rights reserved.
- * Copyright 2015, Joyent, Inc.
+ * Copyright 2018, Joyent, Inc.
  */
 /* Copyright (c) 1990 Mentat Inc. */
 
@@ -127,7 +127,7 @@ static void	udp_bind_hash_remove(udp_t *udp, boolean_t caller_holds_lock);
 static int	udp_build_hdr_template(conn_t *, const in6_addr_t *,
     const in6_addr_t *, in_port_t, uint32_t);
 static void	udp_capability_req(queue_t *q, mblk_t *mp);
-static int	udp_tpi_close(queue_t *q, int flags);
+static int	udp_tpi_close(queue_t *q, int flags, cred_t *);
 static void	udp_close_free(conn_t *);
 static void	udp_tpi_connect(queue_t *q, mblk_t *mp);
 static void	udp_tpi_disconnect(queue_t *q, mblk_t *mp);
@@ -146,8 +146,8 @@ static void	udp_icmp_error_ipv6(conn_t *connp, mblk_t *mp,
     ip_recv_attr_t *ira);
 static void	udp_info_req(queue_t *q, mblk_t *mp);
 static void	udp_input(void *, mblk_t *, void *, ip_recv_attr_t *);
-static void	udp_lrput(queue_t *, mblk_t *);
-static void	udp_lwput(queue_t *, mblk_t *);
+static int	udp_lrput(queue_t *, mblk_t *);
+static int	udp_lwput(queue_t *, mblk_t *);
 static int	udp_open(queue_t *q, dev_t *devp, int flag, int sflag,
 		    cred_t *credp, boolean_t isv6);
 static int	udp_openv4(queue_t *q, dev_t *devp, int flag, int sflag,
@@ -180,7 +180,7 @@ static in_port_t udp_update_next_port(udp_t *udp, in_port_t port,
     boolean_t random);
 static void	udp_wput_other(queue_t *q, mblk_t *mp);
 static void	udp_wput_iocdata(queue_t *q, mblk_t *mp);
-static void	udp_wput_fallback(queue_t *q, mblk_t *mp);
+static int	udp_wput_fallback(queue_t *q, mblk_t *mp);
 static size_t	udp_set_rcv_hiwat(udp_t *udp, size_t size);
 
 static void	*udp_stack_init(netstackid_t stackid, netstack_t *ns);
@@ -260,12 +260,12 @@ static struct qinit udp_rinitv6 = {
 };
 
 static struct qinit udp_winit = {
-	(pfi_t)udp_wput, (pfi_t)ip_wsrv, NULL, NULL, NULL, &udp_mod_info
+	udp_wput, ip_wsrv, NULL, NULL, NULL, &udp_mod_info
 };
 
 /* UDP entry point during fallback */
 struct qinit udp_fallback_sock_winit = {
-	(pfi_t)udp_wput_fallback, NULL, NULL, NULL, NULL, &udp_mod_info
+	udp_wput_fallback, NULL, NULL, NULL, NULL, &udp_mod_info
 };
 
 /*
@@ -273,11 +273,11 @@ struct qinit udp_fallback_sock_winit = {
  * likes to use it as a place to hang the various streams.
  */
 static struct qinit udp_lrinit = {
-	(pfi_t)udp_lrput, NULL, udp_openv4, udp_tpi_close, NULL, &udp_mod_info
+	udp_lrput, NULL, udp_openv4, udp_tpi_close, NULL, &udp_mod_info
 };
 
 static struct qinit udp_lwinit = {
-	(pfi_t)udp_lwput, NULL, udp_openv4, udp_tpi_close, NULL, &udp_mod_info
+	udp_lwput, NULL, udp_openv4, udp_tpi_close, NULL, &udp_mod_info
 };
 
 /* For AF_INET aka /dev/udp */
@@ -373,8 +373,6 @@ udp_srcport_hash(mblk_t *mp, int type, uint16_t min, uint16_t max,
     uint16_t def)
 {
 	size_t szused = 0;
-	struct ether_header *ether;
-	struct ether_vlan_header *vether;
 	ip6_t *ip6h;
 	ipha_t *ipha;
 	uint16_t sap;
@@ -401,12 +399,10 @@ udp_srcport_hash(mblk_t *mp, int type, uint16_t min, uint16_t max,
 		if (mp->b_cont == NULL)
 			return (def);
 		mp = mp->b_cont;
-		ether = (struct ether_header *)mp->b_rptr;
 	} else if (MBLKL(mp) < VXLAN_HDR_LEN) {
 		return (def);
 	} else {
 		szused = VXLAN_HDR_LEN;
-		ether = (struct ether_header *)((uintptr_t)mp->b_rptr + szused);
 	}
 
 	/* Can we hold a MAC header? */
@@ -803,8 +799,9 @@ udp_tpi_connect(queue_t *q, mblk_t *mp)
 	}
 }
 
+/* ARGSUSED */
 static int
-udp_tpi_close(queue_t *q, int flags)
+udp_tpi_close(queue_t *q, int flags, cred_t *credp __unused)
 {
 	conn_t	*connp;
 
@@ -1712,7 +1709,7 @@ udp_do_opt_set(conn_opt_arg_t *coa, int level, int name,
 	udp_t		*udp = connp->conn_udp;
 	udp_stack_t	*us = udp->udp_us;
 	int		*i1 = (int *)invalp;
-	boolean_t 	onoff = (*i1 == 0) ? 0 : 1;
+	boolean_t	onoff = (*i1 == 0) ? 0 : 1;
 	int		error;
 
 	ASSERT(MUTEX_NOT_HELD(&coa->coa_connp->conn_lock));
@@ -1866,9 +1863,9 @@ udp_opt_set(conn_t *connp, uint_t optset_context, int level,
 		/*
 		 * Note: Implies T_CHECK semantics for T_OPTCOM_REQ
 		 * inlen != 0 implies value supplied and
-		 * 	we have to "pretend" to set it.
+		 *	we have to "pretend" to set it.
 		 * inlen == 0 implies that there is no
-		 * 	value part in T_CHECK request and just validation
+		 *	value part in T_CHECK request and just validation
 		 * done elsewhere should be enough, we just return here.
 		 */
 		if (inlen == 0) {
@@ -3515,7 +3512,7 @@ udp_ud_err_connected(conn_t *connp, t_scalar_t error)
  * structure without the cumbersome T_UNITDATA_REQ interface for the case of
  * connected endpoints.
  */
-void
+int
 udp_wput(queue_t *q, mblk_t *mp)
 {
 	sin6_t		*sin6;
@@ -3546,7 +3543,7 @@ udp_wput(queue_t *q, mblk_t *mp)
 			UDP_DBGSTAT(us, udp_data_notconn);
 			UDP_STAT(us, udp_out_err_notconn);
 			freemsg(mp);
-			return;
+			return (0);
 		}
 		/*
 		 * All Solaris components should pass a db_credp
@@ -3559,7 +3556,7 @@ udp_wput(queue_t *q, mblk_t *mp)
 		if (cr == NULL) {
 			UDPS_BUMP_MIB(us, udpOutErrors);
 			freemsg(mp);
-			return;
+			return (0);
 		}
 		ASSERT(udp->udp_issocket);
 		UDP_DBGSTAT(us, udp_data_conn);
@@ -3572,7 +3569,7 @@ udp_wput(queue_t *q, mblk_t *mp)
 			printf("udp_output_connected returned %d\n", error);
 #endif
 		}
-		return;
+		return (0);
 
 	case M_PROTO:
 	case M_PCPROTO:
@@ -3580,13 +3577,13 @@ udp_wput(queue_t *q, mblk_t *mp)
 		if (MBLKL(mp) < sizeof (*tudr) ||
 		    ((t_primp_t)mp->b_rptr)->type != T_UNITDATA_REQ) {
 			udp_wput_other(q, mp);
-			return;
+			return (0);
 		}
 		break;
 
 	default:
 		udp_wput_other(q, mp);
-		return;
+		return (0);
 	}
 
 	/* Handle valid T_UNITDATA_REQ here */
@@ -3736,7 +3733,7 @@ udp_wput(queue_t *q, mblk_t *mp)
 		}
 		if (error == 0) {
 			freeb(mp);
-			return;
+			return (0);
 		}
 		break;
 
@@ -3798,7 +3795,7 @@ udp_wput(queue_t *q, mblk_t *mp)
 		}
 		if (error == 0) {
 			freeb(mp);
-			return;
+			return (0);
 		}
 		break;
 	}
@@ -3806,7 +3803,7 @@ udp_wput(queue_t *q, mblk_t *mp)
 	ASSERT(mp != NULL);
 	/* mp is freed by the following routine */
 	udp_ud_err(q, mp, (t_scalar_t)error);
-	return;
+	return (0);
 
 ud_error2:
 	UDPS_BUMP_MIB(us, udpOutErrors);
@@ -3815,6 +3812,7 @@ ud_error2:
 	ASSERT(mp != NULL);
 	/* mp is freed by the following routine */
 	udp_ud_err(q, mp, (t_scalar_t)error);
+	return (0);
 }
 
 /*
@@ -4150,13 +4148,14 @@ ud_error:
 }
 
 /* ARGSUSED */
-static void
+static int
 udp_wput_fallback(queue_t *wq, mblk_t *mp)
 {
 #ifdef DEBUG
 	cmn_err(CE_CONT, "udp_wput_fallback: Message in fallback \n");
 #endif
 	freemsg(mp);
+	return (0);
 }
 
 
@@ -4632,7 +4631,7 @@ udp_set_rcv_hiwat(udp_t *udp, size_t size)
  * Nobody should be sending
  * packets up this stream
  */
-static void
+static int
 udp_lrput(queue_t *q, mblk_t *mp)
 {
 	switch (mp->b_datap->db_type) {
@@ -4641,11 +4640,12 @@ udp_lrput(queue_t *q, mblk_t *mp)
 		if (*mp->b_rptr & FLUSHW) {
 			*mp->b_rptr &= ~FLUSHR;
 			qreply(q, mp);
-			return;
+			return (0);
 		}
 		break;
 	}
 	freemsg(mp);
+	return (0);
 }
 
 /*
@@ -4653,10 +4653,11 @@ udp_lrput(queue_t *q, mblk_t *mp)
  * Nobody should be sending packets down this stream.
  */
 /* ARGSUSED */
-void
+int
 udp_lwput(queue_t *q, mblk_t *mp)
 {
 	freemsg(mp);
+	return (0);
 }
 
 /*
@@ -4687,9 +4688,9 @@ udp_do_open(cred_t *credp, boolean_t isv6, int flags, int *errorp)
 {
 	udp_t		*udp;
 	conn_t		*connp;
-	zoneid_t 	zoneid;
-	netstack_t 	*ns;
-	udp_stack_t 	*us;
+	zoneid_t	zoneid;
+	netstack_t	*ns;
+	udp_stack_t	*us;
 	int		len;
 
 	ASSERT(errorp != NULL);
@@ -4859,7 +4860,7 @@ void
 udp_activate(sock_lower_handle_t proto_handle, sock_upper_handle_t sock_handle,
     sock_upcalls_t *sock_upcalls, int flags, cred_t *cr)
 {
-	conn_t 		*connp = (conn_t *)proto_handle;
+	conn_t		*connp = (conn_t *)proto_handle;
 	struct sock_proto_props sopp;
 
 	/* All Solaris components should pass a cred for this operation. */
@@ -4983,6 +4984,8 @@ udp_do_bind(conn_t *connp, struct sockaddr *sa, socklen_t len, cred_t *cr,
 	mlp_type_t	addrtype, mlptype;
 	udp_stack_t	*us = udp->udp_us;
 
+	sin = NULL;
+	sin6 = NULL;
 	switch (len) {
 	case sizeof (sin_t):	/* Complete IPv4 address */
 		sin = (sin_t *)sa;
@@ -5134,10 +5137,10 @@ udp_do_bind(conn_t *connp, struct sockaddr *sa, socklen_t len, cred_t *cr,
 	 * another stream.  If another stream is already using the
 	 * requested IP address and port, the behavior depends on
 	 * "bind_to_req_port_only". If set the bind fails; otherwise we
-	 * search for any an unused port to bind to the stream.
+	 * search for any unused port to bind to the stream.
 	 *
 	 * As per the BSD semantics, as modified by the Deering multicast
-	 * changes, if udp_reuseaddr is set, then we allow multiple binds
+	 * changes, if conn_reuseaddr is set, then we allow multiple binds
 	 * to the same port independent of the local IP address.
 	 *
 	 * This is slightly different than in SunOS 4.X which did not
@@ -5613,7 +5616,7 @@ udp_implicit_bind(conn_t *connp, cred_t *cr)
 static int
 udp_do_unbind(conn_t *connp)
 {
-	udp_t 		*udp = connp->conn_udp;
+	udp_t		*udp = connp->conn_udp;
 	udp_fanout_t	*udpf;
 	udp_stack_t	*us = udp->udp_us;
 
@@ -5677,10 +5680,10 @@ udp_do_connect(conn_t *connp, const struct sockaddr *sa, socklen_t len,
 {
 	sin6_t		*sin6;
 	sin_t		*sin;
-	in6_addr_t 	v6dst;
-	ipaddr_t 	v4dst;
-	uint16_t 	dstport;
-	uint32_t 	flowinfo;
+	in6_addr_t	v6dst;
+	ipaddr_t	v4dst;
+	uint16_t	dstport;
+	uint32_t	flowinfo;
 	udp_fanout_t	*udpf;
 	udp_t		*udp, *udp1;
 	ushort_t	ipversion;
@@ -5696,6 +5699,10 @@ udp_do_connect(conn_t *connp, const struct sockaddr *sa, socklen_t len,
 
 	udp = connp->conn_udp;
 	us = udp->udp_us;
+	sin = NULL;
+	sin6 = NULL;
+	v4dst = INADDR_ANY;
+	flowinfo = 0;
 
 	/*
 	 * Address has been verified by the caller
@@ -6293,7 +6300,7 @@ udp_fallback(sock_lower_handle_t proto_handle, queue_t *q,
     boolean_t issocket, so_proto_quiesced_cb_t quiesced_cb,
     sock_quiesce_arg_t *arg)
 {
-	conn_t 	*connp = (conn_t *)proto_handle;
+	conn_t	*connp = (conn_t *)proto_handle;
 	udp_t	*udp;
 	struct T_capability_ack tca;
 	struct sockaddr_in6 laddr, faddr;
@@ -6538,7 +6545,7 @@ int
 udp_ioctl(sock_lower_handle_t proto_handle, int cmd, intptr_t arg,
     int mode, int32_t *rvalp, cred_t *cr)
 {
-	conn_t  	*connp = (conn_t *)proto_handle;
+	conn_t		*connp = (conn_t *)proto_handle;
 	int		error;
 
 	/* All Solaris components should pass a cred for this operation. */

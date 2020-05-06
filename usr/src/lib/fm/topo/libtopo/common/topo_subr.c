@@ -23,7 +23,7 @@
  * Copyright (c) 2006, 2010, Oracle and/or its affiliates. All rights reserved.
  */
 /*
- * Copyright (c) 2018, Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #include <alloca.h>
@@ -37,6 +37,7 @@
 #include <sys/utsname.h>
 
 #include <topo_error.h>
+#include <topo_digraph.h>
 #include <topo_subr.h>
 
 void
@@ -166,21 +167,17 @@ topo_debug_set(topo_hdl_t *thp, const char *dbmode, const char *dout)
 	for (dbp = (topo_debug_mode_t *)_topo_dbout_modes;
 	    dbp->tdm_name != NULL; ++dbp) {
 		if (strcmp(dout, dbp->tdm_name) == 0)
-		thp->th_dbout = dbp->tdm_mode;
+			thp->th_dbout = dbp->tdm_mode;
 	}
 	topo_hdl_unlock(thp);
 }
 
 void
-topo_vdprintf(topo_hdl_t *thp, int mask, const char *mod, const char *format,
-    va_list ap)
+topo_vdprintf(topo_hdl_t *thp, const char *mod, const char *format, va_list ap)
 {
 	char *msg;
 	size_t len;
 	char c;
-
-	if (!(thp->th_debug & mask))
-		return;
 
 	len = vsnprintf(&c, 1, format, ap);
 	msg = alloca(len + 2);
@@ -212,8 +209,11 @@ topo_dprintf(topo_hdl_t *thp, int mask, const char *format, ...)
 {
 	va_list ap;
 
+	if (!(thp->th_debug & mask))
+		return;
+
 	va_start(ap, format);
-	topo_vdprintf(thp, mask, NULL, format, ap);
+	topo_vdprintf(thp, NULL, format, ap);
 	va_end(ap);
 }
 
@@ -221,11 +221,17 @@ tnode_t *
 topo_hdl_root(topo_hdl_t *thp, const char *scheme)
 {
 	ttree_t *tp;
+	topo_digraph_t *tdg;
 
 	for (tp = topo_list_next(&thp->th_trees); tp != NULL;
 	    tp = topo_list_next(tp)) {
 		if (strcmp(scheme, tp->tt_scheme) == 0)
 			return (tp->tt_root);
+	}
+	for (tdg = topo_list_next(&thp->th_digraphs); tdg != NULL;
+	    tdg = topo_list_next(tdg)) {
+		if (strcmp(scheme, tdg->tdg_scheme) == 0)
+			return (tdg->tdg_rootnode);
 	}
 
 	return (NULL);
@@ -535,14 +541,21 @@ topo_sensor_state_name(uint32_t sensor_type, uint8_t state, char *buf,
 			(void) snprintf(buf, len, "0x%02x", state);
 			return;
 	}
+	if (state == 0) {
+		(void) snprintf(buf, len, "NO_STATES_ASSERTED");
+		return;
+	}
+	buf[0] = '\0';
 	for (; ntp->int_name != NULL; ntp++) {
-		if (ntp->int_value == state) {
-			(void) strlcpy(buf, ntp->int_name, len);
-			return;
+		if (state & ntp->int_value) {
+			if (buf[0] != '\0')
+				(void) strlcat(buf, "|", len);
+			(void) strlcat(buf, ntp->int_name, len);
 		}
 	}
 
-	(void) snprintf(buf, len, "0x%02x", state);
+	if (buf[0] == '\0')
+		(void) snprintf(buf, len, "0x%02x", state);
 }
 
 static const topo_pgroup_info_t sys_pgroup = {

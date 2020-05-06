@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2018 Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  */
 
 #ifndef	_VM_GLUE_
@@ -24,6 +24,7 @@ struct vmspace;
 struct vm_map;
 struct pmap;
 struct vm_object;
+struct vmm_pt_ops;
 
 struct vm_map {
 	struct vmspace *vmm_space;
@@ -36,7 +37,8 @@ struct pmap {
 
 	/* Implementation private */
 	enum pmap_type	pm_type;
-	void		*pm_map;
+	struct vmm_pt_ops *pm_ops;
+	void		*pm_impl;
 };
 
 struct vmspace {
@@ -44,6 +46,7 @@ struct vmspace {
 
 	/* Implementation private */
 	kmutex_t	vms_lock;
+	boolean_t	vms_map_changing;
 	struct pmap	vms_pmap;
 	uintptr_t	vms_size;	/* fixed after creation */
 
@@ -53,13 +56,16 @@ struct vmspace {
 typedef pfn_t (*vm_pager_fn_t)(vm_object_t, uintptr_t, pfn_t *, uint_t *);
 
 struct vm_object {
-	kmutex_t	vmo_lock;
-	uint_t		vmo_refcnt;
+	uint_t		vmo_refcnt;	/* manipulated with atomic ops */
+
+	/* This group of fields are fixed at creation time */
 	objtype_t	vmo_type;
 	size_t		vmo_size;
-	vm_memattr_t	vmo_attr;
 	vm_pager_fn_t	vmo_pager;
 	void		*vmo_data;
+
+	kmutex_t	vmo_lock;	/* protects fields below */
+	vm_memattr_t	vmo_attr;
 };
 
 struct vm_page {
@@ -76,5 +82,18 @@ int vm_segmap_space(struct vmspace *, off_t, struct as *, caddr_t *, off_t,
 void *vmspace_find_kva(struct vmspace *, uintptr_t, size_t);
 void vmm_arena_init(void);
 void vmm_arena_fini(void);
+
+struct vmm_pt_ops {
+	void * (*vpo_init)(uint64_t *);
+	void (*vpo_free)(void *);
+	uint64_t (*vpo_wired_cnt)(void *);
+	int (*vpo_is_wired)(void *, uint64_t, uint_t *);
+	int (*vpo_map)(void *, uint64_t, pfn_t, uint_t, uint_t, uint8_t);
+	uint64_t (*vpo_unmap)(void *, uint64_t, uint64_t);
+};
+
+extern struct vmm_pt_ops ept_ops;
+extern struct vmm_pt_ops rvi_ops;
+
 
 #endif /* _VM_GLUE_ */

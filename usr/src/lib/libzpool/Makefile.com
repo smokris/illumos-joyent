@@ -21,7 +21,7 @@
 #
 # Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
 # Copyright (c) 2013, 2016 by Delphix. All rights reserved.
-# Copyright 2018 Joyent, Inc.
+# Copyright 2020 Joyent, Inc.
 #
 
 LIBRARY= libzpool.a
@@ -48,33 +48,32 @@ SRCDIR=		../common
 # There should be a mapfile here
 MAPFILES =
 
-LIBS +=		$(DYNLIB) $(LINTLIB)
+LIBS +=		$(DYNLIB)
 
 INCS += -I../common
 INCS += -I../../../uts/common/fs/zfs
 INCS += -I../../../uts/common/fs/zfs/lua
 INCS += -I../../../common/zfs
+INCS += -I../../../common/lz4
 INCS += -I../../../common
+INCS += -I../../libzutil/common
+
 
 CLEANFILES += ../common/zfs.h
 CLEANFILES += $(EXTPICS)
 
-$(LINTLIB) := SRCS=	$(SRCDIR)/$(LINTSRC)
-$(LINTLIB): ../common/zfs.h
 $(LIBS): ../common/zfs.h
 
 CSTD=	$(CSTD_GNU99)
-C99LMODE=	-Xc99=%all
 
-CFLAGS +=	-g $(CCVERBOSE) $(CNOGLOBAL)
-CFLAGS64 +=	-g $(CCVERBOSE)	$(CNOGLOBAL)
+CFLAGS +=	$(CCGDEBUG) $(CCVERBOSE) $(CNOGLOBAL)
+CFLAGS64 +=	$(CCGDEBUG) $(CCVERBOSE) $(CNOGLOBAL)
 LDLIBS +=	-lcmdutils -lumem -lavl -lnvpair -lz -lc -lsysevent -lmd \
-		-lfakekernel
+		-lfakekernel -lzutil
+NATIVE_LIBS +=	libz.so
 CPPFLAGS.first =	-I$(SRC)/lib/libfakekernel/common
 CPPFLAGS +=	$(INCS)	-DDEBUG -D_FAKE_KERNEL
 
-LINTFLAGS +=	-erroff=E_STATIC_UNUSED $(INCS)
-LINTFLAGS64 +=	-erroff=E_STATIC_UNUSED $(INCS)
 
 # The following is needed to fix the SmartOS build; see OS-6582. We cannot do
 # a conditional appendage to INCS, since that breaks the lint build.
@@ -89,11 +88,13 @@ CERRWARN +=	-_gcc=-Wno-empty-body
 CERRWARN +=	-_gcc=-Wno-unused-function
 CERRWARN +=	-_gcc=-Wno-unused-label
 
+# not linted
+SMATCH=off
+
 .KEEP_STATE:
 
 all: $(LIBS)
 
-lint: $(LINTLIB)
 
 include ../../Makefile.targ
 
@@ -108,6 +109,10 @@ pics/%.o: ../../../uts/common/fs/zfs/lua/%.c
 	$(POST_PROCESS_O)
 
 pics/%.o: ../../../common/zfs/%.c ../common/zfs.h
+	$(COMPILE.c) -o $@ $<
+	$(POST_PROCESS_O)
+
+pics/%.o: ../../../common/lz4/%.c ../common/zfs.h
 	$(COMPILE.c) -o $@ $<
 	$(POST_PROCESS_O)
 

@@ -14,6 +14,10 @@
  *
  *********************************************************/
 
+/*
+ * Copyright 2019 Joyent, Inc.
+ */
+
 #include <sys/types.h>
 #include <sys/conf.h>
 #include <sys/debug.h>
@@ -1677,7 +1681,7 @@ Vxn_FreeDmaMem(dma_buf_t *dma)
    ddi_dma_free_handle(&dma->dmaHdl);
 
    dma->buf = NULL;
-   dma->phyBuf = NULL;
+   dma->phyBuf = (uint32_t)(uintptr_t)NULL;
    dma->bufLen = 0;
 }
 
@@ -1876,7 +1880,7 @@ Vxn_Attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
    const char           *drvName;
    ddi_acc_handle_t     confHdl;
    uint16_t             vid, did;
-   uint8_t              revid;
+   uint8_t              revid __unused;
    struct pci_phys_spec *regs;
    caddr_t              vxnIOp;
    ddi_acc_handle_t     vxnIOHdl;

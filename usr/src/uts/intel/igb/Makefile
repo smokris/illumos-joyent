@@ -22,13 +22,7 @@
 # Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
 # Use is subject to license terms.
 #
-# uts/intel/igb/Makefile
-#
-#	This makefile drives the production of the igb
-#	network driver kernel module.
-#
-#	intel architecture dependent
-#
+# Copyright (c) 2018, Joyent, Inc.
 
 #
 #	Paths to the base of the uts directory trees
@@ -55,8 +49,11 @@ LINTFLAGS += \
 	-I$(UTSBASE)/common/io/e1000api
 
 CERRWARN	+= -_gcc=-Wno-switch
-CERRWARN	+= -_gcc=-Wno-uninitialized
+CERRWARN	+= $(CNOWARN_UNINIT)
 CERRWARN	+= -_cc=-erroff=E_STATEMENT_NOT_REACHED
+
+# needs work
+SMOFF += all_func_returns,indenting
 
 CFLAGS		+= -I$(UTSBASE)/common/io/e1000api
 CFLAGS		+= -I$(UTSBASE)/common/io/igb

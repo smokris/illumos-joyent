@@ -22,6 +22,7 @@
 #
 # Copyright (c) 1997, 2010, Oracle and/or its affiliates. All rights reserved.
 # Copyright 2018 Nexenta Systems, Inc. All rights reserved.
+# Copyright (c) 2018, Joyent, Inc.
 #
 
 LIBRARY= libnsl.a
@@ -163,7 +164,7 @@ include ../../Makefile.lib
 # install this library in the root filesystem
 include ../../Makefile.rootfs
 
-LIBS =		$(DYNLIB) $(LINTLIB)
+LIBS =		$(DYNLIB)
 
 SRCDIR=		../common
 
@@ -183,11 +184,6 @@ BIGPICS =	$(GOTHOGS:%=pics/%)
 $(BIGPICS) :=	sparc_C_PICFLAGS = $(C_BIGPICFLAGS)
 $(BIGPICS) :=	i386_C_PICFLAGS = $(C_BIGPICFLAGS)
 
-# Compile C++ code without exceptions to avoid a dependence on libC.
-NOEXCEPTIONS= -noex
-CCFLAGS += $(NOEXCEPTIONS)
-CCFLAGS64 += $(NOEXCEPTIONS)
-
 CPPFLAGS +=	-I$(SRC)/lib/libnsl/include -D_REENTRANT
 CPPFLAGS +=	-I$(SRC)/lib/libnsl/dial
 
@@ -201,27 +197,25 @@ CCFLAGS64 +=	-_CC=-features=conststrings
 
 CERRWARN +=	-_gcc=-Wno-char-subscripts
 CERRWARN +=	-_gcc=-Wno-parentheses
-CERRWARN +=	-_gcc=-Wno-uninitialized
+CERRWARN +=	$(CNOWARN_UNINIT)
 CERRWARN +=	-_gcc=-Wno-switch
 CERRWARN +=	-_gcc=-Wno-char-subscripts
 CERRWARN +=	-_gcc=-Wno-empty-body
 CERRWARN +=	-_gcc=-Wno-unused-variable
 CERRWARN +=	-_gcc=-Wno-clobbered
 
+# not linted
+SMATCH=off
+
 LIBMP =		-lmp
-lint :=		LIBMP =
 LDLIBS +=	$(LIBMP) -lmd -lc
 DYNFLAGS +=	$(ZNODELETE)
 
-$(LINTLIB):=	SRCS=$(SRCDIR)/$(LINTSRC)
-LINTFLAGS +=	-m -DPORTMAP
-LINTFLAGS64 +=	-m -DPORTMAP
 
 .KEEP_STATE:
 
 all: $(LIBS)
 
-# Don't lint WRAPPERS as they are explicitly unclean
 SRCS=	$(DES:%.o=../des/%.c)			\
 	$(DIAL:%.o=../dial/%.c)			\
 	$(IPSEC:%.o=../ipsec/%.c)		\
@@ -235,8 +229,6 @@ SRCS=	$(DES:%.o=../des/%.c)			\
 	$(NIS_GEN:%.o=../nis/gen/%.c)		\
 	$(COMMON:%.o=../common/%.c)
 
-lint:
-	@$(LINT.c) $(SRCS) $(LDLIBS)
 
 # include library targets
 include ../../Makefile.targ

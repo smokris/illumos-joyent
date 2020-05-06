@@ -27,8 +27,9 @@
  * Copyright 2018 Joyent, Inc.
  */
 
-#include <mdb/mdb_modapi.h>
+#include <sys/mdb_modapi.h>
 #include <mdb/mdb_ctf.h>
+#include <sys/thread.h>
 #include "ctxop.h"
 
 struct ctxop_walk_state {
@@ -43,7 +44,7 @@ ctxop_walk_init(mdb_walk_state_t *wsp)
 	int offset;
 	uintptr_t addr;
 
-	if (wsp->walk_addr == NULL) {
+	if (wsp->walk_addr == 0) {
 		mdb_warn("must specify thread for ctxop walk\n");
 		return (WALK_ERR);
 	}

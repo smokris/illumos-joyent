@@ -22,6 +22,7 @@
 # Copyright 2007 Sun Microsystems, Inc.  All rights reserved.
 # Use is subject to license terms.
 #
+# Copyright 2020 Joyent, Inc.
 
 PROG	= cw
 
@@ -39,20 +40,19 @@ CFLAGS += $(CCVERBOSE)
 
 # Override CFLAGS.  This is needed only for bootstrap of cw.
 $(__GNUC)CFLAGS=	-O -D__sun -Wall -Wno-unknown-pragmas -Werror \
-			-std=gnu89 -nodefaultlibs
-$(__SUNC)CFLAGS=	-xspace -Xa  -xildoff -errtags=yes -errwarn=%all \
-			-xc99=%none    -W0,-xglobalstatic -v
+			-std=gnu99 -nodefaultlibs
+$(__SUNC)CFLAGS=	-xspace -Xa -xildoff -errtags=yes -errwarn=%all \
+			-xc99=%all -W0,-xglobalstatic -v
 
-
-$(__GNUC)LDLIBS +=	-lc
-$(__GNUC)LDFLAGS= 	$(MAPFILE.NES:%=-Wl,-M%)
-
-CPPFLAGS += -DDEFAULT_CC_DIR='"$(SPRO_VROOT)/bin"'
-CPPFLAGS += -DDEFAULT_GCC_DIR='"$(GNUC_ROOT)/bin"'
-CPPFLAGS += -DDEFAULT_CPLUSPLUS_DIR='"$(SPRO_VROOT)/bin"'
-CPPFLAGS += -DDEFAULT_GPLUSPLUS_DIR='"$(GNUC_ROOT)/bin"'
+$(__GNUC)LDLIBS +=	-Wl,-zassert-deflib=libc.so -lc
+$(__GNUC)LDFLAGS=	$(MAPFILE.NES:%=-Wl,-M%)
+$(__GNUC)ZASSERTDEFLIB = -Wl,-zassert-deflib
+$(__GNUC)ZFATALWARNINGS = -Wl,-zfatal-warnings
+$(__GNUC)ZGUIDANCE = -Wl,-zguidance
+LDFLAGS += -Wl,$(ZDIRECT)
 
 $(ROOTONBLDMAN1ONBLDFILES) := FILEMODE=      644
+CSTD=	$(CSTD_GNU99)
 
 # Assume we don't have the install.bin available yet
 INS.file=	$(RM) $@; $(CP) $< $(@D); $(CHMOD) $(FILEMODE) $@
@@ -66,5 +66,10 @@ install: all .WAIT $(ROOTONBLDMACHPROG) $(ROOTONBLDMAN1ONBLDFILES)
 lint: lint_PROG
 
 clean:
+
+#
+# Not run by default: bootstrap...
+check:
+	$(ROOTONBLDBINMACH)/mandoc -Tlint -Wwarning $(MAN1ONBLDFILES)
 
 include ../Makefile.targ

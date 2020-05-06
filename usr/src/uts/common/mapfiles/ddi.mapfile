@@ -10,7 +10,7 @@
 #
 
 #
-# Copyright 2018 Joyent, Inc.
+# Copyright 2019 Joyent, Inc.
 #
 
 #
@@ -40,6 +40,22 @@ SYMBOL_SCOPE {
 	__divdi3			{ FLAGS = EXTERN };
 	__stack_chk_fail		{ FLAGS = EXTERN };
 	__stack_chk_guard		{ FLAGS = EXTERN };
+	__x86_indirect_thunk		{ FLAGS = EXTERN };
+	__x86_indirect_thunk_r10	{ FLAGS = EXTERN };
+	__x86_indirect_thunk_r11	{ FLAGS = EXTERN };
+	__x86_indirect_thunk_r12	{ FLAGS = EXTERN };
+	__x86_indirect_thunk_r13	{ FLAGS = EXTERN };
+	__x86_indirect_thunk_r14	{ FLAGS = EXTERN };
+	__x86_indirect_thunk_r15	{ FLAGS = EXTERN };
+	__x86_indirect_thunk_r8		{ FLAGS = EXTERN };
+	__x86_indirect_thunk_r9		{ FLAGS = EXTERN };
+	__x86_indirect_thunk_rax	{ FLAGS = EXTERN };
+	__x86_indirect_thunk_rbp	{ FLAGS = EXTERN };
+	__x86_indirect_thunk_rbx	{ FLAGS = EXTERN };
+	__x86_indirect_thunk_rcx	{ FLAGS = EXTERN };
+	__x86_indirect_thunk_rdi	{ FLAGS = EXTERN };
+	__x86_indirect_thunk_rdx	{ FLAGS = EXTERN };
+	__x86_indirect_thunk_rsi	{ FLAGS = EXTERN };
 	allocb				{ FLAGS = EXTERN };
 	assfail				{ FLAGS = EXTERN };
 	assfail3			{ FLAGS = EXTERN };
@@ -101,6 +117,7 @@ SYMBOL_SCOPE {
 	ddi_prop_free			{ FLAGS = EXTERN };
 	ddi_prop_get_int		{ FLAGS = EXTERN };
 	ddi_prop_lookup_int_array	{ FLAGS = EXTERN };
+	ddi_prop_lookup_string		{ FLAGS = EXTERN };
 	ddi_prop_op			{ FLAGS = EXTERN };
 	ddi_prop_remove_all		{ FLAGS = EXTERN };
 	ddi_prop_update_int_array	{ FLAGS = EXTERN };
@@ -116,6 +133,15 @@ SYMBOL_SCOPE {
 	ddi_taskq_create		{ FLAGS = EXTERN };
 	ddi_taskq_destroy		{ FLAGS = EXTERN };
 	ddi_taskq_dispatch		{ FLAGS = EXTERN };
+	ddi_ufm_fini			{ FLAGS = EXTERN };
+	ddi_ufm_image_set_desc		{ FLAGS = EXTERN };
+	ddi_ufm_image_set_misc		{ FLAGS = EXTERN };
+	ddi_ufm_image_set_nslots	{ FLAGS = EXTERN };
+	ddi_ufm_init			{ FLAGS = EXTERN };
+	ddi_ufm_slot_set_attrs		{ FLAGS = EXTERN };
+	ddi_ufm_slot_set_misc		{ FLAGS = EXTERN };
+	ddi_ufm_slot_set_version	{ FLAGS = EXTERN };
+	ddi_ufm_update			{ FLAGS = EXTERN };
 	delay				{ FLAGS = EXTERN };
 	desballoc			{ FLAGS = EXTERN };
 	dev_err				{ FLAGS = EXTERN };
@@ -158,7 +184,13 @@ SYMBOL_SCOPE {
 	mutex_tryenter			{ FLAGS = EXTERN };
 	nochpoll			{ FLAGS = EXTERN };
 	nodev				{ FLAGS = EXTERN };
+	nvlist_add_string		{ FLAGS = EXTERN };
+	nvlist_alloc			{ FLAGS = EXTERN };
+	nvlist_free			{ FLAGS = EXTERN };
 	nulldev				{ FLAGS = EXTERN };
+	nvlist_add_string		{ FLAGS = EXTERN };
+	nvlist_alloc			{ FLAGS = EXTERN };
+	nvlist_free			{ FLAGS = EXTERN };
 	panic				{ FLAGS = EXTERN };
 	pci_config_get16		{ FLAGS = EXTERN };
 	pci_config_get32		{ FLAGS = EXTERN };

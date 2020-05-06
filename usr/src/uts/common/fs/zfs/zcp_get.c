@@ -14,7 +14,7 @@
  */
 
 /*
- * Copyright (c) 2016 by Delphix. All rights reserved.
+ * Copyright (c) 2016, 2017 by Delphix. All rights reserved.
  */
 
 #include "lua.h"
@@ -330,8 +330,7 @@ get_special_prop(lua_State *state, dsl_dataset_t *ds, const char *dsname,
 		error = get_clones_stat_impl(ds, clones);
 		if (error == 0) {
 			/* push list to lua stack */
-			VERIFY0(zcp_nvlist_to_lua(state, clones, NULL,
-			    NULL));
+			VERIFY0(zcp_nvlist_to_lua(state, clones, NULL, 0));
 			/* source */
 			(void) lua_pushnil(state);
 		}
@@ -422,16 +421,30 @@ get_special_prop(lua_State *state, dsl_dataset_t *ds, const char *dsname,
 	case ZFS_PROP_INCONSISTENT:
 		numval = dsl_get_inconsistent(ds);
 		break;
-	case ZFS_PROP_RECEIVE_RESUME_TOKEN:
-		VERIFY3U(strlcpy(strval, get_receive_resume_stats_impl(ds),
-		    ZAP_MAXVALUELEN), <, ZAP_MAXVALUELEN);
+	case ZFS_PROP_IVSET_GUID:
+		if (dsl_dataset_is_zapified(ds)) {
+			error = zap_lookup(ds->ds_dir->dd_pool->dp_meta_objset,
+			    ds->ds_object, DS_FIELD_IVSET_GUID,
+			    sizeof (numval), 1, &numval);
+		} else {
+			error = ENOENT;
+		}
+		break;
+	case ZFS_PROP_RECEIVE_RESUME_TOKEN: {
+		char *token = get_receive_resume_stats_impl(ds);
+		VERIFY3U(strlcpy(strval, token, ZAP_MAXVALUELEN), <,
+		    ZAP_MAXVALUELEN);
+		strfree(token);
 		if (strcmp(strval, "") == 0) {
-			VERIFY3U(strlcpy(strval, get_child_receive_stats(ds),
-			    ZAP_MAXVALUELEN), <, ZAP_MAXVALUELEN);
+			token = get_child_receive_stats(ds);
+			VERIFY3U(strlcpy(strval, token, ZAP_MAXVALUELEN), <,
+			    ZAP_MAXVALUELEN);
+			strfree(token);
 			if (strcmp(strval, "") == 0)
 				error = ENOENT;
 		}
 		break;
+	}
 	case ZFS_PROP_VOLSIZE:
 		ASSERT(ds_type == ZFS_TYPE_VOLUME);
 		error = dmu_objset_from_ds(ds, &os);
@@ -787,10 +800,10 @@ static zcp_lib_info_t zcp_get_prop_info = {
 	.pargs = {
 	    { .za_name = "dataset", .za_lua_type = LUA_TSTRING},
 	    { .za_name = "property", .za_lua_type =  LUA_TSTRING},
-	    {NULL, NULL}
+	    {NULL, 0}
 	},
 	.kwargs = {
-	    {NULL, NULL}
+	    {NULL, 0}
 	}
 };
 

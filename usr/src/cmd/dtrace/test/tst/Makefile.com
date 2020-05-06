@@ -23,6 +23,7 @@
 # Copyright 2008 Sun Microsystems, Inc.  All rights reserved.
 # Use is subject to license terms.
 #
+# Copyright (c) 2018, Joyent, Inc.
 
 include $(SRC)/cmd/Makefile.cmd
 
@@ -65,6 +66,9 @@ CERRWARN +=	-_gcc=-Wno-unused-variable
 CERRWARN +=	-_gcc=-Wno-implicit-function-declaration
 CERRWARN +=	-_gcc=-Wno-unused-function
 CERRWARN +=	-_gcc=-Wno-unused-variable
+
+# not linted
+SMATCH=off
 
 all: $(EXES)
 
@@ -109,6 +113,6 @@ scripts: FRC
 	@cd ../cmd/scripts; pwd; $(MAKE) install
 
 dstyle: FRC
-	@if [ -n "$(DSRCS)" ]; then $(DSTYLE) $(DSRCS); fi
+	@if [ -n "$(DSRCS)" ]; then $(PERL) $(DSTYLE) $(DSRCS); fi
 
 FRC:

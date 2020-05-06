@@ -22,7 +22,7 @@
 /*
  * Copyright (c) 2003, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright 2014 Nexenta Systems, Inc. All rights reserved.
- * Copyright 2018 Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  * Copyright (c) 2016 by Delphix. All rights reserved.
  */
 
@@ -378,7 +378,7 @@ filter_bootargs(zlog_t *zlogp, const char *inargs, char *outargs,
 	 * We preserve compatibility with the illumos system boot behavior,
 	 * which allows:
 	 *
-	 * 	# reboot kernel/unix -s -m verbose
+	 *	# reboot kernel/unix -s -m verbose
 	 *
 	 * In this example, kernel/unix tells the booter what file to boot. The
 	 * original intent of this was that we didn't want reboot in a zone to
@@ -552,7 +552,7 @@ notify_zonestatd(zoneid_t zoneid)
 	params.desc_ptr = NULL;
 	params.desc_num = 0;
 	params.rbuf = NULL;
-	params.rsize = NULL;
+	params.rsize = 0;
 	(void) door_call(fd, &params);
 	(void) close(fd);
 }
@@ -1101,7 +1101,7 @@ do_subproc(zlog_t *zlogp, char *cmdbuf, char **retstr, boolean_t debug)
 		 * zoneadmd' to kill this child process before exec().  On
 		 * exec(), SIGHUP and SIGUSR1 will become SIG_DFL.
 		 */
-		sigset(SIGINT, SIG_DFL);
+		(void) sigset(SIGINT, SIG_DFL);
 
 		/*
 		 * Set up a pipe for the child to log to.
@@ -1727,7 +1727,7 @@ server(void *cookie, char *args, size_t alen, door_desc_t *dp,
 	 * it is time for us to shut down zoneadmd.
 	 */
 	if (zargp == DOOR_UNREF_DATA) {
-		logstream_close(platloghdl);
+		logstream_close(platloghdl, B_TRUE);
 
 		/*
 		 * See comment at end of main() for info on the last rites.
@@ -2205,20 +2205,20 @@ setup_door(zlog_t *zlogp)
  * vnodes we could be dealing with.  Our strategy is as follows:
  *
  * - If the file we opened is a regular file (common case):
- * 	There is no fattach(3c)ed door, so we have a chance of becoming
- * 	the managing zoneadmd. We attempt to lock the file: if it is
- * 	already locked, that means someone else raced us here, so we
- * 	lose and give up.  zoneadm(1m) will try to contact the zoneadmd
- * 	that beat us to it.
+ *	There is no fattach(3c)ed door, so we have a chance of becoming
+ *	the managing zoneadmd. We attempt to lock the file: if it is
+ *	already locked, that means someone else raced us here, so we
+ *	lose and give up.  zoneadm(1m) will try to contact the zoneadmd
+ *	that beat us to it.
  *
  * - If the file we opened is a namefs file:
- * 	This means there is already an established door fattach(3c)'ed
- * 	to the rendezvous path.  We've lost the race, so we give up.
- * 	Note that in this case we also try to grab the file lock, and
- * 	will succeed in acquiring it since the vnode locked by the
- * 	"winning" zoneadmd was a regular one, and the one we locked was
- * 	the fattach(3c)'ed door node.  At any rate, no harm is done, and
- * 	we just return to zoneadm(1m) which knows to retry.
+ *	This means there is already an established door fattach(3c)'ed
+ *	to the rendezvous path.  We've lost the race, so we give up.
+ *	Note that in this case we also try to grab the file lock, and
+ *	will succeed in acquiring it since the vnode locked by the
+ *	"winning" zoneadmd was a regular one, and the one we locked was
+ *	the fattach(3c)'ed door node.  At any rate, no harm is done, and
+ *	we just return to zoneadm(1m) which knows to retry.
  */
 static int
 make_daemon_exclusive(zlog_t *zlogp)
@@ -2897,11 +2897,10 @@ main(int argc, char *argv[])
 
 child_out:
 	assert(pid == 0);
-	if (shstate != NULL) {
-		shstate->status = -1;
-		(void) sema_post(&shstate->sem);
-		(void) munmap((char *)shstate, shstatelen);
-	}
+
+	shstate->status = -1;
+	(void) sema_post(&shstate->sem);
+	(void) munmap((char *)shstate, shstatelen);
 
 	/*
 	 * This might trigger an unref notification, but if so,

@@ -21,7 +21,7 @@
 
 /*
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2018, Joyent, Inc.
+ * Copyright (c) 2019, Joyent, Inc.
  */
 /*
  * Copyright (c) 2010, Intel Corporation.
@@ -717,7 +717,7 @@ ntv_getcr4(cmi_hdl_impl_t *hdl)
 	cpu_t *cp = HDLPRIV(hdl);
 	ulong_t val;
 
-	(void) call_func_ntv(cp->cpu_id, ntv_getcr4_xc, (xc_arg_t)&val, NULL);
+	(void) call_func_ntv(cp->cpu_id, ntv_getcr4_xc, (xc_arg_t)&val, 0);
 
 	return (val);
 }
@@ -740,7 +740,7 @@ ntv_setcr4(cmi_hdl_impl_t *hdl, ulong_t val)
 {
 	cpu_t *cp = HDLPRIV(hdl);
 
-	(void) call_func_ntv(cp->cpu_id, ntv_setcr4_xc, (xc_arg_t)val, NULL);
+	(void) call_func_ntv(cp->cpu_id, ntv_setcr4_xc, (xc_arg_t)val, 0);
 }
 
 volatile uint32_t cmi_trapped_rdmsr;
@@ -847,7 +847,7 @@ ntv_int(cmi_hdl_impl_t *hdl, int int_no)
 {
 	cpu_t *cp = HDLPRIV(hdl);
 
-	(void) call_func_ntv(cp->cpu_id, ntv_int_xc, (xc_arg_t)int_no, NULL);
+	(void) call_func_ntv(cp->cpu_id, ntv_int_xc, (xc_arg_t)int_no, 0);
 }
 
 static int
@@ -1005,6 +1005,7 @@ xpv_getsocketstr(cmi_hdl_impl_t *hdl)
 	    xpv_model(hdl), xpv_stepping(hdl)));
 }
 
+/* ARGSUSED */
 static uint_t
 xpv_chipsig(cmi_hdl_impl_t *hdl)
 {
@@ -1236,7 +1237,7 @@ cmi_hdl_ent_lookup(uint_t chipid, uint_t coreid, uint_t strandid)
 	    ((strandid) & CMI_MAX_STRANDID(cmi_strand_nbits))));
 }
 
-extern void cpuid_get_ext_topo(uint_t, uint_t *, uint_t *);
+extern void cpuid_get_ext_topo(cpu_t *, uint_t *, uint_t *);
 
 cmi_hdl_t
 cmi_hdl_create(enum cmi_hdl_class class, uint_t chipid, uint_t coreid,
@@ -1267,9 +1268,17 @@ cmi_hdl_create(enum cmi_hdl_class class, uint_t chipid, uint_t coreid,
 #else
 	vendor = cpuid_getvendor((cpu_t *)priv);
 #endif
-	if (vendor == X86_VENDOR_Intel && cmi_ext_topo_check == 0) {
-		cpuid_get_ext_topo(vendor, &cmi_core_nbits, &cmi_strand_nbits);
-		cmi_ext_topo_check = 1;
+
+	switch (vendor) {
+	case X86_VENDOR_Intel:
+	case X86_VENDOR_AMD:
+		if (cmi_ext_topo_check == 0) {
+			cpuid_get_ext_topo((cpu_t *)priv, &cmi_core_nbits,
+			    &cmi_strand_nbits);
+			cmi_ext_topo_check = 1;
+		}
+	default:
+		break;
 	}
 
 	if (chipid > CMI_MAX_CHIPID ||
@@ -1719,7 +1728,7 @@ cmi_ntv_hwdisable_mce(cmi_hdl_t hdl)
 		cmi_ntv_hwdisable_mce_xc();
 	} else {
 		CPUSET_ONLY(set, cp->cpu_id);
-		xc_call(NULL, NULL, NULL, CPUSET2BV(set),
+		xc_call(0, 0, 0, CPUSET2BV(set),
 		    (xc_func_t)cmi_ntv_hwdisable_mce_xc);
 	}
 }

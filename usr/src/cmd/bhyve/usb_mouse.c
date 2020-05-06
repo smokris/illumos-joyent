@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2014 Leon Dang <ldang@nahannisys.com>
  * All rights reserved.
  *
@@ -220,16 +222,16 @@ struct umouse_bos_desc umouse_bosd = {
 		HSETW(.wTotalLength, sizeof(umouse_bosd)),
 		.bNumDeviceCaps = 1,
 	},
-        .usbssd = {
-                .bLength = sizeof(umouse_bosd.usbssd),
-                .bDescriptorType = UDESC_DEVICE_CAPABILITY,
-                .bDevCapabilityType = 3,
-                .bmAttributes = 0,
-                HSETW(.wSpeedsSupported, 0x08),
-                .bFunctionalitySupport = 3,
-                .bU1DevExitLat = 0xa,   /* dummy - not used */
-                .wU2DevExitLat = { 0x20, 0x00 },
-        }
+	.usbssd = {
+		.bLength = sizeof(umouse_bosd.usbssd),
+		.bDescriptorType = UDESC_DEVICE_CAPABILITY,
+		.bDevCapabilityType = 3,
+		.bmAttributes = 0,
+		HSETW(.wSpeedsSupported, 0x08),
+		.bFunctionalitySupport = 3,
+		.bU1DevExitLat = 0xa,   /* dummy - not used */
+		.wU2DevExitLat = { 0x20, 0x00 },
+	}
 };
 
 
@@ -661,11 +663,18 @@ umouse_request(void *scarg, struct usb_data_xfer *xfer)
 	}
 
 done:
+/* UT_WRITE is 0, so this is condition is never true. */
+#ifdef __FreeBSD__
 	if (xfer->ureq && (xfer->ureq->bmRequestType & UT_WRITE) &&
 	    (err == USB_ERR_NORMAL_COMPLETION) && (data != NULL))
 		data->blen = 0;
 	else if (eshort)
 		err = USB_ERR_SHORT_XFER;
+#else
+	if (eshort)
+		err = USB_ERR_SHORT_XFER;
+#endif
+
 
 	DPRINTF(("umouse request error code %d (0=ok), blen %u txlen %u\r\n",
 	        err, (data ? data->blen : 0), (data ? data->bdone : 0)));

@@ -1,22 +1,30 @@
 The bhyve kernel module and its associated userland consumers have been updated
 to the latest upstream FreeBSD sources as of:
 
-commit 0fac2150fc0f1befa5803ca010ed63a6335847ad
-Author: grehan <grehan@FreeBSD.org>
-Date:   Fri May 4 01:36:49 2018 +0000
+commit 37e8a0e0058c226e6bd0ed5c3a07ee15b1146122
+Author: mav <mav@FreeBSD.org>
+Date:   Mon Sep 23 17:53:47 2019 +0000
 
-    Allow arbitrary numbers of columns for VNC server screen resolution.
+    Make nvme(4) driver some more NUMA aware.
 
-    The prior code only allowed multiples of 32 for the
-    numbers of columns. Remove this restriction to allow
-    a forthcoming UEFI firmware update to allow arbitrary
-    x,y resolutions.
+     - For each queue pair precalculate CPU and domain it is bound to.
+    If queue pairs are not per-CPU, then use the domain of the device.
+     - Allocate most of queue pair memory from the domain it is bound to.
+     - Bind callouts to the same CPUs as queue pair to avoid migrations.
+     - Do not assign queue pairs to each SMT thread.  It just wasted
+    resources and increased lock congestions.
+     - Remove fixed multiplier of CPUs per queue pair, spread them even.
+    This allows to use more queue pairs in some hardware configurations.
+     - If queue pair serves multiple CPUs, bind different NVMe devices to
+    different CPUs.
 
-    (the code for handling rows already supported non mult-32 values)
+    MFC after:      1 month
+    Sponsored by:   iXsystems, Inc.
 
-    Reviewed by:    Leon Dang (original author)
-    MFC after:      3 weeks
-    Differential Revision:  https://reviews.freebsd.org/D15274
+Which corresponds to SVN revision: 352630
 
 
-Which corresponds to SVN revision: 333235
+NOTE:
+This sync ignores commit c8edafdabc27533d9c51eddc2896e772c16d965c.
+There are big changes to the virtio net devices that we haven't synced up yet
+because SmartOS relies heavily on viona instead.

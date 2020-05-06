@@ -23,7 +23,7 @@
 #
 
 #
-# Copyright (c) 2015, Joyent, Inc.  All rights reserved.
+# Copyright 2019 Joyent, Inc.
 #
 
 #
@@ -58,8 +58,8 @@ SYMBOL_VERSION SUNWprivate_1.2 {
 	ctf_add_integer;
 	ctf_add_label;
 	ctf_add_member;
-	ctf_add_pointer;
 	ctf_add_object;
+	ctf_add_pointer;
 	ctf_add_restrict;
 	ctf_add_struct;
 	ctf_add_type;
@@ -69,10 +69,10 @@ SYMBOL_VERSION SUNWprivate_1.2 {
 	ctf_create;
 	ctf_dataptr;
 	ctf_delete_type;
-	ctf_diff_init;
 	ctf_diff_fini;
 	ctf_diff_functions;
 	ctf_diff_getflags;
+	ctf_diff_init;
 	ctf_diff_objects;
 	ctf_diff_setflags;
 	ctf_diff_types;
@@ -87,10 +87,12 @@ SYMBOL_VERSION SUNWprivate_1.2 {
 	ctf_func_args_by_id;
 	ctf_func_info_by_id;
 	ctf_function_iter;
+	ctf_has_c_source;
 	ctf_kind_name;
 	ctf_label_info;
 	ctf_label_iter;
 	ctf_label_topmost;
+	ctf_max_id;
 	ctf_member_info;
 	ctf_merge_add;
 	ctf_merge_dedup;
@@ -100,6 +102,7 @@ SYMBOL_VERSION SUNWprivate_1.2 {
 	ctf_merge_merge;
 	ctf_merge_set_nthreads;
 	ctf_merge_uniquify;
+	ctf_nr_syms;
 	ctf_object_iter;
 	ctf_parent_file;
 	ctf_parent_label;
@@ -111,6 +114,7 @@ SYMBOL_VERSION SUNWprivate_1.2 {
 	ctf_symbol_name;
 	ctf_type_align;
 	ctf_type_cmp;
+	ctf_type_cname;
 	ctf_type_compat;
 	ctf_type_pointer;
 	ctf_update;

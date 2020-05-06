@@ -9,8 +9,8 @@
  * Author:
  *		Arun Chandrashekhar
  *		Manju R
- *        	Rajesh Prabhakaran
- *        	Seokmann Ju
+ *		Rajesh Prabhakaran
+ *		Seokmann Ju
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -43,6 +43,10 @@
 /*
  * Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ */
+
+/*
+ * Copyright 2019 Joyent, Inc.
  */
 
 #include <sys/types.h>
@@ -80,7 +84,7 @@
  * Local static data
  */
 static void	*drsas_state = NULL;
-static int 	debug_level_g = CL_NONE;
+static int	debug_level_g = CL_NONE;
 
 #pragma weak scsi_hba_open
 #pragma weak scsi_hba_close
@@ -251,7 +255,7 @@ drsas_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	uint8_t		create_scsi_node_f = 0;
 	uint8_t		create_ioc_node_f = 0;
 	uint8_t		tran_alloc_f = 0;
-	uint8_t 	irq;
+	uint8_t		irq;
 	uint16_t	vendor_id;
 	uint16_t	device_id;
 	uint16_t	subsysvid;
@@ -1067,7 +1071,7 @@ drsas_reset(dev_info_t *dip, ddi_reset_cmd_t cmd)
 /*ARGSUSED*/
 static int
 drsas_tran_tgt_init(dev_info_t *hba_dip, dev_info_t *tgt_dip,
-		scsi_hba_tran_t *tran, struct scsi_device *sd)
+    scsi_hba_tran_t *tran, struct scsi_device *sd)
 {
 	struct drsas_instance *instance;
 	uint16_t tgt = sd->sd_address.a_target;
@@ -1171,8 +1175,8 @@ drsas_name_node(dev_info_t *dip, char *name, int len)
 
 static struct scsi_pkt *
 drsas_tran_init_pkt(struct scsi_address *ap, register struct scsi_pkt *pkt,
-	struct buf *bp, int cmdlen, int statuslen, int tgtlen,
-	int flags, int (*callback)(), caddr_t arg)
+    struct buf *bp, int cmdlen, int statuslen, int tgtlen,
+    int flags, int (*callback)(), caddr_t arg)
 {
 	struct scsa_cmd	*acmd;
 	struct drsas_instance	*instance;
@@ -1243,7 +1247,7 @@ drsas_tran_init_pkt(struct scsi_address *ap, register struct scsi_pkt *pkt,
 static int
 drsas_tran_start(struct scsi_address *ap, register struct scsi_pkt *pkt)
 {
-	uchar_t 	cmd_done = 0;
+	uchar_t cmd_done = 0;
 
 	struct drsas_instance	*instance = ADDR2MR(ap);
 	struct drsas_cmd	*cmd;
@@ -1295,7 +1299,8 @@ drsas_tran_start(struct scsi_address *ap, register struct scsi_pkt *pkt)
 
 		cmd->sync_cmd = DRSAS_TRUE;
 
-		instance->func_ptr-> issue_cmd_in_poll_mode(instance, cmd);
+		(void) instance->func_ptr->
+		    issue_cmd_in_poll_mode(instance, cmd);
 
 		pkt->pkt_reason		= CMD_CMPLT;
 		pkt->pkt_statistics	= 0;
@@ -1639,7 +1644,7 @@ drsas_isr(struct drsas_instance *instance)
 static struct drsas_cmd *
 get_mfi_pkt(struct drsas_instance *instance)
 {
-	mlist_t 		*head = &instance->cmd_pool_list;
+	mlist_t			*head = &instance->cmd_pool_list;
 	struct drsas_cmd	*cmd = NULL;
 
 	mutex_enter(&instance->cmd_pool_mtx);
@@ -2580,7 +2585,7 @@ service_mfi_aen(struct drsas_instance *instance, struct drsas_cmd *cmd)
 		for (tgt = 0; tgt < MRDRV_MAX_LD; tgt++) {
 			if (instance->dr_ld_list[tgt].dip != NULL) {
 				rval = drsas_service_evt(instance, tgt, 0,
-				    DRSAS_EVT_UNCONFIG_TGT, NULL);
+				    DRSAS_EVT_UNCONFIG_TGT);
 				con_log(CL_ANN1, (CE_WARN,
 				    "dr_sas: CFG CLEARED AEN rval = %d "
 				    "tgt id = %d", rval, tgt));
@@ -2592,7 +2597,7 @@ service_mfi_aen(struct drsas_instance *instance, struct drsas_cmd *cmd)
 	case DR_EVT_LD_DELETED: {
 		rval = drsas_service_evt(instance,
 		    ddi_get16(acc_handle, &evt_detail->args.ld.target_id), 0,
-		    DRSAS_EVT_UNCONFIG_TGT, NULL);
+		    DRSAS_EVT_UNCONFIG_TGT);
 		con_log(CL_ANN1, (CE_WARN, "dr_sas: LD DELETED AEN rval = %d "
 		    "tgt id = %d index = %d", rval,
 		    ddi_get16(acc_handle, &evt_detail->args.ld.target_id),
@@ -2603,7 +2608,7 @@ service_mfi_aen(struct drsas_instance *instance, struct drsas_cmd *cmd)
 	case DR_EVT_LD_CREATED: {
 		rval = drsas_service_evt(instance,
 		    ddi_get16(acc_handle, &evt_detail->args.ld.target_id), 0,
-		    DRSAS_EVT_CONFIG_TGT, NULL);
+		    DRSAS_EVT_CONFIG_TGT);
 		con_log(CL_ANN1, (CE_WARN, "dr_sas: LD CREATED AEN rval = %d "
 		    "tgt id = %d index = %d", rval,
 		    ddi_get16(acc_handle, &evt_detail->args.ld.target_id),
@@ -3271,13 +3276,13 @@ build_cmd(struct drsas_instance *instance, struct scsi_address *ap,
 {
 	uint16_t	flags = 0;
 	uint32_t	i;
-	uint32_t 	context;
+	uint32_t	context __unused;
 	uint32_t	sge_bytes;
 	ddi_acc_handle_t acc_handle;
 	struct drsas_cmd		*cmd;
 	struct drsas_sge64		*mfi_sgl;
 	struct scsa_cmd			*acmd = PKT2CMD(pkt);
-	struct drsas_pthru_frame 	*pthru;
+	struct drsas_pthru_frame	*pthru;
 	struct drsas_io_frame		*ldio;
 
 	/* find out if this is logical or physical drive command.  */
@@ -3326,7 +3331,7 @@ build_cmd(struct drsas_instance *instance, struct scsi_address *ap,
 
 	/*
 	 * case SCMD_SYNCHRONIZE_CACHE:
-	 * 	flush_cache(instance);
+	 *	flush_cache(instance);
 	 *	return_mfi_pkt(instance, cmd);
 	 *	*cmd_done = 1;
 	 *
@@ -3423,7 +3428,7 @@ build_cmd(struct drsas_instance *instance, struct scsi_address *ap,
 
 			break;
 		}
-		/* fall through For all non-rd/wr cmds */
+		/* fall through */
 	default:
 
 		switch (pkt->pkt_cdbp[0]) {
@@ -3437,7 +3442,7 @@ build_cmd(struct drsas_instance *instance, struct scsi_address *ap,
 			switch (page_code) {
 			case 0x3:
 			case 0x4:
-				(void) drsas_mode_sense_build(pkt);
+				drsas_mode_sense_build(pkt);
 				return_mfi_pkt(instance, cmd);
 				*cmd_done = 1;
 				return (NULL);
@@ -4520,6 +4525,7 @@ display_scsi_inquiry(caddr_t scsi_inq)
 #define	MAX_SCSI_DEVICE_CODE	14
 	int		i;
 	char		inquiry_buf[256] = {0};
+	int		bufsize = sizeof (inquiry_buf);
 	int		len;
 	const char	*const scsi_device_types[] = {
 		"Direct-Access    ",
@@ -4540,44 +4546,44 @@ display_scsi_inquiry(caddr_t scsi_inq)
 
 	len = 0;
 
-	len += snprintf(inquiry_buf + len, 265 - len, "  Vendor: ");
+	len += snprintf(inquiry_buf + len, bufsize - len, "  Vendor: ");
 	for (i = 8; i < 16; i++) {
-		len += snprintf(inquiry_buf + len, 265 - len, "%c",
+		len += snprintf(inquiry_buf + len, bufsize - len, "%c",
 		    scsi_inq[i]);
 	}
 
-	len += snprintf(inquiry_buf + len, 265 - len, "  Model: ");
+	len += snprintf(inquiry_buf + len, bufsize - len, "  Model: ");
 
 	for (i = 16; i < 32; i++) {
-		len += snprintf(inquiry_buf + len, 265 - len, "%c",
+		len += snprintf(inquiry_buf + len, bufsize - len, "%c",
 		    scsi_inq[i]);
 	}
 
-	len += snprintf(inquiry_buf + len, 265 - len, "  Rev: ");
+	len += snprintf(inquiry_buf + len, bufsize - len, "  Rev: ");
 
 	for (i = 32; i < 36; i++) {
-		len += snprintf(inquiry_buf + len, 265 - len, "%c",
+		len += snprintf(inquiry_buf + len, bufsize - len, "%c",
 		    scsi_inq[i]);
 	}
 
-	len += snprintf(inquiry_buf + len, 265 - len, "\n");
+	len += snprintf(inquiry_buf + len, bufsize - len, "\n");
 
 
 	i = scsi_inq[0] & 0x1f;
 
 
-	len += snprintf(inquiry_buf + len, 265 - len, "  Type:   %s ",
+	len += snprintf(inquiry_buf + len, bufsize - len, "  Type:   %s ",
 	    i < MAX_SCSI_DEVICE_CODE ? scsi_device_types[i] :
 	    "Unknown          ");
 
 
-	len += snprintf(inquiry_buf + len, 265 - len,
+	len += snprintf(inquiry_buf + len, bufsize - len,
 	    "                 ANSI SCSI revision: %02x", scsi_inq[2] & 0x07);
 
 	if ((scsi_inq[2] & 0x07) == 1 && (scsi_inq[3] & 0x0f) == 1) {
-		len += snprintf(inquiry_buf + len, 265 - len, " CCS\n");
+		len += snprintf(inquiry_buf + len, bufsize - len, " CCS\n");
 	} else {
-		len += snprintf(inquiry_buf + len, 265 - len, "\n");
+		len += snprintf(inquiry_buf + len, bufsize - len, "\n");
 	}
 
 	con_log(CL_ANN1, (CE_CONT, inquiry_buf));
@@ -4651,7 +4657,7 @@ issue_cmd_in_poll_mode_ppc(struct drsas_instance *instance,
 	ddi_put8(cmd->frame_dma_obj.acc_handle, &frame_hdr->cmd_status,
 	    MFI_CMD_STATUS_POLL_MODE);
 	flags = ddi_get16(cmd->frame_dma_obj.acc_handle, &frame_hdr->flags);
-	flags 	|= MFI_FRAME_DONT_POST_IN_REPLY_QUEUE;
+	flags |= MFI_FRAME_DONT_POST_IN_REPLY_QUEUE;
 
 	ddi_put16(cmd->frame_dma_obj.acc_handle, &frame_hdr->flags, flags);
 
@@ -4699,7 +4705,7 @@ enable_intr_ppc(struct drsas_instance *instance)
 static void
 disable_intr_ppc(struct drsas_instance *instance)
 {
-	uint32_t	mask;
+	uint32_t	mask __unused;
 
 	con_log(CL_ANN1, (CE_NOTE, "disable_intr_ppc: called"));
 
@@ -5210,13 +5216,13 @@ drsas_parse_devname(char *devnm, int *tgt, int *lun)
 		if (ddi_strtol(tp, NULL, 0x10, &num)) {
 			return (DDI_FAILURE); /* Can declare this as constant */
 		}
-			*tgt = (int)num;
+		*tgt = (int)num;
 	}
 	if (lun && lp) {
 		if (ddi_strtol(lp, NULL, 0x10, &num)) {
 			return (DDI_FAILURE);
 		}
-			*lun = (int)num;
+		*lun = (int)num;
 	}
 	return (DDI_SUCCESS);  /* Success case */
 }
@@ -5346,10 +5352,8 @@ finish:
 	return (rval);
 }
 
-/*ARGSUSED*/
 static int
-drsas_service_evt(struct drsas_instance *instance, int tgt, int lun, int event,
-    uint64_t wwn)
+drsas_service_evt(struct drsas_instance *instance, int tgt, int lun, int event)
 {
 	struct drsas_eventinfo *mrevt = NULL;
 
@@ -5448,11 +5452,11 @@ drsas_issue_evt_taskq(struct drsas_eventinfo *mrevt)
 	ndi_devi_exit(instance->dip, circ1);
 }
 
-static int
+static void
 drsas_mode_sense_build(struct scsi_pkt *pkt)
 {
 	union scsi_cdb		*cdbp;
-	uint16_t 		page_code;
+	uint16_t		page_code;
 	struct scsa_cmd		*acmd;
 	struct buf		*bp;
 	struct mode_header	*modehdrp;
@@ -5464,7 +5468,7 @@ drsas_mode_sense_build(struct scsi_pkt *pkt)
 	if ((!bp) && bp->b_un.b_addr && bp->b_bcount && acmd->cmd_dmacount) {
 		con_log(CL_ANN1, (CE_WARN, "Failing MODESENSE Command"));
 		/* ADD pkt statistics as Command failed. */
-		return (NULL);
+		return;
 	}
 
 	bp_mapin(bp);
@@ -5502,5 +5506,4 @@ drsas_mode_sense_build(struct scsi_pkt *pkt)
 		default:
 			break;
 	}
-	return (NULL);
 }

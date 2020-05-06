@@ -24,7 +24,7 @@
  * Use is subject to license terms.
  */
 /*
- * Copyright (c) 2015, Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 /*
@@ -116,7 +116,7 @@ enum {
 	ECTF_ZLIB,		/* zlib library failure */
 	ECTF_CONVBKERR,		/* CTF conversion backend error */
 	ECTF_CONVNOCSRC,	/* No C source to convert from */
-	ECTF_NOCONVBKEND	/* No applicable conversion backend */
+	ECTF_CONVNODEBUG	/* No debug info to convert into CTF */
 };
 
 /*
@@ -233,6 +233,9 @@ extern uint_t ctf_flags(ctf_file_t *);
 extern const char *ctf_errmsg(int);
 extern int ctf_version(int);
 
+extern ctf_id_t ctf_max_id(ctf_file_t *);
+extern ulong_t ctf_nr_syms(ctf_file_t *);
+
 extern int ctf_func_info(ctf_file_t *, ulong_t, ctf_funcinfo_t *);
 extern int ctf_func_info_by_id(ctf_file_t *, ctf_id_t, ctf_funcinfo_t *);
 extern int ctf_func_args(ctf_file_t *, ulong_t, uint_t, ctf_id_t *);
@@ -247,6 +250,8 @@ extern ctf_id_t ctf_type_resolve(ctf_file_t *, ctf_id_t);
 extern ssize_t ctf_type_lname(ctf_file_t *, ctf_id_t, char *, size_t);
 extern char *ctf_type_name(ctf_file_t *, ctf_id_t, char *, size_t);
 extern char *ctf_type_qname(ctf_file_t *, ctf_id_t, char *, size_t,
+    const char *);
+extern char *ctf_type_cname(ctf_file_t *, ctf_id_t, char *, size_t,
     const char *);
 extern ssize_t ctf_type_size(ctf_file_t *, ctf_id_t);
 extern ssize_t ctf_type_align(ctf_file_t *, ctf_id_t);
@@ -279,7 +284,7 @@ extern int ctf_string_iter(ctf_file_t *, ctf_string_f *, void *);
 
 extern ctf_id_t ctf_add_array(ctf_file_t *, uint_t, const ctf_arinfo_t *);
 extern ctf_id_t ctf_add_const(ctf_file_t *, uint_t, const char *, ctf_id_t);
-extern ctf_id_t ctf_add_enum(ctf_file_t *, uint_t, const char *);
+extern ctf_id_t ctf_add_enum(ctf_file_t *, uint_t, const char *, size_t);
 extern ctf_id_t ctf_add_float(ctf_file_t *, uint_t,
     const char *, const ctf_encoding_t *);
 extern ctf_id_t ctf_add_forward(ctf_file_t *, uint_t, const char *, uint_t);

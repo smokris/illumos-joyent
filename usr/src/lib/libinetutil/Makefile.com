@@ -22,9 +22,10 @@
 # Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
 # Use is subject to license terms.
 #
+# Copyright (c) 2018, Joyent, Inc.
 
 LIBRARY = libinetutil.a
-VERS = 	  .1
+VERS =	  .1
 OBJECTS = octet.o inetutil.o ifspec.o ifaddrlist.o ifaddrlistx.o eh.o tq.o
 
 include ../../Makefile.lib
@@ -32,15 +33,14 @@ include ../../Makefile.lib
 # install this library in the root filesystem
 include ../../Makefile.rootfs
 
-LIBS =		$(DYNLIB) $(LINTLIB)
+LIBS =		$(DYNLIB)
 
 SRCDIR =	../common
 COMDIR =	$(SRC)/common/net/dhcp
-SRCS = 		$(COMDIR)/octet.c $(SRCDIR)/inetutil.c \
+SRCS =		$(COMDIR)/octet.c $(SRCDIR)/inetutil.c \
 		$(SRCDIR)/ifspec.c $(SRCDIR)/eh.c $(SRCDIR)/tq.c \
 		$(SRCDIR)/ifaddrlist.c $(SRCDIR)/ifaddrlistx.c
 
-$(LINTLIB):=	SRCS = $(SRCDIR)/$(LINTSRC)
 LDLIBS +=	-lsocket -lc
 
 CFLAGS +=	$(CCVERBOSE)
@@ -48,11 +48,12 @@ CPPFLAGS +=	-I$(SRCDIR)
 
 CERRWARN +=	-_gcc=-Wno-parentheses
 
+SMOFF += index_overflow
+
 .KEEP_STATE:
 
 all: $(LIBS)
 
-lint: lintcheck
 
 pics/%.o: $(COMDIR)/%.c
 	$(COMPILE.c) -o $@ $<

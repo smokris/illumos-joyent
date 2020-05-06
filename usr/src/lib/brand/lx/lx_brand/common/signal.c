@@ -25,7 +25,7 @@
  */
 
 /*
- * Copyright 2018 Joyent, Inc. All rights reserved.
+ * Copyright 2019 Joyent, Inc.
  */
 
 #include <sys/types.h>
@@ -617,7 +617,7 @@ lx_sigaltstack(uintptr_t ssp, uintptr_t oss)
 	lx_tsd_t *lxtsd = lx_get_tsd();
 	lx_stack_t ss;
 
-	if (ssp != NULL) {
+	if (ssp != (uintptr_t)NULL) {
 		if (lxtsd->lxtsd_sigaltstack.ss_flags & LX_SS_ONSTACK) {
 			/*
 			 * If we are currently using the installed alternate
@@ -650,7 +650,7 @@ lx_sigaltstack(uintptr_t ssp, uintptr_t oss)
 		}
 	}
 
-	if (oss != NULL) {
+	if (oss != (uintptr_t)NULL) {
 		/*
 		 * User provided old and new stack_t pointers may point to
 		 * the same location.  Copy out before we modify.
@@ -661,7 +661,7 @@ lx_sigaltstack(uintptr_t ssp, uintptr_t oss)
 		}
 	}
 
-	if (ssp != NULL) {
+	if (ssp != (uintptr_t)NULL) {
 		lxtsd->lxtsd_sigaltstack = ss;
 	}
 
@@ -891,7 +891,7 @@ lx_rt_sigtimedwait(uintptr_t set, uintptr_t sinfo, uintptr_t toutp,
 	 */
 	if ((rc = sigtimedwait(&s_set, s_sinfop,
 	    (struct timespec *)toutp)) == -1)
-		return (toutp == NULL ? -EINTR : -errno);
+		return (toutp == (uintptr_t)NULL ? -EINTR : -errno);
 
 	if (s_sinfop == NULL)
 		return (stol_signo[rc]);
@@ -1331,7 +1331,7 @@ lx_build_signal_frame(int lx_sig, siginfo_t *sip, void *p, void *sp,
 	 *   hdlr(int sig, siginfo_t *sip, void *ucp);
 	 */
 	hargs[0] = lx_sig;
-	hargs[1] = sip != NULL ? (uintptr_t)&lx_ssp->si : NULL;
+	hargs[1] = sip != NULL ? (uintptr_t)&lx_ssp->si : (uintptr_t)NULL;
 	hargs[2] = (uintptr_t)lx_ucp;
 #endif
 
@@ -1450,7 +1450,7 @@ lx_call_user_handler(int sig, siginfo_t *sip, void *p)
 {
 	void (*user_handler)();
 	void (*stk_builder)();
-	struct lx_sigaction *lxsap;
+	volatile struct lx_sigaction *lxsap;
 	ucontext_t *ucp = (ucontext_t *)p;
 	size_t stksize;
 	int lx_sig;
@@ -1480,9 +1480,30 @@ lx_call_user_handler(int sig, siginfo_t *sip, void *p)
 		assert(0);
 	}
 
-	if (lxsap->lxsa_handler == SIG_DFL || lxsap->lxsa_handler == SIG_IGN)
+	while (lxsap->lxsa_handler == SIG_DFL ||
+	    lxsap->lxsa_handler == SIG_IGN) {
+		/*
+		 * This normally shouldn't be possible, but there is a window
+		 * in which a vfork()'d process can have its signal disposition
+		 * corrupted by its child.  While this window is narrowed by
+		 * blocking all signals in the brand, that leaves a (smaller)
+		 * window whereby a signal in flight is delivered before the
+		 * brand has blocked them.  To detect this case, we will spin
+		 * if our signal disposition is impossible and all signals are
+		 * blocked due to vfork() activity:  we know that the vfork()'d
+		 * child will eventually restore the signal disposition before
+		 * it unblocks signals, allowing us to proceed.
+		 */
+		if (lx_all_signals_blocked())
+			continue;
+
+		if (lxsap->lxsa_handler != SIG_DFL &&
+		    lxsap->lxsa_handler != SIG_IGN)
+			break;
+
 		lx_err_fatal("lxsa_handler set to %s?  How?!?!?",
 		    (lxsap->lxsa_handler == SIG_DFL) ? "SIG_DFL" : "SIG_IGN");
+	}
 
 #if defined(_LP64)
 	stksize = sizeof (struct lx_sigstack);
@@ -1506,7 +1527,7 @@ lx_call_user_handler(int sig, siginfo_t *sip, void *p)
 		lxsap->lxsa_handler = SIG_DFL;
 
 	lx_sigdeliver(lx_sig, sip, ucp, stksize, stk_builder, user_handler,
-	    lxsap);
+	    (struct lx_sigaction *)lxsap);
 
 	/*
 	 * We need to handle restarting system calls if requested by the
@@ -2389,4 +2410,10 @@ void
 lx_unblock_all_signals()
 {
 	(void) syscall(SYS_brand, B_UNBLOCK_ALL_SIGS);
+}
+
+int
+lx_all_signals_blocked()
+{
+	return (syscall(SYS_brand, B_ALL_SIGS_BLOCKED));
 }

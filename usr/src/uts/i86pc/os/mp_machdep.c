@@ -117,10 +117,10 @@ void (*psm_notifyf)(int)	= (void (*)(int))return_instr;
 void (*psm_set_idle_cpuf)(int)	= (void (*)(int))return_instr;
 void (*psm_unset_idle_cpuf)(int) = (void (*)(int))return_instr;
 void (*psminitf)()		= mach_init;
-void (*picinitf)() 		= return_instr;
-int (*clkinitf)(int, int *) 	= (int (*)(int, int *))return_instr;
-int (*ap_mlsetup)() 		= (int (*)(void))return_instr;
-void (*send_dirintf)() 		= return_instr;
+void (*picinitf)()		= return_instr;
+int (*clkinitf)(int, int *)	= (int (*)(int, int *))return_instr;
+int (*ap_mlsetup)()		= (int (*)(void))return_instr;
+void (*send_dirintf)()		= return_instr;
 void (*setspl)(int)		= (void (*)(int))return_instr;
 int (*addspl)(int, int, int, int) = (int (*)(int, int, int, int))return_instr;
 int (*delspl)(int, int, int, int) = (int (*)(int, int, int, int))return_instr;
@@ -349,6 +349,9 @@ pg_plat_hw_rank(pghw_type_t hw1, pghw_type_t hw2)
 		PGHW_POW_ACTIVE,
 		PGHW_NUM_COMPONENTS
 	};
+
+	rank1 = 0;
+	rank2 = 0;
 
 	for (i = 0; hw_hier[i] != PGHW_NUM_COMPONENTS; i++) {
 		if (hw_hier[i] == hw1)
@@ -1134,6 +1137,14 @@ mach_smpinit(void)
 	if (pops->psm_enable_intr)
 		psm_enable_intr  = pops->psm_enable_intr;
 
+	/*
+	 * Set this vector so it can be used by vmbus (for Hyper-V)
+	 * Need this even for single-CPU systems.  This works for
+	 * "pcplusmp" and "apix" platforms, but not "uppc" (because
+	 * "Uni-processor PC" does not provide a _get_ipivect).
+	 */
+	psm_get_ipivect = pops->psm_get_ipivect;
+
 	/* check for multiple CPUs */
 	if (cnt < 2 && plat_dr_support_cpu() == B_FALSE)
 		return;
@@ -1156,7 +1167,6 @@ mach_smpinit(void)
 #endif
 	}
 
-	psm_get_ipivect = pops->psm_get_ipivect;
 	psm_get_pir_ipivect = pops->psm_get_pir_ipivect;
 	psm_send_pir_ipi = pops->psm_send_pir_ipi;
 	psm_cmci_setup = pops->psm_cmci_setup;
@@ -1313,9 +1323,9 @@ static int x86_cpu_freq[] = { 60, 75, 80, 90, 120, 160, 166, 175, 180, 233 };
  * is most likely printed on the part.
  *
  * Some examples:
- * 	AMD Athlon 1000 mhz measured as 998 mhz
- * 	Intel Pentium III Xeon 733 mhz measured as 731 mhz
- * 	Intel Pentium IV 1500 mhz measured as 1495mhz
+ *	AMD Athlon 1000 mhz measured as 998 mhz
+ *	Intel Pentium III Xeon 733 mhz measured as 731 mhz
+ *	Intel Pentium IV 1500 mhz measured as 1495mhz
  *
  * If in the future this function is no longer sufficient to correct
  * for the error in the measurement, then the algorithm used to perform

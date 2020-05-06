@@ -20,7 +20,8 @@
  */
 /*
  * Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright 2016 Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
+ * Copyright 2019 Western Digital Corporation
  */
 
 #include <sys/types.h>
@@ -189,8 +190,6 @@ int		pua_cache_valid = 0;
 static ACPI_STATUS
 pci_process_acpi_device(ACPI_HANDLE hdl, UINT32 level, void *ctx, void **rv)
 {
-	ACPI_BUFFER	rb;
-	ACPI_OBJECT	ro;
 	ACPI_DEVICE_INFO *adi;
 	int		busnum;
 
@@ -218,18 +217,12 @@ pci_process_acpi_device(ACPI_HANDLE hdl, UINT32 level, void *ctx, void **rv)
 	AcpiOsFree(adi);
 
 	/*
-	 * XXX: ancient Big Bear broken _BBN will result in two
-	 * bus 0 _BBNs being found, so we need to handle duplicate
-	 * bus 0 gracefully.  However, broken _BBN does not
-	 * hide a childless root-bridge so no need to work-around it
-	 * here
+	 * acpica_get_busno() will check the presence of _BBN and
+	 * fail if not present. It will then use the _CRS method to
+	 * retrieve the actual bus number assigned, it will fall back
+	 * to _BBN should the _CRS method fail.
 	 */
-	rb.Pointer = &ro;
-	rb.Length = sizeof (ro);
-	if (ACPI_SUCCESS(AcpiEvaluateObjectTyped(hdl, "_BBN",
-	    NULL, &rb, ACPI_TYPE_INTEGER))) {
-		busnum = ro.Integer.Value;
-
+	if (ACPI_SUCCESS(acpica_get_busno(hdl, &busnum))) {
 		/*
 		 * Ignore invalid _BBN return values here (rather
 		 * than panic) and emit a warning; something else
@@ -881,9 +874,9 @@ list_is_vga_only(struct memlist *l, enum io_mem io)
 /*
  * Assign valid resources to unconfigured pci(e) bridges. We are trying
  * to reprogram the bridge when its
- * 		i)   SECBUS == SUBBUS	||
- * 		ii)  IOBASE > IOLIM	||
- * 		iii) MEMBASE > MEMLIM
+ *		i)   SECBUS == SUBBUS	||
+ *		ii)  IOBASE > IOLIM	||
+ *		iii) MEMBASE > MEMLIM
  * This must be done after one full pass through the PCI tree to collect
  * all BIOS-configured resources, so that we know what resources are
  * free and available to assign to the unconfigured PPBs.
@@ -965,7 +958,7 @@ fix_ppb_res(uchar_t secbus, boolean_t prog_sub)
 		for (; range != 0; range--) {
 			if (memlist_find_with_startaddr(
 			    &pci_bus_res[parbus].bus_avail,
-			    subbus + 1, range, 1) != NULL)
+			    subbus + 1, range, 1) != 0)
 				break; /* find bus range resource at parent */
 		}
 		if (range != 0) {
@@ -1364,11 +1357,11 @@ pci_reprogram(void)
 		 * 3. Exclude <1M address range here in case below reserved
 		 * ranges for BIOS data area, ROM area etc are wrongly reported
 		 * in ACPI resource producer entries for PCI root bus.
-		 * 	00000000 - 000003FF	RAM
-		 * 	00000400 - 000004FF	BIOS data area
-		 * 	00000500 - 0009FFFF	RAM
-		 * 	000A0000 - 000BFFFF	VGA RAM
-		 * 	000C0000 - 000FFFFF	ROM area
+		 *	00000000 - 000003FF	RAM
+		 *	00000400 - 000004FF	BIOS data area
+		 *	00000500 - 0009FFFF	RAM
+		 *	000A0000 - 000BFFFF	VGA RAM
+		 *	000C0000 - 000FFFFF	ROM area
 		 */
 		(void) memlist_remove(&pci_bus_res[bus].mem_avail, 0, 0x100000);
 		(void) memlist_remove(&pci_bus_res[bus].pmem_avail,
@@ -2172,30 +2165,52 @@ subsys_compat_exclude(ushort_t venid, ushort_t devid, ushort_t subvenid,
 	if ((venid == 0x10de) && (is_display(classcode)))
 		return (B_TRUE);
 
+	/*
+	 * 8086,166 is the Ivy Bridge built-in graphics controller on some
+	 * models. Unfortunately 8086,2044 is the Skylake Server processor
+	 * memory channel device. The Ivy Bridge device uses the Skylake
+	 * ID as its sub-device ID. The GPU is not a memory controller DIMM
+	 * channel.
+	 */
+	if (venid == 0x8086 && devid == 0x166 && subvenid == 0x8086 &&
+	    subdevid == 0x2044) {
+		return (B_TRUE);
+	}
+
 	return (B_FALSE);
 }
 
 /*
- * Set the compatible property to a value compliant with
- * rev 2.1 of the IEEE1275 PCI binding.
- * (Also used for PCI-Express devices).
+ * Set the compatible property to a value compliant with rev 2.1 of the IEEE1275
+ * PCI binding. This is also used for PCI express devices and we have our own
+ * minor additions.
  *
  *   pciVVVV,DDDD.SSSS.ssss.RR	(0)
  *   pciVVVV,DDDD.SSSS.ssss	(1)
+ *   pciSSSS,ssss,s		(2+)
  *   pciSSSS,ssss		(2)
  *   pciVVVV,DDDD.RR		(3)
+ *   pciVVVV,DDDD,p		(4+)
  *   pciVVVV,DDDD		(4)
  *   pciclass,CCSSPP		(5)
  *   pciclass,CCSS		(6)
  *
- * The Subsystem (SSSS) forms are not inserted if
- * subsystem-vendor-id is 0.
+ * The Subsystem (SSSS) forms are not inserted if subsystem-vendor-id is 0 or if
+ * it is a case where we know that the IDs overlap.
  *
- * NOTE: For PCI-Express devices "pci" is replaced with "pciex" in 0-6 above
- * property 2 is not created as per "1275 bindings for PCI Express Interconnect"
+ * NOTE: For PCI-Express devices "pci" is replaced with "pciex" in 0-6 above and
+ * property 2 is not created as per "1275 bindings for PCI Express
+ * Interconnect".
  *
- * Set with setprop and \x00 between each
- * to generate the encoded string array form.
+ * Unlike on SPARC, we generate both the "pciex" and "pci" versions of the
+ * above. The problem with property 2 is that it has an ambiguity with
+ * property 4. To make sure that drivers can specify either form of 2 or 4
+ * without ambiguity we add a suffix. The 'p' suffix represents the primary ID,
+ * meaning that it is guaranteed to be form 4. The 's' suffix means that it is
+ * sub-vendor and sub-device form, meaning it is guaranteed to be form 2.
+ *
+ * Set with setprop and \x00 between each to generate the encoded string array
+ * form.
  */
 void
 add_compatible(dev_info_t *dip, ushort_t subvenid, ushort_t subdevid,
@@ -2204,7 +2219,7 @@ add_compatible(dev_info_t *dip, ushort_t subvenid, ushort_t subdevid,
 {
 	int i = 0;
 	int size = COMPAT_BUFSIZE;
-	char *compat[13];
+	char *compat[15];
 	char *buf, *curr;
 
 	curr = buf = kmem_alloc(size, KM_SLEEP);
@@ -2262,6 +2277,12 @@ add_compatible(dev_info_t *dip, ushort_t subvenid, ushort_t subdevid,
 
 		if (subsys_compat_exclude(vendorid, deviceid, subvenid,
 		    subdevid, revid, classcode) == B_FALSE) {
+			compat[i++] = curr;	/* form 2+ */
+			(void) snprintf(curr, size, "pci%x,%x,s", subvenid,
+			    subdevid);
+			size -= strlen(curr) + 1;
+			curr += strlen(curr) + 1;
+
 			compat[i++] = curr;	/* form 2 */
 			(void) snprintf(curr, size, "pci%x,%x", subvenid,
 			    subdevid);
@@ -2271,6 +2292,11 @@ add_compatible(dev_info_t *dip, ushort_t subvenid, ushort_t subdevid,
 	}
 	compat[i++] = curr;	/* form 3 */
 	(void) snprintf(curr, size, "pci%x,%x.%x", vendorid, deviceid, revid);
+	size -= strlen(curr) + 1;
+	curr += strlen(curr) + 1;
+
+	compat[i++] = curr;	/* form 4+ */
+	(void) snprintf(curr, size, "pci%x,%x,p", vendorid, deviceid);
 	size -= strlen(curr) + 1;
 	curr += strlen(curr) + 1;
 
@@ -2537,7 +2563,8 @@ add_reg_props(dev_info_t *dip, uchar_t bus, uchar_t dev, uchar_t func,
 			if ((base & PCI_BASE_TYPE_M) == PCI_BASE_TYPE_ALL) {
 				bar_sz = PCI_BAR_SZ_64;
 				base_hi = pci_getl(bus, dev, func, offset + 4);
-				pci_putl(bus, dev, func, offset + 4, 0xffffffff);
+				pci_putl(bus, dev, func, offset + 4,
+				    0xffffffff);
 				value |= (uint64_t)pci_getl(bus, dev, func,
 				    offset + 4) << 32;
 				pci_putl(bus, dev, func, offset + 4, base_hi);
@@ -2599,7 +2626,7 @@ add_reg_props(dev_info_t *dip, uchar_t bus, uchar_t dev, uchar_t func,
 
 			if (config_op == CONFIG_INFO) {
 				/* take out of the resource map of the bus */
-				if (base != NULL) {
+				if (base != 0) {
 					/* remove from PMEM and MEM space */
 					(void) memlist_remove(mem_avail,
 					    base, len);
@@ -2616,7 +2643,7 @@ add_reg_props(dev_info_t *dip, uchar_t bus, uchar_t dev, uchar_t func,
 					reprogram = 1;
 				}
 				pci_bus_res[bus].mem_size += len;
-			} else if ((*mem_avail && base == NULL) ||
+			} else if ((*mem_avail && base == 0) ||
 			    pci_bus_res[bus].mem_reprogram) {
 				/*
 				 * When desired, attempt a prefetchable
@@ -2625,7 +2652,7 @@ add_reg_props(dev_info_t *dip, uchar_t bus, uchar_t dev, uchar_t func,
 				if (phys_hi & PCI_PREFETCH_B) {
 					base = (uint_t)memlist_find(pmem_avail,
 					    len, len);
-					if (base != NULL) {
+					if (base != 0) {
 						memlist_insert(pmem_used,
 						    base, len);
 						(void) memlist_remove(mem_avail,
@@ -2637,17 +2664,17 @@ add_reg_props(dev_info_t *dip, uchar_t bus, uchar_t dev, uchar_t func,
 				 * desired, or failed, attempt ordinary
 				 * memory allocation
 				 */
-				if (base == NULL) {
+				if (base == 0) {
 					base = (uint_t)memlist_find(mem_avail,
 					    len, len);
-					if (base != NULL) {
+					if (base != 0) {
 						memlist_insert(mem_used,
 						    base, len);
 						(void) memlist_remove(
 						    pmem_avail, base, len);
 					}
 				}
-				if (base != NULL) {
+				if (base != 0) {
 					pci_putl(bus, dev, func, offset,
 					    base | type);
 					base = pci_getl(bus, dev, func, offset);
@@ -2699,7 +2726,7 @@ add_reg_props(dev_info_t *dip, uchar_t bus, uchar_t dev, uchar_t func,
 		regs[nreg].pci_size_low = assigned[nasgn].pci_size_low = len;
 		nreg++, nasgn++;
 		/* take it out of the memory resource */
-		if (base != NULL) {
+		if (base != 0) {
 			(void) memlist_remove(mem_avail, base, len);
 			memlist_insert(mem_used, base, len);
 			pci_bus_res[bus].mem_size += len;

@@ -45,16 +45,15 @@ pics/%.o: ../common/%.c
 	$(COMPILE.c) -o $@ $<
 	$(POST_PROCESS_O)
 
-LIBS = $(DYNLIB) $(LINTLIB)
+LIBS = $(DYNLIB)
 
 CPPFLAGS += -DYP
 
 CERRWARN +=	-_gcc=-Wno-unused-variable
 CERRWARN +=	-_gcc=-Wno-switch
-CERRWARN +=	-_gcc=-Wno-uninitialized
+CERRWARN +=	$(CNOWARN_UNINIT)
 CERRWARN +=	-_gcc=-Wno-parentheses
 
-$(LINTLIB):= SRCS = $(SRCDIR)/$(LINTSRC)
 
 LDLIBS += -lnsl -lc
 
@@ -63,7 +62,6 @@ CPPFLAGS += -I..
 
 .KEEP_STATE:
 
-lint:	lintcheck
 
 # include library targets
 include ../../Makefile.targ

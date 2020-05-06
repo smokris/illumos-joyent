@@ -11,6 +11,7 @@
 
 #
 # Copyright 2011 Nexenta Systems, Inc.  All rights reserved.
+# Copyright (c) 2019, Joyent, Inc.
 #
 
 LIBMDIR		= $(SRC)/lib/libm
@@ -63,11 +64,14 @@ CFLAGS64	+= -_gcc=-D__C99FEATURES__
 CFLAGS		+= -_gcc=-fno-strict-overflow
 CFLAGS64	+= -_gcc=-fno-strict-overflow
 
-$(DYNLIB) 	:= LDLIBS += -lc
+# sparse currently has no _Complex support
+CFLAGS		+= -_smatch=off
+CFLAGS64	+= -_smatch=off
 
-$(LINTLIB) 	:= SRCS = $(LIBMSRC)/$(LINTSRC)
+$(DYNLIB)	:= LDLIBS += -lc
 
-CLEANFILES 	+= pics/*.s pics/*.S
+
+CLEANFILES	+= pics/*.s pics/*.S
 
 FPDEF_amd64	= -DARCH_amd64
 FPDEF_sparc	= -DCG89 -DARCH_v8plus -DFPADD_TRAPS_INCOMPLETE_ON_NAN
@@ -84,7 +88,7 @@ XARCH		= $(XARCH_$(TARGET_ARCH))
 
 ASOPT_sparc	= -xarch=$(XARCH) $(AS_PICFLAGS)
 ASOPT_sparcv9	= -xarch=$(XARCH) $(AS_PICFLAGS)
-ASOPT_i386	= 
+ASOPT_i386	=
 ASOPT_amd64	= -xarch=$(XARCH) $(AS_PICFLAGS)
 ASOPT		= $(ASOPT_$(TARGET_ARCH))
 

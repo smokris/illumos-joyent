@@ -41,19 +41,21 @@
 #include <sys/uio.h>
 #include <sys/unistd.h>
 
-#ifdef	__FreeBSD__
-#define BLOCKIF_IOV_MAX		33	/* not practical to be IOV_MAX */
-#else
-#define BLOCKIF_IOV_MAX		17	/* not practical to be IOV_MAX */
-#endif
+/*
+ * BLOCKIF_IOV_MAX is the maximum number of scatter/gather entries in
+ * a single request.  BLOCKIF_RING_MAX is the maxmimum number of
+ * pending requests that can be queued.
+ */
+#define	BLOCKIF_IOV_MAX		128	/* not practical to be IOV_MAX */
+#define	BLOCKIF_RING_MAX	128
 
 struct blockif_req {
-	struct iovec	br_iov[BLOCKIF_IOV_MAX];
 	int		br_iovcnt;
 	off_t		br_offset;
 	ssize_t		br_resid;
 	void		(*br_callback)(struct blockif_req *req, int err);
 	void		*br_param;
+	struct iovec	br_iov[BLOCKIF_IOV_MAX];
 };
 
 struct blockif_ctxt;
@@ -66,13 +68,11 @@ void	blockif_psectsz(struct blockif_ctxt *bc, int *size, int *off);
 int	blockif_queuesz(struct blockif_ctxt *bc);
 int	blockif_is_ro(struct blockif_ctxt *bc);
 int	blockif_candelete(struct blockif_ctxt *bc);
-int	blockif_read(struct blockif_ctxt *bc, struct blockif_req *breq);
-#ifdef __FreeBSD__
-int	blockif_write(struct blockif_ctxt *bc, struct blockif_req *breq);
-#else
-int	blockif_write(struct blockif_ctxt *bc, struct blockif_req *breq,
-    boolean_t sync);
+#ifndef __FreeBSD__
+int	blockif_set_wce(struct blockif_ctxt *bc, int enable);
 #endif
+int	blockif_read(struct blockif_ctxt *bc, struct blockif_req *breq);
+int	blockif_write(struct blockif_ctxt *bc, struct blockif_req *breq);
 int	blockif_flush(struct blockif_ctxt *bc, struct blockif_req *breq);
 int	blockif_delete(struct blockif_ctxt *bc, struct blockif_req *breq);
 int	blockif_cancel(struct blockif_ctxt *bc, struct blockif_req *breq);
