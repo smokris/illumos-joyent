@@ -1514,7 +1514,9 @@ svm_vmexit(struct svm_softc *svm_sc, int vcpu, struct vm_exit *vmexit)
 	case VMCB_EXIT_CPUID:
 		vmm_stat_incr(svm_sc->vm, vcpu, VMEXIT_CPUID, 1);
 #pragma GCC diagnostic push
+#if __GNUC__ > 7
 #pragma GCC diagnostic ignored "-Waddress-of-packed-member"
+#endif
 		handled = x86_emulate_cpuid(svm_sc->vm, vcpu,
 		    (uint32_t *)&state->rax,
 		    (uint32_t *)&ctx->sctx_rbx,
