@@ -139,15 +139,8 @@ extern char *strdup(const char *);
 
 #if defined(__EXTENSIONS__) || \
 	(!defined(_STRICT_STDC) && !defined(__XOPEN_OR_POSIX))
-#if defined(__GNUC__)
 
-/*
- * gcc provides this inlining facility but Studio C does not.
- * We should use it exclusively once Studio C also provides it.
- */
-#if 0 // FIXME? do we need this?
-extern void *__builtin_alloca(size_t);
-#endif
+#if defined(__GNUC__)
 
 #define	strdupa(s)							\
 	(__extension__(							\
