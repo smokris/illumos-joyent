@@ -346,6 +346,8 @@ typedef struct mlxcx_port {
 	mlxcx_eth_proto_t	mlp_max_proto;
 	mlxcx_eth_proto_t	mlp_admin_proto;
 	mlxcx_eth_proto_t	mlp_oper_proto;
+	mlxcx_pplm_fec_active_t	mlp_fec_active;
+	link_fec_t		mlp_fec_requested;
 
 	mlxcx_eth_inline_mode_t	mlp_wqe_min_inline;
 
@@ -424,11 +426,18 @@ typedef enum {
 	MLXCX_BUFFER_ON_CHAIN,
 } mlxcx_buffer_state_t;
 
+typedef enum {
+	MLXCX_SHARD_READY,
+	MLXCX_SHARD_DRAINING,
+} mlxcx_shard_state_t;
+
 typedef struct mlxcx_buf_shard {
+	mlxcx_shard_state_t	mlbs_state;
 	list_node_t		mlbs_entry;
 	kmutex_t		mlbs_mtx;
 	list_t			mlbs_busy;
 	list_t			mlbs_free;
+	list_t			mlbs_loaned;
 	kcondvar_t		mlbs_free_nonempty;
 } mlxcx_buf_shard_t;
 
@@ -1171,6 +1180,8 @@ extern boolean_t mlxcx_buf_loan(mlxcx_t *, mlxcx_buffer_t *);
 extern void mlxcx_buf_return(mlxcx_t *, mlxcx_buffer_t *);
 extern void mlxcx_buf_return_chain(mlxcx_t *, mlxcx_buffer_t *, boolean_t);
 extern void mlxcx_buf_destroy(mlxcx_t *, mlxcx_buffer_t *);
+extern void mlxcx_shard_ready(mlxcx_buf_shard_t *);
+extern void mlxcx_shard_draining(mlxcx_buf_shard_t *);
 
 extern uint_t mlxcx_buf_bind_or_copy(mlxcx_t *, mlxcx_work_queue_t *,
     mblk_t *, size_t, mlxcx_buffer_t **);
@@ -1311,7 +1322,12 @@ extern boolean_t mlxcx_cmd_access_register(mlxcx_t *, mlxcx_cmd_reg_opmod_t,
     mlxcx_register_id_t, mlxcx_register_data_t *);
 extern boolean_t mlxcx_cmd_query_port_mtu(mlxcx_t *, mlxcx_port_t *);
 extern boolean_t mlxcx_cmd_query_port_status(mlxcx_t *, mlxcx_port_t *);
+extern boolean_t mlxcx_cmd_modify_port_status(mlxcx_t *, mlxcx_port_t *,
+    mlxcx_port_status_t);
 extern boolean_t mlxcx_cmd_query_port_speed(mlxcx_t *, mlxcx_port_t *);
+extern boolean_t mlxcx_cmd_query_port_fec(mlxcx_t *, mlxcx_port_t *);
+extern boolean_t mlxcx_cmd_modify_port_fec(mlxcx_t *, mlxcx_port_t *,
+    mlxcx_pplm_fec_caps_t);
 
 extern boolean_t mlxcx_cmd_set_port_mtu(mlxcx_t *, mlxcx_port_t *);
 

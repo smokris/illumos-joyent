@@ -22,6 +22,7 @@
 /*
  * Copyright 2014 Garrett D'Amore <garrett@damore.org>
  * Copyright (c) 1989, 2010, Oracle and/or its affiliates. All rights reserved.
+ * Copyright 2020 Joyent, Inc.
  */
 
 /*	Copyright (c) 1988 AT&T	*/

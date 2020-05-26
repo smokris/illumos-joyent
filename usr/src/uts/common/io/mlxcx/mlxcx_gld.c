@@ -80,6 +80,53 @@ mlxcx_speed_to_bits(mlxcx_eth_proto_t v)
 	}
 }
 
+static link_fec_t
+mlxcx_fec_to_link_fec(mlxcx_pplm_fec_active_t mlxcx_fec)
+{
+	if ((mlxcx_fec & MLXCX_PPLM_FEC_ACTIVE_NONE) != 0)
+		return (LINK_FEC_NONE);
+
+	if ((mlxcx_fec & MLXCX_PPLM_FEC_ACTIVE_FIRECODE) != 0)
+		return (LINK_FEC_BASE_R);
+
+	if ((mlxcx_fec & (MLXCX_PPLM_FEC_ACTIVE_RS528 |
+	    MLXCX_PPLM_FEC_ACTIVE_RS271 | MLXCX_PPLM_FEC_ACTIVE_RS544 |
+	    MLXCX_PPLM_FEC_ACTIVE_RS272)) != 0)
+		return (LINK_FEC_RS);
+
+	return (LINK_FEC_NONE);
+}
+
+static boolean_t
+mlxcx_link_fec_cap(link_fec_t fec, mlxcx_pplm_fec_caps_t *pfecp)
+{
+	mlxcx_pplm_fec_caps_t pplm_fec = 0;
+
+	if ((fec & LINK_FEC_AUTO) != 0) {
+		pplm_fec = MLXCX_PPLM_FEC_CAP_AUTO;
+		fec &= ~LINK_FEC_AUTO;
+	} else if ((fec & LINK_FEC_NONE) != 0) {
+		pplm_fec = MLXCX_PPLM_FEC_CAP_NONE;
+		fec &= ~LINK_FEC_NONE;
+	} else if ((fec & LINK_FEC_RS) != 0) {
+		pplm_fec |= MLXCX_PPLM_FEC_CAP_RS;
+		fec &= ~LINK_FEC_RS;
+	} else if ((fec & LINK_FEC_BASE_R) != 0) {
+		pplm_fec |= MLXCX_PPLM_FEC_CAP_FIRECODE;
+		fec &= ~LINK_FEC_BASE_R;
+	}
+
+	/*
+	 * Only one fec option is allowed.
+	 */
+	if (fec != 0)
+		return (B_FALSE);
+
+	*pfecp = pplm_fec;
+
+	return (B_TRUE);
+}
+
 static int
 mlxcx_mac_stat_rfc_2863(mlxcx_t *mlxp, mlxcx_port_t *port, uint_t stat,
     uint64_t *val)
@@ -451,7 +498,8 @@ mlxcx_mac_ring_tx(void *arg, mblk_t *mp)
 		return (NULL);
 	}
 
-	if (sq->mlwq_state & MLXCX_WQ_TEARDOWN) {
+	if ((sq->mlwq_state & (MLXCX_WQ_TEARDOWN | MLXCX_WQ_STARTED)) !=
+	    MLXCX_WQ_STARTED) {
 		mutex_exit(&sq->mlwq_mtx);
 		mlxcx_buf_return_chain(mlxp, b, B_FALSE);
 		return (NULL);
@@ -725,8 +773,28 @@ mlxcx_mac_ring_stop(mac_ring_driver_t rh)
 	mlxcx_buf_shard_t *s;
 	mlxcx_buffer_t *buf;
 
+	/*
+	 * To prevent deadlocks and sleeping whilst holding either the
+	 * CQ mutex or WQ mutex, we split the stop processing into two
+	 * parts.
+	 *
+	 * With the CQ amd WQ mutexes held the appropriate WQ is stopped.
+	 * The Q in the HCA is set to Reset state and flagged as no
+	 * longer started. Atomic with changing this WQ state, the buffer
+	 * shards are flagged as draining.
+	 *
+	 * Now, any requests for buffers and attempts to submit messages
+	 * will fail and once we're in this state it is safe to relinquish
+	 * the CQ and WQ mutexes. Allowing us to complete the ring stop
+	 * by waiting for the buffer lists, with the exception of
+	 * the loaned list, to drain. Buffers on the loaned list are
+	 * not under our control, we will get them back when the mblk tied
+	 * to the buffer is freed.
+	 */
+
 	mutex_enter(&cq->mlcq_mtx);
 	mutex_enter(&wq->mlwq_mtx);
+
 	if (wq->mlwq_state & MLXCX_WQ_STARTED) {
 		if (wq->mlwq_type == MLXCX_WQ_TYPE_RECVQ &&
 		    !mlxcx_cmd_stop_rq(mlxp, wq)) {
@@ -743,7 +811,15 @@ mlxcx_mac_ring_stop(mac_ring_driver_t rh)
 	}
 	ASSERT0(wq->mlwq_state & MLXCX_WQ_STARTED);
 
+	mlxcx_shard_draining(wq->mlwq_bufs);
+	if (wq->mlwq_foreign_bufs != NULL)
+		mlxcx_shard_draining(wq->mlwq_foreign_bufs);
+
+
 	if (wq->mlwq_state & MLXCX_WQ_BUFFERS) {
+		mutex_exit(&wq->mlwq_mtx);
+		mutex_exit(&cq->mlcq_mtx);
+
 		/* Return any outstanding buffers to the free pool. */
 		while ((buf = list_remove_head(&cq->mlcq_buffers)) != NULL) {
 			mlxcx_buf_return_chain(mlxp, buf, B_FALSE);
@@ -775,12 +851,13 @@ mlxcx_mac_ring_stop(mac_ring_driver_t rh)
 			mutex_exit(&s->mlbs_mtx);
 		}
 
+		mutex_enter(&wq->mlwq_mtx);
 		wq->mlwq_state &= ~MLXCX_WQ_BUFFERS;
+		mutex_exit(&wq->mlwq_mtx);
+	} else {
+		mutex_exit(&wq->mlwq_mtx);
+		mutex_exit(&cq->mlcq_mtx);
 	}
-	ASSERT0(wq->mlwq_state & MLXCX_WQ_BUFFERS);
-
-	mutex_exit(&wq->mlwq_mtx);
-	mutex_exit(&cq->mlcq_mtx);
 }
 
 static int
@@ -1061,6 +1138,14 @@ mlxcx_mac_propinfo(void *arg, const char *pr_name, mac_prop_id_t pr_num,
 		mac_prop_info_set_perm(prh, MAC_PROP_PERM_READ);
 		mac_prop_info_set_default_uint8(prh, 1);
 		break;
+	case MAC_PROP_ADV_FEC_CAP:
+		mac_prop_info_set_perm(prh, MAC_PROP_PERM_READ);
+		mac_prop_info_set_default_fec(prh, LINK_FEC_AUTO);
+		break;
+	case MAC_PROP_EN_FEC_CAP:
+		mac_prop_info_set_perm(prh, MAC_PROP_PERM_RW);
+		mac_prop_info_set_default_fec(prh, LINK_FEC_AUTO);
+		break;
 	case MAC_PROP_ADV_100GFDX_CAP:
 	case MAC_PROP_EN_100GFDX_CAP:
 		mac_prop_info_set_perm(prh, MAC_PROP_PERM_READ);
@@ -1120,6 +1205,9 @@ mlxcx_mac_setprop(void *arg, const char *pr_name, mac_prop_id_t pr_num,
 	uint32_t new_mtu, new_hw_mtu, old_mtu;
 	mlxcx_buf_shard_t *sh;
 	boolean_t allocd = B_FALSE;
+	boolean_t relink = B_FALSE;
+	link_fec_t fec;
+	mlxcx_pplm_fec_caps_t cap_fec;
 
 	mutex_enter(&port->mlp_mtx);
 
@@ -1137,7 +1225,8 @@ mlxcx_mac_setprop(void *arg, const char *pr_name, mac_prop_id_t pr_num,
 		for (; sh != NULL; sh = list_next(&mlxp->mlx_buf_shards, sh)) {
 			mutex_enter(&sh->mlbs_mtx);
 			if (!list_is_empty(&sh->mlbs_free) ||
-			    !list_is_empty(&sh->mlbs_busy)) {
+			    !list_is_empty(&sh->mlbs_busy) ||
+			    !list_is_empty(&sh->mlbs_loaned)) {
 				allocd = B_TRUE;
 				mutex_exit(&sh->mlbs_mtx);
 				break;
@@ -1167,11 +1256,57 @@ mlxcx_mac_setprop(void *arg, const char *pr_name, mac_prop_id_t pr_num,
 			break;
 		}
 		break;
+
+	case MAC_PROP_EN_FEC_CAP:
+		bcopy(pr_val, &fec, sizeof (fec));
+		if (!mlxcx_link_fec_cap(fec, &cap_fec)) {
+			ret = EINVAL;
+			break;
+		}
+
+		/*
+		 * Don't change the FEC if it is already at the requested
+		 * setting AND the port is up.
+		 * When the port is down, always set the FEC and attempt
+		 * to retrain the link.
+		 */
+		if (fec == port->mlp_fec_requested &&
+		    fec == mlxcx_fec_to_link_fec(port->mlp_fec_active) &&
+		    port->mlp_oper_status != MLXCX_PORT_STATUS_DOWN)
+			break;
+
+		/*
+		 * The most like cause of this failing is an invalid
+		 * or unsupported fec option.
+		 */
+		if (!mlxcx_cmd_modify_port_fec(mlxp, port, cap_fec)) {
+			ret = EINVAL;
+			break;
+		}
+
+		port->mlp_fec_requested = fec;
+
+		/*
+		 * For FEC to become effective, the link needs to go back
+		 * to training and negotiation state. This happens when
+		 * the link transitions from down to up, force a relink.
+		 */
+		relink = B_TRUE;
+		break;
+
 	default:
 		ret = ENOTSUP;
 		break;
 	}
 
+	if (relink) {
+		if (!mlxcx_cmd_modify_port_status(mlxp, port,
+		    MLXCX_PORT_STATUS_DOWN) ||
+		    !mlxcx_cmd_modify_port_status(mlxp, port,
+		    MLXCX_PORT_STATUS_UP)) {
+			ret = EIO;
+		}
+	}
 	mutex_exit(&port->mlp_mtx);
 
 	return (ret);
@@ -1228,6 +1363,21 @@ mlxcx_mac_getprop(void *arg, const char *pr_name, mac_prop_id_t pr_num,
 			break;
 		}
 		*(uint8_t *)pr_val = port->mlp_autoneg;
+		break;
+	case MAC_PROP_ADV_FEC_CAP:
+		if (pr_valsize < sizeof (link_fec_t)) {
+			ret = EOVERFLOW;
+			break;
+		}
+		*(link_fec_t *)pr_val =
+		    mlxcx_fec_to_link_fec(port->mlp_fec_active);
+		break;
+	case MAC_PROP_EN_FEC_CAP:
+		if (pr_valsize < sizeof (link_fec_t)) {
+			ret = EOVERFLOW;
+			break;
+		}
+		*(link_fec_t *)pr_val = port->mlp_fec_requested;
 		break;
 	case MAC_PROP_MTU:
 		if (pr_valsize < sizeof (uint32_t)) {

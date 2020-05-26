@@ -28,6 +28,7 @@
 
 /*
  * Copyright 2018 Joyent, Inc.
+ * Copyright 2020 Oxide Computer Company
  */
 
 #include <sys/cdefs.h>
@@ -1517,11 +1518,8 @@ svm_vmexit(struct svm_softc *svm_sc, int vcpu, struct vm_exit *vmexit)
 #if __GNUC__ > 7
 #pragma GCC diagnostic ignored "-Waddress-of-packed-member"
 #endif
-		handled = x86_emulate_cpuid(svm_sc->vm, vcpu,
-		    (uint32_t *)&state->rax,
-		    (uint32_t *)&ctx->sctx_rbx,
-		    (uint32_t *)&ctx->sctx_rcx,
-		    (uint32_t *)&ctx->sctx_rdx);
+		handled = x86_emulate_cpuid(svm_sc->vm, vcpu, &state->rax,
+		    &ctx->sctx_rbx, &ctx->sctx_rcx, &ctx->sctx_rdx);
 #pragma GCC diagnostic pop
 		break;
 	case VMCB_EXIT_HLT:
