@@ -422,7 +422,7 @@ add_nets(int *argc, char **argv)
 	char *nets;
 	char *net;
 	char *lasts;
-	int nextpcifn = 1;		/* 0 reserved for primary */
+	uint_t nextpcifn = 1;		/* 0 reserved for primary */
 	char slotconf[MAXNAMELEN];
 	char *primary = NULL;
 
@@ -433,7 +433,11 @@ add_nets(int *argc, char **argv)
 
 	for (net = strtok_r(nets, " ", &lasts); net != NULL;
 	    net = strtok_r(NULL, " ", &lasts)) {
-		int pcifn;
+		char *slotstr;
+		uint_t pcibus = 0;
+		uint_t pcislot = PCI_SLOT_NICS;
+		uint_t pcifn;
+		int ret;
 
 		/* zoneadmd is not careful about a trailing delimiter. */
 		if (net[0] == '\0') {
@@ -450,14 +454,27 @@ add_nets(int *argc, char **argv)
 			}
 			primary = net;
 			pcifn = 0;
+		} else if ((slotstr = get_zcfg_var("net", net,
+		    "pci_slot")) != NULL) {
+			if (parse_pcislot(slotstr, &pcibus, &pcislot,
+			    &pcifn) != 0) {
+				return (-1);
+			}
 		} else {
 			pcifn = nextpcifn;
 			nextpcifn++;
 		}
 
-		if (snprintf(slotconf, sizeof (slotconf),
-		    "%d:%d,virtio-net-viona,%s", PCI_SLOT_NICS, pcifn, net) >=
-		    sizeof (slotconf)) {
+		if (pcibus > 0) {
+			ret = snprintf(slotconf, sizeof (slotconf),
+			    "%u:%u:%u,virtio-net-viona,%s",
+			    pcibus, pcislot, pcifn, net);
+		} else {
+			ret = snprintf(slotconf, sizeof (slotconf),
+			    "%u:%u,virtio-net-viona,%s", pcislot, pcifn, net);
+		}
+
+		if (ret >= sizeof (slotconf)) {
 			(void) printf("Error: net '%s' too long\n", net);
 			return (-1);
 		}
