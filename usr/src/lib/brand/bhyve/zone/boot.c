@@ -53,6 +53,14 @@ typedef enum {
 	PCI_SLOT_LPC = 31,		/* Windows requires lpc in slot 31 */
 } pci_slot_t;
 
+/*
+ * The min and max slot values on bus 0 for a NIC when specifying an explicit
+ * location. We reserve (and use) PCI_SLOT_NICS for NICs that don't have an
+ * explicit location.
+ */
+#define	PCI_SLOT_NICS_MIN (PCI_SLOT_NICS + 1)
+#define	PCI_SLOT_NICS_MAX (PCI_SLOT_FBUF - 1)
+
 static boolean_t debug;
 static const char *zonename;
 static const char *zonepath;
@@ -437,7 +445,6 @@ add_nets(int *argc, char **argv)
 		uint_t pcibus = 0;
 		uint_t pcislot = PCI_SLOT_NICS;
 		uint_t pcifn;
-		int ret;
 
 		/* zoneadmd is not careful about a trailing delimiter. */
 		if (net[0] == '\0') {
@@ -458,6 +465,17 @@ add_nets(int *argc, char **argv)
 		    "pci_slot")) != NULL) {
 			if (parse_pcislot(slotstr, &pcibus, &pcislot,
 			    &pcifn) != 0) {
+				/*
+				 * parse_pcislot() already emits an error
+				 * on failure, so we don't need to
+				 */
+				return (-1);
+			}
+			if (pcibus == 0 && (pcislot < PCI_SLOT_NICS_MIN ||
+			    pcislot > PCI_SLOT_NICS_MAX)) {
+				(void) printf("Error: pci slot for nic %s "
+				    "(%u:%u:%u) is out of range\n",
+				    net, pcibus, pcislot, pcifn);
 				return (-1);
 			}
 		} else {
@@ -465,16 +483,9 @@ add_nets(int *argc, char **argv)
 			nextpcifn++;
 		}
 
-		if (pcibus > 0) {
-			ret = snprintf(slotconf, sizeof (slotconf),
-			    "%u:%u:%u,virtio-net-viona,%s",
-			    pcibus, pcislot, pcifn, net);
-		} else {
-			ret = snprintf(slotconf, sizeof (slotconf),
-			    "%u:%u,virtio-net-viona,%s", pcislot, pcifn, net);
-		}
-
-		if (ret >= sizeof (slotconf)) {
+		if (snprintf(slotconf, sizeof (slotconf),
+		    "%u:%u:%u,virtio-net-viona,%s",
+		    pcibus, pcislot, pcifn, net) >= sizeof (slotconf)) {
 			(void) printf("Error: net '%s' too long\n", net);
 			return (-1);
 		}
