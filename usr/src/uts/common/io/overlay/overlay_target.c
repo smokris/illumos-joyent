@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2016 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 /*
@@ -233,7 +233,7 @@ overlay_target_free(overlay_dev_t *odd)
 		return;
 
 	if (odd->odd_target->ott_mode == OVERLAY_TARGET_DYNAMIC) {
-		refhash_t *rp = odd->odd_target->ott_u.ott_dyn.ott_dhash;
+		qqcache_t *qp = odd->odd_target->ott_u.ott_dyn.ott_cache;
 		avl_tree_t *ap = &odd->odd_target->ott_u.ott_dyn.ott_tree;
 		overlay_target_entry_t *ote;
 
@@ -241,17 +241,17 @@ overlay_target_free(overlay_dev_t *odd)
 		 * Our AVL tree and hashtable contain the same elements,
 		 * therefore we should just remove it from the tree, but then
 		 * delete the entries when we remove them from the hash table
-		 * (which happens through the refhash dtor).
+		 * (which happens through the qqcache dtor).
 		 */
 		while ((ote = avl_first(ap)) != NULL)
 			avl_remove(ap, ote);
 
 		avl_destroy(ap);
-		for (ote = refhash_first(rp); ote != NULL;
-		    ote = refhash_next(rp, ote)) {
-			refhash_remove(rp, ote);
+		for (ote = qqcache_first(qp); ote != NULL;
+		    ote = qqcache_next(qp, ote)) {
+			qqcache_remove(qp, ote);
 		}
-		refhash_destroy(rp);
+		qqcache_destroy(qp);
 	}
 
 	ASSERT(odd->odd_target->ott_ocount == 0);
@@ -351,7 +351,7 @@ overlay_target_lookup(overlay_dev_t *odd, mblk_t *mp, struct sockaddr *sock,
 	if (mac_header_info(odd->odd_mh, mp, &mhi) != 0)
 		return (OVERLAY_TARGET_DROP);
 	mutex_enter(&ott->ott_lock);
-	entry = refhash_lookup(ott->ott_u.ott_dyn.ott_dhash,
+	entry = qqcache_lookup(ott->ott_u.ott_dyn.ott_cache,
 	    mhi.mhi_daddr);
 	if (entry == NULL) {
 		entry = kmem_cache_alloc(overlay_entry_cache,
@@ -366,13 +366,13 @@ overlay_target_lookup(overlay_dev_t *odd, mblk_t *mp, struct sockaddr *sock,
 		entry->ote_flags |= OVERLAY_ENTRY_F_PENDING;
 		entry->ote_ott = ott;
 		entry->ote_odd = odd;
-		refhash_insert(ott->ott_u.ott_dyn.ott_dhash, entry);
+		qqcache_insert(ott->ott_u.ott_dyn.ott_cache, entry);
 		avl_add(&ott->ott_u.ott_dyn.ott_tree, entry);
 		mutex_exit(&ott->ott_lock);
 		overlay_target_queue(entry);
 		return (OVERLAY_TARGET_ASYNC);
 	}
-	refhash_hold(ott->ott_u.ott_dyn.ott_dhash, entry);
+	qqcache_hold(ott->ott_u.ott_dyn.ott_cache, entry);
 	mutex_exit(&ott->ott_lock);
 
 	mutex_enter(&entry->ote_lock);
@@ -412,7 +412,7 @@ overlay_target_lookup(overlay_dev_t *odd, mblk_t *mp, struct sockaddr *sock,
 	mutex_exit(&entry->ote_lock);
 
 	mutex_enter(&ott->ott_lock);
-	refhash_rele(ott->ott_u.ott_dyn.ott_dhash, entry);
+	qqcache_rele(ott->ott_u.ott_dyn.ott_cache, entry);
 	mutex_exit(&ott->ott_lock);
 
 	return (ret);
@@ -499,10 +499,13 @@ overlay_target_associate(overlay_target_hdl_t *thdl, void *arg)
 		bcopy(&ota->ota_point, &ott->ott_u.ott_point,
 		    sizeof (overlay_target_point_t));
 	} else {
-		ott->ott_u.ott_dyn.ott_dhash = refhash_create(OVERLAY_HSIZE,
+		int ret;
+
+		ret = qqcache_create(&ott->ott_u.ott_dyn.ott_cache,
+		    odd->odd_cachesz, odd->odd_cachea, OVERLAY_HSIZE,
 		    overlay_mac_hash, overlay_mac_cmp,
 		    overlay_target_entry_dtor, sizeof (overlay_target_entry_t),
-		    offsetof(overlay_target_entry_t, ote_reflink),
+		    offsetof(overlay_target_entry_t, ote_cachelink),
 		    offsetof(overlay_target_entry_t, ote_addr), KM_SLEEP);
 		avl_create(&ott->ott_u.ott_dyn.ott_tree, overlay_mac_avl,
 		    sizeof (overlay_target_entry_t),
@@ -1083,7 +1086,7 @@ overlay_target_cache_get(overlay_target_hdl_t *thdl, void *arg)
 		    sizeof (overlay_target_point_t));
 	} else {
 		overlay_target_entry_t *ote;
-		ote = refhash_lookup(ott->ott_u.ott_dyn.ott_dhash,
+		ote = qqcache_lookup(ott->ott_u.ott_dyn.ott_cache,
 		    otc->otc_entry.otce_mac);
 		if (ote != NULL) {
 			mutex_enter(&ote->ote_lock);
@@ -1146,7 +1149,7 @@ overlay_target_cache_set(overlay_target_hdl_t *thdl, void *arg)
 	mutex_enter(&ott->ott_lock);
 	mutex_exit(&odd->odd_lock);
 
-	ote = refhash_lookup(ott->ott_u.ott_dyn.ott_dhash,
+	ote = qqcache_lookup(ott->ott_u.ott_dyn.ott_cache,
 	    otc->otc_entry.otce_mac);
 	if (ote == NULL) {
 		ote = kmem_cache_alloc(overlay_entry_cache, KM_SLEEP);
@@ -1156,7 +1159,7 @@ overlay_target_cache_set(overlay_target_hdl_t *thdl, void *arg)
 		ote->ote_ott = ott;
 		ote->ote_odd = odd;
 		mutex_enter(&ote->ote_lock);
-		refhash_insert(ott->ott_u.ott_dyn.ott_dhash, ote);
+		qqcache_insert(ott->ott_u.ott_dyn.ott_cache, ote);
 		avl_add(&ott->ott_u.ott_dyn.ott_tree, ote);
 	} else {
 		mutex_enter(&ote->ote_lock);
@@ -1217,7 +1220,7 @@ overlay_target_cache_remove(overlay_target_hdl_t *thdl, void *arg)
 	mutex_enter(&ott->ott_lock);
 	mutex_exit(&odd->odd_lock);
 
-	ote = refhash_lookup(ott->ott_u.ott_dyn.ott_dhash,
+	ote = qqcache_lookup(ott->ott_u.ott_dyn.ott_cache,
 	    otc->otc_entry.otce_mac);
 	if (ote != NULL) {
 		mutex_enter(&ote->ote_lock);
@@ -1269,7 +1272,7 @@ overlay_target_cache_flush(overlay_target_hdl_t *thdl, void *arg)
 		ote->ote_flags &= ~OVERLAY_ENTRY_F_VALID_MASK;
 		mutex_exit(&ote->ote_lock);
 	}
-	ote = refhash_lookup(ott->ott_u.ott_dyn.ott_dhash,
+	ote = qqcache_lookup(ott->ott_u.ott_dyn.ott_cache,
 	    otc->otc_entry.otce_mac);
 
 	mutex_exit(&ott->ott_lock);

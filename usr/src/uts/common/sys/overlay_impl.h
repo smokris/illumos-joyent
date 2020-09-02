@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2016 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #ifndef _SYS_OVERLAY_IMPL_H
@@ -29,7 +29,7 @@
 #include <sys/avl.h>
 #include <sys/ksocket.h>
 #include <sys/socket.h>
-#include <sys/refhash.h>
+#include <sys/qqcache.h>
 #include <sys/ethernet.h>
 #include <sys/list.h>
 
@@ -81,7 +81,7 @@ typedef struct overlay_target {
 	union {					/* ott_lock */
 		overlay_target_point_t	ott_point;
 		struct overlay_target_dyn {
-			refhash_t	*ott_dhash;
+			qqcache_t	*ott_cache;
 			avl_tree_t	ott_tree;
 		} ott_dyn;
 	} ott_u;
@@ -118,6 +118,8 @@ typedef struct overlay_dev {
 	avl_node_t	odd_muxnode;		/* managed by mux */
 	overlay_target_t *odd_target;		/* See big theory statement */
 	char		odd_fmamsg[OVERLAY_STATUS_BUFLEN];	/* odd_lock */
+	uint_t		odd_cachesz;
+	uint_t		odd_cachea;
 } overlay_dev_t;
 
 typedef enum overlay_target_entry_flags {
@@ -129,7 +131,7 @@ typedef enum overlay_target_entry_flags {
 
 typedef struct overlay_target_entry {
 	kmutex_t		ote_lock;
-	refhash_link_t		ote_reflink;	/* hashtable link */
+	qqcache_link_t		ote_cachelink;	/* cache link */
 	avl_node_t		ote_avllink;	/* iteration link */
 	list_node_t		ote_qlink;
 	overlay_target_entry_flags_t ote_flags;	/* RW: state flags */

@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2016 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 /*
@@ -451,7 +451,7 @@
  * cache is to cache where we should send a packet on the underlay network,
  * given its mac address. The target cache operates in two modes depending on
  * whether the lookup module was declared to OVERLAY_TARGET_POINT or
- * OVERLAY_TARGET_DYANMIC.
+ * OVERLAY_TARGET_DYNAMIC.
  *
  * In the case where the target cache has been programmed to be
  * OVERLAY_TARGET_POINT, then we only maintain a single overlay_target_point_t
@@ -461,12 +461,14 @@
  * On the other hand, when we have an instance of OVERLAY_TARGET_DYNAMIC, things
  * are much more interesting and as a result, more complicated. We primarily
  * store lists of overlay_target_entry_t's which are stored in both an avl tree
- * and a refhash_t. The primary look up path uses the refhash_t and the avl tree
+ * and a qqcache_t. The primary look up path uses the qqcache_t and the avl tree
  * is only used for a few of the target ioctls used to dump data such that we
  * can get a consistent iteration order for things like dladm show-overlay -t.
  * The key that we use for the reference hashtable is based on the mac address
  * in the cache and currently we just do a simple CRC32 to transform it into a
- * hash.
+ * hash. The qqcache allows us to set a limit on the number of entries that
+ * are stored in the kernel, using the 2Q algorithm to age out old entries.
+ * The size of the cache can be adjusted dynamically using dladm.
  *
  * Each entry maintains a set of flags to indicate the current status of the
  * request. The flags may indicate one of three states: that current cache entry
@@ -830,20 +832,45 @@ typedef enum overlay_dev_prop {
 	OVERLAY_DEV_P_MTU = 0,
 	OVERLAY_DEV_P_VNETID,
 	OVERLAY_DEV_P_ENCAP,
-	OVERLAY_DEV_P_VARPDID
+	OVERLAY_DEV_P_VARPDID,
+	OVERLAY_DEV_P_CACHE_SIZE,
+	OVERLAY_DEV_P_CACHE_A,
 } overlay_dev_prop_t;
 
-#define	OVERLAY_DEV_NPROPS	4
 static const char *overlay_dev_props[] = {
 	"mtu",
 	"vnetid",
 	"encap",
-	"varpd/id"
+	"varpd/id",
+	"cache_size",
+	"cache_a",
 };
+#define	OVERLAY_DEV_NPROPS	ARRAY_SIZE(overlay_dev_props)
 
 #define	OVERLAY_MTU_MIN	576
 #define	OVERLAY_MTU_DEF	1400
 #define	OVERLAY_MTU_MAX	8900
+
+/*
+ * The qqcache 'a' parameter is a percentage of the cache size -- specifically
+ * the percentage of the cache that holds MFU entries. We only support
+ * integral values of a (that should be granular enough). By default
+ * we bias the cache towards holding more MFU entries, though this is a
+ * arbitrary number, and might need to be adjusted based on real-world
+ * experience.
+ */
+#define	OVERLAY_CACHE_A_MAX	100
+#define	OVERLAY_CACHE_A_DEF	75
+#define	OVERLAY_CACHE_A_MIN	0
+
+/*
+ * The cache limits are also somewhat arbitrary. 1 million entries would
+ * result in around 200Mb of kernel memory, and a single fabric with
+ * 1 million entries is well beyond the expected size of any fabric.
+ */
+#define	OVERLAY_CACHE_MIN	0
+#define	OVERLAY_CACHE_MAX	10000000
+#define	OVERLAY_CACHE_DEF	1024
 
 overlay_dev_t *
 overlay_hold_by_dlid(datalink_id_t id)
@@ -1261,6 +1288,9 @@ overlay_i_create(void *karg, intptr_t arg, int mode, cred_t *cred, int *rvalp)
 	}
 	odd->odd_vid = oicp->oic_vnetid;
 
+	odd->odd_cachesz = OVERLAY_CACHE_DEF;
+	odd->odd_cachea = OVERLAY_CACHE_A_DEF;
+
 	mac = mac_alloc(MAC_VERSION);
 	if (mac == NULL) {
 		mutex_exit(&overlay_dev_lock);
@@ -1616,6 +1646,7 @@ overlay_i_propinfo(void *karg, intptr_t arg, int mode, cred_t *cred,
 	uint_t propid = UINT_MAX;
 	overlay_ioc_propinfo_t *oip = karg;
 	overlay_prop_handle_t phdl = (overlay_prop_handle_t)oip;
+	uint32_t def = 0;
 
 	odd = overlay_hold_by_dlid(oip->oipi_linkid);
 	if (odd == NULL)
@@ -1695,6 +1726,22 @@ overlay_i_propinfo(void *karg, intptr_t arg, int mode, cred_t *cred,
 		overlay_prop_set_prot(phdl, OVERLAY_PROP_PERM_READ);
 		overlay_prop_set_type(phdl, OVERLAY_PROP_T_UINT);
 		overlay_prop_set_nodefault(phdl);
+		break;
+	case OVERLAY_DEV_P_CACHE_SIZE:
+		def = OVERLAY_CACHE_DEF;
+		overlay_prop_set_prot(phdl, OVERLAY_PROP_PERM_RW);
+		overlay_prop_set_type(phdl, OVERLAY_PROP_T_UINT);
+		overlay_prop_set_default(phdl, &def, sizeof (def));
+		overlay_prop_set_range_uint32(phdl, OVERLAY_CACHE_MIN,
+		    OVERLAY_CACHE_MAX);
+		break;
+	case OVERLAY_DEV_P_CACHE_A:
+		def = OVERLAY_CACHE_A_DEF;
+		overlay_prop_set_prot(phdl, OVERLAY_PROP_PERM_RW);
+		overlay_prop_set_type(phdl, OVERLAY_PROP_T_UINT);
+		overlay_prop_set_default(phdl, &def, sizeof (def));
+		overlay_prop_set_range_uint32(phdl, OVERLAY_CACHE_A_MIN,
+		    OVERLAY_CACHE_A_MAX);
 		break;
 	default:
 		overlay_hold_rele(odd);
@@ -1805,6 +1852,20 @@ overlay_i_getprop(void *karg, intptr_t arg, int mode, cred_t *cred,
 		}
 		mutex_exit(&odd->odd_lock);
 		break;
+	case OVERLAY_DEV_P_CACHE_SIZE:
+		mutex_enter(&odd->odd_lock);
+		bcopy(&odd->odd_cachesz, oip->oip_value,
+		    sizeof (odd->odd_cachesz));
+		mutex_exit(&odd->odd_lock);
+		oip->oip_size = sizeof (odd->odd_cachesz);
+		break;
+	case OVERLAY_DEV_P_CACHE_A:
+		mutex_enter(&odd->odd_lock);
+		bcopy(&odd->odd_cachea, oip->oip_value,
+		    sizeof (odd->odd_cachea));
+		mutex_exit(&odd->odd_lock);
+		oip->oip_size = sizeof (odd->odd_cachea);
+		break;
 	default:
 		ret = ENOENT;
 	}
@@ -1846,6 +1907,83 @@ overlay_setprop_vnetid(overlay_dev_t *odd, uint64_t vnetid)
 	mutex_exit(&odd->odd_lock);
 }
 
+static int
+overlay_setprop_cache_size(overlay_dev_t *odd, uint32_t size)
+{
+	overlay_target_t *ott;
+	int ret = 0;
+
+	if (size == 0)
+		size = OVERLAY_CACHE_DEF;
+
+	/*
+	 * Since the minimum cache size is currently 0, some compilers will
+	 * complain about a comparison of 'size < 0' for an unsigned type
+	 * since it's always true. As a result, we only check the max size.
+	 * If the min value is changed to a non-zero value, a check should be
+	 * added for the minimum bound as well.
+	 */
+	if (size > OVERLAY_CACHE_MAX)
+		return (EINVAL);
+
+	mutex_enter(&odd->odd_lock);
+	ott = odd->odd_target;
+
+	/*
+	 * If ott != NULL, ott->ott_mode is read only, and we don't
+	 * need to acquire the lock to check the value of ott_mode.
+	 */
+	if (ott != NULL && ott->ott_mode == OVERLAY_TARGET_DYNAMIC) {
+		mutex_enter(&ott->ott_lock);
+		ret = qqcache_adjust_size(ott->ott_u.ott_dyn.ott_cache, size);
+		mutex_exit(&ott->ott_lock);
+	}
+
+	if (ret == 0)
+		odd->odd_cachesz = size;
+
+	mutex_exit(&odd->odd_lock);
+
+	return (ret);
+}
+
+static int
+overlay_setprop_cache_a(overlay_dev_t *odd, uint32_t a)
+{
+	overlay_target_t *ott;
+	int ret = 0;
+
+	/*
+	 * Similar to the cache size, since the range of a is an integral
+	 * percent (0-100), we omit a 'a < 0' comparison when validating
+	 * the value (and only validate the upper bound) of a since some
+	 * compilers will complain about the tautology.
+	 */
+	if (a > OVERLAY_CACHE_A_MAX)
+		return (EINVAL);
+
+	mutex_enter(&odd->odd_lock);
+	ott = odd->odd_target;
+
+	/*
+	 * If ott != NULL, ott->ott_mode is read only, and we don't
+	 * need to acquire the lock to check the value of ott_mode.
+	 */
+	if (ott != NULL && ott->ott_mode == OVERLAY_TARGET_DYNAMIC) {
+		mutex_enter(&ott->ott_lock);
+		ret = qqcache_adjust_a(ott->ott_u.ott_dyn.ott_cache, a);
+		mutex_exit(&ott->ott_lock);
+	}
+
+	if (ret == 0)
+		odd->odd_cachea = a;
+
+	mutex_exit(&odd->odd_lock);
+
+	return (ret);
+
+}
+
 /* ARGSUSED */
 static int
 overlay_i_setprop(void *karg, intptr_t arg, int mode, cred_t *cred,
@@ -1856,7 +1994,7 @@ overlay_i_setprop(void *karg, intptr_t arg, int mode, cred_t *cred,
 	overlay_ioc_prop_t *oip = karg;
 	uint_t propid = UINT_MAX;
 	mac_perim_handle_t mph;
-	uint64_t maxid, *vidp;
+	uint64_t maxid, *vidp, *sizep, *ap;
 
 	if (oip->oip_size > OVERLAY_PROP_SIZEMAX)
 		return (EINVAL);
@@ -1878,8 +2016,9 @@ overlay_i_setprop(void *karg, intptr_t arg, int mode, cred_t *cred,
 		int i;
 
 		for (i = 0; i < OVERLAY_DEV_NPROPS; i++) {
-			if (strcmp(overlay_dev_props[i], oip->oip_name) == 0)
+			if (strcmp(overlay_dev_props[i], oip->oip_name) == 0) {
 				break;
+			}
 			if (i == OVERLAY_DEV_NPROPS) {
 				ret = odd->odd_plugin->ovp_ops->ovpo_setprop(
 				    odd->odd_pvoid, oip->oip_name,
@@ -1941,6 +2080,22 @@ overlay_i_setprop(void *karg, intptr_t arg, int mode, cred_t *cred,
 	case OVERLAY_DEV_P_ENCAP:
 	case OVERLAY_DEV_P_VARPDID:
 		ret = EPERM;
+		break;
+	case OVERLAY_DEV_P_CACHE_SIZE:
+		if (oip->oip_size != sizeof (uint64_t)) {
+			ret = EINVAL;
+			break;
+		}
+		sizep = (uint64_t *)oip->oip_value;
+		ret = overlay_setprop_cache_size(odd, *sizep);
+		break;
+	case OVERLAY_DEV_P_CACHE_A:
+		if (oip->oip_size != sizeof (uint64_t)) {
+			ret = EINVAL;
+			break;
+		}
+		ap = (uint64_t *)oip->oip_value;
+		ret = overlay_setprop_cache_a(odd, *ap);
 		break;
 	default:
 		ret = ENOENT;
