@@ -300,6 +300,7 @@ GENUNIX_OBJS +=	\
 		resolvepath.o	\
 		retire_store.o	\
 		process.o	\
+		qqcache.o	\
 		rlimit.o	\
 		rmap.o		\
 		rw.o		\

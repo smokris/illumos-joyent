@@ -491,6 +491,8 @@ CHKHDRS=			\
 	ptem.h			\
 	ptms.h			\
 	ptyvar.h		\
+	qqcache.h		\
+	qqcache_impl.h		\
 	raidioctl.h		\
 	ramdisk.h		\
 	random.h		\
