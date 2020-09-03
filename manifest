@@ -10933,6 +10933,7 @@ f usr/sbin/nscd 0555 root bin
 f usr/sbin/nvmeadm 0555 root bin
 f usr/sbin/nwamadm 0555 root bin
 f usr/sbin/nwamcfg 0555 root bin
+f usr/sbin/ovroute 0555 root bin
 f usr/sbin/pbind 0555 root sys
 f usr/sbin/pcitool 0555 root bin
 f usr/sbin/ping 4555 root bin
