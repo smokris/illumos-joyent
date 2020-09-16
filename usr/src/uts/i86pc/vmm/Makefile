@@ -43,9 +43,6 @@ INSTALL_TARGET	= $(BINARY) $(ROOTMODULE) $(ROOT_CONFFILE)
 #	Overrides and additions
 #
 
-=======
-CERRWARN	+= -_gcc=-Wno-empty-body
-
 # 3rd party code
 SMOFF += all_func_returns
 

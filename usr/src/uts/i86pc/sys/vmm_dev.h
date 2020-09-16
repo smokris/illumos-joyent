@@ -342,6 +342,7 @@ _Static_assert(sizeof(struct vm_readwrite_kernemu_device) == 24, "ABI");
 #define	VM_SUSPEND_CPU			(VMM_IOC_BASE | 0x1d)
 #define	VM_RESUME_CPU			(VMM_IOC_BASE | 0x1e)
 
+#define	VM_ARC_RESV			(VMM_IOC_BASE | 0xfe)
 
 #define	VM_DEVMEM_GETOFFSET		(VMM_IOC_BASE | 0xff)
 
