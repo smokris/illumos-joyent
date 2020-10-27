@@ -45,7 +45,6 @@
 #include <netinet/udp.h>
 
 #include <sys/overlay_impl.h>
-#include <sys/sdt.h>
 
 /*
  * We normally should not need to do a msgpullup() on an mblk_t.
@@ -56,7 +55,7 @@
  * so we define some dtrace probes to help identify those if they occur.
  */
 #define	OVERLAY_PULLUPMSG(mp, reason) \
-    DTRACE_PROBE2(overlay__pullupmsg, mblk_t *, mp, char *, reason)
+    DTRACE_PROBE2(__overlay_pullupmsg, mblk_t *, mp, const char *, reason)
 
 
 /*
@@ -763,6 +762,7 @@ again:
 		mutex_exit(&entry->ote_lock);
 		if (queue == B_TRUE)
 			overlay_target_queue(entry);
+		OVERLAY_FREEMSG(mp, "overlay_pkt_init failed");
 		freemsg(mp);
 		goto again;
 	}
@@ -779,7 +779,7 @@ again:
 		bcopy(&pkt.op_dstaddr, &otl->otl_u.otl_l3.otl3_dest,
 		    sizeof (struct in6_addr));
 
-		DTRACE_PROBE3(overlay__lookup__vl3__req,
+		DTRACE_PROBE3(__overlay_vl3__lookup__req,
 		    uintptr_t, otl->otl_reqid, uint64_t, otl->otl_vnetid,
 		    struct in6_addr *, &otl->otl_u.otl_l3.otl3_dest);
 	} else {
@@ -792,7 +792,7 @@ again:
 		otl->otl_u.otl_l2.otl2_sap = pkt.op_mhi.mhi_bindsap;
 		otl->otl_u.otl_l2.otl2_vlan = VLAN_ID(pkt.op_mhi.mhi_tci);
 
-		DTRACE_PROBE3(overlay__lookup__vl2__req,
+		DTRACE_PROBE3(__overlay_vl2__lookup__req,
 		    uintptr_t, otl->otl_reqid, uint64_t, otl->otl_vnetid,
 		    uint8_t *, otl->otl_u.otl_l2.otl2_dstaddr);
 	}
@@ -844,13 +844,13 @@ overlay_target_lookup_respond(overlay_target_hdl_t *thdl, void *arg)
 	entry->ote_vtime = gethrtime();
 
 	if (OTE_IS_L3(entry)) {
-		DTRACE_PROBE2(overlay__lookup__vl3__resp,
+		DTRACE_PROBE2(__overlay_vl3__lookup__resp,
 		    uintptr_t, otr->otr_reqid,
 		    uint8_t *, entry->ote_entry.otp_mac);
 	} else {
 		uint16_t port = ntohs(entry->ote_entry.otp_port);
 
-		DTRACE_PROBE3(overlay__lookup__vl2__resp,
+		DTRACE_PROBE3(__overlay_vl2__lookup__resp,
 		    uintptr_t, otr->otr_reqid,
 		    struct in6_addr *, &entry->ote_entry.otp_ip,
 		    uint16_t, port);
@@ -922,6 +922,8 @@ overlay_target_lookup_drop(overlay_target_hdl_t *thdl, void *arg)
 
 	if (queue == B_TRUE)
 		overlay_target_queue(entry);
+
+	OVERLAY_FREEMSG(mp, "received OVERLAY_TARGET_DROP ioctl");
 	freemsg(mp);
 
 done:
@@ -2165,10 +2167,13 @@ again:
 	}
 
 done:
-	if (ret == 0 && first_mp != orig_mp)
+	if (ret == 0 && first_mp != orig_mp) {
+		OVERLAY_FREEMSG(orig_mp,
+		    "freeing original message after pullup");
 		freemsg(orig_mp);
-	else
+	} else {
 		op->op_mblk = first_mp;
+	}
 
 	return (ret);
 }

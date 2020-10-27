@@ -33,6 +33,7 @@
 #include <sys/qqcache.h>
 #include <sys/ethernet.h>
 #include <sys/list.h>
+#include <sys/sdt.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -248,6 +249,9 @@ typedef struct overlay_pkt {
 #define	OVERLAY_TARGET_MINOR	((minor_t)0)
 #define	OVERLAY_ROUTER_MINOR	((minor_t)1)
 #define	OVERLAY_MINOR_START	2
+
+#define	OVERLAY_FREEMSG(mp, reason) \
+    DTRACE_PROBE2(__overlay_freemsg, mblk_t *, mp, const char *, reason)
 
 extern dev_info_t *overlay_dip;
 

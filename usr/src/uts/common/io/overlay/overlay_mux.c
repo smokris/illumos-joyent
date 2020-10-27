@@ -38,11 +38,6 @@
 
 #include <sys/overlay_impl.h>
 
-#include <sys/sdt.h>
-
-#define	OVERLAY_FREEMSG(mp, reason) \
-    DTRACE_PROBE2(overlay__freemsg, mblk_t *, mp, char *, reason)
-
 static list_t overlay_mux_list;
 static kmutex_t overlay_mux_lock;
 
@@ -204,6 +199,18 @@ overlay_mux_recv(ksocket_t ks, mblk_t *mpchain, size_t msgsize, int oob,
 		fmp = mp;
 		mp = fmp->b_cont;
 		freeb(fmp);
+
+		/*
+		 * In cases of looped-back vxlan, that tends to have a
+		 * prepended IP+UDP-only mblk, followed by the data.  Parsing
+		 * would've made that mblk a zero-length one (rptr == wptr).
+		 */
+		if (mp->b_rptr == mp->b_wptr && mp->b_cont != NULL) {
+			/* Ended up with zero-length mblk, lose it! */
+			fmp = mp;
+			mp = fmp->b_cont;
+			freeb(fmp);
+		}
 
 		/*
 		 * Until we have VXLAN-or-other-decap HW acceleration support
@@ -455,8 +462,10 @@ overlay_mux_tx(overlay_mux_t *mux, struct msghdr *hdr, mblk_t *mp)
 	 * b_cont of mp post-call).  We can't hold up this message (it's a
 	 * datagram), so we drop, and let the caller cope.
 	 */
-	if (ret != 0)
+	if (ret != 0) {
+		OVERLAY_FREEMSG(mp, "ksocket_sendmblk failed");
 		freemsg(mp);
+	}
 
 	return (ret);
 }
