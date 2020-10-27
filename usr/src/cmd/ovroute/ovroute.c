@@ -35,6 +35,14 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+/*
+ * To facilitate potential future changes, we have an undocumented
+ * "_version" subcommand that net-agent can use to determine the cmdline
+ * options supported. This should follow semver semantics.
+ */
+#define	OVROUTE_MAJOR	1
+#define	OVROUTE_MINOR	0
+
 typedef enum {
 	OVPARAM_NONE =		0x00,
 	OVPARAM_DEVICE =	0x01,
@@ -167,6 +175,8 @@ static int do_ioctl(int, void *, boolean_t);
 
 static int do_help(int, char **);
 
+static int do_version(int, char **);
+
 static int do_router(int, char **);
 static int do_router_create(int, char **);
 static int do_router_delete(int, char **);
@@ -188,6 +198,7 @@ static void parse_addr(const char *, struct in6_addr *, uint8_t *);
 static void parse_addr_port(const char *, struct sockaddr_in6 *);
 
 static dispatch_tbl_t main_tbl[] = {
+	{ "_version", do_version },
 	{ "router", do_router },
 	{ "route-table", do_route_table },
 	{ "help", do_help },
@@ -244,12 +255,12 @@ usage(void)
 "Usage: %1$s router create -d overlay -m macaddr -v vlan -r route_table \n"
 "\t-a address/mask [-a address/mask] router_id\n"
 "       %1$s router delete -d overlay router_id\n"
+"       %1$s router get -d overlay [router_id...]\n"
 "       %1$s router set-routing-table -d overlay -r route_table router_id\n"
-"       %1$s router get [router_id...]\n"
 "       %1$s route-table create -d overlay routetbl_id\n"
 "       %1$s route-table delete -d overlay routetbl_id\n"
-"       %1$s route-table set-default -d overlay routetbl_id\n"
 "       %1$s route-table get -d overlay [routetbl_id...]\n"
+"       %1$s route-table set-default -d overlay routetbl_id\n"
 "       %1$s route-table add -d overlay -i routetbl_id destination target\n"
 "       %1$s route-table del -d overlay -i routetbl_id destination target\n",
 	    __progname);
@@ -279,6 +290,13 @@ static int
 do_help(int argc __unused, char **argv __unused)
 {
 	usage();
+}
+
+static int
+do_version(int argc __unused, char **argv __unused)
+{
+	(void) printf("%d.%d\n", OVROUTE_MAJOR, OVROUTE_MINOR);
+	return (0);
 }
 
 static int

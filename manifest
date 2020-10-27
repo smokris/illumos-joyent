@@ -12586,6 +12586,7 @@ f usr/share/man/man1m/nlsadmin.1m 0444 root bin
 f usr/share/man/man1m/nscd.1m 0444 root bin
 f usr/share/man/man1m/nvmeadm.1m 0444 root bin
 f usr/share/man/man1m/nwamd.1m 0444 root bin
+f usr/share/man/man1m/ovroute.1m 0444 root bin
 f usr/share/man/man1m/passmgmt.1m 0444 root bin
 f usr/share/man/man1m/pbind.1m 0444 root bin
 f usr/share/man/man1m/pcitool.1m 0444 root bin
