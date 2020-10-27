@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2018, Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #ifndef _QQCACHE_H
@@ -165,9 +165,15 @@ extern int qqcache_adjust_a(qqcache_t *, size_t);
 extern size_t qqcache_size(const qqcache_t *);
 extern size_t qqcache_a(const qqcache_t *);
 
+extern size_t qqcache_nentries(const qqcache_t *);
+
 /* Iterate through entries. */
 extern void *qqcache_first(qqcache_t *);
 extern void *qqcache_next(qqcache_t *, void *);
+
+/* Lookup stats */
+extern uint64_t qqcache_lookups(const qqcache_t *);
+extern uint64_t qqcache_hits(const qqcache_t *);
 
 #ifdef __cplusplus
 }

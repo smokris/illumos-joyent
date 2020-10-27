@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2018, Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #ifndef _QQCACHE_IMPL_H
@@ -31,8 +31,8 @@ CTASSERT(QQCACHE_INSERT_LIST < QQCACHE_NUM_LISTS);
 CTASSERT(QQCACHE_NUM_LISTS >= 2);
 
 typedef struct qqcache_list {
-	list_t	qqcl_list;
-	size_t	qqcl_len;
+	list_t		qqcl_list;
+	size_t		qqcl_len;
 } qqcache_list_t;
 
 struct qqcache {
@@ -45,6 +45,8 @@ struct qqcache {
 	size_t		qqc_size;
 	size_t		qqc_a;
 	size_t		qqc_max[QQCACHE_NUM_LISTS];
+	uint64_t	qqc_lookups;
+	uint64_t	qqc_hits;
 	qqcache_list_t	qqc_lists[QQCACHE_NUM_LISTS];
 	qqcache_list_t	qqc_buckets[];
 };
@@ -52,18 +54,12 @@ struct qqcache {
 #define	QQCACHE_LIST(qqc, lnk) \
 	(&(qqc)->qqc_lists[(lnk)->qqln_listnum])
 
-#ifdef lint
-extern qqcache_link_t *obj_to_link(qqcache_t *, void *);
-extern void *link_to_obj(qqcache_t *, qqcache_link_t *);
-extern void *obj_to_tag(qqcache_t *, void *);
-#else
 #define	obj_to_link(_q, _o) \
 	((qqcache_link_t *)(((char *)(_o)) + (_q)->qqc_link_off))
 #define	link_to_obj(_q, _l) \
 	((void *)(((char *)(_l)) - (_q)->qqc_link_off))
 #define	obj_to_tag(_q, _o) \
 	((void *)(((char *)(_o)) + (_q)->qqc_tag_off))
-#endif
 
 #ifdef __cplusplus
 }

@@ -354,8 +354,12 @@ qqcache_lookup(qqcache_t *qc, const void *tp)
 	qqcache_list_t *src;
 	uint_t tgtnum;
 
+	qc->qqc_lookups++;
+
 	if ((lp = qqcache_hash_lookup(qc, tp, NULL)) == NULL)
 		return (NULL);
+
+	qc->qqc_hits++;
 
 	src = QQCACHE_LIST(qc, lp);
 	list_remove(&src->qqcl_list, lp);
@@ -441,4 +445,27 @@ qqcache_next(qqcache_t *qc, void *obj)
 	}
 
 	return (NULL);
+}
+
+uint64_t
+qqcache_lookups(const qqcache_t *qc)
+{
+	return (qc->qqc_lookups);
+}
+
+uint64_t
+qqcache_hits(const qqcache_t *qc)
+{
+	return (qc->qqc_hits);
+}
+
+size_t
+qqcache_nentries(const qqcache_t *qc)
+{
+	size_t tot = 0;
+
+	for (size_t i = 0; i < QQCACHE_NUM_LISTS; i++)
+		tot += qc->qqc_lists[i].qqcl_len;
+
+	return (tot);
 }
