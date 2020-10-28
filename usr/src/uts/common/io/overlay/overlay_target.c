@@ -2092,10 +2092,13 @@ again:
 	case ETHERTYPE_IPV6:
 		l2_len = sizeof (ip6_t);
 		break;
+	case ETHERTYPE_ARP:
+		l2_len = 28;
+		break;
 	default:
 		/*
-		 * For any other types (e.g. ARP), we don't bother checking
-		 * for any further segmentation of the data.
+		 * For any other types, we don't bother checking for any
+		 * further segmentation of the data.
 		 */
 		goto done;
 	}
@@ -2178,6 +2181,15 @@ again:
 		bcopy(&op->op2_u.op2_ipv6->ip6_src, &op->op_srcaddr,
 		    sizeof (struct in6_addr));
 		break;
+	case ETHERTYPE_ARP:
+		if (len < 28) {
+			*reasonp = "truncated ARP packet";
+			ret = EINVAL;
+			goto done;
+		}
+
+		/* We don't need to do anything else for ARP packets */
+		goto done;
 	}
 
 	switch (op->op_l3proto) {

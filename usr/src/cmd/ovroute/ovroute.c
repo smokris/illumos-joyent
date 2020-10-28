@@ -1381,6 +1381,12 @@ parse_addr_port(const char *str, struct sockaddr_in6 *addrp)
 
 	bzero(addrp, sizeof (struct sockaddr_in6));
 
+	/*
+	 * Since IPv4 addresses are mapped to IPv6, we always set this
+	 * to AF_INET6 for consistency.
+	 */
+	addrp->sin6_family = AF_INET6;
+
 	if (str[0] != '[') {
 		if (strchr(astr, '.') != NULL) {
 			in_addr_t v4;

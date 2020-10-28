@@ -328,6 +328,8 @@ extern int overlay_router_open(dev_t *, int, int, cred_t *);
 extern int overlay_router_ioctl(dev_t, int, intptr_t, int, cred_t *, int *);
 extern int overlay_router_close(dev_t, int, int, cred_t *);
 
+extern boolean_t overlay_router_arp(overlay_dev_t *, overlay_net_t *,
+    overlay_pkt_t *);
 extern int overlay_route(overlay_dev_t *, overlay_net_t *, overlay_pkt_t *,
     struct sockaddr *, socklen_t *);
 

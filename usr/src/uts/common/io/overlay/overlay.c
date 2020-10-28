@@ -925,6 +925,9 @@ static list_t overlay_dev_list;
 uint8_t overlay_macaddr[ETHERADDRL] =
 	{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
 
+static uint8_t overlay_bcast[ETHERADDRL] =
+	{ 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
+
 typedef enum overlay_dev_prop {
 	OVERLAY_DEV_P_MTU = 0,
 	OVERLAY_DEV_P_VNETID,
@@ -1199,6 +1202,7 @@ overlay_m_tx(void *arg, mblk_t *mp_chain)
 		overlay_pkt_t pkt;
 		socklen_t slen;
 		struct sockaddr_storage storage;
+		const uint8_t *daddr;
 
 		mp_chain = mp->b_next;
 		mp->b_next = NULL;
@@ -1211,19 +1215,51 @@ overlay_m_tx(void *arg, mblk_t *mp_chain)
 			mp = mp_chain;
 			continue;
 		}
+		daddr = pkt.op_mhi.mhi_daddr;
 
 		/*
 		 * Check if the destination MAC is a router MAC. If not
 		 * (ont == NULL), do the traditional L2 lookup/queueing.
 		 * If a router MAC, we need to route the packet.
 		 */
-		ont = overlay_hold_net_by_mac(orr, pkt.op_mhi.mhi_daddr);
+		ont = overlay_hold_net_by_mac(orr, daddr);
+
+		/*
+		 * If the packet is addressed to the overlay router or
+		 * a broadcast packet, is an ARP packet, call
+		 * overlay_router_arp() to try to handle it. If
+		 * overlay_router_arp() handled the packet, we free and
+		 * continue, otherwise continue processing.
+		 */
+		if ((ont != NULL ||
+		    bcmp(overlay_bcast, daddr, ETHERADDRL) == 0) &&
+		    pkt.op_mhi.mhi_bindsap == ETHERTYPE_ARP &&
+		    overlay_router_arp(odd, ont, &pkt)) {
+			/*
+			 * If we get here, overlay_router_arp() successfully
+			 * handled the ARP request in pkt, so just free
+			 * normally and continue (i.e. no dtrace probe for
+			 * this)
+			 */
+			freemsg(pkt.op_mblk);
+			mp = mp_chain;
+
+			if (ont != NULL)
+				overlay_net_rele(ont);
+
+			continue;
+		}
+
 		if (ont == NULL) {
 			ret = overlay_target_lookup(odd, &pkt, B_FALSE,
 			    (struct sockaddr *)&storage, &slen);
 			if (ret != OVERLAY_TARGET_OK) {
-				if (ret == OVERLAY_TARGET_DROP)
-					freemsg(mp);
+				if (ret == OVERLAY_TARGET_DROP) {
+					OVERLAY_FREEMSG(pkt.op_mblk,
+					    "overlay_target_lookup returned "
+					    "OVERLAY_TARGET_DROP");
+					freemsg(pkt.op_mblk);
+				}
 				mp = mp_chain;
 				continue;
 			}
@@ -1233,7 +1269,10 @@ overlay_m_tx(void *arg, mblk_t *mp_chain)
 			 * agree, otherwise we drop the packet.
 			 */
 			if (OPKT_VLAN(&pkt) != ont->ont_vlan) {
-				freemsg(mp);
+				OVERLAY_FREEMSG(pkt.op_mblk,
+				    "pkt sent to router with wrong vlan id");
+				freemsg(pkt.op_mblk);
+
 				mp = mp_chain;
 				overlay_net_rele(ont);
 				continue;
@@ -1242,8 +1281,12 @@ overlay_m_tx(void *arg, mblk_t *mp_chain)
 			ret = overlay_route(odd, ont, &pkt,
 			    (struct sockaddr *)&storage, &slen);
 			if (ret != OVERLAY_TARGET_OK) {
-				if (ret == OVERLAY_TARGET_DROP)
-					freemsg(mp);
+				if (ret == OVERLAY_TARGET_DROP) {
+					OVERLAY_FREEMSG(pkt.op_mblk,
+					    "overlay_target_lookup returned "
+					    "OVERLAY_TARGET_DROP");
+					freemsg(pkt.op_mblk);
+				}
 				mp = mp_chain;
 				overlay_net_rele(ont);
 				continue;
@@ -1254,10 +1297,12 @@ overlay_m_tx(void *arg, mblk_t *mp_chain)
 		hdr.msg_name = &storage;
 		hdr.msg_namelen = slen;
 
-		ret = odd->odd_plugin->ovp_ops->ovpo_encap(odd->odd_mh, mp,
-		    &einfo, &ep);
+		ret = odd->odd_plugin->ovp_ops->ovpo_encap(odd->odd_mh,
+		    pkt.op_mblk, &einfo, &ep);
 		if (ret != 0 || ep == NULL) {
-			freemsg(mp);
+			OVERLAY_FREEMSG(pkt.op_mblk,
+			    "overlay encapsulation failed");
+			freemsg(pkt.op_mblk);
 			goto out;
 		}
 
