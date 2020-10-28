@@ -1194,6 +1194,7 @@ overlay_m_tx(void *arg, mblk_t *mp_chain)
 	einfo.ovdi_id = odd->odd_vid;
 	mp = mp_chain;
 	while (mp != NULL) {
+		const char *reason;
 		overlay_net_t *ont;
 		overlay_pkt_t pkt;
 		socklen_t slen;
@@ -1203,8 +1204,9 @@ overlay_m_tx(void *arg, mblk_t *mp_chain)
 		mp->b_next = NULL;
 		ep = NULL;
 
-		ret = overlay_pkt_init(&pkt, odd->odd_mh, mp);
+		ret = overlay_pkt_init(&pkt, odd->odd_mh, mp, &reason);
 		if (ret != 0) {
+			OVERLAY_FREEMSG(mp, reason);
 			freemsg(mp);
 			mp = mp_chain;
 			continue;

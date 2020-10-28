@@ -227,6 +227,8 @@ typedef struct overlay_pkt {
 		unsigned char		*op3_char;
 		struct tcphdra_s	*op3_tcp;
 		struct udphdr		*op3_udp;
+		struct icmph		*op3_icmp;
+		struct icmp6_hdr	*op3_icmp6;
 	} op3_u;
 
 	/*
@@ -255,7 +257,8 @@ typedef struct overlay_pkt {
 
 extern dev_info_t *overlay_dip;
 
-extern int overlay_pkt_init(overlay_pkt_t *, mac_handle_t, mblk_t *);
+extern int overlay_pkt_init(overlay_pkt_t *, mac_handle_t, mblk_t *,
+    const char **);
 
 extern mblk_t *overlay_m_tx(void *, mblk_t *);
 

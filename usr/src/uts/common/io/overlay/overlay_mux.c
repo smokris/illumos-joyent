@@ -74,6 +74,7 @@ static void
 overlay_rx(mac_handle_t mh, overlay_target_t *ott, overlay_router_t *orr,
     mblk_t *mp)
 {
+	const char *reason;
 	overlay_net_t *ont = NULL;
 	struct ether_vlan_header *eth = NULL;
 	overlay_pkt_t op;
@@ -88,9 +89,9 @@ overlay_rx(mac_handle_t mh, overlay_target_t *ott, overlay_router_t *orr,
 		return;
 	}
 
-	if (overlay_pkt_init(&op, mh, mp) != 0) {
-		OVERLAY_FREEMSG(op.op_mblk, "overlay_pkt_init failed");
-		freemsg(op.op_mblk);
+	if (overlay_pkt_init(&op, mh, mp, &reason) != 0) {
+		OVERLAY_FREEMSG(mp, reason);
+		freemsg(mp);
 		return;
 	}
 

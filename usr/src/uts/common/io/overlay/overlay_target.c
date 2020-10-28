@@ -42,6 +42,7 @@
 #include <inet/ip.h>
 #include <inet/tcp.h>
 #include <netinet/ip6.h>
+#include <netinet/icmp6.h>
 #include <netinet/udp.h>
 
 #include <sys/overlay_impl.h>
@@ -722,6 +723,7 @@ overlay_target_lookup_request(overlay_target_hdl_t *thdl, void *arg)
 	overlay_target_entry_t *entry;
 	clock_t ret, timeout;
 	overlay_pkt_t pkt;
+	const char *reason;
 
 	timeout = ddi_get_lbolt() + drv_usectohz(MICROSEC);
 again:
@@ -749,20 +751,24 @@ again:
 	 * try again.
 	 */
 	if (overlay_pkt_init(&pkt, entry->ote_odd->odd_mh,
-	    entry->ote_chead) != 0) {
+	    entry->ote_chead, &reason) != 0) {
 		boolean_t queue = B_FALSE;
 		mblk_t *mp = entry->ote_chead;
+
 		entry->ote_chead = mp->b_next;
 		mp->b_next = NULL;
 		if (entry->ote_ctail == mp)
 			entry->ote_ctail = entry->ote_chead;
 		entry->ote_mbsize -= msgsize(mp);
+
 		if (entry->ote_chead != NULL)
 			queue = B_TRUE;
 		mutex_exit(&entry->ote_lock);
+
 		if (queue == B_TRUE)
 			overlay_target_queue(entry);
-		OVERLAY_FREEMSG(mp, "overlay_pkt_init failed");
+
+		OVERLAY_FREEMSG(mp, reason);
 		freemsg(mp);
 		goto again;
 	}
@@ -1931,6 +1937,13 @@ overlay_mblk_offset(mblk_t **restrict mpp, size_t offset, size_t *restrict lenp)
 	return (mp->b_rptr + offset);
 }
 
+typedef enum overlay_ip6_res {
+	OIP6_OK,
+	OIP6_FRAGMENT,
+	OIP6_TRUNCATED,
+	OIP6_PULLUP
+} overlay_ip6_res_t;
+
 /*
  * Locate the L3 header in an IPv6 packet. mpp is the ptr to the address of
  * the mblk_t that contains the fixed portion of the IPv6 header, hdrp points
@@ -1940,17 +1953,15 @@ overlay_mblk_offset(mblk_t **restrict mpp, size_t offset, size_t *restrict lenp)
  * the start of the L3 header. *protop is set to the L3 protocol (TCP, UDP,
  * etc.).
  */
-static void *
+static overlay_ip6_res_t
 overlay_ip6_l3(mblk_t **mpp, unsigned char *hdrp, size_t *restrict lenp,
-    uint8_t *restrict protop, boolean_t *needpullup)
+    uint8_t *restrict protop, unsigned char **l3hdrpp)
 {
 	ip6_t *ip6;
 	struct ip6_opt *ip6_opt;
 	size_t offset;
 	uint8_t len;
 	uint8_t opt_type;
-
-	*needpullup = B_FALSE;
 
 	ip6 = (ip6_t *)hdrp;
 	offset = hdrp - (*mpp)->b_rptr;
@@ -1965,10 +1976,11 @@ overlay_ip6_l3(mblk_t **mpp, unsigned char *hdrp, size_t *restrict lenp,
 		switch (opt_type) {
 		case IPPROTO_TCP:
 		case IPPROTO_UDP:
+		case IPPROTO_ICMPV6:
 			goto done;
 		case IPPROTO_FRAGMENT:
 			/* Punt on fragments */
-			return (NULL);
+			return (OIP6_FRAGMENT);
 		case IP6OPT_PAD1:
 			offset++;
 			break;
@@ -1989,10 +2001,11 @@ overlay_ip6_l3(mblk_t **mpp, unsigned char *hdrp, size_t *restrict lenp,
 		 * option header is not split across mblk_ts.
 		 */
 		ip6_opt = overlay_mblk_offset(mpp, offset, lenp);
-		if (*lenp < 2) {
-			*needpullup = B_TRUE;
-			return (NULL);
-		}
+		if (ip6_opt == NULL)
+			return (OIP6_TRUNCATED);
+		if (*lenp < 2)
+			return (OIP6_PULLUP);
+
 		opt_type = ip6_opt->ip6o_type;
 		len = ip6_opt->ip6o_len;
 	}
@@ -2000,20 +2013,37 @@ overlay_ip6_l3(mblk_t **mpp, unsigned char *hdrp, size_t *restrict lenp,
 done:
 	*protop = opt_type;
 	if (opt_type == IPPROTO_NONE)
-		return (NULL);
+		return (OIP6_TRUNCATED);
 
-	return (overlay_mblk_offset(mpp, offset, lenp));
+	*l3hdrpp = overlay_mblk_offset(mpp, offset, lenp);
+	if (*l3hdrpp == NULL)
+		return (OIP6_TRUNCATED);
+
+	return (OIP6_OK);
 }
 
+/*
+ * This fills out 'op' with the data in 'orig_mp'.
+ *
+ * On success, 0 is returned and op->op_mblk will point to the corresponding
+ * mblk_t. If msgpullup() had to be used on 'mp', 'orig_mp' will be freed and
+ * op->op_mblk will point to the pulled-up copy of orig_mp.
+ *
+ * On failure, a non-zero value is returned and 'orig_mp' is not modified.
+ * Additionally, *reasonp is set to a static string describing the reason
+ * for the failure (primairly for use for dtrace probes).
+ */
 int
 overlay_pkt_init(overlay_pkt_t *restrict op, mac_handle_t restrict mh,
-    mblk_t *restrict orig_mp)
+    mblk_t *restrict orig_mp, const char **reasonp)
 {
 	mblk_t *first_mp = orig_mp;
 	mblk_t *mp;
 	size_t len, l2_len, l3_len;
 	int ret = 0;
 	boolean_t looped = B_FALSE;
+
+	*reasonp = NULL;
 
 again:
 	mp = first_mp;
@@ -2038,8 +2068,10 @@ again:
 
 	if (op->op_mhi.mhi_hdrsize > len) {
 		OVERLAY_PULLUPMSG(orig_mp, "split ethernet header");
-		if ((first_mp = msgpullup(orig_mp, -1)) == NULL)
+		if ((first_mp = msgpullup(orig_mp, -1)) == NULL) {
+			*reasonp = "msgpullup failed";
 			return (ENOMEM);
+		}
 
 		looped = B_TRUE;
 		goto again;
@@ -2070,8 +2102,10 @@ again:
 
 	if (len < l2_len) {
 		OVERLAY_PULLUPMSG(orig_mp, "L2 header is split");
-		if ((first_mp = msgpullup(orig_mp, -1)) == NULL)
+		if ((first_mp = msgpullup(orig_mp, -1)) == NULL) {
+			*reasonp = "msgpullup failed";
 			return (ENOMEM);
+		}
 
 		looped = B_TRUE;
 		goto again;
@@ -2101,6 +2135,7 @@ again:
 		if (l2_len < IP_SIMPLE_HDR_LENGTH ||
 		    l2_len > IP_MAX_HDR_LENGTH ||
 		    l2_len > ntohs(op->op2_u.op2_ipv4->ipha_length)) {
+			*reasonp = "IP header length invalid";
 			ret = EINVAL;
 			goto done;
 		}
@@ -2114,24 +2149,35 @@ again:
 		IN6_IPADDR_TO_V4MAPPED(op->op2_u.op2_ipv4->ipha_src,
 		    &op->op_srcaddr);
 		break;
-	case ETHERTYPE_IPV6: {
-		boolean_t do_pullup = B_FALSE;
-
-		op->op3_u.op3_char = overlay_ip6_l3(&mp, op->op2_u.op2_char,
-		    &len, &op->op_l3proto, &do_pullup);
-		if (do_pullup) {
-			if ((first_mp = msgpullup(orig_mp, -1)) == NULL)
-				return (ENOMEM);
+	case ETHERTYPE_IPV6:
+		switch (overlay_ip6_l3(&mp, op->op2_u.op2_char, &len,
+		    &op->op_l3proto, &op->op3_u.op3_char)) {
+		case OIP6_OK:
+			break;
+		case OIP6_FRAGMENT:
+			*reasonp = "fragmented IPv6 packet";
+			ret = EBADMSG;
+			goto done;
+		case OIP6_TRUNCATED:
+			*reasonp = "truncated IPv6 packet";
+			ret = EINVAL;
+			goto done;
+		case OIP6_PULLUP:
+			if ((first_mp = msgpullup(orig_mp, -1)) == NULL) {
+				*reasonp = "msgpullup failed";
+				ret = ENOMEM;
+				goto done;
+			}
 
 			looped = B_TRUE;
 			goto again;
 		}
+
 		bcopy(&op->op2_u.op2_ipv6->ip6_dst, &op->op_dstaddr,
 		    sizeof (struct in6_addr));
 		bcopy(&op->op2_u.op2_ipv6->ip6_src, &op->op_srcaddr,
 		    sizeof (struct in6_addr));
 		break;
-	}
 	}
 
 	switch (op->op_l3proto) {
@@ -2141,14 +2187,33 @@ again:
 	case IPPROTO_UDP:
 		l3_len = sizeof (struct udphdr);
 		break;
+	case IPPROTO_ICMP:
+		if (op->op_mhi.mhi_bindsap != ETHERTYPE_IP) {
+			*reasonp = "ICMP in non-IP packet";
+			ret = EINVAL;
+			goto done;
+		}
+		l3_len = ICMPH_SIZE;
+		break;
+	case IPPROTO_ICMPV6:
+		if (op->op_mhi.mhi_bindsap != ETHERTYPE_IPV6) {
+			*reasonp = "ICMPv6 in non-IPv6 packet";
+			ret = EINVAL;
+			goto done;
+		}
+		l3_len = ICMP6_MINLEN;
+		break;
 	default:
 		l3_len = 0;
 	}
 
 	if (len < l3_len) {
 		OVERLAY_PULLUPMSG(orig_mp, "L3 header is split");
-		if ((first_mp = msgpullup(orig_mp, -1)) == NULL)
-			return (ENOMEM);
+		if ((first_mp = msgpullup(orig_mp, -1)) == NULL) {
+			*reasonp = "msgpullup failed";
+			ret = ENOMEM;
+			goto done;
+		}
 
 		looped = B_TRUE;
 		goto again;
@@ -2167,13 +2232,29 @@ again:
 	}
 
 done:
-	if (ret == 0 && first_mp != orig_mp) {
-		OVERLAY_FREEMSG(orig_mp,
-		    "freeing original message after pullup");
-		freemsg(orig_mp);
-	} else {
-		op->op_mblk = first_mp;
+	if (first_mp != orig_mp) {
+		if (ret == 0) {
+			/*
+			 * We had to do a msgpullup(), but were otherwise
+			 * successful. We free the original mblk_t, and
+			 * use our pulled-up mblk (first_mp).
+			 */
+			OVERLAY_FREEMSG(orig_mp,
+			    "freeing original mblk after pullup");
+			freemsg(orig_mp);
+		} else if (first_mp != NULL) {
+			/*
+			 * Even after doing a msgpullup(), there was some
+			 * other problem. We're returning an error so
+			 * dispose of our pulled-up msg and leave the
+			 * original untouched.
+			 */
+			freemsg(first_mp);
+		}
 	}
+
+	if (ret == 0)
+		op->op_mblk = first_mp;
 
 	return (ret);
 }
