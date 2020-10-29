@@ -438,7 +438,69 @@ packet.
 .\" ================================
 .Sh EXAMPLES
 .\" ================================
-TODO.
+.Bl -inset
+.It Example 1
+.Pp
+In this setup, we have the following hosts, all using an overlay instance
+.Ql sdc_overlay7224243
+with a vnet ID of
+.Ql 7224243 :
+.TS
+box tab (@);
+c | c | c
+l | l | l.
+HOST@VLAN@SUBNET
+_
+hostA@42@192.168.1.0/24
+_
+hostB@2112@192.168.2.0/24
+_
+hostC@42@192.168.1.0/24
+@2112@192.168.2.0/24
+.TE
+.Pp
+The router instances will be as follows:
+.TS
+box tab (@);
+c | c | c
+l | l | l.
+SUBNET@ROUTER IP@ROUTER MAC
+_
+192.168.1.0/24@192.168.1.1@90:b8:d0:17:f7:be
+_
+192.168.2.0/24@192.168.2.2@90:b8:d0:7f:36:ac
+.TE
+.Pp
+To enable all three vnics to route traffic between the two subnets, the
+appropriate router instances must be created on each host.
+Additionally, a routing table must be created to indicate that the traffic sent
+to the router IP should be routed to the other subnets.
+.Pp
+The following commands are run on the respective hosts to enable this:
+.Bd -literal
+hostA# ovroute router create -d sdc_overlay7224243 -m 90:b8:d0:17:f7:be -v 42 -a 192.168.1.1/24 router-42
+hostA# ovroute route-table create -d sdc_overlay7224243 rtab-default
+hostA# ovroute route-table set-default -d sdc_overlay7224243 rtab-default
+hostA# ovroute route-table add -d sdc_overlay7224243 -i rtab-default 0.0.0.0/0 0.0.0.0
+
+hostB# ovroute router create -d sdc_overlay7224243 -m 90:b8:d0:7f:36:ac -v 2112 -a 192.168.2.1/24 router-2112
+hostB# ovroute route-table create -d sdc_overlay7224243 rtab-default
+hostB# ovroute route-table set-default -d sdc_overlay7224243 rtab-default
+hostB# ovroute route-table add -d sdc_overlay7224243 -i rtab-default 0.0.0.0/0 0.0.0.0
+
+hostC# ovroute router create -d sdc_overlay7224243 -m 90:b8:d0:17:f7:be -v 42 -a 192.168.1.1/24 router-42
+hostC# ovroute router create -d sdc_overlay7224243 -m 90:b8:d0:7f:36:ac -v 2112 -a 192.168.2.1/24 router-2112
+hostC# ovroute route-table create -d sdc_overlay7224243 rtab-default
+hostC# ovroute route-table set-default -d sdc_overlay7224243 rtab-default
+hostC# ovroute route-table add -d sdc_overlay7224243 -i rtab-default 0.0.0.0/0 0.0.0.0
+.Ed
+.Pp
+Note that
+.Ql 192.168.0.0/16 0.0.0.0
+or similar could also have been used in the routing table to route the
+traffic.
+As long as the destination network and mask match the traffic.
+.El
 .\" ================================
 .Sh INTERFACE STABILITY
 .\" ================================
