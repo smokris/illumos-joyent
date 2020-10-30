@@ -665,8 +665,6 @@ do_router_iter(const char *ovname)
 		    ofmt_strerror(ofmt, oferr, ebuf, sizeof (ebuf)));
 	}
 
-	ofmt_print_header(ofmt);
-
 	for (;;) {
 		ret = ioctl(fd, OVERLAY_ROUTER_NET_ITER, iter);
 
@@ -1015,8 +1013,6 @@ do_routetbl_iter(const char *ovname)
 		    ofmt_strerror(ofmt, oferr, ebuf, sizeof (ebuf)));
 	}
 
-	ofmt_print_header(ofmt);
-
 	for (;;) {
 		int ret;
 
@@ -1086,7 +1082,9 @@ do_routetbl_get(int argc, char **argv)
 		int ret;
 
 		(void) printf("Table: %s\n", argv[i]);
-		ofmt_print_header(ofmt);
+
+		if (i > optind)
+			ofmt_print_header(ofmt);
 
 		/*
 		 * Clear out tbl to be used for the next route table.

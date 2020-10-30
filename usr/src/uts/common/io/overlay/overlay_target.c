@@ -2153,6 +2153,10 @@ again:
 		    &op->op_srcaddr);
 		break;
 	case ETHERTYPE_IPV6:
+		/*
+		 * overlay_ip6_l3() also sets op->op3_u.op3_char for us
+		 * after skipping over any options.
+		 */
 		switch (overlay_ip6_l3(&mp, op->op2_u.op2_char, &len,
 		    &op->op_l3proto, &op->op3_u.op3_char)) {
 		case OIP6_OK:
@@ -2182,6 +2186,7 @@ again:
 		    sizeof (struct in6_addr));
 		break;
 	case ETHERTYPE_ARP:
+		/* There is no L3 with ARP packets */
 		if (len < 28) {
 			*reasonp = "truncated ARP packet";
 			ret = EINVAL;
@@ -2236,10 +2241,40 @@ again:
 	case IPPROTO_TCP:
 		op->op_srcport = ntohs(op->op3_u.op3_tcp->tha_lport);
 		op->op_dstport = ntohs(op->op3_u.op3_tcp->tha_fport);
+
+		/* Whatever is left in this mblk + any remaining fragments */
+		op->op_l3len = len + msgdsize(mp->b_cont);
 		break;
 	case IPPROTO_UDP:
 		op->op_srcport = ntohs(op->op3_u.op3_udp->uh_sport);
 		op->op_dstport = ntohs(op->op3_u.op3_udp->uh_dport);
+
+		/* Whatever is left in this mblk + any remaining fragments */
+		op->op_l3len = len + msgdsize(mp->b_cont);
+		break;
+	case IPPROTO_ICMPV6:
+		/*
+		 * For ICMPv6 packets, we require the entire ICMPv6 payload to
+		 * be contiguous. This is largely to simplify neighbor
+		 * discovery handling for the router IP.
+		 */
+		if (mp->b_cont != NULL) {
+			OVERLAY_PULLUPMSG(orig_mp, "ICMPv6 pkt is split");
+			if ((first_mp = msgpullup(orig_mp, -1)) == NULL) {
+				*reasonp = "msgpullup failed";
+				ret = ENOMEM;
+				goto done;
+			}
+
+			looped = B_TRUE;
+			goto again;
+		}
+
+		/*
+		 * From the above contiguous requirement, this means len
+		 * must be the size of the ICMPv6 data (including header).
+		 */
+		op->op_l3len = len;
 		break;
 	}
 

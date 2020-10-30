@@ -925,7 +925,7 @@ static list_t overlay_dev_list;
 uint8_t overlay_macaddr[ETHERADDRL] =
 	{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
 
-static uint8_t overlay_bcast[ETHERADDRL] =
+uint8_t overlay_bcast[ETHERADDRL] =
 	{ 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
 
 typedef enum overlay_dev_prop {
@@ -1171,6 +1171,46 @@ overlay_m_unicast(void *arg, const uint8_t *macaddr)
 	return (0);
 }
 
+static int
+overlay_tx(overlay_dev_t *odd, overlay_net_t *ont, overlay_pkt_t *pkt,
+    struct sockaddr *addr, socklen_t *slenp)
+{
+	const uint8_t *daddr = pkt->op_mhi.mhi_daddr;
+
+	/*
+	 * No router instance defined for this network, so just perform VL2
+	 * processing.
+	 */
+	if (ont == NULL)
+		return (overlay_target_lookup(odd, pkt, B_FALSE, addr, slenp));
+
+	/*
+	 * If we handle an ARP request or a neighbor request for our
+	 * router IP, drop the original message.
+	 */
+	switch (OPKT_ETYPE(pkt)) {
+	case ETHERTYPE_ARP:
+		if (overlay_router_arp(odd, ont, pkt)) {
+			return (OVERLAY_TARGET_DROP);
+		}
+		break;
+	case ETHERTYPE_IPV6:
+		if (daddr[0] == 0x33 && daddr[1] == 0x33 &&
+		    pkt->op_l3proto == IPPROTO_ICMPV6 &&
+		    overlay_router_ndp(odd, ont, pkt)) {
+			return (OVERLAY_TARGET_DROP);
+		}
+		break;
+	}
+
+	/* If sent to our router MAC, do routing processing */
+	if (bcmp(daddr, ont->ont_mac, ETHERADDRL) == 0)
+		return (overlay_route(odd, ont, pkt, addr, slenp));
+
+	/* Otherwise, just do VL2 processing */
+	return (overlay_target_lookup(odd, pkt, B_FALSE, addr, slenp));
+}
+
 mblk_t *
 overlay_m_tx(void *arg, mblk_t *mp_chain)
 {
@@ -1217,81 +1257,21 @@ overlay_m_tx(void *arg, mblk_t *mp_chain)
 		}
 		daddr = pkt.op_mhi.mhi_daddr;
 
-		/*
-		 * Check if the destination MAC is a router MAC. If not
-		 * (ont == NULL), do the traditional L2 lookup/queueing.
-		 * If a router MAC, we need to route the packet.
-		 */
-		ont = overlay_hold_net_by_mac(orr, daddr);
+		ont = overlay_net_hold_by_vlan(orr,
+			    VLAN_ID(pkt.op_mhi.mhi_tci));
 
-		/*
-		 * If the packet is addressed to the overlay router or
-		 * a broadcast packet, is an ARP packet, call
-		 * overlay_router_arp() to try to handle it. If
-		 * overlay_router_arp() handled the packet, we free and
-		 * continue, otherwise continue processing.
-		 */
-		if ((ont != NULL ||
-		    bcmp(overlay_bcast, daddr, ETHERADDRL) == 0) &&
-		    pkt.op_mhi.mhi_bindsap == ETHERTYPE_ARP &&
-		    overlay_router_arp(odd, ont, &pkt)) {
-			/*
-			 * If we get here, overlay_router_arp() successfully
-			 * handled the ARP request in pkt, so just free
-			 * normally and continue (i.e. no dtrace probe for
-			 * this)
-			 */
-			freemsg(pkt.op_mblk);
-			mp = mp_chain;
+		ret = overlay_tx(odd, ont, &pkt, (struct sockaddr *)&storage,
+		    &slen);
 
-			if (ont != NULL)
-				overlay_net_rele(ont);
+		if (ont != NULL)
+			overlay_net_rele(ont);
 
-			continue;
-		}
-
-		if (ont == NULL) {
-			ret = overlay_target_lookup(odd, &pkt, B_FALSE,
-			    (struct sockaddr *)&storage, &slen);
-			if (ret != OVERLAY_TARGET_OK) {
-				if (ret == OVERLAY_TARGET_DROP) {
-					OVERLAY_FREEMSG(pkt.op_mblk,
-					    "overlay_target_lookup returned "
-					    "OVERLAY_TARGET_DROP");
-					freemsg(pkt.op_mblk);
-				}
-				mp = mp_chain;
-				continue;
-			}
-		} else {
-			/*
-			 * If routing, we need to make sure the MAC and vlan
-			 * agree, otherwise we drop the packet.
-			 */
-			if (OPKT_VLAN(&pkt) != ont->ont_vlan) {
-				OVERLAY_FREEMSG(pkt.op_mblk,
-				    "pkt sent to router with wrong vlan id");
+		if (ret != OVERLAY_TARGET_OK) {
+			if (ret == OVERLAY_TARGET_DROP)
 				freemsg(pkt.op_mblk);
 
-				mp = mp_chain;
-				overlay_net_rele(ont);
-				continue;
-			}
-
-			ret = overlay_route(odd, ont, &pkt,
-			    (struct sockaddr *)&storage, &slen);
-			if (ret != OVERLAY_TARGET_OK) {
-				if (ret == OVERLAY_TARGET_DROP) {
-					OVERLAY_FREEMSG(pkt.op_mblk,
-					    "overlay_target_lookup returned "
-					    "OVERLAY_TARGET_DROP");
-					freemsg(pkt.op_mblk);
-				}
-				mp = mp_chain;
-				overlay_net_rele(ont);
-				continue;
-			}
-			overlay_net_rele(ont);
+			mp = mp_chain;
+			continue;
 		}
 
 		hdr.msg_name = &storage;

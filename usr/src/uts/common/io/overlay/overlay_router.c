@@ -25,7 +25,11 @@
 #include <sys/sysmacros.h>
 #include <sys/policy.h>
 #include <sys/overlay_impl.h>
+
+#include <sys/strsun.h>
 #include <netinet/arp.h>
+#include <netinet/ip6.h>
+#include <netinet/icmp6.h>
 
 typedef enum overlay_router_ioctl_flags {
 	OFF_NONE =	0,		/* no flags */
@@ -223,6 +227,25 @@ overlay_hold_net_by_id(overlay_router_t *orr, const char *id)
 	}
 	mutex_exit(&orr->orr_lock);
 	return (NULL);
+}
+
+/* vlan is in host byte order */
+overlay_net_t *
+overlay_hold_net_by_vlan(overlay_router_t *orr, uint16_t vlan)
+{
+	overlay_net_t *ont = NULL;
+	overlay_net_t ref = {
+		.ont_vlan = vlan
+	};
+
+	ont = avl_find(&orr->orr_nets_vlan, &ref, NULL);
+	if (ont != NULL) {
+		mutex_enter(&ont->ont_lock);
+		ont->ont_refcnt++;
+		mutex_exit(&ont->ont_lock);
+	}
+	mutex_exit(&orr->orr_lock);
+	return (ont);
 }
 
 overlay_net_t *
@@ -459,7 +482,6 @@ overlay_router_net_create(overlay_router_t *orr, void *buf)
 	if (bcmp(ioc_net->oin_mac, overlay_macaddr, ETHERADDRL) == 0)
 		return (EINVAL);
 
-
 	if (strlen(ioc_net->oin_routetbl) > 0) {
 		rtab = overlay_route_tbl_hold_by_id(orr, ioc_net->oin_routetbl);
 		if (rtab == NULL)
@@ -499,7 +521,8 @@ overlay_router_net_create(overlay_router_t *orr, void *buf)
 	mutex_enter(&orr->orr_lock);
 	mutex_enter(&net->ont_lock);
 
-	if (avl_find(&orr->orr_nets_mac, net, NULL) != NULL ||
+	if (avl_find(&orr->orr_nets_vlan, net, NULL) != NULL ||
+	    avl_find(&orr->orr_nets_mac, net, NULL) != NULL ||
 	    (hasv4 && avl_find(&orr->orr_nets_v4, net, NULL) != NULL) ||
 	    (hasv6 && avl_find(&orr->orr_nets_v6, net, NULL) != NULL)) {
 		mutex_exit(&net->ont_lock);
@@ -508,6 +531,9 @@ overlay_router_net_create(overlay_router_t *orr, void *buf)
 		overlay_net_rele(net);
 		return (EEXIST);
 	}
+
+	avl_add(&orr->orr_nets_vlan, net);
+	net->ont_refcnt++;
 
 	avl_add(&orr->orr_nets_mac, net);
 	net->ont_refcnt++;
@@ -561,6 +587,9 @@ overlay_router_net_delete(overlay_router_t *orr, void *buf)
 
 	mutex_enter(&orr->orr_lock);
 	mutex_enter(&net->ont_lock);
+
+	avl_remove(&orr->orr_nets_vlan, net);
+	net->ont_refcnt--;
 
 	avl_remove(&orr->orr_nets_mac, net);
 	net->ont_refcnt--;
@@ -1628,6 +1657,21 @@ overlay_put16(mblk_t *mp, uint16_t val)
 }
 
 static inline void
+overlay_put32(mblk_t *mp, uint32_t val)
+{
+	/*
+	 * Since we're constructing the packet, these should be correct
+	 * Because of the ethernet header, the best we can assume is
+	 * 16-bit alignment.
+	 */
+	ASSERT3U(MBLKTAIL(mp), >=, sizeof (uint16_t));
+	ASSERT(IS_P2ALIGNED(mp->b_wptr, sizeof (uint16_t)));
+
+	bcopy(&val, mp->b_wptr, sizeof (val));
+	mp->b_wptr += sizeof (val);
+}
+
+static inline void
 overlay_put_mac(mblk_t *mp, const uint8_t *mac)
 {
 	ASSERT3U(MBLKTAIL(mp), >=, ETHERADDRL);
@@ -1639,10 +1683,19 @@ overlay_put_mac(mblk_t *mp, const uint8_t *mac)
 static inline void
 overlay_put_ip(mblk_t *mp, in_addr_t ip)
 {
-	ASSERT3U(MBLKTALK(mp), >=, sizeof (in_addr_t));
+	ASSERT3U(MBLKTAIL(mp), >=, sizeof (in_addr_t));
 
 	bcopy(&ip, mp->b_wptr, sizeof (ip));
 	mp->b_wptr += sizeof (ip);
+}
+
+static inline void
+overlay_put_ip6(mblk_t *mp, const struct in6_addr *addr)
+{
+	ASSERT3U(MBLKTAIL(mp), >=, sizeof (struct in6_addr));
+
+	bcopy(addr, mp->b_wptr, sizeof (*addr));
+	mp->b_wptr += sizeof (*addr);
 }
 
 static inline void
@@ -1664,17 +1717,37 @@ overlay_put_eth_vlan(mblk_t *mp, const uint8_t *dst, const uint8_t *src,
 /* The ARP hardware type for ethernet */
 #define	ARP_HW_ETHER	1
 
+/*
+ * Handle ARP requests for the router MAC. Returns B_TRUE if we handled the
+ * ARP request, B_FALSE if we did not (implying pkt should undergo further
+ * handling).
+ *
+ * In the future, we could look to use the overlay_target L3->L2 mappings
+ * to satisify ARP requests for known targets (and only drop out to varpd
+ * for unknown targets), but for now, we just handle ARP for the router
+ * IP/MAC.
+ */
 boolean_t
 overlay_router_arp(overlay_dev_t *odd, overlay_net_t *ont, overlay_pkt_t *pkt)
 {
-	unsigned char *ptr = pkt->op2_u.op2_char;
+	unsigned char *ptr;
 	unsigned char *src_hwaddr;
 	mblk_t *resp = NULL;
 	in_addr_t src_ip, tgt_ip;
-	uint8_t router_mac[ETHERADDRL];
+
+	ASSERT3P(ont, !=, NULL);
+
+	/*
+	 * Must be sent to either ethernet broadcast address or our
+	 * router address to handle it.
+	 */
+	if (bcmp(overlay_bcast, pkt->op_mhi.mhi_daddr, ETHERADDRL) != 0 &&
+	    bcmp(ont->ont_mac, pkt->op_mhi.mhi_daddr, ETHERADDRL) != 0)
+		return (B_FALSE);
 
 	/*
 	 * Some sanity checks:
+	 *
 	 * - Hardware type is ARP_HW_ETHER
 	 * - Protocol type is IPv4 (ETHERTYPE_IP)
 	 * - Hardware length is ETHERADDRL
@@ -1682,8 +1755,9 @@ overlay_router_arp(overlay_dev_t *odd, overlay_net_t *ont, overlay_pkt_t *pkt)
 	 * - Operation is ARP_REQUEST
 	 *
 	 * overlay_pkt_init() already guarantees us a 28 byte, contiguous
-	 * in ram packet, so we can traverse this safely.
+	 * in ram packet when it's ARP, so we can traverse this safely.
 	 */
+	ptr = pkt->op2_u.op2_char;
 	if (overlay_get16(&ptr) != ARP_HW_ETHER ||
 	    overlay_get16(&ptr) != ETHERTYPE_IP ||
 	    *ptr++ != ETHERADDRL || *ptr++ != sizeof (in_addr_t) ||
@@ -1702,23 +1776,8 @@ overlay_router_arp(overlay_dev_t *odd, overlay_net_t *ont, overlay_pkt_t *pkt)
 	bcopy(ptr, &tgt_ip, sizeof (in_addr_t));
 	ptr += sizeof (in_addr_t);
 
-	if (ont != NULL) {
-		if (tgt_ip != ont->ont_routeraddr)
-			return (B_FALSE);
-		bcopy(ont->ont_mac, router_mac, ETHERADDRL);
-	} else {
-		ont = overlay_net_hold_by_net(odd->odd_router, tgt_ip);
-		if (ont == NULL)
-			return (B_FALSE);
-
-		if (tgt_ip != ont->ont_routeraddr) {
-			overlay_net_rele(ont);
-			return (B_FALSE);
-		}
-
-		bcopy(ont->ont_mac, router_mac, ETHERADDRL);
-		overlay_net_rele(ont);
-	}
+	if (tgt_ip != ont->ont_routeraddr)
+		return (B_FALSE);
 
 	resp = allocb(pkt->op_mhi.mhi_hdrsize + ARP_ETHER_SIZE, 0);
 	if (resp == NULL)
@@ -1730,7 +1789,7 @@ overlay_router_arp(overlay_dev_t *odd, overlay_net_t *ont, overlay_pkt_t *pkt)
 	 * tci (really just vlan) comes from the source packet, and we're of
 	 * course sending an ARP packet.
 	 */
-	overlay_put_eth_vlan(resp, pkt->op_mhi.mhi_saddr, router_mac,
+	overlay_put_eth_vlan(resp, pkt->op_mhi.mhi_saddr, ont->ont_mac,
 	    pkt->op_mhi.mhi_tci, ETHERTYPE_ARP);
 
 	/*
@@ -1743,7 +1802,7 @@ overlay_router_arp(overlay_dev_t *odd, overlay_net_t *ont, overlay_pkt_t *pkt)
 	overlay_put8(resp, ETHERADDRL);			/* hw address length */
 	overlay_put8(resp, sizeof (in_addr_t));	/* protocol address length */
 	overlay_put16(resp, htons(ARPOP_REPLY));	/* operation */
-	overlay_put_mac(resp, router_mac);		/* sender hw address */
+	overlay_put_mac(resp, ont->ont_mac);		/* sender hw address */
 	overlay_put_ip(resp, tgt_ip);		/* sender protocol address */
 	overlay_put_mac(resp, src_hwaddr);	/* target hw address */
 	overlay_put_ip(resp, src_ip);		/* target protocol address */
@@ -1761,7 +1820,157 @@ overlay_router_arp(overlay_dev_t *odd, overlay_net_t *ont, overlay_pkt_t *pkt)
 	return (B_TRUE);
 }
 
-/* Hash the packet 5-tuple to a value [0..nent) */
+boolean_t
+overlay_router_ndp(overlay_dev_t *odd, overlay_net_t *ont, overlay_pkt_t *pkt)
+{
+	nd_neighbor_solicit_t *nd;
+	size_t len = pkt->op_l3len;
+
+	ASSERT3P(ont, !=, NULL);
+	ASSERT3U(pkt->op_l3proto, ==, IPPROTO_ICMPV6);
+
+	if (IN6_IS_ADDR_UNSPECIFIED(&ont->ont_routeraddrv6))
+		return (B_FALSE);
+
+	if (!IN6_IS_ADDR_MC_SOLICITEDNODE(&pkt->op_dstaddr) &&
+	    !IN6_IS_ADDR_MC_LINKLOCAL(&pkt->op_dstaddr))
+		return (B_FALSE);
+
+	nd = (nd_neighbor_solicit_t *)pkt->op3_u.op3_char;
+
+	if (nd->nd_ns_type != ND_NEIGHBOR_SOLICIT && nd->nd_ns_code != 0)
+		return (B_FALSE);
+
+	if (len < sizeof (*nd))
+		return (B_FALSE);
+
+	if (IN6_IS_ADDR_MULTICAST(&nd->nd_ns_target) ||
+	    IN6_IS_ADDR_V4MAPPED(&nd->nd_ns_target) ||
+	    IN6_IS_ADDR_LOOPBACK(&nd->nd_ns_target))
+		return (B_FALSE);
+
+	uint8_t *eth = NULL;
+	nd_opt_hdr_t *opt = (nd_opt_hdr_t *)(nd + 1);
+
+	len -= sizeof (*nd);
+	while (len >= sizeof (*opt)) {
+		if (opt->nd_opt_len == 0)
+			return (B_FALSE);
+
+		if (opt->nd_opt_type == ND_OPT_SOURCE_LINKADDR) {
+			eth = (uint8_t *)((uintptr_t)opt +
+			    sizeof (nd_opt_hdr_t));
+		}
+		len -= opt->nd_opt_len * 8;
+		opt = (nd_opt_hdr_t *)((uintptr_t)opt +
+		    opt->nd_opt_len * 8);
+	}
+
+	if (eth == NULL)
+		return (B_FALSE);
+
+	if (!IN6_ARE_ADDR_EQUAL(&ont->ont_routeraddrv6, &nd->nd_ns_target))
+		return (B_FALSE);
+
+	/* It's for us, construct a reply */
+	mblk_t *resp = allocb(ETHERMAX + VLAN_TAGSZ, 0);
+
+	if (resp == NULL)
+		return (B_TRUE);
+
+	overlay_put_eth_vlan(resp, pkt->op_mhi.mhi_saddr, ont->ont_mac,
+	    pkt->op_mhi.mhi_tci, ETHERTYPE_IPV6);
+
+	ip6_t *ip6h = (ip6_t *)resp->b_wptr;
+
+	/*
+	 * Write the IPv6 header out. Destination IP is the source IP from
+	 * the request, and the source IP is the router IP.
+	 */
+	bcopy(pkt->op2_u.op2_ipv6, ip6h, sizeof (*ip6h));
+	bcopy(&ont->ont_routeraddrv6, &ip6h->ip6_src, sizeof (struct in6_addr));
+	bcopy(&pkt->op2_u.op2_ipv6->ip6_src, &ip6h->ip6_dst,
+	    sizeof (struct in6_addr));
+	ip6h->ip6_nxt = IPPROTO_ICMPV6;
+	resp->b_wptr += sizeof (*ip6h);
+
+	nd_neighbor_advert_t *na = (nd_neighbor_advert_t *)resp->b_wptr;
+
+	bzero(na, sizeof (*na));
+        na->nd_na_type = ND_NEIGHBOR_ADVERT;
+        na->nd_na_code = 0;
+        /*
+         * RFC 4443 defines that we should set the checksum to zero before we
+         * calculate the checksumat we should set the checksum to zero before we
+         * calculate it.
+         */
+        na->nd_na_cksum = 0;
+        /*
+         * The header <netinet/icmp6.h> has already transformed this
+         * into the appropriate host order. Don't use htonl.
+         */
+        na->nd_na_flags_reserved = ND_NA_FLAG_SOLICITED | ND_NA_FLAG_OVERRIDE;
+	bcopy(&ont->ont_routeraddrv6, &na->nd_na_target,
+            sizeof (struct in6_addr));
+	resp->b_wptr += sizeof (*na);
+
+	opt = (nd_opt_hdr_t *)resp->b_wptr;
+        opt->nd_opt_type = ND_OPT_TARGET_LINKADDR;
+        opt->nd_opt_len = 1;
+	resp->b_wptr += sizeof (*opt);
+
+	overlay_put_mac(resp, ont->ont_mac);
+
+	/* Set the IPv6 length */
+	len = (uintptr_t)resp->b_wptr - (uintptr_t)na;
+	ip6h->ip6_plen = htons(len);
+
+	/*
+	 * Calculate the IPv6 checksum. As nice it would be to re-use the
+	 * existing in-kernel IPv6 checksum code, it requires some additional
+	 * structures. Maybe in the future we can adjust things to use it.
+	 */
+	uint16_t *v;
+	uint32_t sum = 0;
+
+	v = (uint16_t *)&ip6h->ip6_src;
+	for (size_t i = 0; i < sizeof (struct in6_addr); i +=2, v++)
+		sum += *v;
+
+	v = (uint16_t *)&ip6h->ip6_dst;
+	for (size_t i = 0; i < sizeof (struct in6_addr); i +=2, v++)
+		sum += *v;
+
+	sum += ip6h->ip6_plen;
+
+#ifdef _BIG_ENDIAN
+	sum += IPPROTO_ICMPV6;
+#else
+	sum += IPPROTO_ICMPV6 << 8;
+#endif
+
+	v = (uint16_t *)na;
+	for (size_t i = 0; i < len; i += 2, v++)
+		sum += *v;
+
+	while ((sum >> 16) != 0)
+		sum = (sum & 0xffff) + (sum >> 16);
+
+	sum &= 0xffff;
+        na->nd_na_cksum = ~sum & 0xffff;
+
+	mutex_enter(&odd->odd_lock);
+	overlay_io_start(odd, OVERLAY_F_IN_RX);
+	mutex_exit(&odd->odd_lock);
+
+	mac_rx(odd->odd_mh, NULL, resp);
+
+	mutex_enter(&odd->odd_lock);
+	overlay_io_done(odd, OVERLAY_F_IN_RX);
+
+	return (B_TRUE);
+}
+
 static uint8_t
 overlay_pkt_hash(overlay_pkt_t *pkt)
 {
@@ -1895,22 +2104,16 @@ overlay_route(overlay_dev_t *odd, overlay_net_t *ont, overlay_pkt_t *pkt,
     struct sockaddr *addr, socklen_t *lenp)
 {
 	overlay_router_t *orr = odd->odd_router;
-	overlay_routetab_t *rtab = overlay_get_rtab(orr, ont);
+	overlay_routetab_t *rtab = NULL;
 	overlay_target_t *ott = NULL;
 	int ret = 0;
 
 	/*
-	 * No routing table, and the packet was sent to the router MAC,
-	 * we drop.
+	 * If we're routing, the destination MAC and vlan of the packet
+	 * should agree, otherwise we drop the packet.
 	 */
-	if (rtab == NULL)
+	if (OPKT_VLAN(pkt) != ont->ont_vlan)
 		return (OVERLAY_TARGET_DROP);
-
-	ott = odd->odd_target;
-	if (ott == NULL) {
-		overlay_route_tbl_rele(rtab);
-		return (OVERLAY_TARGET_DROP);
-	}
 
 	switch (pkt->op_mhi.mhi_bindsap) {
 	case ETHERTYPE_IP:
@@ -1921,28 +2124,57 @@ overlay_route(overlay_dev_t *odd, overlay_net_t *ont, overlay_pkt_t *pkt,
 		 * Drop any non IPv4 or IPv6 packets directed to the router
 		 * MAC.
 		 */
-		ret = OVERLAY_TARGET_DROP;
-		goto done;
+		return (OVERLAY_TARGET_DROP);
 	}
 
+	ott = odd->odd_target;
+	if (ott == NULL)
+		return (OVERLAY_TARGET_DROP);
+
 	/*
-	 * If no match was found (overlay_router_get_target() returns B_FALSE),
-	 * we drop the packet. Otherwise, if we get an target other than
-	 * INADDR_ANY/IN6_ADDR_UNSPECIFIED, we return that. Otherwise, we
-	 * route the packet locally.
+	 * No routing table, and the packet was sent to the router MAC,
+	 * we drop.
+	 */
+	rtab = overlay_get_rtab(orr, ont);
+	if (rtab == NULL)
+		return (OVERLAY_TARGET_DROP);
+
+	/*
+	 * Find the target address+port for this packet in the routing table.
+	 * If no target was found, we drop the packet.
 	 */
 	if (!overlay_router_get_target(rtab, pkt, addr, lenp)) {
 		ret = OVERLAY_TARGET_DROP;
 		goto done;
 	}
 
+	/*
+	 * If the target is the 'local' destination (the target is the
+	 * any/unspecified address, we do a VL3->VL2 lookup and route within
+	 * the vnet.
+	 */
 	if (is_target_local(addr)) {
 		ret = overlay_target_lookup(odd, pkt, B_TRUE, addr, lenp);
 	}
 
+	/* XXX: Any additional handling (e.g. NAT, ...) would go here */
+
 done:
 	overlay_route_tbl_rele(rtab);
 	return (ret);
+}
+
+static int
+overlay_cmp_net_vlan(const void *a, const void *b)
+{
+	const overlay_net_t *l = a;
+	const overlay_net_t *r = b;
+
+	if (l->ont_vlan < r->ont_vlan)
+		return (-1);
+	if (l->ont_vlan > r->ont_vlan)
+		return (1);
+	return (0);
 }
 
 static int
@@ -2005,6 +2237,8 @@ overlay_router_cache_ctor(void *buf, void *arg __unused, int kmflags __unused)
 	    sizeof (overlay_routetab_t),
 	    offsetof(overlay_routetab_t, ort_link));
 
+	avl_create(&orr->orr_nets_vlan, overlay_cmp_net_vlan,
+	    sizeof (overlay_net_t), offsetof(overlay_net_t, ont_node_vlan));
 	avl_create(&orr->orr_nets_mac, overlay_cmp_net_mac,
 	    sizeof (overlay_net_t), offsetof(overlay_net_t, ont_node_mac));
 	avl_create(&orr->orr_nets_v4, overlay_cmp_net_v4,
@@ -2023,6 +2257,7 @@ overlay_router_cache_dtor(void *buf, void *arg __unused)
 	avl_destroy(&orr->orr_nets_v6);
 	avl_destroy(&orr->orr_nets_v4);
 	avl_destroy(&orr->orr_nets_mac);
+	avl_destroy(&orr->orr_nets_vlan);
 	list_destroy(&orr->orr_routetbls);
 
 	mutex_destroy(&orr->orr_lock);

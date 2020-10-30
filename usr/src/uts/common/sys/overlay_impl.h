@@ -84,6 +84,7 @@ typedef struct overlay_routetab {
 
 typedef struct overlay_net {
 	kmutex_t	ont_lock;
+	avl_node_t	ont_node_vlan;
 	avl_node_t	ont_node_mac;
 	avl_node_t	ont_node_v4;
 	avl_node_t	ont_node_v6;
@@ -105,6 +106,7 @@ typedef struct overlay_router {
 	kmutex_t	orr_lock;
 	uint_t		orr_refcnt;
 	list_t		orr_routetbls;
+	avl_tree_t	orr_nets_vlan;
 	avl_tree_t	orr_nets_mac;
 	avl_tree_t	orr_nets_v4;
 	avl_tree_t	orr_nets_v6;
@@ -239,11 +241,11 @@ typedef struct overlay_pkt {
 	struct in6_addr			op_dstaddr;
 	uint16_t			op_srcport; /* in host byteorder */
 	uint16_t			op_dstport; /* in host byteorder */
+	uint16_t			op_l3len;
 	uint8_t				op_l3proto;
 } overlay_pkt_t;
 #define	OPKT_ETYPE(pkt) ((pkt)->op_mhi.mhi_bindsap)
 #define	OPKT_VLAN(pkt) (VLAN_ID((pkt)->op_mhi.mhi_tci))
-
 
 #define	OVERLAY_CTL		"overlay"
 #define	OVERLAY_ROUTER_CTL	"overlay_router"
@@ -256,6 +258,7 @@ typedef struct overlay_pkt {
     DTRACE_PROBE2(__overlay_freemsg, mblk_t *, mp, const char *, reason)
 
 extern dev_info_t *overlay_dip;
+extern uint8_t overlay_bcast[ETHERADDRL];
 
 extern int overlay_pkt_init(overlay_pkt_t *, mac_handle_t, mblk_t *,
     const char **);
@@ -317,6 +320,7 @@ extern overlay_router_t *overlay_router_create(overlay_dev_t *);
 extern void overlay_router_free(overlay_router_t *);
 extern boolean_t overlay_router_active(overlay_router_t *);
 
+extern overlay_net_t *overlay_net_hold_by_vlan(overlay_router_t *, uint16_t);
 extern overlay_net_t *overlay_net_hold_by_net(overlay_router_t *, in_addr_t);
 extern overlay_net_t *overlay_net_hold_by_net6(overlay_router_t *,
     const struct in6_addr *);
@@ -329,6 +333,8 @@ extern int overlay_router_ioctl(dev_t, int, intptr_t, int, cred_t *, int *);
 extern int overlay_router_close(dev_t, int, int, cred_t *);
 
 extern boolean_t overlay_router_arp(overlay_dev_t *, overlay_net_t *,
+    overlay_pkt_t *);
+extern boolean_t overlay_router_ndp(overlay_dev_t *, overlay_net_t *,
     overlay_pkt_t *);
 extern int overlay_route(overlay_dev_t *, overlay_net_t *, overlay_pkt_t *,
     struct sockaddr *, socklen_t *);
