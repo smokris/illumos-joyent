@@ -333,16 +333,8 @@ do_router_create(int argc, char **argv)
 	struct in6_addr addr;
 	uint8_t prefixlen;
 
-	while ((c = getopt(argc, argv, "d:v:a:m:r:")) != -1) {
+	while ((c = getopt(argc, argv, "a:d:m:r:v:")) != -1) {
 		switch (c) {
-		case 'd':
-			ovname = optarg;
-			params |= OVPARAM_DEVICE;
-			break;
-		case 'v':
-			parse_vlan(optarg, &orn.oin_vlan);
-			params |= OVPARAM_VLAN;
-			break;
 		case 'a':
 			parse_addr(optarg, &addr, &prefixlen);
 			if (IN6_IS_ADDR_V4MAPPED(&addr)) {
@@ -368,6 +360,10 @@ do_router_create(int argc, char **argv)
 				orn.oin_prefixlenv6 = prefixlen;
 			}
 			break;
+		case 'd':
+			ovname = optarg;
+			params |= OVPARAM_DEVICE;
+			break;
 		case 'm':
 			parse_mac(optarg, orn.oin_mac);
 			params |= OVPARAM_MAC;
@@ -376,6 +372,10 @@ do_router_create(int argc, char **argv)
 			parse_id(optarg, orn.oin_routetbl,
 			    sizeof (orn.oin_routetbl));
 			params |= OVPARAM_ROUTETBL;
+			break;
+		case 'v':
+			parse_vlan(optarg, &orn.oin_vlan);
+			params |= OVPARAM_VLAN;
 			break;
 		case '?':
 			(void) fprintf(stderr, "Unknown option -%c\n", optopt);
@@ -648,7 +648,7 @@ net_iter_free(overlay_ioc_net_iter_t *iter, size_t nents)
 }
 
 static int
-do_router_iter(const char *ovname)
+do_router_iter(const char *ovname, const char *ofields, uint_t flags)
 {
 	const size_t nents = 64;
 	overlay_ioc_net_iter_t *iter = net_iter_alloc(ovname, nents);
@@ -657,7 +657,7 @@ do_router_iter(const char *ovname)
 	int fd = open_overlay(overlay_dev, B_TRUE);
 	int ret;
 
-	oferr = ofmt_open("all", net_fields, 0, 0, &ofmt);
+	oferr = ofmt_open(ofields, net_fields, flags, 0, &ofmt);
 	if (oferr != OFMT_SUCCESS) {
 		char ebuf[OFMT_BUFSIZE];
 
@@ -691,12 +691,20 @@ static int
 do_router_get(int argc, char **argv)
 {
 	const char *ovname = NULL;
+	const char *ofields = "all";
+	uint_t flags = 0;
 	int c;
 
-	while ((c = getopt(argc, argv, "d:")) != -1) {
+	while ((c = getopt(argc, argv, "d:o:p")) != -1) {
 		switch (c) {
 		case 'd':
 			ovname = optarg;
+			break;
+		case 'o':
+			ofields = optarg;
+			break;
+		case 'p':
+			flags |= OFMT_PARSABLE;
 			break;
 		}
 	}
@@ -707,14 +715,14 @@ do_router_get(int argc, char **argv)
 	}
 
 	if (optind == argc)
-		return (do_router_iter(ovname));
+		return (do_router_iter(ovname, ofields, flags));
 
 	datalink_id_t dlid;
 	int fd;
 	ofmt_handle_t ofmt = NULL;
 	ofmt_status_t oferr;
 
-	oferr = ofmt_open("all", net_fields, 0, 0, &ofmt);
+	oferr = ofmt_open(ofields, net_fields, flags, 0, &ofmt);
 	if (oferr != OFMT_SUCCESS) {
 		char ebuf[OFMT_BUFSIZE];
 
@@ -994,7 +1002,7 @@ route_tbl_iter_free(overlay_ioc_rtab_iter_t *iter, size_t nents)
 }
 
 static int
-do_routetbl_iter(const char *ovname)
+do_routetbl_iter(const char *ovname, const char *ofields, uint_t flags)
 {
 	const size_t nents = 64;
 	overlay_ioc_rtab_iter_t *iter;
@@ -1005,7 +1013,7 @@ do_routetbl_iter(const char *ovname)
 	iter = route_tbl_iter_alloc(ovname, nents);
 	fd = open_overlay(overlay_dev, B_TRUE);
 
-	oferr = ofmt_open("all", routetbl_fields, 0, 0, &ofmt);
+	oferr = ofmt_open(ofields, routetbl_fields, flags, 0, &ofmt);
 	if (oferr != OFMT_SUCCESS) {
 		char ebuf[OFMT_BUFSIZE];
 
@@ -1041,12 +1049,20 @@ static int
 do_routetbl_get(int argc, char **argv)
 {
 	const char *ovname = NULL;
+	const char *ofields = "all";
+	uint_t flags = 0;
 	int c;
 
-	while ((c = getopt(argc, argv, "d:")) != -1) {
+	while ((c = getopt(argc, argv, "d:o:p")) != -1) {
 		switch (c) {
 		case 'd':
 			ovname = optarg;
+			break;
+		case 'o':
+			ofields = optarg;
+			break;
+		case 'p':
+			flags |= OFMT_PARSABLE;
 			break;
 		}
 	}
@@ -1057,7 +1073,7 @@ do_routetbl_get(int argc, char **argv)
 	}
 
 	if (optind == argc)
-		return (do_routetbl_iter(ovname));
+		return (do_routetbl_iter(ovname, ofields, flags));
 
 	int fd;
 	ofmt_handle_t ofmt = NULL;
@@ -1065,7 +1081,7 @@ do_routetbl_get(int argc, char **argv)
 	overlay_ioc_routetab_t *tbl = NULL;
 	size_t nents = 64;
 
-	oferr = ofmt_open("all", routeent_fields, 0, 0, &ofmt);
+	oferr = ofmt_open(ofields, routeent_fields, flags, 0, &ofmt);
 	if (oferr != OFMT_SUCCESS) {
 		char ebuf[OFMT_BUFSIZE];
 
