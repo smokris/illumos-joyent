@@ -43,6 +43,7 @@
 .Nm
 .Cm router get
 .Fl d Ar overlay
+.Oo Fl o Ar field Ns Oo ,... Oc Oo Fl p Oc Oc
 .Oo Ar router_id Ns ... Oc
 .\"
 .\" set-routing-table
@@ -73,6 +74,7 @@
 .Cm route-table get
 .Fl d Ar overlay
 .Ar route_table_id
+.Oo Fl o Ar field Ns Oo ,... Oc Oo Fl p Oc Oc
 .Oo Ar route_table_id Ns ... Oc
 .\"
 .\" route-table set-default
@@ -265,6 +267,7 @@ router instance denoted by
 .It Xo Nm Cm router get
 .\" -------------------
 .Fl d Ar overlay
+.Oo Fl o Ar field Ns Oo ,... Oc Oo Fl p Oc Oc
 .Oo Ar router_id Ns ... Oc
 .Xc
 Get the information about
@@ -278,6 +281,43 @@ is specified, all
 router instances defined for
 .Ar overlay
 are printed.
+If the
+.Fl o
+option is specified, the output is limited to the comma separated list of
+fields given by the
+.Ar field
+arguments(s):
+.Bl -tag -offset indent -width "NETWORK-V6"
+.It id
+The
+.Ar router_id
+as passed in to the
+.Nm Cm router create
+command.
+.It network
+The overlay IPv4 network and CIDR mask the router listens on, e\.g\.
+.Ql 192.168.1.0/24 .
+.It network-v6
+The overlay IPv6 network and CIDR mask the router listens on.
+.It vlan
+The VLAN id of the subnet the overlay router instance is listening on.
+.It mac
+The MAC address the overlay router instance uses for the given subnet.
+.It rtable
+The overlay routing table associated with this subnet (if any).
+.El
+.Pp
+Additionally, the
+.Fl p
+option may be passed with the
+.Fl o
+option to indicate the output should be in a machine parsable (colon delimited)
+format.
+The
+.Fl p
+option requires specifying the
+.Fl o
+option to indicate the fields to output.
 .\"
 .It Xo Nm Cm router set-routing-table
 .\" ---------------------------------
@@ -321,6 +361,7 @@ on overlay
 .It Xo Nm Cm route-table get
 .\" ------------------------
 .Fl d Ar overlay
+.Oo Fl o Ar field Ns Oo ,... Oc Oo Fl p Oc Oc
 .Oo Ar route_table_id Ns ... Oc
 .Xc
 Display the routing table
@@ -333,6 +374,32 @@ is specified, each route table is displayed.
 If no route tables are specified, all route tables on
 .Ar overlay
 are displayed.
+If the
+.Fl o
+option is specified, a comma separated list of fields must be specified to
+indicate the fields to display.
+The
+.Ar field
+values may be any combination of:
+.Bl -tag -offset indent -width "destination"
+.It id
+The overlay route table id as is given in the
+.Nm Cm route-table create
+command.
+.It destination
+The virtual layer three (VL3) address of the destination in CIDR format.
+In other words, the destination subnet and CIDR mask as seen by instances in
+the overlay network.
+.It target
+The underlay layer three (UL3) address and port to send the matching traffic.
+In other words, the destination address of the encapsulated packet.
+.El
+.Pp
+Additionally, the
+.Fl p
+option may be given with the
+.Fl o
+option to generate output in machine parsable (colon delimited) format.
 .\"
 .It Xo Nm Cm route-table set-default
 .\" --------------------------------

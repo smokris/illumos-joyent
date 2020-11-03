@@ -146,14 +146,26 @@ static const ofmt_field_t routetbl_fields[] = {
 	{ NULL, 0, 0, NULL }
 };
 
+typedef struct routetbl_print {
+	char				rpt_id[OVERLAY_ID_MAX];
+	const overlay_route_ent_t	*rpt_ent;
+} routetbl_print_t;
+
 typedef enum routetbl_ent_memb {
-	REM_DEST = 0,
+	REM_ID = 0,
+	REM_DEST,
 	REM_TARGET
 } routetbl_ent_memb_t;
 
 static boolean_t routeent_print(ofmt_arg_t *, char *, uint_t);
 
 static const ofmt_field_t routeent_fields[] = {
+	{
+		.of_name = "ID",
+		.of_width = OVERLAY_ID_MAX,
+		.of_id = REM_ID,
+		.of_cb = routeent_print,
+	},
 	{
 		.of_name = "DESTINATION",
 		.of_width = INET6_ADDRSTRLEN + 4,
@@ -893,24 +905,29 @@ routetbl_print(ofmt_arg_t *ofmt, char *buf, uint_t buflen)
 static boolean_t
 routeent_print(ofmt_arg_t *ofmt, char *buf, uint_t buflen)
 {
-	overlay_route_ent_t *ent = ofmt->ofmt_cbarg;
+	const routetbl_print_t *prt = ofmt->ofmt_cbarg;
+	const overlay_route_ent_t *ent = prt->rpt_ent;
 	const void *addr;
 	in_addr_t v4;
 	int af;
+	uint8_t pfxlen = ent->ore_prefixlen;
 
 	switch ((routetbl_ent_memb_t)ofmt->ofmt_id) {
+	case REM_ID:
+		(void) strlcpy(buf, prt->rpt_id, buflen);
+		break;
 	case REM_DEST:
 		if (IN6_IS_ADDR_V4MAPPED(&ent->ore_dest)) {
 			af = AF_INET;
 			IN6_V4MAPPED_TO_IPADDR(&ent->ore_dest, v4);
 			addr = &v4;
-			ent->ore_prefixlen -= 96;
+			pfxlen -= 96;
 		} else {
 			af = AF_INET6;
 			addr = &ent->ore_dest;
 		}
 
-		netprefix_print(af, addr, ent->ore_prefixlen, buf, buflen);
+		netprefix_print(af, addr, pfxlen, buf, buflen);
 		break;
 	case REM_TARGET:
 		(void) sockaddr_print(&ent->ore_target, buf, buflen);
@@ -1094,13 +1111,11 @@ do_routetbl_get(int argc, char **argv)
 	tbl = route_tbl_alloc(ovname, nents);
 
 	for (int i = optind; i < argc; i++) {
+		routetbl_print_t prt = { 0 };
 		datalink_id_t linkid = tbl->oir_hdr.orih_linkid;
 		int ret;
 
-		(void) printf("Table: %s\n", argv[i]);
-
-		if (i > optind)
-			ofmt_print_header(ofmt);
+		(void) strlcpy(prt.rpt_id, argv[i], sizeof (prt.rpt_id));
 
 		/*
 		 * Clear out tbl to be used for the next route table.
@@ -1123,8 +1138,10 @@ do_routetbl_get(int argc, char **argv)
 			if (tbl->oir_count == 0)
 				break;
 
-			for (size_t j = 0; j < tbl->oir_count; j++)
-				ofmt_print(ofmt, &tbl->oir_ents[j]);
+			for (size_t j = 0; j < tbl->oir_count; j++) {
+				prt.rpt_ent = &tbl->oir_ents[j];
+				ofmt_print(ofmt, &prt);
+			}
 		}
 	}
 
