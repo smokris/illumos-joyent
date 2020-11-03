@@ -238,6 +238,7 @@ overlay_hold_net_by_vlan(overlay_router_t *orr, uint16_t vlan)
 		.ont_vlan = vlan
 	};
 
+	mutex_enter(&orr->orr_lock);
 	ont = avl_find(&orr->orr_nets_vlan, &ref, NULL);
 	if (ont != NULL) {
 		mutex_enter(&ont->ont_lock);
@@ -268,11 +269,11 @@ overlay_hold_net_by_mac(overlay_router_t *orr, const uint8_t mac[ETHERADDRL])
 }
 
 /*
- * Find and hold the overlay_net_t that contains addr, and return the
+ * Find and hold the overlay_net_t whose subnet contains addr, and return the
  * overlay_net_t, or NULL if not found.
  */
 overlay_net_t *
-overlay_net_hold_by_net(overlay_router_t *orr, in_addr_t addr)
+overlay_hold_net_by_ip(overlay_router_t *orr, in_addr_t addr)
 {
 	overlay_net_t *ont;
 	avl_index_t where;
@@ -319,12 +320,11 @@ out:
 
 /* Similar to overlay_net_hold_by_net() except for an IPv6 addr. */
 overlay_net_t *
-overlay_net_hold_by_net6(overlay_router_t *orr, const struct in6_addr *addr)
+overlay_hold_net_by_ip6(overlay_router_t *orr, const struct in6_addr *addr)
 {
 	overlay_net_t *ont;
 	avl_index_t where;
 	overlay_net_t ref = { 0 };
-	struct in6_addr netcmp = { 0 };
 
 	bcopy(addr, &ref.ont_netv6, sizeof (ref.ont_netv6));
 
@@ -776,7 +776,7 @@ overlay_router_net_iter(overlay_router_t *orr, void *buf)
 		rnet->oin_routeraddr = ent->ont_routeraddr;
 		rnet->oin_prefixlen = ent->ont_prefixlen;
 		rnet->oin_prefixlenv6 = ent->ont_prefixlenv6;
-		rnet->oin_vlan = ntohs(ent->ont_vlan);
+		rnet->oin_vlan = ent->ont_vlan;
 
 		bcopy(ent->ont_mac, mark->orm_mac, ETHERADDRL);
 

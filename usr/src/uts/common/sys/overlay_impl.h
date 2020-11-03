@@ -320,9 +320,9 @@ extern overlay_router_t *overlay_router_create(overlay_dev_t *);
 extern void overlay_router_free(overlay_router_t *);
 extern boolean_t overlay_router_active(overlay_router_t *);
 
-extern overlay_net_t *overlay_net_hold_by_vlan(overlay_router_t *, uint16_t);
-extern overlay_net_t *overlay_net_hold_by_net(overlay_router_t *, in_addr_t);
-extern overlay_net_t *overlay_net_hold_by_net6(overlay_router_t *,
+extern overlay_net_t *overlay_hold_net_by_vlan(overlay_router_t *, uint16_t);
+extern overlay_net_t *overlay_hold_net_by_ip(overlay_router_t *, in_addr_t);
+extern overlay_net_t *overlay_hold_net_by_ip6(overlay_router_t *,
     const struct in6_addr *);
 extern overlay_net_t *overlay_hold_net_by_mac(overlay_router_t *orr,
     const uint8_t mac[ETHERADDRL]);

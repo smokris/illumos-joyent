@@ -1242,7 +1242,6 @@ overlay_m_tx(void *arg, mblk_t *mp_chain)
 		overlay_pkt_t pkt;
 		socklen_t slen;
 		struct sockaddr_storage storage;
-		const uint8_t *daddr;
 
 		mp_chain = mp->b_next;
 		mp->b_next = NULL;
@@ -1255,9 +1254,8 @@ overlay_m_tx(void *arg, mblk_t *mp_chain)
 			mp = mp_chain;
 			continue;
 		}
-		daddr = pkt.op_mhi.mhi_daddr;
 
-		ont = overlay_net_hold_by_vlan(orr,
+		ont = overlay_hold_net_by_vlan(orr,
 			    VLAN_ID(pkt.op_mhi.mhi_tci));
 
 		ret = overlay_tx(odd, ont, &pkt, (struct sockaddr *)&storage,

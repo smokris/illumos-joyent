@@ -1469,10 +1469,8 @@ overlay_target_cache_flush_avl(avl_tree_t *avl)
 static int
 overlay_target_cache_flush(overlay_target_hdl_t *thdl, void *arg)
 {
-	avl_tree_t *avl;
 	overlay_dev_t *odd;
 	overlay_target_t *ott;
-	overlay_target_entry_t *ote;
 	overlay_targ_cache_t *otc = arg;
 
 	odd = overlay_hold_by_dlid(otc->otc_linkid);

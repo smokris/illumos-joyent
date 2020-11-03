@@ -107,11 +107,11 @@ overlay_rx(mac_handle_t mh, overlay_target_t *ott, overlay_router_t *orr,
 
 	switch (OPKT_ETYPE(&op)) {
 	case ETHERTYPE_IP:
-		ont = overlay_net_hold_by_net(orr,
+		ont = overlay_hold_net_by_ip(orr,
 		    op.op2_u.op2_ipv4->ipha_dst);
 		break;
 	case ETHERTYPE_IPV6:
-		ont = overlay_net_hold_by_net6(orr, &op.op_dstaddr);
+		ont = overlay_hold_net_by_ip6(orr, &op.op_dstaddr);
 		break;
 	default:
 		/*
