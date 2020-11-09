@@ -25,8 +25,11 @@
 #include <sys/sysmacros.h>
 #include <sys/policy.h>
 #include <sys/overlay_impl.h>
-
+#include <sys/ddi.h>
+#include <sys/sunddi.h>
 #include <sys/strsun.h>
+#include <sys/ctype.h>
+
 #include <netinet/arp.h>
 #include <netinet/ip6.h>
 #include <netinet/icmp6.h>
@@ -108,6 +111,30 @@ net_addr6_prefixequal(const struct in6_addr *a1, const struct in6_addr *a2,
 {
 	return (IN6_ARE_PREFIXEDADDR_EQUAL(a1, a2, prefixlen) ?
 	    B_TRUE : B_FALSE);
+}
+
+static boolean_t
+overlay_valid_id(const char *str, size_t len)
+{
+	/*
+	 * IDs are in fixed sized buffers. It should fit in the given length
+	 * and be NUL-terminated.
+	 */
+	if (strnlen(str, len) == len && str[len - 1] != '\0')
+		return (B_FALSE);
+
+	/* Require the first character to be alphanumeric */
+	if (!ISALNUM(*str))
+		return (B_FALSE);
+	str++;
+
+	/* The remaining characters can be alphanumeric or include '-' or '.' */
+	while (*str != '\0') {
+		if (!ISALNUM(*str) && *str != '-' && *str != '.' && *str != '#')
+			return (B_FALSE);
+		str++;
+	}
+	return (B_TRUE);
 }
 
 static int
@@ -479,13 +506,25 @@ overlay_router_net_create(overlay_router_t *orr, void *buf)
 	if (ioc_net->oin_vlan < VLAN_ID_MIN || ioc_net->oin_vlan > VLAN_ID_MAX)
 		return (EINVAL);
 
+	/* MAC address can't be all zeros */
 	if (bcmp(ioc_net->oin_mac, overlay_macaddr, ETHERADDRL) == 0)
 		return (EINVAL);
 
-	if (strlen(ioc_net->oin_routetbl) > 0) {
+	if (!overlay_valid_id(ioc_net->oin_id, sizeof (ioc_net->oin_id)))
+		return (EINVAL);
+
+	if (overlay_valid_id(ioc_net->oin_routetbl,
+	    sizeof (ioc_net->oin_routetbl))) {
 		rtab = overlay_route_tbl_hold_by_id(orr, ioc_net->oin_routetbl);
 		if (rtab == NULL)
 			return (EINVAL);
+	} else if (ioc_net->oin_routetbl[0] != '\0') {
+		/*
+		 * The route table ID was not empty, but invalid. We
+		 * allow an empty route table ID to indicate the default
+		 * route table should be used (if it exists).
+		 */
+		return (EINVAL);
 	}
 
 	net = kmem_cache_alloc(overlay_net_cache, KM_SLEEP);
@@ -578,6 +617,9 @@ overlay_router_net_delete(overlay_router_t *orr, void *buf)
 	    strlen(rnet->oin_routetbl) != 0)
 		return (EINVAL);
 
+	if (!overlay_valid_id(rnet->oin_id, sizeof (rnet->oin_id)))
+		return (EINVAL);
+
 	if (strlen(rnet->oin_id) == 0)
 		return (EINVAL);
 
@@ -654,6 +696,9 @@ overlay_router_net_get(overlay_router_t *orr, void *buf)
 	    ioc_net->oin_vlan != 0 ||
 	    bcmp(ioc_net->oin_mac, overlay_macaddr, ETHERADDRL) != 0 ||
 	    strlen(ioc_net->oin_routetbl) != 0)
+		return (EINVAL);
+
+	if (!overlay_valid_id(ioc_net->oin_id, sizeof (ioc_net->oin_id)))
 		return (EINVAL);
 
 	if (strlen(ioc_net->oin_id) == 0)
@@ -814,6 +859,10 @@ overlay_router_net_set_routetbl(overlay_router_t *orr, void *buf)
 	    bcmp(rnet->oin_mac, overlay_macaddr, ETHERADDRL) != 0)
 		return (EINVAL);
 
+	if (!overlay_valid_id(rnet->oin_id, sizeof (rnet->oin_id)) ||
+	    !overlay_valid_id(rnet->oin_routetbl, sizeof (rnet->oin_routetbl)))
+		return (EINVAL);
+
 	net = overlay_hold_net_by_id(orr, rnet->oin_id);
 	if (net == NULL)
 		return (ENOENT);
@@ -849,6 +898,9 @@ overlay_router_tbl_copyin(const void *buf, void **outp, size_t *bsize,
 
 	if (ddi_copyin(buf, &base, sizeof (base), flags & FKIOCTL) != 0)
 		return (EFAULT);
+
+	if (!overlay_valid_id(base.oir_id, sizeof (base.oir_id)))
+		return (EINVAL);
 
 	*bsize = sizeof (base) +
 	    base.oir_count * sizeof (overlay_route_ent_t);
@@ -1120,6 +1172,9 @@ overlay_route_tbl_set(overlay_router_t *orr, void *buf)
 	overlay_routetab_t *newtbl, *tbl;
 	int ret;
 
+	if (!overlay_valid_id(ioc_rtab->oir_id, sizeof (ioc_rtab->oir_id)))
+		return (EINVAL);
+
 	newtbl = kmem_cache_alloc(overlay_rtab_cache, KM_SLEEP);
 
 	(void) strlcpy(newtbl->ort_id, ioc_rtab->oir_id,
@@ -1209,6 +1264,9 @@ overlay_route_tbl_del(overlay_router_t *orr, void *buf)
 	overlay_routetab_t *rtab;
 	uint_t cnt;
 
+	if (!overlay_valid_id(ioc_rtab->oir_id, sizeof (ioc_rtab->oir_id)))
+		return (EINVAL);
+
 	rtab = overlay_route_tbl_hold_by_id(orr, ioc_rtab->oir_id);
 	if (rtab == NULL)
 		return (ENOENT);
@@ -1252,8 +1310,11 @@ overlay_route_tbl_set_default(overlay_router_t *orr, void *buf)
 	if (ioc_rtab->oir_marker != 0 || ioc_rtab->oir_count != 0)
 		return (EINVAL);
 
+	if (!overlay_valid_id(ioc_rtab->oir_id, sizeof (ioc_rtab->oir_id)))
+		return (EINVAL);
+
 	rtab = overlay_route_tbl_hold_by_id(orr, ioc_rtab->oir_id);
-	if (rtab == NULL)
+	if (rtab == NULL && ioc_rtab->oir_id[0] != '\0')
 		return (ENOENT);
 
 	mutex_enter(&orr->orr_lock);
@@ -1279,6 +1340,9 @@ overlay_route_tbl_addent(overlay_router_t *orr, void *buf)
 	int ret;
 
 	if (ioc_rtab->oir_marker != 0)
+		return (EINVAL);
+
+	if (!overlay_valid_id(ioc_rtab->oir_id, sizeof (ioc_rtab->oir_id)))
 		return (EINVAL);
 
 	rtab = overlay_route_tbl_hold_by_id(orr, ioc_rtab->oir_id);
@@ -1323,6 +1387,9 @@ overlay_route_tbl_delent(overlay_router_t *orr, void *buf)
 	 * which (if any) entries weren't found.
 	 */
 	if (ioc_rtab->oir_marker != 0 || ioc_rtab->oir_count != 1)
+		return (EINVAL);
+
+	if (!overlay_valid_id(ioc_rtab->oir_id, sizeof (ioc_rtab->oir_id)))
 		return (EINVAL);
 
 	ent = ioc_rtab->oir_ents;

@@ -25,6 +25,7 @@
 #include <sys/debug.h>
 #include <sys/ethernet.h>
 #include <sys/overlay_common.h>
+#include <sys/uuid.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -36,7 +37,13 @@ typedef struct overlay_router_ioc_hdr {
 } overlay_router_ioc_hdr_t;
 CTASSERT(sizeof (overlay_router_ioc_hdr_t) == sizeof (uint64_t));
 
-#define	OVERLAY_ID_MAX		32
+/*
+ * The ID strings need to be large enough to hold a UUID in string form.
+ * Anyone using non-UUIDs is likely to not need more characters than this,
+ * so UUID_PRINTABLE_STRING_LENGTH is used as the size (this includes the
+ * terminating NUL).
+ */
+#define	OVERLAY_ID_MAX		UUID_PRINTABLE_STRING_LENGTH
 
 #define	OVERLAY_ROUTER_IOCTL	(('o' << 24) | ('v' << 16) | ('r' << 8))
 
@@ -55,7 +62,6 @@ typedef struct overlay_ioc_net {
 	uint8_t				oin_prefixlenv6;
 	uint16_t			oin_vlan;	/* in host order */
 	uint8_t				oin_mac[ETHERADDRL];
-	uint8_t				oin_pad[2];
 	char				oin_id[OVERLAY_ID_MAX];
 	char				oin_routetbl[OVERLAY_ID_MAX];
 } overlay_ioc_net_t;

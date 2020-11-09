@@ -56,7 +56,7 @@ typedef enum {
 extern const char *__progname;
 
 static const char *overlay_dev = "/dev/overlay_router";
-static const char *id_re = "[A-Za-z#.-]{1,32}";
+static const char *id_re = "[A-Za-z0-9][A-Za-z#.-]*";
 static const char *empty = "-";
 
 typedef struct dispatch_tbl {
