@@ -191,8 +191,8 @@ overlay_ip_avl(const void *a, const void *b)
 {
 	const overlay_target_entry_t *l = a;
 	const overlay_target_entry_t *r = b;
-	const struct in6_addr *l_ip = &l->ote_entry.otp_ip;
-	const struct in6_addr *r_ip = &r->ote_entry.otp_ip;
+	const struct in6_addr *l_ip = &l->ote_key.otk_ip;
+	const struct in6_addr *r_ip = &r->ote_key.otk_ip;
 	int i;
 
 	ASSERT(l->ote_flags & OVERLAY_ENTRY_F_L3);
