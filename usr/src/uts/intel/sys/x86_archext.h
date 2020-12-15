@@ -735,6 +735,8 @@ extern "C" {
 #define	X86FSET_TSX_CTRL	97
 #define	X86FSET_TAA_NO		98
 #define	X86FSET_PPIN		99
+#define	X86FSET_VAES		100
+#define	X86FSET_VPCLMULQDQ	101
 
 /*
  * Intel Deep C-State invariant TSC in leaf 0x80000007.
@@ -962,6 +964,9 @@ extern "C" {
 #define	X86_CHIPREV_AMD_17_SSP_B0 \
 	_X86_CHIPREV_MKREV(X86_VENDOR_AMD, 0x17, 0x0008)
 
+#define	X86_CHIPREV_AMD_17_MTS_B0 \
+	_X86_CHIPREV_MKREV(X86_VENDOR_AMD, 0x17, 0x0009)
+
 /*
  * Various socket/package types, extended as the need to distinguish
  * a new type arises.  The top 8 byte identfies the vendor and the
@@ -1017,7 +1022,9 @@ extern "C" {
 #define	X86_SOCKET_SP3		_X86_SOCKET_MKVAL(X86_VENDOR_AMD, 0x1f)
 #define	X86_SOCKET_SP3R2	_X86_SOCKET_MKVAL(X86_VENDOR_AMD, 0x20)
 #define	X86_SOCKET_FP5		_X86_SOCKET_MKVAL(X86_VENDOR_AMD, 0x21)
-#define	X86_NUM_SOCKETS_AMD	0x22
+#define	X86_SOCKET_FP6		_X86_SOCKET_MKVAL(X86_VENDOR_AMD, 0x22)
+#define	X86_SOCKET_STRX4	_X86_SOCKET_MKVAL(X86_VENDOR_AMD, 0x23)
+#define	X86_NUM_SOCKETS_AMD	0x24
 
 
 /*
@@ -1112,7 +1119,7 @@ extern "C" {
 
 #if defined(_KERNEL) || defined(_KMEMUSER)
 
-#define	NUM_X86_FEATURES	100
+#define	NUM_X86_FEATURES	102
 extern uchar_t x86_featureset[];
 
 extern void free_x86_featureset(void *featureset);

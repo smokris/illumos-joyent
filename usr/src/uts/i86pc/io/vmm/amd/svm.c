@@ -92,16 +92,16 @@ SYSCTL_NODE(_hw_vmm, OID_AUTO, svm, CTLFLAG_RW | CTLFLAG_MPSAFE, NULL,
 /*
  * SVM CPUID function 0x8000_000A, edx bit decoding.
  */
-#define AMD_CPUID_SVM_NP		BIT(0)  /* Nested paging or RVI */
-#define AMD_CPUID_SVM_LBR		BIT(1)  /* Last branch virtualization */
-#define AMD_CPUID_SVM_SVML		BIT(2)  /* SVM lock */
-#define AMD_CPUID_SVM_NRIP_SAVE		BIT(3)  /* Next RIP is saved */
-#define AMD_CPUID_SVM_TSC_RATE		BIT(4)  /* TSC rate control. */
-#define AMD_CPUID_SVM_VMCB_CLEAN	BIT(5)  /* VMCB state caching */
-#define AMD_CPUID_SVM_FLUSH_BY_ASID	BIT(6)  /* Flush by ASID */
-#define AMD_CPUID_SVM_DECODE_ASSIST	BIT(7)  /* Decode assist */
-#define AMD_CPUID_SVM_PAUSE_INC		BIT(10) /* Pause intercept filter. */
-#define AMD_CPUID_SVM_PAUSE_FTH		BIT(12) /* Pause filter threshold */
+#define	AMD_CPUID_SVM_NP		BIT(0)  /* Nested paging or RVI */
+#define	AMD_CPUID_SVM_LBR		BIT(1)  /* Last branch virtualization */
+#define	AMD_CPUID_SVM_SVML		BIT(2)  /* SVM lock */
+#define	AMD_CPUID_SVM_NRIP_SAVE		BIT(3)  /* Next RIP is saved */
+#define	AMD_CPUID_SVM_TSC_RATE		BIT(4)  /* TSC rate control. */
+#define	AMD_CPUID_SVM_VMCB_CLEAN	BIT(5)  /* VMCB state caching */
+#define	AMD_CPUID_SVM_FLUSH_BY_ASID	BIT(6)  /* Flush by ASID */
+#define	AMD_CPUID_SVM_DECODE_ASSIST	BIT(7)  /* Decode assist */
+#define	AMD_CPUID_SVM_PAUSE_INC		BIT(10) /* Pause intercept filter. */
+#define	AMD_CPUID_SVM_PAUSE_FTH		BIT(12) /* Pause filter threshold */
 #define	AMD_CPUID_SVM_AVIC		BIT(13)	/* AVIC present */
 
 #define	VMCB_CACHE_DEFAULT	(VMCB_CACHE_ASID	|	\
@@ -122,28 +122,10 @@ SYSCTL_INT(_hw_vmm_svm, OID_AUTO, vmcb_clean, CTLFLAG_RDTUN, &vmcb_clean,
 static MALLOC_DEFINE(M_SVM, "svm", "svm");
 static MALLOC_DEFINE(M_SVM_VLAPIC, "svm-vlapic", "svm-vlapic");
 
+/* SVM features advertised by CPUID.8000000AH:EDX */
 static uint32_t svm_feature = ~0U;	/* AMD SVM features. */
-SYSCTL_UINT(_hw_vmm_svm, OID_AUTO, features, CTLFLAG_RDTUN, &svm_feature, 0,
-    "SVM features advertised by CPUID.8000000AH:EDX");
 
 static int disable_npf_assist;
-SYSCTL_INT(_hw_vmm_svm, OID_AUTO, disable_npf_assist, CTLFLAG_RWTUN,
-    &disable_npf_assist, 0, NULL);
-
-#ifdef __FreeBSD__
-/* Maximum ASIDs supported by the processor */
-static uint32_t nasid;
-SYSCTL_UINT(_hw_vmm_svm, OID_AUTO, num_asids, CTLFLAG_RDTUN, &nasid, 0,
-    "Number of ASIDs supported by this processor");
-
-/* Current ASID generation for each host cpu */
-static struct asid asid[MAXCPU];
-
-/*
- * SVM host state saved area of size 4KB for each core.
- */
-static uint8_t hsave[MAXCPU][PAGE_SIZE] __aligned(PAGE_SIZE);
-#endif /* __FreeBSD__ */
 
 static VMM_STAT_AMD(VCPU_EXITINTINFO, "VM exits during event delivery");
 static VMM_STAT_AMD(VCPU_INTINFO_INJECTED, "Events pending at VM entry");
@@ -191,7 +173,7 @@ svm_cleanup(void)
 static int
 check_svm_features(void)
 {
-	u_int regs[4];
+	uint_t regs[4];
 
 	/* CPUID Fn8000_000A is for SVM */
 	do_cpuid(0x8000000A, regs);
@@ -333,14 +315,14 @@ svm_restore(void)
 #endif /* __FreeBSD__ */
 
 /* Pentium compatible MSRs */
-#define MSR_PENTIUM_START	0
-#define MSR_PENTIUM_END		0x1FFF
+#define	MSR_PENTIUM_START	0
+#define	MSR_PENTIUM_END		0x1FFF
 /* AMD 6th generation and Intel compatible MSRs */
-#define MSR_AMD6TH_START	0xC0000000UL
-#define MSR_AMD6TH_END		0xC0001FFFUL
+#define	MSR_AMD6TH_START	0xC0000000UL
+#define	MSR_AMD6TH_END		0xC0001FFFUL
 /* AMD 7th and 8th generation compatible MSRs */
-#define MSR_AMD7TH_START	0xC0010000UL
-#define MSR_AMD7TH_END		0xC0011FFFUL
+#define	MSR_AMD7TH_START	0xC0010000UL
+#define	MSR_AMD7TH_END		0xC0011FFFUL
 
 /*
  * Get the index and bit position for a MSR in permission bitmap.
@@ -418,7 +400,7 @@ svm_get_intercept(struct svm_softc *sc, int vcpu, int idx, uint32_t bitmask)
 {
 	struct vmcb_ctrl *ctrl;
 
-	KASSERT(idx >=0 && idx < 5, ("invalid intercept index %d", idx));
+	KASSERT(idx >= 0 && idx < 5, ("invalid intercept index %d", idx));
 
 	ctrl = svm_get_vmcb_ctrl(sc, vcpu);
 	return (ctrl->intercept[idx] & bitmask ? 1 : 0);
@@ -431,7 +413,7 @@ svm_set_intercept(struct svm_softc *sc, int vcpu, int idx, uint32_t bitmask,
 	struct vmcb_ctrl *ctrl;
 	uint32_t oldval;
 
-	KASSERT(idx >=0 && idx < 5, ("invalid intercept index %d", idx));
+	KASSERT(idx >= 0 && idx < 5, ("invalid intercept index %d", idx));
 
 	ctrl = svm_get_vmcb_ctrl(sc, vcpu);
 	oldval = ctrl->intercept[idx];
@@ -903,67 +885,6 @@ svm_handle_mmio_emul(struct svm_softc *svm_sc, int vcpu, struct vm_exit *vmexit,
 	vie_init_mmio(vie, inst_bytes, inst_len, &paging, gpa);
 }
 
-#ifdef KTR
-static const char *
-intrtype_to_str(int intr_type)
-{
-	switch (intr_type) {
-	case VMCB_EVENTINJ_TYPE_INTR:
-		return ("hwintr");
-	case VMCB_EVENTINJ_TYPE_NMI:
-		return ("nmi");
-	case VMCB_EVENTINJ_TYPE_INTn:
-		return ("swintr");
-	case VMCB_EVENTINJ_TYPE_EXCEPTION:
-		return ("exception");
-	default:
-		panic("%s: unknown intr_type %d", __func__, intr_type);
-	}
-}
-#endif
-
-/*
- * Inject an event to vcpu as described in section 15.20, "Event injection".
- */
-static void
-svm_eventinject(struct svm_softc *sc, int vcpu, int intr_type, int vector,
-		 uint32_t error, bool ec_valid)
-{
-	struct vmcb_ctrl *ctrl;
-
-	ctrl = svm_get_vmcb_ctrl(sc, vcpu);
-
-	KASSERT((ctrl->eventinj & VMCB_EVENTINJ_VALID) == 0,
-	    ("%s: event already pending %lx", __func__, ctrl->eventinj));
-
-	KASSERT(vector >=0 && vector <= 255, ("%s: invalid vector %d",
-	    __func__, vector));
-
-	switch (intr_type) {
-	case VMCB_EVENTINJ_TYPE_INTR:
-	case VMCB_EVENTINJ_TYPE_NMI:
-	case VMCB_EVENTINJ_TYPE_INTn:
-		break;
-	case VMCB_EVENTINJ_TYPE_EXCEPTION:
-		if (vector >= 0 && vector <= 31 && vector != 2)
-			break;
-		/* FALLTHROUGH */
-	default:
-		panic("%s: invalid intr_type/vector: %d/%d", __func__,
-		    intr_type, vector);
-	}
-	ctrl->eventinj = vector | (intr_type << 8) | VMCB_EVENTINJ_VALID;
-	if (ec_valid) {
-		ctrl->eventinj |= VMCB_EVENTINJ_EC_VALID;
-		ctrl->eventinj |= (uint64_t)error << 32;
-		VCPU_CTR3(sc->vm, vcpu, "Injecting %s at vector %d errcode %x",
-		    intrtype_to_str(intr_type), vector, error);
-	} else {
-		VCPU_CTR2(sc->vm, vcpu, "Injecting %s at vector %d",
-		    intrtype_to_str(intr_type), vector);
-	}
-}
-
 static void
 svm_update_virqinfo(struct svm_softc *sc, int vcpu)
 {
@@ -984,7 +905,7 @@ svm_update_virqinfo(struct svm_softc *sc, int vcpu)
 }
 
 static void
-svm_save_intinfo(struct svm_softc *svm_sc, int vcpu)
+svm_save_exitintinfo(struct svm_softc *svm_sc, int vcpu)
 {
 	struct vmcb_ctrl *ctrl;
 	uint64_t intinfo;
@@ -1001,7 +922,7 @@ svm_save_intinfo(struct svm_softc *svm_sc, int vcpu)
 	 * that was being delivered.
 	 */
 	VCPU_CTR2(svm_sc->vm, vcpu, "SVM:Pending INTINFO(0x%lx), vector=%d.\n",
-		intinfo, VMCB_EXITINTINFO_VECTOR(intinfo));
+	    intinfo, VMCB_EXITINTINFO_VECTOR(intinfo));
 	vmm_stat_incr(svm_sc->vm, vcpu, VCPU_EXITINTINFO, 1);
 	vm_exit_intinfo(svm_sc->vm, vcpu, intinfo);
 }
@@ -1014,12 +935,14 @@ vintr_intercept_enabled(struct svm_softc *sc, int vcpu)
 	    VMCB_INTCPT_VINTR));
 }
 
-static __inline void
-enable_intr_window_exiting(struct svm_softc *sc, int vcpu)
+static void
+svm_enable_intr_window_exiting(struct svm_softc *sc, int vcpu)
 {
 	struct vmcb_ctrl *ctrl;
+	struct vmcb_state *state;
 
 	ctrl = svm_get_vmcb_ctrl(sc, vcpu);
+	state = svm_get_vmcb_state(sc, vcpu);
 
 	if ((ctrl->v_irq & V_IRQ) != 0 && ctrl->v_intr_vector == 0) {
 		KASSERT(ctrl->v_intr_prio & V_IGN_TPR,
@@ -1029,6 +952,17 @@ enable_intr_window_exiting(struct svm_softc *sc, int vcpu)
 		return;
 	}
 
+	/*
+	 * We use V_IRQ in conjunction with the VINTR intercept to trap into the
+	 * hypervisor as soon as a virtual interrupt can be delivered.
+	 *
+	 * Since injected events are not subject to intercept checks we need to
+	 * ensure that the V_IRQ is not actually going to be delivered on VM
+	 * entry.
+	 */
+	VERIFY((ctrl->eventinj & VMCB_EVENTINJ_VALID) != 0 ||
+	    (state->rflags & PSL_I) == 0 || ctrl->intr_shadow);
+
 	VCPU_CTR0(sc->vm, vcpu, "Enable intr window exiting");
 	ctrl->v_irq |= V_IRQ;
 	ctrl->v_intr_prio |= V_IGN_TPR;
@@ -1037,8 +971,8 @@ enable_intr_window_exiting(struct svm_softc *sc, int vcpu)
 	svm_enable_intercept(sc, vcpu, VMCB_CTRL1_INTCPT, VMCB_INTCPT_VINTR);
 }
 
-static __inline void
-disable_intr_window_exiting(struct svm_softc *sc, int vcpu)
+static void
+svm_disable_intr_window_exiting(struct svm_softc *sc, int vcpu)
 {
 	struct vmcb_ctrl *ctrl;
 
@@ -1063,30 +997,18 @@ disable_intr_window_exiting(struct svm_softc *sc, int vcpu)
  * to track when the vcpu is done handling the NMI.
  */
 static int
-nmi_blocked(struct svm_softc *sc, int vcpu)
+svm_nmi_blocked(struct svm_softc *sc, int vcpu)
 {
-	int blocked;
-
-	blocked = svm_get_intercept(sc, vcpu, VMCB_CTRL1_INTCPT,
-	    VMCB_INTCPT_IRET);
-	return (blocked);
+	return (svm_get_intercept(sc, vcpu, VMCB_CTRL1_INTCPT,
+	    VMCB_INTCPT_IRET));
 }
 
 static void
-enable_nmi_blocking(struct svm_softc *sc, int vcpu)
-{
-
-	KASSERT(!nmi_blocked(sc, vcpu), ("vNMI already blocked"));
-	VCPU_CTR0(sc->vm, vcpu, "vNMI blocking enabled");
-	svm_enable_intercept(sc, vcpu, VMCB_CTRL1_INTCPT, VMCB_INTCPT_IRET);
-}
-
-static void
-clear_nmi_blocking(struct svm_softc *sc, int vcpu)
+svm_clear_nmi_blocking(struct svm_softc *sc, int vcpu)
 {
 	struct vmcb_ctrl *ctrl;
 
-	KASSERT(nmi_blocked(sc, vcpu), ("vNMI already unblocked"));
+	KASSERT(svm_nmi_blocked(sc, vcpu), ("vNMI already unblocked"));
 	VCPU_CTR0(sc->vm, vcpu, "vNMI blocking cleared");
 	/*
 	 * When the IRET intercept is cleared the vcpu will attempt to execute
@@ -1102,17 +1024,84 @@ clear_nmi_blocking(struct svm_softc *sc, int vcpu)
 	svm_disable_intercept(sc, vcpu, VMCB_CTRL1_INTCPT, VMCB_INTCPT_IRET);
 
 	/*
-	 * Set 'intr_shadow' to prevent an NMI from being injected on the
-	 * immediate VMRUN.
+	 * Set an interrupt shadow to prevent an NMI from being immediately
+	 * injected on the next VMRUN.
 	 */
 	ctrl = svm_get_vmcb_ctrl(sc, vcpu);
 	ctrl->intr_shadow = 1;
 }
 
+static void
+svm_inject_event(struct svm_softc *sc, int vcpu, uint64_t intinfo)
+{
+	struct vmcb_ctrl *ctrl;
+	uint8_t vector;
+	uint32_t evtype;
+
+	ASSERT(VMCB_EXITINTINFO_VALID(intinfo));
+
+	ctrl = svm_get_vmcb_ctrl(sc, vcpu);
+	vector = VMCB_EXITINTINFO_VECTOR(intinfo);
+	evtype = VMCB_EXITINTINFO_TYPE(intinfo);
+
+	switch (evtype) {
+	case VMCB_EVENTINJ_TYPE_INTR:
+	case VMCB_EVENTINJ_TYPE_NMI:
+	case VMCB_EVENTINJ_TYPE_INTn:
+		break;
+	case VMCB_EVENTINJ_TYPE_EXCEPTION:
+		VERIFY(vector <= 31);
+		/*
+		 * NMIs are expected to be injected with VMCB_EVENTINJ_TYPE_NMI,
+		 * rather than as an exception with the NMI vector.
+		 */
+		VERIFY(vector != 2);
+		break;
+	default:
+		panic("unexpected event type %x", evtype);
+	}
+
+	ctrl->eventinj = VMCB_EVENTINJ_VALID | evtype | vector;
+	if (VMCB_EXITINTINFO_EC_VALID(intinfo)) {
+		ctrl->eventinj |= VMCB_EVENTINJ_EC_VALID;
+		ctrl->eventinj |= (uint64_t)VMCB_EXITINTINFO_EC(intinfo) << 32;
+	}
+}
+
+static void
+svm_inject_nmi(struct svm_softc *sc, int vcpu)
+{
+	struct vmcb_ctrl *ctrl = svm_get_vmcb_ctrl(sc, vcpu);
+
+	ASSERT(!svm_nmi_blocked(sc, vcpu));
+
+	ctrl->eventinj = VMCB_EVENTINJ_VALID | VMCB_EVENTINJ_TYPE_NMI;
+	vm_nmi_clear(sc->vm, vcpu);
+
+	/*
+	 * Virtual NMI blocking is now in effect.
+	 *
+	 * Not only does this block a subsequent NMI injection from taking
+	 * place, it also configures an intercept on the IRET so we can track
+	 * when the next injection can take place.
+	 */
+	svm_enable_intercept(sc, vcpu, VMCB_CTRL1_INTCPT, VMCB_INTCPT_IRET);
+}
+
+static void
+svm_inject_irq(struct svm_softc *sc, int vcpu, int vector)
+{
+	struct vmcb_ctrl *ctrl = svm_get_vmcb_ctrl(sc, vcpu);
+
+	ASSERT(vector >= 0 && vector <= 255);
+
+	ctrl->eventinj = VMCB_EVENTINJ_VALID | vector;
+}
+
 #define	EFER_MBZ_BITS	0xFFFFFFFFFFFF0200UL
 
 static int
-svm_write_efer(struct svm_softc *sc, int vcpu, uint64_t newval, bool *retu)
+svm_write_efer(struct svm_softc *sc, int vcpu, uint64_t newval)
 {
 	struct vm_exit *vme;
 	struct vmcb_state *state;
@@ -1157,8 +1146,7 @@ svm_write_efer(struct svm_softc *sc, int vcpu, uint64_t newval, bool *retu)
 	if (newval & EFER_LMSLE) {
 		vme = vm_exitinfo(sc->vm, vcpu);
 		vm_exit_svm(vme, VMCB_EXIT_MSR, 1, 0);
-		*retu = true;
-		return (0);
+		return (-1);
 	}
 
 	if (newval & EFER_FFXSR) {
@@ -1180,23 +1168,22 @@ gpf:
 }
 
 static int
-emulate_wrmsr(struct svm_softc *sc, int vcpu, u_int num, uint64_t val,
-    bool *retu)
+emulate_wrmsr(struct svm_softc *sc, int vcpu, uint_t num, uint64_t val)
 {
 	int error;
 
 	if (lapic_msr(num))
-		error = lapic_wrmsr(sc->vm, vcpu, num, val, retu);
+		error = lapic_wrmsr(sc->vm, vcpu, num, val);
 	else if (num == MSR_EFER)
-		error = svm_write_efer(sc, vcpu, val, retu);
+		error = svm_write_efer(sc, vcpu, val);
 	else
-		error = svm_wrmsr(sc, vcpu, num, val, retu);
+		error = svm_wrmsr(sc, vcpu, num, val);
 
 	return (error);
 }
 
 static int
-emulate_rdmsr(struct svm_softc *sc, int vcpu, u_int num, bool *retu)
+emulate_rdmsr(struct svm_softc *sc, int vcpu, uint_t num)
 {
 	struct vmcb_state *state;
 	struct svm_regctx *ctx;
@@ -1204,9 +1191,9 @@ emulate_rdmsr(struct svm_softc *sc, int vcpu, u_int num, bool *retu)
 	int error;
 
 	if (lapic_msr(num))
-		error = lapic_rdmsr(sc->vm, vcpu, num, &result, retu);
+		error = lapic_rdmsr(sc->vm, vcpu, num, &result);
 	else
-		error = svm_rdmsr(sc, vcpu, num, &result, retu);
+		error = svm_rdmsr(sc, vcpu, num, &result);
 
 	if (error == 0) {
 		state = svm_get_vmcb_state(sc, vcpu);
@@ -1217,50 +1204,6 @@ emulate_rdmsr(struct svm_softc *sc, int vcpu, u_int num, bool *retu)
 
 	return (error);
 }
-
-#ifdef KTR
-static const char *
-exit_reason_to_str(uint64_t reason)
-{
-	static char reasonbuf[32];
-
-	switch (reason) {
-	case VMCB_EXIT_INVALID:
-		return ("invalvmcb");
-	case VMCB_EXIT_SHUTDOWN:
-		return ("shutdown");
-	case VMCB_EXIT_NPF:
-		return ("nptfault");
-	case VMCB_EXIT_PAUSE:
-		return ("pause");
-	case VMCB_EXIT_HLT:
-		return ("hlt");
-	case VMCB_EXIT_CPUID:
-		return ("cpuid");
-	case VMCB_EXIT_IO:
-		return ("inout");
-	case VMCB_EXIT_MC:
-		return ("mchk");
-	case VMCB_EXIT_INTR:
-		return ("extintr");
-	case VMCB_EXIT_NMI:
-		return ("nmi");
-	case VMCB_EXIT_VINTR:
-		return ("vintr");
-	case VMCB_EXIT_MSR:
-		return ("msr");
-	case VMCB_EXIT_IRET:
-		return ("iret");
-	case VMCB_EXIT_MONITOR:
-		return ("monitor");
-	case VMCB_EXIT_MWAIT:
-		return ("mwait");
-	default:
-		snprintf(reasonbuf, sizeof(reasonbuf), "%lx", reason);
-		return (reasonbuf);
-	}
-}
-#endif	/* KTR */
 
 /*
  * From section "State Saved on Exit" in APMv2: nRIP is saved for all #VMEXITs
@@ -1302,7 +1245,6 @@ svm_vmexit(struct svm_softc *svm_sc, int vcpu, struct vm_exit *vmexit)
 #else
 	int error, errcode_valid = 0, handled, idtvec, reflect;
 #endif
-	bool retu;
 
 	ctx = svm_get_guest_regctx(svm_sc, vcpu);
 	vmcb = svm_get_vmcb(svm_sc, vcpu);
@@ -1338,7 +1280,7 @@ svm_vmexit(struct svm_softc *svm_sc, int vcpu, struct vm_exit *vmexit)
 	    vmexit->inst_length, code, info1, info2));
 
 	svm_update_virqinfo(svm_sc, vcpu);
-	svm_save_intinfo(svm_sc, vcpu);
+	svm_save_exitintinfo(svm_sc, vcpu);
 
 	switch (code) {
 	case VMCB_EXIT_IRET:
@@ -1346,11 +1288,12 @@ svm_vmexit(struct svm_softc *svm_sc, int vcpu, struct vm_exit *vmexit)
 		 * Restart execution at "iret" but with the intercept cleared.
 		 */
 		vmexit->inst_length = 0;
-		clear_nmi_blocking(svm_sc, vcpu);
+		svm_clear_nmi_blocking(svm_sc, vcpu);
 		handled = 1;
 		break;
 	case VMCB_EXIT_VINTR:	/* interrupt window exiting */
 		vmm_stat_incr(svm_sc->vm, vcpu, VMEXIT_VINTR, 1);
+		svm_disable_intr_window_exiting(svm_sc, vcpu);
 		handled = 1;
 		break;
 	case VMCB_EXIT_INTR:	/* external interrupt */
@@ -1438,19 +1381,19 @@ svm_vmexit(struct svm_softc *svm_sc, int vcpu, struct vm_exit *vmexit)
 		eax = state->rax;
 		ecx = ctx->sctx_rcx;
 		edx = ctx->sctx_rdx;
-		retu = false;
 
 		if (info1) {
 			vmm_stat_incr(svm_sc->vm, vcpu, VMEXIT_WRMSR, 1);
 			val = (uint64_t)edx << 32 | eax;
 			VCPU_CTR2(svm_sc->vm, vcpu, "wrmsr %x val %lx",
 			    ecx, val);
-			if (emulate_wrmsr(svm_sc, vcpu, ecx, val, &retu)) {
+			error = emulate_wrmsr(svm_sc, vcpu, ecx, val);
+			if (error == 0) {
+				handled = 1;
+			} else if (error > 0) {
 				vmexit->exitcode = VM_EXITCODE_WRMSR;
 				vmexit->u.msr.code = ecx;
 				vmexit->u.msr.wval = val;
-			} else if (!retu) {
-				handled = 1;
 			} else {
 				KASSERT(vmexit->exitcode != VM_EXITCODE_BOGUS,
 				    ("emulate_wrmsr retu with bogus exitcode"));
@@ -1458,11 +1401,12 @@ svm_vmexit(struct svm_softc *svm_sc, int vcpu, struct vm_exit *vmexit)
 		} else {
 			VCPU_CTR1(svm_sc->vm, vcpu, "rdmsr %x", ecx);
 			vmm_stat_incr(svm_sc->vm, vcpu, VMEXIT_RDMSR, 1);
-			if (emulate_rdmsr(svm_sc, vcpu, ecx, &retu)) {
+			error = emulate_rdmsr(svm_sc, vcpu, ecx);
+			if (error == 0) {
+				handled = 1;
+			} else if (error > 0) {
 				vmexit->exitcode = VM_EXITCODE_RDMSR;
 				vmexit->u.msr.code = ecx;
-			} else if (!retu) {
-				handled = 1;
 			} else {
 				KASSERT(vmexit->exitcode != VM_EXITCODE_BOGUS,
 				    ("emulate_rdmsr retu with bogus exitcode"));
@@ -1545,10 +1489,6 @@ svm_vmexit(struct svm_softc *svm_sc, int vcpu, struct vm_exit *vmexit)
 		break;
 	}
 
-	VCPU_CTR4(svm_sc->vm, vcpu, "%s %s vmexit at %lx/%d",
-	    handled ? "handled" : "unhandled", exit_reason_to_str(code),
-	    vmexit->rip, vmexit->inst_length);
-
 	DTRACE_PROBE3(vmm__vexit, int, vcpu, uint64_t, vmexit->rip, uint32_t,
 	    code);
 
@@ -1573,51 +1513,40 @@ svm_vmexit(struct svm_softc *svm_sc, int vcpu, struct vm_exit *vmexit)
 	return (handled);
 }
 
-static void
-svm_inj_intinfo(struct svm_softc *svm_sc, int vcpu)
-{
-	uint64_t intinfo;
-
-	if (!vm_entry_intinfo(svm_sc->vm, vcpu, &intinfo))
-		return;
-
-	KASSERT(VMCB_EXITINTINFO_VALID(intinfo), ("%s: entry intinfo is not "
-	    "valid: %lx", __func__, intinfo));
-
-	svm_eventinject(svm_sc, vcpu, VMCB_EXITINTINFO_TYPE(intinfo),
-		VMCB_EXITINTINFO_VECTOR(intinfo),
-		VMCB_EXITINTINFO_EC(intinfo),
-		VMCB_EXITINTINFO_EC_VALID(intinfo));
-	vmm_stat_incr(svm_sc->vm, vcpu, VCPU_INTINFO_INJECTED, 1);
-	VCPU_CTR1(svm_sc->vm, vcpu, "Injected entry intinfo: %lx", intinfo);
-}
-
 /*
- * Inject event to virtual cpu.
+ * Inject exceptions, NMIs, and ExtINTs.
+ *
+ * The logic behind these are complicated and may involve mutex contention, so
+ * the injection is performed without the protection of host CPU interrupts
+ * being disabled.  This means a racing notification could be "lost",
+ * necessitating a later call to svm_inject_recheck() to close that window
+ * of opportunity.
  */
-static void
-svm_inj_interrupts(struct svm_softc *sc, int vcpu, struct vlapic *vlapic)
+static enum event_inject_state
+svm_inject_events(struct svm_softc *sc, int vcpu)
 {
 	struct vmcb_ctrl *ctrl;
 	struct vmcb_state *state;
 	struct svm_vcpu *vcpustate;
-	uint8_t v_tpr;
-	int vector, need_intr_window;
-	int extint_pending;
+	uint64_t intinfo;
+	enum event_inject_state ev_state;
 
 	state = svm_get_vmcb_state(sc, vcpu);
 	ctrl  = svm_get_vmcb_ctrl(sc, vcpu);
 	vcpustate = svm_get_vcpu(sc, vcpu);
+	ev_state = EIS_CAN_INJECT;
 
-	need_intr_window = 0;
-
-	vlapic_tmr_update(vlapic);
-
+	/* Clear any interrupt shadow if guest %rip has changed */
 	if (vcpustate->nextrip != state->rip) {
 		ctrl->intr_shadow = 0;
-		VCPU_CTR2(sc->vm, vcpu, "Guest interrupt blocking "
-		    "cleared due to rip change: %lx/%lx",
-		    vcpustate->nextrip, state->rip);
+	}
+
+	/*
+	 * An event is already pending for injection.  This can occur when the
+	 * vCPU exits prior to VM entry (like for an AST).
+	 */
+	if (ctrl->eventinj & VMCB_EVENTINJ_VALID) {
+		return (EIS_EV_EXISTING | EIS_REQ_EXIT);
 	}
 
 	/*
@@ -1629,118 +1558,79 @@ svm_inj_interrupts(struct svm_softc *sc, int vcpu, struct vlapic *vlapic)
 	 * An event might also be pending because an exception was injected
 	 * by the hypervisor (e.g. #PF during instruction emulation).
 	 */
-	svm_inj_intinfo(sc, vcpu);
+	if (vm_entry_intinfo(sc->vm, vcpu, &intinfo)) {
+		ASSERT(VMCB_EXITINTINFO_VALID(intinfo));
+
+		svm_inject_event(sc, vcpu, intinfo);
+		vmm_stat_incr(sc->vm, vcpu, VCPU_INTINFO_INJECTED, 1);
+		ev_state = EIS_EV_INJECTED;
+	}
 
 	/* NMI event has priority over interrupts. */
-	if (vm_nmi_pending(sc->vm, vcpu)) {
-		if (nmi_blocked(sc, vcpu)) {
-			/*
-			 * Can't inject another NMI if the guest has not
-			 * yet executed an "iret" after the last NMI.
-			 */
-			VCPU_CTR0(sc->vm, vcpu, "Cannot inject NMI due "
-			    "to NMI-blocking");
-		} else if (ctrl->intr_shadow) {
-			/*
-			 * Can't inject an NMI if the vcpu is in an intr_shadow.
-			 */
-			VCPU_CTR0(sc->vm, vcpu, "Cannot inject NMI due to "
-			    "interrupt shadow");
-			need_intr_window = 1;
-			goto done;
-		} else if (ctrl->eventinj & VMCB_EVENTINJ_VALID) {
-			/*
-			 * If there is already an exception/interrupt pending
-			 * then defer the NMI until after that.
-			 */
-			VCPU_CTR1(sc->vm, vcpu, "Cannot inject NMI due to "
-			    "eventinj %lx", ctrl->eventinj);
+	if (vm_nmi_pending(sc->vm, vcpu) && !svm_nmi_blocked(sc, vcpu)) {
+		if (ev_state == EIS_CAN_INJECT) {
+			/* Can't inject NMI if vcpu is in an intr_shadow. */
+			if (ctrl->intr_shadow) {
+				return (EIS_GI_BLOCK);
+			}
 
-			/*
-			 * Use self-IPI to trigger a VM-exit as soon as
-			 * possible after the event injection is completed.
-			 *
-			 * This works only if the external interrupt exiting
-			 * is at a lower priority than the event injection.
-			 *
-			 * Although not explicitly specified in APMv2 the
-			 * relative priorities were verified empirically.
-			 */
-			ipi_cpu(curcpu, IPI_AST);	/* XXX vmm_ipinum? */
+			svm_inject_nmi(sc, vcpu);
+			ev_state = EIS_EV_INJECTED;
 		} else {
-			vm_nmi_clear(sc->vm, vcpu);
-
-			/* Inject NMI, vector number is not used */
-			svm_eventinject(sc, vcpu, VMCB_EVENTINJ_TYPE_NMI,
-			    IDT_NMI, 0, false);
-
-			/* virtual NMI blocking is now in effect */
-			enable_nmi_blocking(sc, vcpu);
-
-			VCPU_CTR0(sc->vm, vcpu, "Injecting vNMI");
+			return (ev_state | EIS_REQ_EXIT);
 		}
 	}
 
-	extint_pending = vm_extint_pending(sc->vm, vcpu);
-	if (!extint_pending) {
-		if (!vlapic_pending_intr(vlapic, &vector))
-			goto done;
-		KASSERT(vector >= 16 && vector <= 255,
-		    ("invalid vector %d from local APIC", vector));
-	} else {
+	if (vm_extint_pending(sc->vm, vcpu)) {
+		int vector;
+
+		if (ev_state != EIS_CAN_INJECT) {
+			return (ev_state | EIS_REQ_EXIT);
+		}
+
+		/*
+		 * If the guest has disabled interrupts or is in an interrupt
+		 * shadow then we cannot inject the pending interrupt.
+		 */
+		if ((state->rflags & PSL_I) == 0 || ctrl->intr_shadow) {
+			return (EIS_GI_BLOCK);
+		}
+
 		/* Ask the legacy pic for a vector to inject */
 		vatpic_pending_intr(sc->vm, &vector);
 		KASSERT(vector >= 0 && vector <= 255,
 		    ("invalid vector %d from INTR", vector));
-	}
 
-	/*
-	 * If the guest has disabled interrupts or is in an interrupt shadow
-	 * then we cannot inject the pending interrupt.
-	 */
-	if ((state->rflags & PSL_I) == 0) {
-		VCPU_CTR2(sc->vm, vcpu, "Cannot inject vector %d due to "
-		    "rflags %lx", vector, state->rflags);
-		need_intr_window = 1;
-		goto done;
-	}
-
-	if (ctrl->intr_shadow) {
-		VCPU_CTR1(sc->vm, vcpu, "Cannot inject vector %d due to "
-		    "interrupt shadow", vector);
-		need_intr_window = 1;
-		goto done;
-	}
-
-	if (ctrl->eventinj & VMCB_EVENTINJ_VALID) {
-		VCPU_CTR2(sc->vm, vcpu, "Cannot inject vector %d due to "
-		    "eventinj %lx", vector, ctrl->eventinj);
-		need_intr_window = 1;
-		goto done;
-	}
-
-	svm_eventinject(sc, vcpu, VMCB_EVENTINJ_TYPE_INTR, vector, 0, false);
-
-	if (!extint_pending) {
-		vlapic_intr_accepted(vlapic, vector);
-	} else {
+		svm_inject_irq(sc, vcpu, vector);
 		vm_extint_clear(sc->vm, vcpu);
 		vatpic_intr_accepted(sc->vm, vector);
+		ev_state = EIS_EV_INJECTED;
 	}
 
+	return (ev_state);
+}
+
+/*
+ * Synchronize vLAPIC state and inject any interrupts pending on it.
+ *
+ * This is done with host CPU interrupts disabled so notification IPIs will be
+ * queued on the host APIC and recognized when entering SVM guest context.
+ */
+static enum event_inject_state
+svm_inject_vlapic(struct svm_softc *sc, int vcpu, struct vlapic *vlapic,
+    enum event_inject_state ev_state)
+{
+	struct vmcb_ctrl *ctrl;
+	struct vmcb_state *state;
+	int vector;
+	uint8_t v_tpr;
+
+	state = svm_get_vmcb_state(sc, vcpu);
+	ctrl  = svm_get_vmcb_ctrl(sc, vcpu);
+
 	/*
-	 * Force a VM-exit as soon as the vcpu is ready to accept another
-	 * interrupt. This is done because the PIC might have another vector
-	 * that it wants to inject. Also, if the APIC has a pending interrupt
-	 * that was preempted by the ExtInt then it allows us to inject the
-	 * APIC vector as soon as possible.
-	 */
-	need_intr_window = 1;
-done:
-	/*
-	 * The guest can modify the TPR by writing to %CR8. In guest mode
-	 * the processor reflects this write to V_TPR without hypervisor
-	 * intervention.
+	 * The guest can modify the TPR by writing to %cr8. In guest mode the
+	 * CPU reflects this write to V_TPR without hypervisor intervention.
 	 *
 	 * The guest can also modify the TPR by writing to it via the memory
 	 * mapped APIC page. In this case, the write will be emulated by the
@@ -1750,36 +1640,91 @@ done:
 	v_tpr = vlapic_get_cr8(vlapic);
 	KASSERT(v_tpr <= 15, ("invalid v_tpr %x", v_tpr));
 	if (ctrl->v_tpr != v_tpr) {
-		VCPU_CTR2(sc->vm, vcpu, "VMCB V_TPR changed from %x to %x",
-		    ctrl->v_tpr, v_tpr);
 		ctrl->v_tpr = v_tpr;
 		svm_set_dirty(sc, vcpu, VMCB_CACHE_TPR);
 	}
 
-	if (need_intr_window) {
-		/*
-		 * We use V_IRQ in conjunction with the VINTR intercept to
-		 * trap into the hypervisor as soon as a virtual interrupt
-		 * can be delivered.
-		 *
-		 * Since injected events are not subject to intercept checks
-		 * we need to ensure that the V_IRQ is not actually going to
-		 * be delivered on VM entry. The KASSERT below enforces this.
-		 */
-		KASSERT((ctrl->eventinj & VMCB_EVENTINJ_VALID) != 0 ||
-		    (state->rflags & PSL_I) == 0 || ctrl->intr_shadow,
-		    ("Bogus intr_window_exiting: eventinj (%lx), "
-		    "intr_shadow (%lu), rflags (%lx)",
-		    ctrl->eventinj, ctrl->intr_shadow, state->rflags));
-		enable_intr_window_exiting(sc, vcpu);
-	} else {
-		disable_intr_window_exiting(sc, vcpu);
+	/* If an event cannot otherwise be injected, we are done for now */
+	if (ev_state != EIS_CAN_INJECT) {
+		return (ev_state);
 	}
+
+	if (!vlapic_pending_intr(vlapic, &vector)) {
+		return (EIS_CAN_INJECT);
+	}
+	KASSERT(vector >= 16 && vector <= 255,
+	    ("invalid vector %d from local APIC", vector));
+
+	/*
+	 * If the guest has disabled interrupts or is in an interrupt shadow
+	 * then we cannot inject the pending interrupt.
+	 */
+	if ((state->rflags & PSL_I) == 0 || ctrl->intr_shadow) {
+		return (EIS_GI_BLOCK);
+	}
+
+	svm_inject_irq(sc, vcpu, vector);
+	vlapic_intr_accepted(vlapic, vector);
+	return (EIS_EV_INJECTED);
 }
+
+/*
+ * Re-check for events to be injected.
+ *
+ * Once host CPU interrupts are disabled, check for the presence of any events
+ * which require injection processing.  If an exit is required upon injection,
+ * or once the guest becomes interruptable, that will be configured too.
+ */
+static bool
+svm_inject_recheck(struct svm_softc *sc, int vcpu,
+    enum event_inject_state ev_state)
+{
+	struct vmcb_ctrl *ctrl;
+
+	ctrl  = svm_get_vmcb_ctrl(sc, vcpu);
+
+	if (ev_state == EIS_CAN_INJECT) {
+		/*
+		 * An active interrupt shadow would preclude us from injecting
+		 * any events picked up during a re-check.
+		 */
+		if (ctrl->intr_shadow != 0) {
+			return (false);
+		}
+
+		if (vm_nmi_pending(sc->vm, vcpu) &&
+		    !svm_nmi_blocked(sc, vcpu)) {
+			/* queued NMI not blocked by NMI-window-exiting */
+			return (true);
+		}
+		if (vm_extint_pending(sc->vm, vcpu)) {
+			/* queued ExtINT not blocked by existing injection */
+			return (true);
+		}
+	} else {
+		if ((ev_state & EIS_REQ_EXIT) != 0) {
+			/*
+			 * Use a self-IPI to force an immediate exit after
+			 * event injection has occurred.
+			 */
+			poke_cpu(CPU->cpu_id);
+		} else {
+			/*
+			 * If any event is being injected, an exit immediately
+			 * upon becoming interruptable again will allow pending
+			 * or newly queued events to be injected in a timely
+			 * manner.
+			 */
+			svm_enable_intr_window_exiting(sc, vcpu);
+		}
+	}
+	return (false);
+}
+
 
 #ifdef __FreeBSD__
 static void
-check_asid(struct svm_softc *sc, int vcpuid, pmap_t pmap, u_int thiscpu)
+check_asid(struct svm_softc *sc, int vcpuid, pmap_t pmap, uint_t thiscpu)
 {
 	struct svm_vcpu *vcpustate;
 	struct vmcb_ctrl *ctrl;
@@ -1805,26 +1750,26 @@ check_asid(struct svm_softc *sc, int vcpuid, pmap_t pmap, u_int thiscpu)
 	 *    the 'vcpustate'. This happens when the host invalidates pages
 	 *    belonging to the guest.
 	 *
-	 *	asidgen		eptgen	      Action
+	 *	asidgen		eptgen		Action
 	 *	mismatch	mismatch
-	 *	   0		   0		(a)
-	 *	   0		   1		(b1) or (b2)
-	 *	   1		   0		(c)
-	 *	   1		   1		(d)
+	 *	0		0		(a)
+	 *	0		1		(b1) or (b2)
+	 *	1		0		(c)
+	 *	1		1		(d)
 	 *
-	 * (a) There is no mismatch in eptgen or ASID generation and therefore
-	 *     no further action is needed.
+	 * (a)	There is no mismatch in eptgen or ASID generation and therefore
+	 *	no further action is needed.
 	 *
-	 * (b1) If the cpu supports FlushByAsid then the vcpu's ASID is
-	 *      retained and the TLB entries associated with this ASID
-	 *      are flushed by VMRUN.
+	 * (b1)	If the cpu supports FlushByAsid then the vcpu's ASID is
+	 *	retained and the TLB entries associated with this ASID
+	 *	are flushed by VMRUN.
 	 *
-	 * (b2) If the cpu does not support FlushByAsid then a new ASID is
-	 *      allocated.
+	 * (b2)	If the cpu does not support FlushByAsid then a new ASID is
+	 *	allocated.
 	 *
-	 * (c) A new ASID is allocated.
+	 * (c)	A new ASID is allocated.
 	 *
-	 * (d) A new ASID is allocated.
+	 * (d)	A new ASID is allocated.
 	 */
 
 	alloc_asid = false;
@@ -1882,7 +1827,7 @@ check_asid(struct svm_softc *sc, int vcpuid, pmap_t pmap, u_int thiscpu)
 }
 #else /* __FreeBSD__ */
 static void
-check_asid(struct svm_softc *sc, int vcpuid, pmap_t pmap, u_int thiscpu)
+check_asid(struct svm_softc *sc, int vcpuid, pmap_t pmap, uint_t thiscpu)
 {
 	struct svm_vcpu *vcpustate = svm_get_vcpu(sc, vcpuid);
 	struct vmcb_ctrl *ctrl = svm_get_vmcb_ctrl(sc, vcpuid);
@@ -1905,15 +1850,13 @@ check_asid(struct svm_softc *sc, int vcpuid, pmap_t pmap, u_int thiscpu)
 static __inline void
 disable_gintr(void)
 {
-
 	__asm __volatile("clgi");
 }
 
 static __inline void
 enable_gintr(void)
 {
-
-        __asm __volatile("stgi");
+	__asm __volatile("stgi");
 }
 
 static __inline void
@@ -1975,7 +1918,7 @@ svm_dr_leave_guest(struct svm_regctx *gctx)
  */
 static int
 svm_vmrun(void *arg, int vcpu, uint64_t rip, pmap_t pmap,
-	struct vm_eventinfo *evinfo)
+    struct vm_eventinfo *evinfo)
 {
 	struct svm_regctx *gctx;
 	struct svm_softc *svm_sc;
@@ -2041,15 +1984,15 @@ svm_vmrun(void *arg, int vcpu, uint64_t rip, pmap_t pmap,
 	state->rip = rip;
 
 	do {
-#ifndef __FreeBSD__
+		enum event_inject_state inject_state;
+
 		/*
-		 * Interrupt injection may involve mutex contention which, on
-		 * illumos bhyve, are blocking/non-spin.  Doing so with global
-		 * interrupts disabled is a recipe for deadlock, so it is
-		 * performed here.
+		 * Initial event injection is complex and may involve mutex
+		 * contention, so it must be performed with global interrupts
+		 * still enabled.
 		 */
-		svm_inj_interrupts(svm_sc, vcpu, vlapic);
-#endif
+		inject_state = svm_inject_events(svm_sc, vcpu);
+		handled = 0;
 
 		/*
 		 * Disable global interrupts to guarantee atomicity during
@@ -2059,6 +2002,13 @@ svm_vmrun(void *arg, int vcpu, uint64_t rip, pmap_t pmap,
 		 * state, NPT generation number, vlapic interrupts etc.
 		 */
 		disable_gintr();
+
+		/*
+		 * Synchronizing and injecting vlapic state is lock-free and is
+		 * safe (and prudent) to perform with interrupts disabled.
+		 */
+		inject_state = svm_inject_vlapic(svm_sc, vcpu, vlapic,
+		    inject_state);
 
 		if (vcpu_suspended(evinfo)) {
 			enable_gintr();
@@ -2092,6 +2042,16 @@ svm_vmrun(void *arg, int vcpu, uint64_t rip, pmap_t pmap,
 		}
 
 		/*
+		 * If subsequent activity queued events which require injection
+		 * handling, take another lap to handle them.
+		 */
+		if (svm_inject_recheck(svm_sc, vcpu, inject_state)) {
+			enable_gintr();
+			handled = 1;
+			continue;
+		}
+
+		/*
 		 * #VMEXIT resumes the host with the guest LDTR, so
 		 * save the current LDT selector so it can be restored
 		 * after an exit.  The userspace hypervisor probably
@@ -2099,10 +2059,6 @@ svm_vmrun(void *arg, int vcpu, uint64_t rip, pmap_t pmap,
 		 * safe.
 		 */
 		ldt_sel = sldt();
-
-#ifdef __FreeBSD__
-		svm_inj_interrupts(svm_sc, vcpu, vlapic);
-#endif
 
 		/* Activate the nested pmap on 'curcpu' */
 		CPU_SET_ATOMIC_ACQ(curcpu, &pmap->pm_active);
@@ -2514,7 +2470,8 @@ svm_vlapic_init(void *arg, int vcpuid)
 	struct vlapic *vlapic;
 
 	svm_sc = arg;
-	vlapic = malloc(sizeof(struct vlapic), M_SVM_VLAPIC, M_WAITOK | M_ZERO);
+	vlapic = malloc(sizeof (struct vlapic), M_SVM_VLAPIC,
+	    M_WAITOK | M_ZERO);
 	vlapic->vm = svm_sc->vm;
 	vlapic->vcpuid = vcpuid;
 	vlapic->apic_page = (struct LAPIC *)&svm_sc->apic_page[vcpuid];
@@ -2527,9 +2484,8 @@ svm_vlapic_init(void *arg, int vcpuid)
 static void
 svm_vlapic_cleanup(void *arg, struct vlapic *vlapic)
 {
-
-        vlapic_cleanup(vlapic);
-        free(vlapic, M_SVM_VLAPIC);
+	vlapic_cleanup(vlapic);
+	free(vlapic, M_SVM_VLAPIC);
 }
 
 #ifndef __FreeBSD__

@@ -103,6 +103,7 @@ MANFILES=	acct.h.3head		\
 		ulimit.h.3head		\
 		un.h.3head		\
 		unistd.h.3head		\
+		upanic.h.3head		\
 		utime.h.3head		\
 		utmpx.h.3head		\
 		utsname.h.3head		\
@@ -114,6 +115,11 @@ MANFILES=	acct.h.3head		\
 		xlocale.h.3head
 
 MANLINKS=	\
+		CMSG_DATA.3head \
+		CMSG_FIRSTHDR.3head \
+		CMSG_LEN.3head \
+		CMSG_NXTHDR.3head \
+		CMSG_SPACE.3head \
 		LIST_CLASS_ENTRY.3head \
 		LIST_CLASS_HEAD.3head \
 		LIST_CONCAT.3head \
@@ -295,6 +301,11 @@ MANLINKS +=	acct.3head		\
 		wordexp.3head		\
 		xlocale.3head
 
+CMSG_DATA.3head := LINKSRC = socket.h.3head
+CMSG_FIRSTHDR.3head := LINKSRC = socket.h.3head
+CMSG_LEN.3head := LINKSRC = socket.h.3head
+CMSG_NXTHDR.3head := LINKSRC = socket.h.3head
+CMSG_SPACE.3head := LINKSRC = socket.h.3head
 LIST_CLASS_ENTRY.3head := LINKSRC = queue.h.3head
 LIST_CLASS_HEAD.3head := LINKSRC = queue.h.3head
 LIST_CONCAT.3head := LINKSRC = queue.h.3head

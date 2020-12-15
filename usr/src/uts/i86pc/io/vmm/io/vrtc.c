@@ -72,14 +72,14 @@ struct rtcdev {
 	uint8_t	century;
 	uint8_t	nvram2[128 - 51];
 } __packed;
-CTASSERT(sizeof(struct rtcdev) == 128);
+CTASSERT(sizeof (struct rtcdev) == 128);
 CTASSERT(offsetof(struct rtcdev, century) == RTC_CENTURY);
 
 struct vrtc {
 	struct vm	*vm;
 	struct mtx	mtx;
 	struct callout	callout;
-	u_int		addr;		/* RTC register to read or write */
+	uint_t		addr;		/* RTC register to read or write */
 	sbintime_t	base_uptime;
 	time_t		base_rtctime;
 	struct rtcdev	rtcdev;
@@ -113,9 +113,8 @@ SYSCTL_DECL(_hw_vmm);
 SYSCTL_NODE(_hw_vmm, OID_AUTO, vrtc, CTLFLAG_RW | CTLFLAG_MPSAFE, NULL,
     NULL);
 
+/* Stop guest when invalid RTC time is detected */
 static int rtc_flag_broken_time = 1;
-SYSCTL_INT(_hw_vmm_vrtc, OID_AUTO, flag_broken_time, CTLFLAG_RDTUN,
-    &rtc_flag_broken_time, 0, "Stop guest when invalid RTC time is detected");
 
 static __inline bool
 divider_enabled(int reg_a)
@@ -292,7 +291,7 @@ rtc_to_secs(struct vrtc *vrtc)
 
 	rtc = &vrtc->rtcdev;
 
-	bzero(&ct, sizeof(struct clocktime));
+	bzero(&ct, sizeof (struct clocktime));
 
 	error = rtcget(rtc, rtc->sec, &ct.sec);
 	if (error || ct.sec < 0 || ct.sec > 59) {
@@ -785,7 +784,7 @@ vrtc_nvram_write(struct vm *vm, int offset, uint8_t value)
 	 * Don't allow writes to RTC control registers or the date/time fields.
 	 */
 	if (offset < offsetof(struct rtcdev, nvram[0]) ||
-	    offset == RTC_CENTURY || offset >= sizeof(struct rtcdev)) {
+	    offset == RTC_CENTURY || offset >= sizeof (struct rtcdev)) {
 		VM_CTR1(vrtc->vm, "RTC nvram write to invalid offset %d",
 		    offset);
 		return (EINVAL);
@@ -811,7 +810,7 @@ vrtc_nvram_read(struct vm *vm, int offset, uint8_t *retval)
 	/*
 	 * Allow all offsets in the RTC to be read.
 	 */
-	if (offset < 0 || offset >= sizeof(struct rtcdev))
+	if (offset < 0 || offset >= sizeof (struct rtcdev))
 		return (EINVAL);
 
 	vrtc = vm_rtc(vm);
@@ -833,12 +832,10 @@ vrtc_nvram_read(struct vm *vm, int offset, uint8_t *retval)
 }
 
 int
-vrtc_addr_handler(struct vm *vm, int vcpuid, bool in, uint16_t port,
-    uint8_t bytes, uint32_t *val)
+vrtc_addr_handler(void *arg, bool in, uint16_t port, uint8_t bytes,
+    uint32_t *val)
 {
-	struct vrtc *vrtc;
-
-	vrtc = vm_rtc(vm);
+	struct vrtc *vrtc = arg;
 
 	if (bytes != 1)
 		return (-1);
@@ -856,24 +853,21 @@ vrtc_addr_handler(struct vm *vm, int vcpuid, bool in, uint16_t port,
 }
 
 int
-vrtc_data_handler(struct vm *vm, int vcpuid, bool in, uint16_t port,
-    uint8_t bytes, uint32_t *val)
+vrtc_data_handler(void *arg, bool in, uint16_t port, uint8_t bytes,
+    uint32_t *val)
 {
-	struct vrtc *vrtc;
-	struct rtcdev *rtc;
+	struct vrtc *vrtc = arg;
+	struct rtcdev *rtc = &vrtc->rtcdev;
 	sbintime_t basetime;
 	time_t curtime;
 	int error, offset;
-
-	vrtc = vm_rtc(vm);
-	rtc = &vrtc->rtcdev;
 
 	if (bytes != 1)
 		return (-1);
 
 	VRTC_LOCK(vrtc);
 	offset = vrtc->addr;
-	if (offset >= sizeof(struct rtcdev)) {
+	if (offset >= sizeof (struct rtcdev)) {
 		VRTC_UNLOCK(vrtc);
 		return (-1);
 	}
@@ -904,24 +898,24 @@ vrtc_data_handler(struct vm *vm, int vcpuid, bool in, uint16_t port,
 		} else {
 			*val = *((uint8_t *)rtc + offset);
 		}
-		VCPU_CTR2(vm, vcpuid, "Read value %x from RTC offset %x",
+		VM_CTR2(vm, "Read value %x from RTC offset %x",
 		    *val, offset);
 	} else {
 		switch (offset) {
 		case 10:
-			VCPU_CTR1(vm, vcpuid, "RTC reg_a set to %x", *val);
+			VM_CTR1(vm, "RTC reg_a set to %x", *val);
 			vrtc_set_reg_a(vrtc, *val);
 			break;
 		case 11:
-			VCPU_CTR1(vm, vcpuid, "RTC reg_b set to %x", *val);
+			VM_CTR1(vm, "RTC reg_b set to %x", *val);
 			error = vrtc_set_reg_b(vrtc, *val);
 			break;
 		case 12:
-			VCPU_CTR1(vm, vcpuid, "RTC reg_c set to %x (ignored)",
+			VM_CTR1(vm, "RTC reg_c set to %x (ignored)",
 			    *val);
 			break;
 		case 13:
-			VCPU_CTR1(vm, vcpuid, "RTC reg_d set to %x (ignored)",
+			VM_CTR1(vm, "RTC reg_d set to %x (ignored)",
 			    *val);
 			break;
 		case 0:
@@ -931,8 +925,7 @@ vrtc_data_handler(struct vm *vm, int vcpuid, bool in, uint16_t port,
 			*val &= 0x7f;
 			/* FALLTHRU */
 		default:
-			VCPU_CTR2(vm, vcpuid, "RTC offset %x set to %x",
-			    offset, *val);
+			VM_CTR2(vm, "RTC offset %x set to %x", offset, *val);
 			*((uint8_t *)rtc + offset) = *val;
 			break;
 		}
@@ -975,7 +968,7 @@ vrtc_init(struct vm *vm)
 	struct rtcdev *rtc;
 	time_t curtime;
 
-	vrtc = malloc(sizeof(struct vrtc), M_VRTC, M_WAITOK | M_ZERO);
+	vrtc = malloc(sizeof (struct vrtc), M_VRTC, M_WAITOK | M_ZERO);
 	vrtc->vm = vm;
 	mtx_init(&vrtc->mtx, "vrtc lock", NULL, MTX_DEF);
 	callout_init(&vrtc->callout, 1);

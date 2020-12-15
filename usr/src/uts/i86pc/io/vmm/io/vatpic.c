@@ -131,7 +131,7 @@ vatpic_get_highest_isrpin(struct atpic *atpic)
 	int i;
 
 	ATPIC_PIN_FOREACH(pin, atpic, i) {
-                bit = (1 << pin);
+		bit = (1 << pin);
 
 		if (atpic->service & bit) {
 			/*
@@ -625,7 +625,7 @@ vatpic_intr_accepted(struct vm *vm, int vector)
 
 static int
 vatpic_read(struct vatpic *vatpic, struct atpic *atpic, bool in, int port,
-	    int bytes, uint32_t *eax)
+    int bytes, uint32_t *eax)
 {
 	int pin;
 
@@ -709,14 +709,11 @@ vatpic_write(struct vatpic *vatpic, struct atpic *atpic, bool in, int port,
 }
 
 int
-vatpic_master_handler(struct vm *vm, int vcpuid, bool in, uint16_t port,
-    uint8_t bytes, uint32_t *eax)
+vatpic_master_handler(void *arg, bool in, uint16_t port, uint8_t bytes,
+    uint32_t *eax)
 {
-	struct vatpic *vatpic;
-	struct atpic *atpic;
-
-	vatpic = vm_atpic(vm);
-	atpic = &vatpic->atpic[0];
+	struct vatpic *vatpic = arg;
+	struct atpic *atpic = &vatpic->atpic[0];
 
 	if (bytes != 1)
 		return (-1);
@@ -729,14 +726,11 @@ vatpic_master_handler(struct vm *vm, int vcpuid, bool in, uint16_t port,
 }
 
 int
-vatpic_slave_handler(struct vm *vm, int vcpuid, bool in, uint16_t port,
-    uint8_t bytes, uint32_t *eax)
+vatpic_slave_handler(void *arg, bool in, uint16_t port, uint8_t bytes,
+    uint32_t *eax)
 {
-	struct vatpic *vatpic;
-	struct atpic *atpic;
-
-	vatpic = vm_atpic(vm);
-	atpic = &vatpic->atpic[1];
+	struct vatpic *vatpic = arg;
+	struct atpic *atpic = &vatpic->atpic[1];
 
 	if (bytes != 1)
 		return (-1);
@@ -749,13 +743,12 @@ vatpic_slave_handler(struct vm *vm, int vcpuid, bool in, uint16_t port,
 }
 
 int
-vatpic_elc_handler(struct vm *vm, int vcpuid, bool in, uint16_t port,
-    uint8_t bytes, uint32_t *eax)
+vatpic_elc_handler(void *arg, bool in, uint16_t port, uint8_t bytes,
+    uint32_t *eax)
 {
-	struct vatpic *vatpic;
+	struct vatpic *vatpic = arg;
 	bool is_master;
 
-	vatpic = vm_atpic(vm);
 	is_master = (port == IO_ELCR1);
 
 	if (bytes != 1)
@@ -795,7 +788,7 @@ vatpic_init(struct vm *vm)
 {
 	struct vatpic *vatpic;
 
-	vatpic = malloc(sizeof(struct vatpic), M_VATPIC, M_WAITOK | M_ZERO);
+	vatpic = malloc(sizeof (struct vatpic), M_VATPIC, M_WAITOK | M_ZERO);
 	vatpic->vm = vm;
 
 	mtx_init(&vatpic->mtx, "vatpic lock", NULL, MTX_SPIN);

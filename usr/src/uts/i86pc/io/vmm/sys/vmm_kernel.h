@@ -65,7 +65,7 @@ struct vm_guest_paging;
 struct pmap;
 
 struct vm_eventinfo {
-	u_int	*rptr;		/* runblock cookie */
+	uint_t	*rptr;		/* runblock cookie */
 	int	*sptr;		/* suspend cookie */
 	int	*iptr;		/* reqidle cookie */
 };
@@ -75,21 +75,21 @@ typedef int	(*vmm_cleanup_func_t)(void);
 typedef void	(*vmm_resume_func_t)(void);
 typedef void *	(*vmi_init_func_t)(struct vm *vm, struct pmap *pmap);
 typedef int	(*vmi_run_func_t)(void *vmi, int vcpu, uint64_t rip,
-		    struct pmap *pmap, struct vm_eventinfo *info);
+    struct pmap *pmap, struct vm_eventinfo *info);
 typedef void	(*vmi_cleanup_func_t)(void *vmi);
 typedef int	(*vmi_get_register_t)(void *vmi, int vcpu, int num,
-				      uint64_t *retval);
+    uint64_t *retval);
 typedef int	(*vmi_set_register_t)(void *vmi, int vcpu, int num,
-				      uint64_t val);
+    uint64_t val);
 typedef int	(*vmi_get_desc_t)(void *vmi, int vcpu, int num,
-				  struct seg_desc *desc);
+    struct seg_desc *desc);
 typedef int	(*vmi_set_desc_t)(void *vmi, int vcpu, int num,
-				  struct seg_desc *desc);
+    struct seg_desc *desc);
 typedef int	(*vmi_get_cap_t)(void *vmi, int vcpu, int num, int *retval);
 typedef int	(*vmi_set_cap_t)(void *vmi, int vcpu, int num, int val);
-typedef struct vmspace * (*vmi_vmspace_alloc)(vm_offset_t min, vm_offset_t max);
+typedef struct vmspace *(*vmi_vmspace_alloc)(vm_offset_t min, vm_offset_t max);
 typedef void	(*vmi_vmspace_free)(struct vmspace *vmspace);
-typedef struct vlapic * (*vmi_vlapic_init)(void *vmi, int vcpu);
+typedef struct vlapic *(*vmi_vlapic_init)(void *vmi, int vcpu);
 typedef void	(*vmi_vlapic_cleanup)(void *vmi, struct vlapic *vlapic);
 #ifndef __FreeBSD__
 typedef void	(*vmi_savectx)(void *vmi, int vcpu);
@@ -280,8 +280,15 @@ vcpu_should_yield(struct vm *vm, int vcpu)
 }
 #endif /* _SYS_THREAD_H */
 
+typedef enum vcpu_notify {
+	VCPU_NOTIFY_NONE,
+	VCPU_NOTIFY_APIC,	/* Posted intr notification (if possible) */
+	VCPU_NOTIFY_EXIT,	/* IPI to cause VM exit */
+} vcpu_notify_t;
+
 void *vcpu_stats(struct vm *vm, int vcpu);
-void vcpu_notify_event(struct vm *vm, int vcpuid, bool lapic_intr);
+void vcpu_notify_event(struct vm *vm, int vcpuid);
+void vcpu_notify_event_type(struct vm *vm, int vcpuid, vcpu_notify_t);
 struct vmspace *vm_get_vmspace(struct vm *vm);
 struct vatpic *vm_atpic(struct vm *vm);
 struct vatpit *vm_atpit(struct vm *vm);
@@ -372,7 +379,26 @@ void vm_inject_ud(struct vm *vm, int vcpuid);
 void vm_inject_gp(struct vm *vm, int vcpuid);
 void vm_inject_ac(struct vm *vm, int vcpuid, int errcode);
 void vm_inject_ss(struct vm *vm, int vcpuid, int errcode);
+void vm_inject_pf(struct vm *vm, int vcpuid, int errcode, uint64_t cr2);
 
+/*
+ * Both SVM and VMX have complex logic for injecting events such as exceptions
+ * or interrupts into the guest.  Within those two backends, the progress of
+ * event injection is tracked by event_inject_state, hopefully making it easier
+ * to reason about.
+ */
+enum event_inject_state {
+	EIS_CAN_INJECT	= 0, /* exception/interrupt can be injected */
+	EIS_EV_EXISTING	= 1, /* blocked by existing event */
+	EIS_EV_INJECTED	= 2, /* blocked by injected event */
+	EIS_GI_BLOCK	= 3, /* blocked by guest interruptability */
+
+	/*
+	 * Flag to request an immediate exit from VM context after event
+	 * injection in order to perform more processing
+	 */
+	EIS_REQ_EXIT	= (1 << 15),
+};
 
 #ifndef	__FreeBSD__
 
@@ -385,18 +411,22 @@ int vmm_mod_unload(void);
 void vmm_call_trap(uint64_t);
 
 /*
- * Because of tangled headers, these are mirrored by vmm_drv.h to present the
- * interface to driver consumers.
+ * Because of tangled headers, this is not exposed directly via the vmm_drv
+ * interface, but rather mirrored as vmm_drv_iop_cb_t in vmm_drv.h.
  */
-typedef int (*vmm_rmem_cb_t)(void *, uintptr_t, uint_t, uint64_t *);
-typedef int (*vmm_wmem_cb_t)(void *, uintptr_t, uint_t, uint64_t);
+typedef int (*ioport_handler_t)(void *, bool, uint16_t, uint8_t, uint32_t *);
 
-int vm_ioport_hook(struct vm *, uint_t, vmm_rmem_cb_t, vmm_wmem_cb_t, void *,
-    void **);
+int vm_ioport_access(struct vm *vm, int vcpuid, bool in, uint16_t port,
+    uint8_t bytes, uint32_t *val);
+
+int vm_ioport_attach(struct vm *vm, uint16_t port, ioport_handler_t func,
+    void *arg, void **cookie);
+int vm_ioport_detach(struct vm *vm, void **cookie, ioport_handler_t *old_func,
+    void **old_arg);
+
+int vm_ioport_hook(struct vm *, uint16_t, ioport_handler_t, void *, void **);
 void vm_ioport_unhook(struct vm *, void **);
-int vm_ioport_handle_hook(struct vm *, int, bool, int, int, uint32_t *);
 
 #endif /* __FreeBSD */
 
 #endif /* _VMM_KERNEL_H_ */
-

@@ -74,7 +74,8 @@ enum vie_status {
 	VIES_PENDING_MMIO	= (1U << 5),
 	VIES_PENDING_INOUT	= (1U << 6),
 	VIES_REPEAT		= (1U << 7),
-	VIES_COMPLETE		= (1U << 8),
+	VIES_USER_FALLBACK	= (1U << 8),
+	VIES_COMPLETE		= (1U << 9),
 };
 
 /* State of request to perform emulated access (inout or MMIO) */
@@ -130,8 +131,8 @@ struct vie {
 
 	uint8_t		scale;
 
-	uint8_t		vex_reg:4,		/* vvvv: first source register specifier */
-			vex_pp:2,		/* pp */
+	uint8_t		vex_reg:4,	/* vvvv: first source reg specifier */
+			vex_pp:2,	/* pp */
 			_sparebits:2;
 
 	uint8_t		_sparebytes[2];
@@ -433,7 +434,7 @@ vie_calc_bytereg(struct vie *vie, enum vm_reg_name *reg, int *lhbr)
 }
 
 static int
-vie_read_bytereg(struct vie *vie, void *vm, int vcpuid, uint8_t *rval)
+vie_read_bytereg(struct vie *vie, struct vm *vm, int vcpuid, uint8_t *rval)
 {
 	uint64_t val;
 	int error, lhbr;
@@ -454,7 +455,7 @@ vie_read_bytereg(struct vie *vie, void *vm, int vcpuid, uint8_t *rval)
 }
 
 static int
-vie_write_bytereg(struct vie *vie, void *vm, int vcpuid, uint8_t byte)
+vie_write_bytereg(struct vie *vie, struct vm *vm, int vcpuid, uint8_t byte)
 {
 	uint64_t origval, val, mask;
 	int error, lhbr;
@@ -480,8 +481,8 @@ vie_write_bytereg(struct vie *vie, void *vm, int vcpuid, uint8_t byte)
 }
 
 static int
-vie_update_register(void *vm, int vcpuid, enum vm_reg_name reg, uint64_t val,
-    int size)
+vie_update_register(struct vm *vm, int vcpuid, enum vm_reg_name reg,
+    uint64_t val, int size)
 {
 	int error;
 	uint64_t origval;
@@ -536,23 +537,25 @@ vie_repeat(struct vie *vie)
 /*
  * Return the status flags that would result from doing (x - y).
  */
+/* BEGIN CSTYLED */
 #define	GETCC(sz)							\
-static u_long								\
+static ulong_t								\
 getcc##sz(uint##sz##_t x, uint##sz##_t y)				\
 {									\
-	u_long rflags;							\
+	ulong_t rflags;							\
 									\
 	__asm __volatile("sub %2,%1; pushfq; popq %0" :			\
 	    "=r" (rflags), "+r" (x) : "m" (y));				\
 	return (rflags);						\
 } struct __hack
+/* END CSTYLED */
 
 GETCC(8);
 GETCC(16);
 GETCC(32);
 GETCC(64);
 
-static u_long
+static ulong_t
 getcc(int opsize, uint64_t x, uint64_t y)
 {
 	KASSERT(opsize == 1 || opsize == 2 || opsize == 4 || opsize == 8,
@@ -571,23 +574,25 @@ getcc(int opsize, uint64_t x, uint64_t y)
 /*
  * Macro creation of functions getaddflags{8,16,32,64}
  */
+/* BEGIN CSTYLED */
 #define	GETADDFLAGS(sz)							\
-static u_long								\
+static ulong_t								\
 getaddflags##sz(uint##sz##_t x, uint##sz##_t y)				\
 {									\
-	u_long rflags;							\
+	ulong_t rflags;							\
 									\
 	__asm __volatile("add %2,%1; pushfq; popq %0" :			\
 	    "=r" (rflags), "+r" (x) : "m" (y));				\
 	return (rflags);						\
 } struct __hack
+/* END CSTYLED */
 
 GETADDFLAGS(8);
 GETADDFLAGS(16);
 GETADDFLAGS(32);
 GETADDFLAGS(64);
 
-static u_long
+static ulong_t
 getaddflags(int opsize, uint64_t x, uint64_t y)
 {
 	KASSERT(opsize == 1 || opsize == 2 || opsize == 4 || opsize == 8,
@@ -606,23 +611,25 @@ getaddflags(int opsize, uint64_t x, uint64_t y)
 /*
  * Return the status flags that would result from doing (x & y).
  */
+/* BEGIN CSTYLED */
 #define	GETANDFLAGS(sz)							\
-static u_long								\
+static ulong_t								\
 getandflags##sz(uint##sz##_t x, uint##sz##_t y)				\
 {									\
-	u_long rflags;							\
+	ulong_t rflags;							\
 									\
 	__asm __volatile("and %2,%1; pushfq; popq %0" :			\
 	    "=r" (rflags), "+r" (x) : "m" (y));				\
 	return (rflags);						\
 } struct __hack
+/* END CSTYLED */
 
 GETANDFLAGS(8);
 GETANDFLAGS(16);
 GETANDFLAGS(32);
 GETANDFLAGS(64);
 
-static u_long
+static ulong_t
 getandflags(int opsize, uint64_t x, uint64_t y)
 {
 	KASSERT(opsize == 1 || opsize == 2 || opsize == 4 || opsize == 8,
@@ -639,7 +646,7 @@ getandflags(int opsize, uint64_t x, uint64_t y)
 }
 
 static int
-emulate_mov(void *vm, int vcpuid, uint64_t gpa, struct vie *vie)
+vie_emulate_mov(struct vie *vie, struct vm *vm, int vcpuid, uint64_t gpa)
 {
 	int error, size;
 	enum vm_reg_name reg;
@@ -658,8 +665,10 @@ emulate_mov(void *vm, int vcpuid, uint64_t gpa, struct vie *vie)
 		 */
 		size = 1;	/* override for byte operation */
 		error = vie_read_bytereg(vie, vm, vcpuid, &byte);
-		if (error == 0)
-			error = vie_mmio_write(vie, vm, vcpuid, gpa, byte, size);
+		if (error == 0) {
+			error = vie_mmio_write(vie, vm, vcpuid, gpa, byte,
+			    size);
+		}
 		break;
 	case 0x89:
 		/*
@@ -753,7 +762,7 @@ emulate_mov(void *vm, int vcpuid, uint64_t gpa, struct vie *vie)
 }
 
 static int
-emulate_movx(void *vm, int vcpuid, uint64_t gpa, struct vie *vie)
+vie_emulate_movx(struct vie *vie, struct vm *vm, int vcpuid, uint64_t gpa)
 {
 	int error, size;
 	enum vm_reg_name reg;
@@ -840,8 +849,9 @@ emulate_movx(void *vm, int vcpuid, uint64_t gpa, struct vie *vie)
  * Helper function to calculate and validate a linear address.
  */
 static int
-vie_get_gla(struct vie *vie, void *vm, int vcpuid, int opsize, int addrsize,
-    int prot, enum vm_reg_name seg, enum vm_reg_name gpr, uint64_t *gla)
+vie_get_gla(struct vie *vie, struct vm *vm, int vcpuid, int opsize,
+    int addrsize, int prot, enum vm_reg_name seg, enum vm_reg_name gpr,
+    uint64_t *gla)
 {
 	struct seg_desc desc;
 	uint64_t cr0, val, rflags;
@@ -890,7 +900,7 @@ vie_get_gla(struct vie *vie, void *vm, int vcpuid, int opsize, int addrsize,
 }
 
 static int
-emulate_movs(void *vm, int vcpuid, uint64_t gpa, struct vie *vie)
+vie_emulate_movs(struct vie *vie, struct vm *vm, int vcpuid, uint64_t gpa)
 {
 	struct vm_copyinfo copyinfo[2];
 	uint64_t dstaddr, srcaddr, dstgpa, srcgpa, val;
@@ -991,11 +1001,19 @@ emulate_movs(void *vm, int vcpuid, uint64_t gpa, struct vie *vie)
 			 */
 			error = vie_mmio_read(vie, vm, vcpuid, gpa, &val,
 			    opsize);
-			if (error)
-				goto done;
 
-			vm_copyout(vm, vcpuid, &val, copyinfo, opsize);
-			vm_copy_teardown(vm, vcpuid, copyinfo, nitems(copyinfo));
+			if (error == 0) {
+				vm_copyout(vm, vcpuid, &val, copyinfo, opsize);
+			}
+			/*
+			 * Regardless of whether the MMIO read was successful or
+			 * not, the copy resources must be cleaned up.
+			 */
+			vm_copy_teardown(vm, vcpuid, copyinfo,
+			    nitems(copyinfo));
+			if (error != 0) {
+				goto done;
+			}
 		} else {
 			/*
 			 * Case (4): read from and write to mmio.
@@ -1011,7 +1029,7 @@ emulate_movs(void *vm, int vcpuid, uint64_t gpa, struct vie *vie)
 				goto done;
 
 			error = vm_gla2gpa(vm, vcpuid, paging, dstaddr,
-			   PROT_WRITE, &dstgpa, &fault);
+			    PROT_WRITE, &dstgpa, &fault);
 			if (error || fault)
 				goto done;
 
@@ -1069,7 +1087,7 @@ done:
 }
 
 static int
-emulate_stos(void *vm, int vcpuid, uint64_t gpa, struct vie *vie)
+vie_emulate_stos(struct vie *vie, struct vm *vm, int vcpuid, uint64_t gpa)
 {
 	int error, opsize, repeat;
 	uint64_t val;
@@ -1129,7 +1147,7 @@ emulate_stos(void *vm, int vcpuid, uint64_t gpa, struct vie *vie)
 }
 
 static int
-emulate_and(void *vm, int vcpuid, uint64_t gpa, struct vie *vie)
+vie_emulate_and(struct vie *vie, struct vm *vm, int vcpuid, uint64_t gpa)
 {
 	int error, size;
 	enum vm_reg_name reg;
@@ -1180,16 +1198,16 @@ emulate_and(void *vm, int vcpuid, uint64_t gpa, struct vie *vie)
 		 */
 
 		/* get the first operand */
-                error = vie_mmio_read(vie, vm, vcpuid, gpa, &val1, size);
-                if (error)
+		error = vie_mmio_read(vie, vm, vcpuid, gpa, &val1, size);
+		if (error)
 			break;
 
-                /*
+		/*
 		 * perform the operation with the pre-fetched immediate
 		 * operand and write the result
 		 */
-                result = val1 & vie->immediate;
-                error = vie_mmio_write(vie, vm, vcpuid, gpa, result, size);
+		result = val1 & vie->immediate;
+		error = vie_mmio_write(vie, vm, vcpuid, gpa, result, size);
 		break;
 	default:
 		break;
@@ -1216,7 +1234,7 @@ emulate_and(void *vm, int vcpuid, uint64_t gpa, struct vie *vie)
 }
 
 static int
-emulate_or(void *vm, int vcpuid, uint64_t gpa, struct vie *vie)
+vie_emulate_or(struct vie *vie, struct vm *vm, int vcpuid, uint64_t gpa)
 {
 	int error, size;
 	enum vm_reg_name reg;
@@ -1231,9 +1249,9 @@ emulate_or(void *vm, int vcpuid, uint64_t gpa, struct vie *vie)
 		 * OR reg (ModRM:reg) and mem (ModRM:r/m) and store the
 		 * result in reg.
 		 *
-		 * 0b/r         or r16, r/m16
-		 * 0b/r         or r32, r/m32
-		 * REX.W + 0b/r or r64, r/m64
+		 * 0b/r		or r16, r/m16
+		 * 0b/r		or r32, r/m32
+		 * REX.W + 0b/r	or r64, r/m64
 		 */
 
 		/* get the first operand */
@@ -1267,16 +1285,16 @@ emulate_or(void *vm, int vcpuid, uint64_t gpa, struct vie *vie)
 		 */
 
 		/* get the first operand */
-                error = vie_mmio_read(vie, vm, vcpuid, gpa, &val1, size);
-                if (error)
+		error = vie_mmio_read(vie, vm, vcpuid, gpa, &val1, size);
+		if (error)
 			break;
 
-                /*
+		/*
 		 * perform the operation with the pre-fetched immediate
 		 * operand and write the result
 		 */
-                result = val1 | vie->immediate;
-                error = vie_mmio_write(vie, vm, vcpuid, gpa, result, size);
+		result = val1 | vie->immediate;
+		error = vie_mmio_write(vie, vm, vcpuid, gpa, result, size);
 		break;
 	default:
 		break;
@@ -1303,7 +1321,7 @@ emulate_or(void *vm, int vcpuid, uint64_t gpa, struct vie *vie)
 }
 
 static int
-emulate_cmp(void *vm, int vcpuid, uint64_t gpa, struct vie *vie)
+vie_emulate_cmp(struct vie *vie, struct vm *vm, int vcpuid, uint64_t gpa)
 {
 	int error, size;
 	uint64_t regop, memop, op1, op2, rflags, rflags2;
@@ -1374,7 +1392,7 @@ emulate_cmp(void *vm, int vcpuid, uint64_t gpa, struct vie *vie)
 			size = 1;
 
 		/* get the first operand */
-                error = vie_mmio_read(vie, vm, vcpuid, gpa, &op1, size);
+		error = vie_mmio_read(vie, vm, vcpuid, gpa, &op1, size);
 		if (error)
 			return (error);
 
@@ -1394,7 +1412,7 @@ emulate_cmp(void *vm, int vcpuid, uint64_t gpa, struct vie *vie)
 }
 
 static int
-emulate_test(void *vm, int vcpuid, uint64_t gpa, struct vie *vie)
+vie_emulate_test(struct vie *vie, struct vm *vm, int vcpuid, uint64_t gpa)
 {
 	int error, size;
 	uint64_t op1, rflags, rflags2;
@@ -1442,7 +1460,7 @@ emulate_test(void *vm, int vcpuid, uint64_t gpa, struct vie *vie)
 }
 
 static int
-emulate_bextr(void *vm, int vcpuid, uint64_t gpa, struct vie *vie)
+vie_emulate_bextr(struct vie *vie, struct vm *vm, int vcpuid, uint64_t gpa)
 {
 	uint64_t src1, src2, dst, rflags;
 	unsigned start, len;
@@ -1519,7 +1537,7 @@ done:
 }
 
 static int
-emulate_add(void *vm, int vcpuid, uint64_t gpa, struct vie *vie)
+vie_emulate_add(struct vie *vie, struct vm *vm, int vcpuid, uint64_t gpa)
 {
 	int error, size;
 	uint64_t nval, rflags, rflags2, val1, val2;
@@ -1533,9 +1551,9 @@ emulate_add(void *vm, int vcpuid, uint64_t gpa, struct vie *vie)
 		/*
 		 * ADD r/m to r and store the result in r
 		 *
-		 * 03/r            ADD r16, r/m16
-		 * 03/r            ADD r32, r/m32
-		 * REX.W + 03/r    ADD r64, r/m64
+		 * 03/r			ADD r16, r/m16
+		 * 03/r			ADD r32, r/m32
+		 * REX.W + 03/r		ADD r64, r/m64
 		 */
 
 		/* get the first operand */
@@ -1574,7 +1592,7 @@ emulate_add(void *vm, int vcpuid, uint64_t gpa, struct vie *vie)
 }
 
 static int
-emulate_sub(void *vm, int vcpuid, uint64_t gpa, struct vie *vie)
+vie_emulate_sub(struct vie *vie, struct vm *vm, int vcpuid, uint64_t gpa)
 {
 	int error, size;
 	uint64_t nval, rflags, rflags2, val1, val2;
@@ -1588,9 +1606,9 @@ emulate_sub(void *vm, int vcpuid, uint64_t gpa, struct vie *vie)
 		/*
 		 * SUB r/m from r and store the result in r
 		 *
-		 * 2B/r            SUB r16, r/m16
-		 * 2B/r            SUB r32, r/m32
-		 * REX.W + 2B/r    SUB r64, r/m64
+		 * 2B/r		SUB r16, r/m16
+		 * 2B/r		SUB r32, r/m32
+		 * REX.W + 2B/r	SUB r64, r/m64
 		 */
 
 		/* get the first operand */
@@ -1629,7 +1647,7 @@ emulate_sub(void *vm, int vcpuid, uint64_t gpa, struct vie *vie)
 }
 
 static int
-emulate_stack_op(void *vm, int vcpuid, uint64_t mmio_gpa, struct vie *vie)
+vie_emulate_stack_op(struct vie *vie, struct vm *vm, int vcpuid, uint64_t gpa)
 {
 	struct vm_copyinfo copyinfo[2];
 	struct seg_desc ss_desc;
@@ -1708,12 +1726,12 @@ emulate_stack_op(void *vm, int vcpuid, uint64_t mmio_gpa, struct vie *vie)
 		return (error);
 
 	if (pushop) {
-		error = vie_mmio_read(vie, vm, vcpuid, mmio_gpa, &val, size);
+		error = vie_mmio_read(vie, vm, vcpuid, gpa, &val, size);
 		if (error == 0)
 			vm_copyout(vm, vcpuid, &val, copyinfo, size);
 	} else {
 		vm_copyin(vm, vcpuid, copyinfo, &val, size);
-		error = vie_mmio_write(vie, vm, vcpuid, mmio_gpa, val, size);
+		error = vie_mmio_write(vie, vm, vcpuid, gpa, val, size);
 		rsp += size;
 	}
 	vm_copy_teardown(vm, vcpuid, copyinfo, nitems(copyinfo));
@@ -1727,7 +1745,7 @@ emulate_stack_op(void *vm, int vcpuid, uint64_t mmio_gpa, struct vie *vie)
 }
 
 static int
-emulate_push(void *vm, int vcpuid, uint64_t mmio_gpa, struct vie *vie)
+vie_emulate_push(struct vie *vie, struct vm *vm, int vcpuid, uint64_t gpa)
 {
 	int error;
 
@@ -1740,12 +1758,12 @@ emulate_push(void *vm, int vcpuid, uint64_t mmio_gpa, struct vie *vie)
 	if ((vie->reg & 7) != 6)
 		return (EINVAL);
 
-	error = emulate_stack_op(vm, vcpuid, mmio_gpa, vie);
+	error = vie_emulate_stack_op(vie, vm, vcpuid, gpa);
 	return (error);
 }
 
 static int
-emulate_pop(void *vm, int vcpuid, uint64_t mmio_gpa, struct vie *vie)
+vie_emulate_pop(struct vie *vie, struct vm *vm, int vcpuid, uint64_t gpa)
 {
 	int error;
 
@@ -1758,24 +1776,24 @@ emulate_pop(void *vm, int vcpuid, uint64_t mmio_gpa, struct vie *vie)
 	if ((vie->reg & 7) != 0)
 		return (EINVAL);
 
-	error = emulate_stack_op(vm, vcpuid, mmio_gpa, vie);
+	error = vie_emulate_stack_op(vie, vm, vcpuid, gpa);
 	return (error);
 }
 
 static int
-emulate_group1(void *vm, int vcpuid, uint64_t gpa, struct vie *vie)
+vie_emulate_group1(struct vie *vie, struct vm *vm, int vcpuid, uint64_t gpa)
 {
 	int error;
 
 	switch (vie->reg & 7) {
 	case 0x1:	/* OR */
-		error = emulate_or(vm, vcpuid, gpa, vie);
+		error = vie_emulate_or(vie, vm, vcpuid, gpa);
 		break;
 	case 0x4:	/* AND */
-		error = emulate_and(vm, vcpuid, gpa, vie);
+		error = vie_emulate_and(vie, vm, vcpuid, gpa);
 		break;
 	case 0x7:	/* CMP */
-		error = emulate_cmp(vm, vcpuid, gpa, vie);
+		error = vie_emulate_cmp(vie, vm, vcpuid, gpa);
 		break;
 	default:
 		error = EINVAL;
@@ -1786,7 +1804,7 @@ emulate_group1(void *vm, int vcpuid, uint64_t gpa, struct vie *vie)
 }
 
 static int
-emulate_bittest(void *vm, int vcpuid, uint64_t gpa, struct vie *vie)
+vie_emulate_bittest(struct vie *vie, struct vm *vm, int vcpuid, uint64_t gpa)
 {
 	uint64_t val, rflags;
 	int error, bitmask, bitoff;
@@ -1827,7 +1845,8 @@ emulate_bittest(void *vm, int vcpuid, uint64_t gpa, struct vie *vie)
 }
 
 static int
-emulate_twob_group15(void *vm, int vcpuid, uint64_t gpa, struct vie *vie)
+vie_emulate_twob_group15(struct vie *vie, struct vm *vm, int vcpuid,
+    uint64_t gpa)
 {
 	int error;
 	uint64_t buf;
@@ -1891,6 +1910,12 @@ vie_mmio_read(struct vie *vie, struct vm *vm, int cpuid, uint64_t gpa,
 		vie->mmio_req_read.gpa = gpa;
 		vie->mmio_req_read.state = VR_PENDING;
 		vie->status |= VIES_PENDING_MMIO;
+	} else if (err < 0) {
+		/*
+		 * The MMIO read failed in such a way that fallback to handling
+		 * in userspace is required.
+		 */
+		vie->status |= VIES_USER_FALLBACK;
 	}
 	return (err);
 }
@@ -1926,12 +1951,18 @@ vie_mmio_write(struct vie *vie, struct vm *vm, int cpuid, uint64_t gpa,
 		vie->mmio_req_write.data = wval;
 		vie->mmio_req_write.state = VR_PENDING;
 		vie->status |= VIES_PENDING_MMIO;
+	} else if (err < 0) {
+		/*
+		 * The MMIO write failed in such a way that fallback to handling
+		 * in userspace is required.
+		 */
+		vie->status |= VIES_USER_FALLBACK;
 	}
 	return (err);
 }
 
 int
-vie_emulate_mmio(struct vie *vie, void *vm, int vcpuid)
+vie_emulate_mmio(struct vie *vie, struct vm *vm, int vcpuid)
 {
 	int error;
 	uint64_t gpa;
@@ -1945,53 +1976,53 @@ vie_emulate_mmio(struct vie *vie, void *vm, int vcpuid)
 
 	switch (vie->op.op_type) {
 	case VIE_OP_TYPE_GROUP1:
-		error = emulate_group1(vm, vcpuid, gpa, vie);
+		error = vie_emulate_group1(vie, vm, vcpuid, gpa);
 		break;
 	case VIE_OP_TYPE_POP:
-		error = emulate_pop(vm, vcpuid, gpa, vie);
+		error = vie_emulate_pop(vie, vm, vcpuid, gpa);
 		break;
 	case VIE_OP_TYPE_PUSH:
-		error = emulate_push(vm, vcpuid, gpa, vie);
+		error = vie_emulate_push(vie, vm, vcpuid, gpa);
 		break;
 	case VIE_OP_TYPE_CMP:
-		error = emulate_cmp(vm, vcpuid, gpa, vie);
+		error = vie_emulate_cmp(vie, vm, vcpuid, gpa);
 		break;
 	case VIE_OP_TYPE_MOV:
-		error = emulate_mov(vm, vcpuid, gpa, vie);
+		error = vie_emulate_mov(vie, vm, vcpuid, gpa);
 		break;
 	case VIE_OP_TYPE_MOVSX:
 	case VIE_OP_TYPE_MOVZX:
-		error = emulate_movx(vm, vcpuid, gpa, vie);
+		error = vie_emulate_movx(vie, vm, vcpuid, gpa);
 		break;
 	case VIE_OP_TYPE_MOVS:
-		error = emulate_movs(vm, vcpuid, gpa, vie);
+		error = vie_emulate_movs(vie, vm, vcpuid, gpa);
 		break;
 	case VIE_OP_TYPE_STOS:
-		error = emulate_stos(vm, vcpuid, gpa, vie);
+		error = vie_emulate_stos(vie, vm, vcpuid, gpa);
 		break;
 	case VIE_OP_TYPE_AND:
-		error = emulate_and(vm, vcpuid, gpa, vie);
+		error = vie_emulate_and(vie, vm, vcpuid, gpa);
 		break;
 	case VIE_OP_TYPE_OR:
-		error = emulate_or(vm, vcpuid, gpa, vie);
+		error = vie_emulate_or(vie, vm, vcpuid, gpa);
 		break;
 	case VIE_OP_TYPE_SUB:
-		error = emulate_sub(vm, vcpuid, gpa, vie);
+		error = vie_emulate_sub(vie, vm, vcpuid, gpa);
 		break;
 	case VIE_OP_TYPE_BITTEST:
-		error = emulate_bittest(vm, vcpuid, gpa, vie);
+		error = vie_emulate_bittest(vie, vm, vcpuid, gpa);
 		break;
 	case VIE_OP_TYPE_TWOB_GRP15:
-		error = emulate_twob_group15(vm, vcpuid, gpa, vie);
+		error = vie_emulate_twob_group15(vie, vm, vcpuid, gpa);
 		break;
 	case VIE_OP_TYPE_ADD:
-		error = emulate_add(vm, vcpuid, gpa, vie);
+		error = vie_emulate_add(vie, vm, vcpuid, gpa);
 		break;
 	case VIE_OP_TYPE_TEST:
-		error = emulate_test(vm, vcpuid, gpa, vie);
+		error = vie_emulate_test(vie, vm, vcpuid, gpa);
 		break;
 	case VIE_OP_TYPE_BEXTR:
-		error = emulate_bextr(vm, vcpuid, gpa, vie);
+		error = vie_emulate_bextr(vie, vm, vcpuid, gpa);
 		break;
 	default:
 		error = EINVAL;
@@ -2007,7 +2038,8 @@ vie_emulate_mmio(struct vie *vie, void *vm, int vcpuid)
 }
 
 static int
-vie_emulate_inout_port(struct vie *vie, struct vm *vm, int vcpuid)
+vie_emulate_inout_port(struct vie *vie, struct vm *vm, int vcpuid,
+    uint32_t *eax)
 {
 	uint32_t mask, val;
 	bool in;
@@ -2017,18 +2049,19 @@ vie_emulate_inout_port(struct vie *vie, struct vm *vm, int vcpuid)
 	in = (vie->inout.flags & INOUT_IN) != 0;
 
 	if (!in) {
-		val = vie->inout.eax & mask;
+		val = *eax & mask;
 	}
 
 	if (vie->inout_req_state != VR_DONE) {
-		err = vm_inout_access(vm, vcpuid, in, vie->inout.port,
+		err = vm_ioport_access(vm, vcpuid, in, vie->inout.port,
 		    vie->inout.bytes, &val);
+		val &= mask;
 	} else {
 		/*
 		 * This port access was handled in userspace and the result was
 		 * injected in to be handled now.
 		 */
-		val = vie->inout_req_val;
+		val = vie->inout_req_val & mask;
 		vie->inout_req_state = VR_NONE;
 		err = 0;
 	}
@@ -2042,11 +2075,7 @@ vie_emulate_inout_port(struct vie *vie, struct vm *vm, int vcpuid)
 	}
 
 	if (in) {
-		val &= mask;
-		val |= (vie->inout.eax & ~mask);
-		err = vm_set_register(vm, vcpuid, VM_REG_GUEST_RAX, val);
-		KASSERT(err == 0, ("emulate_ioport: error %d setting guest "
-		    "rax register", err));
+		*eax = (*eax & ~mask) | val;
 	}
 	return (0);
 }
@@ -2141,7 +2170,7 @@ vie_emulate_inout_str(struct vie *vie, struct vm *vm, int vcpuid)
 		vm_copyin(vm, vcpuid, copyinfo, &vie->inout.eax, bytes);
 	}
 
-	err = vie_emulate_inout_port(vie, vm, vcpuid);
+	err = vie_emulate_inout_port(vie, vm, vcpuid, &vie->inout.eax);
 
 	if (err == 0 && in) {
 		vm_copyout(vm, vcpuid, &vie->inout.eax, copyinfo, bytes);
@@ -2202,22 +2231,31 @@ vie_emulate_inout(struct vie *vie, struct vm *vm, int vcpuid)
 			return (EINVAL);
 		}
 
-		err = vie_emulate_inout_port(vie, vm, vcpuid);
-
-		if (err == ESRCH) {
-			ASSERT(vie->status & VIES_PENDING_INOUT);
-			/* Return to userspace with the in/out request */
-			err = -1;
+		err = vie_emulate_inout_port(vie, vm, vcpuid, &vie->inout.eax);
+		if (err == 0 && (vie->inout.flags & INOUT_IN) != 0) {
+			/*
+			 * With the inX access now a success, the result needs
+			 * to be stored in the guest %rax.
+			 */
+			err = vm_set_register(vm, vcpuid, VM_REG_GUEST_RAX,
+			    vie->inout.eax);
+			VERIFY0(err);
 		}
 	} else {
 		vie->status &= ~VIES_REPEAT;
 		err = vie_emulate_inout_str(vie, vm, vcpuid);
 
-		if (err == ESRCH) {
-			ASSERT(vie->status & VIES_PENDING_INOUT);
-			/* Return to userspace with the in/out request */
-			err = -1;
-		}
+	}
+	if (err < 0) {
+		/*
+		 * Access to an I/O port failed in such a way that fallback to
+		 * handling in userspace is required.
+		 */
+		vie->status |= VIES_USER_FALLBACK;
+	} else if (err == ESRCH) {
+		ASSERT(vie->status & VIES_PENDING_INOUT);
+		/* Return to userspace with the in/out request */
+		err = -1;
 	}
 
 	return (err);
@@ -2242,7 +2280,14 @@ vie_advance_pc(struct vie *vie, uint64_t *nextrip)
 void
 vie_exitinfo(const struct vie *vie, struct vm_exit *vme)
 {
-	if (vie->status & VIES_MMIO) {
+	if (vie->status & VIES_USER_FALLBACK) {
+		/*
+		 * Despite the fact that the instruction was successfully
+		 * decoded, some aspect of the emulation failed in such a way
+		 * that it is left up to userspace to complete the operation.
+		 */
+		vie_fallback_exitinfo(vie, vme);
+	} else if (vie->status & VIES_MMIO) {
 		vme->exitcode = VM_EXITCODE_MMIO;
 		if (vie->mmio_req_read.state == VR_PENDING) {
 			vme->u.mmio.gpa = vie->mmio_req_read.gpa;
@@ -2296,7 +2341,16 @@ vie_fallback_exitinfo(const struct vie *vie, struct vm_exit *vme)
 bool
 vie_pending(const struct vie *vie)
 {
-	return ((vie->status & (VIES_PENDING_MMIO|VIES_PENDING_INOUT)) != 0);
+	/*
+	 * These VIE status bits indicate conditions which must be addressed
+	 * through either device IO fulfillment (with corresponding
+	 * vie_fulfill_*()) or complete userspace emulation (followed by a
+	 * vie_reset()).
+	 */
+	const enum vie_status of_interest =
+	    VIES_PENDING_MMIO | VIES_PENDING_INOUT | VIES_USER_FALLBACK;
+
+	return ((vie->status & of_interest) != 0);
 }
 
 bool
@@ -2607,9 +2661,6 @@ _vm_gla2gpa(struct vm *vm, int vcpuid, struct vm_guest_paging *paging,
 	int ptpshift = 0, ptpindex = 0;
 	uint64_t ptpphys;
 	uint64_t *ptpbase = NULL, pte = 0, pgsize = 0;
-#ifdef	__FreeBSD__
-	u_int retries;
-#endif
 	uint32_t *ptpbase32, pte32;
 	void *cookie;
 
@@ -2619,16 +2670,9 @@ _vm_gla2gpa(struct vm *vm, int vcpuid, struct vm_guest_paging *paging,
 	writable = prot & VM_PROT_WRITE;
 	cookie = NULL;
 	retval = 0;
-#ifdef	__FreeBSD__
-	retries = 0;
-#endif
 restart:
 	ptpphys = paging->cr3;		/* root of the page tables */
 	ptp_release(&cookie);
-#ifdef	__FreeBSD__
-	if (retries++ > 0)
-		maybe_yield();
-#endif
 
 	if (vie_canonical_check(paging->cpu_mode, gla)) {
 		/*
@@ -2667,8 +2711,8 @@ restart:
 			    (usermode && (pte32 & PG_U) == 0) ||
 			    (writable && (pte32 & PG_RW) == 0)) {
 				if (!check_only) {
-					pfcode = pf_error_code(usermode, prot, 0,
-					    pte32);
+					pfcode = pf_error_code(usermode, prot,
+					    0, pte32);
 					vm_inject_pf(vm, vcpuid, pfcode, gla);
 				}
 				goto fault;
@@ -2713,7 +2757,7 @@ restart:
 		/* Zero out the lower 5 bits and the upper 32 bits */
 		ptpphys &= 0xffffffe0UL;
 
-		ptpbase = ptp_hold(vm, vcpuid, ptpphys, sizeof(*ptpbase) * 4,
+		ptpbase = ptp_hold(vm, vcpuid, ptpphys, sizeof (*ptpbase) * 4,
 		    &cookie);
 		if (ptpbase == NULL)
 			goto error;
@@ -2770,8 +2814,8 @@ restart:
 		if (nlevels > 0 && (pte & PG_PS) != 0) {
 			if (pgsize > 1 * GB) {
 				if (!check_only) {
-					pfcode = pf_error_code(usermode, prot, 1,
-					    pte);
+					pfcode = pf_error_code(usermode, prot,
+					    1, pte);
 					vm_inject_pf(vm, vcpuid, pfcode, gla);
 				}
 				goto fault;
@@ -2938,8 +2982,8 @@ decode_prefixes(struct vie *vie, enum vm_cpu_mode cpu_mode, int cs_d)
 	/*
 	 * § 2.3.5, "The VEX Prefix", SDM Vol 2.
 	 */
-	if ((cpu_mode == CPU_MODE_64BIT || cpu_mode == CPU_MODE_COMPATIBILITY)
-	    && x == 0xC4) {
+	if ((cpu_mode == CPU_MODE_64BIT ||
+	    cpu_mode == CPU_MODE_COMPATIBILITY) && x == 0xC4) {
 		const struct vie_op *optab;
 
 		/* 3-byte VEX prefix. */
@@ -3374,7 +3418,7 @@ vie_verify_gla(struct vie *vie, struct vm *vm, int cpuid, uint64_t gla)
 		error = vm_get_register(vm, cpuid, vie->base_register, &base);
 		if (error) {
 			printf("verify_gla: error %d getting base reg %d\n",
-				error, vie->base_register);
+			    error, vie->base_register);
 			return (-1);
 		}
 
@@ -3391,7 +3435,7 @@ vie_verify_gla(struct vie *vie, struct vm *vm, int cpuid, uint64_t gla)
 		error = vm_get_register(vm, cpuid, vie->index_register, &idx);
 		if (error) {
 			printf("verify_gla: error %d getting index reg %d\n",
-				error, vie->index_register);
+			    error, vie->index_register);
 			return (-1);
 		}
 	}
@@ -3424,8 +3468,7 @@ vie_verify_gla(struct vie *vie, struct vm *vm, int cpuid, uint64_t gla)
 		error = vm_get_seg_desc(vm, cpuid, seg, &desc);
 		if (error) {
 			printf("verify_gla: error %d getting segment"
-			       " descriptor %d", error,
-			       vie->segment_register);
+			    " descriptor %d", error, vie->segment_register);
 			return (-1);
 		}
 		segbase = desc.base;
@@ -3435,10 +3478,10 @@ vie_verify_gla(struct vie *vie, struct vm *vm, int cpuid, uint64_t gla)
 	gla2 &= size2mask[vie->addrsize];
 	if (gla != gla2) {
 		printf("verify_gla mismatch: segbase(0x%0lx)"
-		       "base(0x%0lx), scale(%d), index(0x%0lx), "
-		       "disp(0x%0lx), gla(0x%0lx), gla2(0x%0lx)\n",
-		       segbase, base, vie->scale, idx, vie->displacement,
-		       gla, gla2);
+		    "base(0x%0lx), scale(%d), index(0x%0lx), "
+		    "disp(0x%0lx), gla(0x%0lx), gla2(0x%0lx)\n",
+		    segbase, base, vie->scale, idx, vie->displacement,
+		    gla, gla2);
 		return (-1);
 	}
 

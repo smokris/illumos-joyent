@@ -319,7 +319,6 @@ vhpet_handler(void *a)
 	vhpet_timer_interrupt(vhpet, n);
 done:
 	VHPET_UNLOCK(vhpet);
-	return;
 }
 
 static void
@@ -478,8 +477,8 @@ vhpet_timer_update_config(struct vhpet *vhpet, int n, uint64_t data,
 }
 
 int
-vhpet_mmio_write(void *vm, int vcpuid, uint64_t gpa, uint64_t val, int size,
-    void *arg)
+vhpet_mmio_write(struct vm *vm, int vcpuid, uint64_t gpa, uint64_t val,
+    int size)
 {
 	struct vhpet *vhpet;
 	uint64_t data, mask, oldval, val64;
@@ -628,8 +627,8 @@ done:
 }
 
 int
-vhpet_mmio_read(void *vm, int vcpuid, uint64_t gpa, uint64_t *rval, int size,
-    void *arg)
+vhpet_mmio_read(struct vm *vm, int vcpuid, uint64_t gpa, uint64_t *rval,
+    int size)
 {
 	int i, offset;
 	struct vhpet *vhpet;
@@ -718,8 +717,8 @@ vhpet_init(struct vm *vm)
 	struct vhpet_callout_arg *arg;
 	struct bintime bt;
 
-	vhpet = malloc(sizeof(struct vhpet), M_VHPET, M_WAITOK | M_ZERO);
-        vhpet->vm = vm;
+	vhpet = malloc(sizeof (struct vhpet), M_VHPET, M_WAITOK | M_ZERO);
+	vhpet->vm = vm;
 	mtx_init(&vhpet->mtx, "vhpet lock", NULL, MTX_DEF);
 
 	FREQ2BT(HPET_FREQ, &bt);

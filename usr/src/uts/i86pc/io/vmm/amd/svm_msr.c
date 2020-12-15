@@ -106,7 +106,6 @@ svm_msr_guest_init(struct svm_softc *sc, int vcpu)
 	 * There are no guest MSRs that are saved/restored "by hand" so nothing
 	 * more to do here.
 	 */
-	return;
 }
 
 void
@@ -144,8 +143,7 @@ svm_msr_guest_exit(struct svm_softc *sc, int vcpu)
 }
 
 int
-svm_rdmsr(struct svm_softc *sc, int vcpu, u_int num, uint64_t *result,
-    bool *retu)
+svm_rdmsr(struct svm_softc *sc, int vcpu, uint_t num, uint64_t *result)
 {
 	int error = 0;
 
@@ -181,7 +179,7 @@ svm_rdmsr(struct svm_softc *sc, int vcpu, u_int num, uint64_t *result,
 }
 
 int
-svm_wrmsr(struct svm_softc *sc, int vcpu, u_int num, uint64_t val, bool *retu)
+svm_wrmsr(struct svm_softc *sc, int vcpu, uint_t num, uint64_t val)
 {
 	int error = 0;
 

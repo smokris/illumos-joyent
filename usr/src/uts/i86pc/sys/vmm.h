@@ -353,7 +353,6 @@ struct vm_exit {
 		} spinup_ap;
 		struct {
 			uint64_t	rflags;
-			uint64_t	intr_status;
 		} hlt;
 		struct {
 			int		vector;
@@ -381,8 +380,6 @@ struct vm_entry {
 		struct vm_mmio mmio;
 	} u;
 };
-
-void vm_inject_pf(void *vm, int vcpuid, int error_code, uint64_t cr2);
 
 int vm_restart_instruction(void *vm, int vcpuid);
 

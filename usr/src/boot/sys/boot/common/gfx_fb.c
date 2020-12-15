@@ -12,6 +12,7 @@
 /*
  * Copyright 2016 Toomas Soome <tsoome@me.com>
  * Copyright 2019 OmniOS Community Edition (OmniOSce) Association.
+ * Copyright 2020 RackTop Systems, Inc.
  */
 
 /*
@@ -26,6 +27,7 @@
 #include <efilib.h>
 #else
 #include <btxv86.h>
+#include <vbe.h>
 #endif
 #include <sys/tem_impl.h>
 #include <sys/consplat.h>
@@ -247,10 +249,7 @@ gfx_set_colors(struct env_var *ev, int flags, const void *value)
 	if (value == NULL)
 		return (CMD_OK);
 
-	if (gfx_fb.framebuffer_common.framebuffer_bpp < 24)
-		limit = 7;
-	else
-		limit = 255;
+	limit = 255;
 
 	if (color_name_to_ansi(value, &val)) {
 		snprintf(buf, sizeof (buf), "%d", val);
@@ -262,18 +261,16 @@ gfx_set_colors(struct env_var *ev, int flags, const void *value)
 		val = (int)strtol(value, &end, 0);
 		if (errno != 0 || *end != '\0') {
 			printf("Allowed values are either ansi color name or "
-			    "number from range [0-7]%s.\n",
-			    limit == 7 ? "" : " or [16-255]");
+			    "number from range [0-255].\n");
 			return (CMD_OK);
 		}
 		evalue = value;
 	}
 
 	/* invalid value? */
-	if ((val < 0 || val > limit) || (val > 7 && val < 16)) {
+	if ((val < 0 || val > limit)) {
 		printf("Allowed values are either ansi color name or "
-		    "number from range [0-7]%s.\n",
-		    limit == 7 ? "" : " or [16-255]");
+		    "number from range [0-255].\n");
 		return (CMD_OK);
 	}
 
@@ -1125,14 +1122,17 @@ gfx_term_drawrect(uint32_t ux1, uint32_t uy1, uint32_t ux2, uint32_t uy2)
 	width = vf_width / 4;			/* line width */
 	xshift = (vf_width - width) / 2;
 	yshift = (vf_height - width) / 2;
-	/* Terminal coordinates start from (1,1) */
-	ux1--;
-	uy1--;
+
+	/* Shift coordinates */
+	if (ux1 != 0)
+		ux1--;
+	if (uy1 != 0)
+		uy1--;
 	ux2--;
 	uy2--;
 
 	/* mark area used in tem */
-	tem_image_display(tems.ts_active, uy1 - 1, ux1 - 1, uy2, ux2);
+	tem_image_display(tems.ts_active, uy1, ux1, uy2 + 1, ux2 + 1);
 
 	/*
 	 * Draw horizontal lines width points thick, shifted from outer edge.
@@ -1199,10 +1199,6 @@ gfx_term_drawrect(uint32_t ux1, uint32_t uy1, uint32_t ux2, uint32_t uy2)
 		gfx_fb_bezier(x1, y1 - i, x2 + i, y1 - i, x2 + i, y2, width-i);
 }
 
-#define	FL_PUTIMAGE_BORDER	0x1
-#define	FL_PUTIMAGE_NOSCROLL	0x2
-#define	FL_PUTIMAGE_DEBUG	0x80
-
 int
 gfx_fb_putimage(png_t *png, uint32_t ux1, uint32_t uy1, uint32_t ux2,
     uint32_t uy2, uint32_t flags)
@@ -1210,7 +1206,7 @@ gfx_fb_putimage(png_t *png, uint32_t ux1, uint32_t uy1, uint32_t ux2,
 	struct vis_consdisplay da;
 	uint32_t i, j, x, y, fheight, fwidth, color;
 	int fbpp;
-	uint8_t r, g, b, a, *p;
+	uint8_t r, g, b, a;
 	bool scale = false;
 	bool trace = false;
 
@@ -1328,10 +1324,10 @@ gfx_fb_putimage(png_t *png, uint32_t ux1, uint32_t uy1, uint32_t ux2,
 	 */
 	if (!(flags & FL_PUTIMAGE_NOSCROLL)) {
 		tem_image_display(tems.ts_active,
-		    da.row / tems.ts_font.vf_height - 1,
-		    da.col / tems.ts_font.vf_width - 1,
-		    (da.row + da.height) / tems.ts_font.vf_height - 1,
-		    (da.col + da.width) / tems.ts_font.vf_width - 1);
+		    da.row / tems.ts_font.vf_height,
+		    da.col / tems.ts_font.vf_width,
+		    (da.row + da.height) / tems.ts_font.vf_height,
+		    (da.col + da.width) / tems.ts_font.vf_width);
 	}
 
 	if ((flags & FL_PUTIMAGE_BORDER))
@@ -1438,40 +1434,74 @@ gfx_fb_putimage(png_t *png, uint32_t ux1, uint32_t uy1, uint32_t ux2,
 			    << gfx_fb.u.fb2.framebuffer_blue_field_position;
 
 			switch (gfx_fb.framebuffer_common.framebuffer_bpp) {
+#if !defined(EFI)
 			case 8: {
 				uint32_t best, dist, k;
 				int diff;
 
+				/* if alpha is 0, use screen bg color */
+				if (a == 0) {
+					text_color_t fg, bg;
+
+					tem_get_colors(
+					    (tem_vt_state_t)tems.ts_active,
+					    &fg, &bg);
+					da.data[j] = gfx_fb_color_map(bg);
+					break;
+				}
+
 				color = 0;
-				best = 256 * 256 * 256;
-				for (k = 0; k < 16; k++) {
-					diff = r - cmap4_to_24.red[k];
+				best = CMAP_SIZE * CMAP_SIZE * CMAP_SIZE;
+				for (k = 0; k < CMAP_SIZE; k++) {
+					diff = r - pe8[k].Red;
 					dist = diff * diff;
-					diff = g - cmap4_to_24.green[k];
+					diff = g - pe8[k].Green;
 					dist += diff * diff;
-					diff = b - cmap4_to_24.blue[k];
+					diff = b - pe8[k].Blue;
 					dist += diff * diff;
+
+					if (dist == 0)
+						break;
 
 					if (dist < best) {
 						color = k;
 						best = dist;
-						if (dist == 0)
-							break;
 					}
 				}
-				da.data[j] = solaris_color_to_pc_color[color];
+				if (k == CMAP_SIZE)
+					k = color;
+				da.data[j] = (k < 16) ?
+				    solaris_color_to_pc_color[k] : k;
 				break;
 			}
 			case 15:
 			case 16:
+				/* if alpha is 0, use screen bg color */
+				if (a == 0) {
+					text_color_t fg, bg;
+
+					tem_get_colors(
+					    (tem_vt_state_t)tems.ts_active,
+					    &fg, &bg);
+					color = gfx_fb_color_map(bg);
+				}
 				*(uint16_t *)(da.data+j) = color;
 				break;
 			case 24:
-				p = (uint8_t *)&color;
-				da.data[j] = p[0];
-				da.data[j+1] = p[1];
-				da.data[j+2] = p[2];
+				/* if alpha is 0, use screen bg color */
+				if (a == 0) {
+					text_color_t fg, bg;
+
+					tem_get_colors(
+					    (tem_vt_state_t)tems.ts_active,
+					    &fg, &bg);
+					color = gfx_fb_color_map(bg);
+				}
+				da.data[j] = ((uint8_t *)&color)[0];
+				da.data[j + 1] = ((uint8_t *)&color)[1];
+				da.data[j + 2] = ((uint8_t *)&color)[2];
 				break;
+#endif
 			case 32:
 				color |= a << 24;
 				*(uint32_t *)(da.data+j) = color;
@@ -2010,4 +2040,86 @@ command_font(int argc, char *argv[])
 		plat_cons_update_mode(-1);
 	}
 	return (rc);
+}
+
+bool
+gfx_get_edid_resolution(struct vesa_edid_info *edid, edid_res_list_t *res)
+{
+	struct resolution *rp, *p;
+
+	/*
+	 * Walk detailed timings tables (4).
+	 */
+	if ((edid->display.supported_features
+	    & EDID_FEATURE_PREFERRED_TIMING_MODE) != 0) {
+		/* Walk detailed timing descriptors (4) */
+		for (int i = 0; i < DET_TIMINGS; i++) {
+			/*
+			 * Reserved value 0 is not used for display decriptor.
+			 */
+			if (edid->detailed_timings[i].pixel_clock == 0)
+				continue;
+			if ((rp = malloc(sizeof (*rp))) == NULL)
+				continue;
+			rp->width = GET_EDID_INFO_WIDTH(edid, i);
+			rp->height = GET_EDID_INFO_HEIGHT(edid, i);
+			if (rp->width > 0 && rp->width <= EDID_MAX_PIXELS &&
+			    rp->height > 0 && rp->height <= EDID_MAX_LINES)
+				TAILQ_INSERT_TAIL(res, rp, next);
+			else
+				free(rp);
+		}
+	}
+
+	/*
+	 * Walk standard timings list (8).
+	 */
+	for (int i = 0; i < STD_TIMINGS; i++) {
+		/* Is this field unused? */
+		if (edid->standard_timings[i] == 0x0101)
+			continue;
+
+		if ((rp = malloc(sizeof (*rp))) == NULL)
+			continue;
+
+		rp->width = HSIZE(edid->standard_timings[i]);
+		switch (RATIO(edid->standard_timings[i])) {
+		case RATIO1_1:
+			rp->height = HSIZE(edid->standard_timings[i]);
+			if (edid->header.version > 1 ||
+			    edid->header.revision > 2) {
+				rp->height = rp->height * 10 / 16;
+			}
+			break;
+		case RATIO4_3:
+			rp->height = HSIZE(edid->standard_timings[i]) * 3 / 4;
+			break;
+		case RATIO5_4:
+			rp->height = HSIZE(edid->standard_timings[i]) * 4 / 5;
+			break;
+		case RATIO16_9:
+			rp->height = HSIZE(edid->standard_timings[i]) * 9 / 16;
+			break;
+		}
+
+		/*
+		 * Create resolution list in decreasing order, except keep
+		 * first entry (preferred timing mode).
+		 */
+		TAILQ_FOREACH(p, res, next) {
+			if (p->width * p->height < rp->width * rp->height) {
+				/* Keep preferred mode first */
+				if (TAILQ_FIRST(res) == p)
+					TAILQ_INSERT_AFTER(res, p, rp, next);
+				else
+					TAILQ_INSERT_BEFORE(p, rp, next);
+				break;
+			}
+			if (TAILQ_NEXT(p, next) == NULL) {
+				TAILQ_INSERT_TAIL(res, rp, next);
+				break;
+			}
+		}
+	}
+	return (!TAILQ_EMPTY(res));
 }
