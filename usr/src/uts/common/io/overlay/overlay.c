@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2020 Joyent, Inc.
+ * Copyright 2021 Joyent, Inc.
  */
 
 /*
@@ -1196,7 +1196,7 @@ overlay_tx(overlay_dev_t *odd, overlay_net_t *ont, overlay_pkt_t *pkt,
 		break;
 	case ETHERTYPE_IPV6:
 		if (daddr[0] == 0x33 && daddr[1] == 0x33 &&
-		    pkt->op_l3proto == IPPROTO_ICMPV6 &&
+		    pkt->op_l4proto == IPPROTO_ICMPV6 &&
 		    overlay_router_ndp(odd, ont, pkt)) {
 			return (OVERLAY_TARGET_DROP);
 		}
@@ -1256,7 +1256,7 @@ overlay_m_tx(void *arg, mblk_t *mp_chain)
 		}
 
 		ont = overlay_hold_net_by_vlan(orr,
-			    VLAN_ID(pkt.op_mhi.mhi_tci));
+		    VLAN_ID(pkt.op_mhi.mhi_tci));
 
 		ret = overlay_tx(odd, ont, &pkt, (struct sockaddr *)&storage,
 		    &slen);

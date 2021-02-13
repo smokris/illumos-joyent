@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2018, Joyent Inc.
+ * Copyright 2021 Joyent, Inc.
  */
 
 #ifndef _MDB_QQCACHE_H

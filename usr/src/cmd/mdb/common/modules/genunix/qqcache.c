@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2018, Joyent, Inc.
+ * Copyright 2021 Joyent, Inc.
  */
 
 #include <mdb/mdb_modapi.h>

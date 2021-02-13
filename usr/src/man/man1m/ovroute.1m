@@ -9,9 +9,9 @@
 .\" http://www.illumos.org/license/CDDL.
 .\"
 .\"
-.\" Copyright 2020 Joyent, Inc.
+.\" Copyright 2021 Joyent, Inc.
 .\"
-.Dd October 26, 2020
+.Dd February 9, 2021
 .Dt OVROUTE 1M
 .Os
 .Sh NAME
@@ -118,7 +118,7 @@ For example, two VL2 subnets may wish to route packets to each other,
 regardless of which physical system instances using those VL2 networks reside.
 As long as the underlay IPs
 .Po
-the UL3 address ka the IP address of the underlying interface the overlay
+the UL3 address aka the IP address of the underlying interface the overlay
 instance sits on, e.g. the IP address of
 .Ql sdc_underlay0
 .Pc of the source and destination systems are reachable to each other,
@@ -134,7 +134,7 @@ To route packets between VL2 subnets, an
 .Xr overlay 5
 router instance is created for each VL2 network where packets are intended to
 be routed.
-A
+An
 .Xr overlay 5
 router instance should be created on any physical machine where the
 corresponding VL2 subnet is in use.
@@ -247,7 +247,7 @@ Optionally, if an
 .Xr overlay 5
 routing table has already been defined, the
 .Fl r Ar route_table_id
-option can be specified to associate the the VL2 subnet to the given
+option can be specified to associate the VL2 subnet to the given
 .Xr overlay 5
 route table.
 If no route table is specified, the default route table for the
@@ -325,7 +325,7 @@ option to indicate the fields to output.
 .Fl r Ar route_table_id
 .Ar router_id
 .Xc
-Set the the routing table for
+Set the routing table for
 .Ar router_id
 on overlay
 .Ar overlay
@@ -573,7 +573,7 @@ As long as the destination network and mask match the traffic.
 .\" ================================
 Private
 .Pp
-This is intented to be an internal Triton utility, and it's command line
+This is intented to be an internal Triton utility, and its command line
 interface may change without notice.
 .\" ================================
 .Sh SEE ALSO

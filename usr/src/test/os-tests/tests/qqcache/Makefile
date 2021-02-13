@@ -10,7 +10,7 @@
 #
 
 #
-# Copyright 2020 Joyent, Inc.
+# Copyright 2021 Joyent, Inc.
 #
 
 include $(SRC)/cmd/Makefile.cmd

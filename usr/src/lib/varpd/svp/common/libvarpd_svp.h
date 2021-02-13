@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2020 Joyent, Inc.
+ * Copyright 2021 Joyent, Inc.
  */
 
 #ifndef _LIBVARPD_SVP_H

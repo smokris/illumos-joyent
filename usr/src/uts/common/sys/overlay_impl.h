@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2020 Joyent, Inc.
+ * Copyright 2021 Joyent, Inc.
  */
 
 #ifndef _SYS_OVERLAY_IMPL_H
@@ -207,7 +207,7 @@ typedef struct overlay_target_entry {
  * outbound packet (e.g. packets that are being routed or NATed), we cache the
  * start of the various headers in overlay_pkt_t.
  * We also sanitize the mblk_t as necessary -- that is, we don't allow a given
- * L1 (ethernet), L2 (IPv4/IPv6), or L3 (TCP/UDP) header to be split across
+ * L2 (ethernet), L3 (IPv4/IPv6), or L4 (TCP/UDP) header to be split across
  * multiple mblk_ts. For headers that can have a fixed header followed by a
  * variable portion (e.g. IP options), we do relax the contiguous requirement
  * to only the fixed portion of the header.
@@ -221,17 +221,17 @@ typedef struct overlay_pkt {
 	mblk_t				*op_mblk;
 	mac_header_info_t		op_mhi;
 	union {
-		unsigned char		*op2_char;
-		struct ipha_s		*op2_ipv4;
-		struct ip6_hdr		*op2_ipv6;
-	} op2_u;
-	union {
 		unsigned char		*op3_char;
-		struct tcphdra_s	*op3_tcp;
-		struct udphdr		*op3_udp;
-		struct icmph		*op3_icmp;
-		struct icmp6_hdr	*op3_icmp6;
+		struct ipha_s		*op3_ipv4;
+		struct ip6_hdr		*op3_ipv6;
 	} op3_u;
+	union {
+		unsigned char		*op4_char;
+		struct tcphdra_s	*op4_tcp;
+		struct udphdr		*op4_udp;
+		struct icmph		*op4_icmp;
+		struct icmp6_hdr	*op4_icmp6;
+	} op4_u;
 
 	/*
 	 * For IPv4 addresses, the src/dst addressess are stored as V4MAPPED
@@ -241,8 +241,8 @@ typedef struct overlay_pkt {
 	struct in6_addr			op_dstaddr;
 	uint16_t			op_srcport; /* in host byteorder */
 	uint16_t			op_dstport; /* in host byteorder */
-	uint16_t			op_l3len;
-	uint8_t				op_l3proto;
+	uint16_t			op_l4len;
+	uint8_t				op_l4proto;
 } overlay_pkt_t;
 #define	OPKT_ETYPE(pkt) ((pkt)->op_mhi.mhi_bindsap)
 #define	OPKT_VLAN(pkt) (VLAN_ID((pkt)->op_mhi.mhi_tci))

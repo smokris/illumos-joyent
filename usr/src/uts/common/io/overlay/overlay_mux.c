@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2020 Joyent, Inc.
+ * Copyright 2021 Joyent, Inc.
  */
 
 /*
@@ -108,7 +108,7 @@ overlay_rx(mac_handle_t mh, overlay_target_t *ott, overlay_router_t *orr,
 	switch (OPKT_ETYPE(&op)) {
 	case ETHERTYPE_IP:
 		ont = overlay_hold_net_by_ip(orr,
-		    op.op2_u.op2_ipv4->ipha_dst);
+		    op.op3_u.op3_ipv4->ipha_dst);
 		break;
 	case ETHERTYPE_IPV6:
 		ont = overlay_hold_net_by_ip6(orr, &op.op_dstaddr);

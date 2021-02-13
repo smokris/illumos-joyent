@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2020 Joyent, Inc.
+ * Copyright 2021 Joyent, Inc.
  */
 
 /*
@@ -1456,7 +1456,7 @@ overlay_routetab_iter(overlay_router_t *orr, void *buf)
 	 * previous ioctl) to the address of the overlay_routetab_t to
 	 * start at
 	 */
-	if (iter->oiri_marker == 1) {
+	if (iter->oiri_marker == 1UL) {
 		iter->oiri_count = 0;
 		return (0);
 	}
@@ -1824,7 +1824,7 @@ overlay_router_arp(overlay_dev_t *odd, overlay_net_t *ont, overlay_pkt_t *pkt)
 	 * overlay_pkt_init() already guarantees us a 28 byte, contiguous
 	 * in ram packet when it's ARP, so we can traverse this safely.
 	 */
-	ptr = pkt->op2_u.op2_char;
+	ptr = pkt->op3_u.op3_char;
 	if (overlay_get16(&ptr) != ARP_HW_ETHER ||
 	    overlay_get16(&ptr) != ETHERTYPE_IP ||
 	    *ptr++ != ETHERADDRL || *ptr++ != sizeof (in_addr_t) ||
@@ -1891,10 +1891,10 @@ boolean_t
 overlay_router_ndp(overlay_dev_t *odd, overlay_net_t *ont, overlay_pkt_t *pkt)
 {
 	nd_neighbor_solicit_t *nd;
-	size_t len = pkt->op_l3len;
+	size_t len = pkt->op_l4len;
 
 	ASSERT3P(ont, !=, NULL);
-	ASSERT3U(pkt->op_l3proto, ==, IPPROTO_ICMPV6);
+	ASSERT3U(pkt->op_l4proto, ==, IPPROTO_ICMPV6);
 
 	if (IN6_IS_ADDR_UNSPECIFIED(&ont->ont_routeraddrv6))
 		return (B_FALSE);
@@ -1903,7 +1903,7 @@ overlay_router_ndp(overlay_dev_t *odd, overlay_net_t *ont, overlay_pkt_t *pkt)
 	    !IN6_IS_ADDR_MC_LINKLOCAL(&pkt->op_dstaddr))
 		return (B_FALSE);
 
-	nd = (nd_neighbor_solicit_t *)pkt->op3_u.op3_char;
+	nd = (nd_neighbor_solicit_t *)pkt->op4_u.op4_char;
 
 	if (nd->nd_ns_type != ND_NEIGHBOR_SOLICIT && nd->nd_ns_code != 0)
 		return (B_FALSE);
@@ -1954,9 +1954,9 @@ overlay_router_ndp(overlay_dev_t *odd, overlay_net_t *ont, overlay_pkt_t *pkt)
 	 * Write the IPv6 header out. Destination IP is the source IP from
 	 * the request, and the source IP is the router IP.
 	 */
-	bcopy(pkt->op2_u.op2_ipv6, ip6h, sizeof (*ip6h));
+	bcopy(pkt->op3_u.op3_ipv6, ip6h, sizeof (*ip6h));
 	bcopy(&ont->ont_routeraddrv6, &ip6h->ip6_src, sizeof (struct in6_addr));
-	bcopy(&pkt->op2_u.op2_ipv6->ip6_src, &ip6h->ip6_dst,
+	bcopy(&pkt->op3_u.op3_ipv6->ip6_src, &ip6h->ip6_dst,
 	    sizeof (struct in6_addr));
 	ip6h->ip6_nxt = IPPROTO_ICMPV6;
 	resp->b_wptr += sizeof (*ip6h);
@@ -1964,26 +1964,26 @@ overlay_router_ndp(overlay_dev_t *odd, overlay_net_t *ont, overlay_pkt_t *pkt)
 	nd_neighbor_advert_t *na = (nd_neighbor_advert_t *)resp->b_wptr;
 
 	bzero(na, sizeof (*na));
-        na->nd_na_type = ND_NEIGHBOR_ADVERT;
-        na->nd_na_code = 0;
-        /*
-         * RFC 4443 defines that we should set the checksum to zero before we
-         * calculate the checksumat we should set the checksum to zero before we
-         * calculate it.
-         */
-        na->nd_na_cksum = 0;
-        /*
-         * The header <netinet/icmp6.h> has already transformed this
-         * into the appropriate host order. Don't use htonl.
-         */
-        na->nd_na_flags_reserved = ND_NA_FLAG_SOLICITED | ND_NA_FLAG_OVERRIDE;
+	na->nd_na_type = ND_NEIGHBOR_ADVERT;
+	na->nd_na_code = 0;
+	/*
+	 * RFC 4443 defines that we should set the checksum to zero before we
+	 * calculate the checksumat we should set the checksum to zero before we
+	 * calculate it.
+	 */
+	na->nd_na_cksum = 0;
+	/*
+	 * The header <netinet/icmp6.h> has already transformed this
+	 * into the appropriate host order. Don't use htonl.
+	 */
+	na->nd_na_flags_reserved = ND_NA_FLAG_SOLICITED | ND_NA_FLAG_OVERRIDE;
 	bcopy(&ont->ont_routeraddrv6, &na->nd_na_target,
-            sizeof (struct in6_addr));
+	    sizeof (struct in6_addr));
 	resp->b_wptr += sizeof (*na);
 
 	opt = (nd_opt_hdr_t *)resp->b_wptr;
-        opt->nd_opt_type = ND_OPT_TARGET_LINKADDR;
-        opt->nd_opt_len = 1;
+	opt->nd_opt_type = ND_OPT_TARGET_LINKADDR;
+	opt->nd_opt_len = 1;
 	resp->b_wptr += sizeof (*opt);
 
 	overlay_put_mac(resp, ont->ont_mac);
@@ -2001,11 +2001,11 @@ overlay_router_ndp(overlay_dev_t *odd, overlay_net_t *ont, overlay_pkt_t *pkt)
 	uint32_t sum = 0;
 
 	v = (uint16_t *)&ip6h->ip6_src;
-	for (size_t i = 0; i < sizeof (struct in6_addr); i +=2, v++)
+	for (size_t i = 0; i < sizeof (struct in6_addr); i += 2, v++)
 		sum += *v;
 
 	v = (uint16_t *)&ip6h->ip6_dst;
-	for (size_t i = 0; i < sizeof (struct in6_addr); i +=2, v++)
+	for (size_t i = 0; i < sizeof (struct in6_addr); i += 2, v++)
 		sum += *v;
 
 	sum += ip6h->ip6_plen;
@@ -2024,7 +2024,7 @@ overlay_router_ndp(overlay_dev_t *odd, overlay_net_t *ont, overlay_pkt_t *pkt)
 		sum = (sum & 0xffff) + (sum >> 16);
 
 	sum &= 0xffff;
-        na->nd_na_cksum = ~sum & 0xffff;
+	na->nd_na_cksum = ~sum & 0xffff;
 
 	mutex_enter(&odd->odd_lock);
 	overlay_io_start(odd, OVERLAY_F_IN_RX);
@@ -2051,7 +2051,7 @@ overlay_pkt_hash(overlay_pkt_t *pkt)
 
 	uint8_t *p = (uint8_t *)&hash;
 
-	return (p[0] ^ p[1] ^ p[2] ^ p[3] ^ pkt->op_l3proto);
+	return (p[0] ^ p[1] ^ p[2] ^ p[3] ^ pkt->op_l4proto);
 }
 
 static boolean_t

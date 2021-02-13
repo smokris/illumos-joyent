@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2020 Joyent, Inc.
+ * Copyright 2021 Joyent, Inc.
  */
 
 /*
@@ -1943,17 +1943,17 @@ typedef enum overlay_ip6_res {
 } overlay_ip6_res_t;
 
 /*
- * Locate the L3 header in an IPv6 packet. mpp is the ptr to the address of
+ * Locate the L4 header in an IPv6 packet. mpp is the ptr to the address of
  * the mblk_t that contains the fixed portion of the IPv6 header, hdrp points
  * to the start of the IPv6 header (within *mpp).
  *
  * *lenp is set to the length of the remaining data in the mblk_t containing
- * the start of the L3 header. *protop is set to the L3 protocol (TCP, UDP,
+ * the start of the L4 header. *protop is set to the L4 protocol (TCP, UDP,
  * etc.).
  */
 static overlay_ip6_res_t
-overlay_ip6_l3(mblk_t **mpp, unsigned char *hdrp, size_t *restrict lenp,
-    uint8_t *restrict protop, unsigned char **l3hdrpp)
+overlay_ip6_l4(mblk_t **mpp, unsigned char *hdrp, size_t *restrict lenp,
+    uint8_t *restrict protop, unsigned char **l4hdrpp)
 {
 	ip6_t *ip6;
 	struct ip6_opt *ip6_opt;
@@ -1967,7 +1967,7 @@ overlay_ip6_l3(mblk_t **mpp, unsigned char *hdrp, size_t *restrict lenp,
 	len = sizeof (ip6_t);
 
 	/*
-	 * IPv6 commingles IPv6 options and L3 protocols (they share the
+	 * IPv6 commingles IPv6 options and L4 protocols (they share the
 	 * same ID space).
 	 */
 	while (opt_type != IPPROTO_NONE) {
@@ -2013,8 +2013,8 @@ done:
 	if (opt_type == IPPROTO_NONE)
 		return (OIP6_TRUNCATED);
 
-	*l3hdrpp = overlay_mblk_offset(mpp, offset, lenp);
-	if (*l3hdrpp == NULL)
+	*l4hdrpp = overlay_mblk_offset(mpp, offset, lenp);
+	if (*l4hdrpp == NULL)
 		return (OIP6_TRUNCATED);
 
 	return (OIP6_OK);
@@ -2037,7 +2037,7 @@ overlay_pkt_init(overlay_pkt_t *restrict op, mac_handle_t restrict mh,
 {
 	mblk_t *first_mp = orig_mp;
 	mblk_t *mp;
-	size_t len, l2_len, l3_len;
+	size_t len, l3_len, l4_len;
 	int ret = 0;
 	boolean_t looped = B_FALSE;
 
@@ -2058,7 +2058,7 @@ again:
 		return (ret);
 
 	/*
-	 * Sanitize the mblk. If any of L1, L2, or L3 headers are split
+	 * Sanitize the mblk. If any of L2, L3, or L4 headers are split
 	 * mid-header, we msgpullup() the whole thing and use that instead,
 	 * otherwise cache the start of each header.
 	 */
@@ -2075,23 +2075,23 @@ again:
 		goto again;
 	}
 
-	/* Set the L2 header address */
-	op->op2_u.op2_char = overlay_mblk_offset(&mp,
+	/* Set the L3 header address */
+	op->op3_u.op3_char = overlay_mblk_offset(&mp,
 	    op->op_mhi.mhi_hdrsize, &len);
 
 	/*
 	 * Verify the remaining length in the mblk_t that contains the start
-	 * of the L2 header doesn't split it across mblk_ts.
+	 * of the L3 header doesn't split it across mblk_ts.
 	 */
 	switch (OPKT_ETYPE(op)) {
 	case ETHERTYPE_IP:
-		l2_len = sizeof (ipha_t);
+		l3_len = sizeof (ipha_t);
 		break;
 	case ETHERTYPE_IPV6:
-		l2_len = sizeof (ip6_t);
+		l3_len = sizeof (ip6_t);
 		break;
 	case ETHERTYPE_ARP:
-		l2_len = 28;
+		l3_len = 28;
 		break;
 	default:
 		/*
@@ -2101,8 +2101,8 @@ again:
 		goto done;
 	}
 
-	if (len < l2_len) {
-		OVERLAY_PULLUPMSG(orig_mp, "L2 header is split");
+	if (len < l3_len) {
+		OVERLAY_PULLUPMSG(orig_mp, "L3 header is split");
 		if ((first_mp = msgpullup(orig_mp, -1)) == NULL) {
 			*reasonp = "msgpullup failed";
 			return (ENOMEM);
@@ -2113,17 +2113,17 @@ again:
 	}
 
 	/*
-	 * We started with l2_len as the size of the fixed portion of the
+	 * We started with l3_len as the size of the fixed portion of the
 	 * IPv4/IPv6 header. Now that we're sure the fixed portion isn't
 	 * split across mblk_ts, we reset it to the total length of the
 	 * IPv4/IPv6 header (i.e. including options) to determine the
-	 * start of the L3 header.
+	 * start of the L4 header.
 	 *
 	 * Also copy in the source and destination addresses.
 	 */
 	switch (op->op_mhi.mhi_bindsap) {
 	case ETHERTYPE_IP:
-		l2_len = IPH_HDR_LENGTH(op->op2_u.op2_ipv4);
+		l3_len = IPH_HDR_LENGTH(op->op3_u.op3_ipv4);
 
 		/*
 		 * Sanity check the length. It must be within the min and max
@@ -2133,30 +2133,30 @@ again:
 		 * don't try to interpret the TCP/UDP header at the
 		 * wrong location.
 		 */
-		if (l2_len < IP_SIMPLE_HDR_LENGTH ||
-		    l2_len > IP_MAX_HDR_LENGTH ||
-		    l2_len > ntohs(op->op2_u.op2_ipv4->ipha_length)) {
+		if (l3_len < IP_SIMPLE_HDR_LENGTH ||
+		    l3_len > IP_MAX_HDR_LENGTH ||
+		    l3_len > ntohs(op->op3_u.op3_ipv4->ipha_length)) {
 			*reasonp = "IP header length invalid";
 			ret = EINVAL;
 			goto done;
 		}
 
-		op->op_l3proto = op->op2_u.op2_ipv4->ipha_protocol;
-		op->op3_u.op3_char = overlay_mblk_offset(&mp,
-		    op->op_mhi.mhi_hdrsize + l2_len, &len);
+		op->op_l4proto = op->op3_u.op3_ipv4->ipha_protocol;
+		op->op4_u.op4_char = overlay_mblk_offset(&mp,
+		    op->op_mhi.mhi_hdrsize + l3_len, &len);
 
-		IN6_IPADDR_TO_V4MAPPED(op->op2_u.op2_ipv4->ipha_dst,
+		IN6_IPADDR_TO_V4MAPPED(op->op3_u.op3_ipv4->ipha_dst,
 		    &op->op_dstaddr);
-		IN6_IPADDR_TO_V4MAPPED(op->op2_u.op2_ipv4->ipha_src,
+		IN6_IPADDR_TO_V4MAPPED(op->op3_u.op3_ipv4->ipha_src,
 		    &op->op_srcaddr);
 		break;
 	case ETHERTYPE_IPV6:
 		/*
-		 * overlay_ip6_l3() also sets op->op3_u.op3_char for us
+		 * overlay_ip6_l4() also sets op->op4_u.op4_char for us
 		 * after skipping over any options.
 		 */
-		switch (overlay_ip6_l3(&mp, op->op2_u.op2_char, &len,
-		    &op->op_l3proto, &op->op3_u.op3_char)) {
+		switch (overlay_ip6_l4(&mp, op->op3_u.op3_char, &len,
+		    &op->op_l4proto, &op->op4_u.op4_char)) {
 		case OIP6_OK:
 			break;
 		case OIP6_FRAGMENT:
@@ -2178,13 +2178,13 @@ again:
 			goto again;
 		}
 
-		bcopy(&op->op2_u.op2_ipv6->ip6_dst, &op->op_dstaddr,
+		bcopy(&op->op3_u.op3_ipv6->ip6_dst, &op->op_dstaddr,
 		    sizeof (struct in6_addr));
-		bcopy(&op->op2_u.op2_ipv6->ip6_src, &op->op_srcaddr,
+		bcopy(&op->op3_u.op3_ipv6->ip6_src, &op->op_srcaddr,
 		    sizeof (struct in6_addr));
 		break;
 	case ETHERTYPE_ARP:
-		/* There is no L3 with ARP packets */
+		/* There is no L4 with ARP packets */
 		if (len < 28) {
 			*reasonp = "truncated ARP packet";
 			ret = EINVAL;
@@ -2195,12 +2195,12 @@ again:
 		goto done;
 	}
 
-	switch (op->op_l3proto) {
+	switch (op->op_l4proto) {
 	case IPPROTO_TCP:
-		l3_len = sizeof (struct tcphdra_s);
+		l4_len = sizeof (struct tcphdra_s);
 		break;
 	case IPPROTO_UDP:
-		l3_len = sizeof (struct udphdr);
+		l4_len = sizeof (struct udphdr);
 		break;
 	case IPPROTO_ICMP:
 		if (op->op_mhi.mhi_bindsap != ETHERTYPE_IP) {
@@ -2208,7 +2208,7 @@ again:
 			ret = EINVAL;
 			goto done;
 		}
-		l3_len = ICMPH_SIZE;
+		l4_len = ICMPH_SIZE;
 		break;
 	case IPPROTO_ICMPV6:
 		if (op->op_mhi.mhi_bindsap != ETHERTYPE_IPV6) {
@@ -2216,14 +2216,14 @@ again:
 			ret = EINVAL;
 			goto done;
 		}
-		l3_len = ICMP6_MINLEN;
+		l4_len = ICMP6_MINLEN;
 		break;
 	default:
-		l3_len = 0;
+		l4_len = 0;
 	}
 
-	if (len < l3_len) {
-		OVERLAY_PULLUPMSG(orig_mp, "L3 header is split");
+	if (len < l4_len) {
+		OVERLAY_PULLUPMSG(orig_mp, "L4 header is split");
 		if ((first_mp = msgpullup(orig_mp, -1)) == NULL) {
 			*reasonp = "msgpullup failed";
 			ret = ENOMEM;
@@ -2235,20 +2235,20 @@ again:
 	}
 
 	/* Now set the src/dst port */
-	switch (op->op_l3proto) {
+	switch (op->op_l4proto) {
 	case IPPROTO_TCP:
-		op->op_srcport = ntohs(op->op3_u.op3_tcp->tha_lport);
-		op->op_dstport = ntohs(op->op3_u.op3_tcp->tha_fport);
+		op->op_srcport = ntohs(op->op4_u.op4_tcp->tha_lport);
+		op->op_dstport = ntohs(op->op4_u.op4_tcp->tha_fport);
 
 		/* Whatever is left in this mblk + any remaining fragments */
-		op->op_l3len = len + msgdsize(mp->b_cont);
+		op->op_l4len = len + msgdsize(mp->b_cont);
 		break;
 	case IPPROTO_UDP:
-		op->op_srcport = ntohs(op->op3_u.op3_udp->uh_sport);
-		op->op_dstport = ntohs(op->op3_u.op3_udp->uh_dport);
+		op->op_srcport = ntohs(op->op4_u.op4_udp->uh_sport);
+		op->op_dstport = ntohs(op->op4_u.op4_udp->uh_dport);
 
 		/* Whatever is left in this mblk + any remaining fragments */
-		op->op_l3len = len + msgdsize(mp->b_cont);
+		op->op_l4len = len + msgdsize(mp->b_cont);
 		break;
 	case IPPROTO_ICMPV6:
 		/*
@@ -2272,7 +2272,7 @@ again:
 		 * From the above contiguous requirement, this means len
 		 * must be the size of the ICMPv6 data (including header).
 		 */
-		op->op_l3len = len;
+		op->op_l4len = len;
 		break;
 	}
 

@@ -20,7 +20,7 @@
  */
 /*
  * Copyright (c) 2004, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright 2020 Joyent, Inc. All rights reserved.
+ * Copyright 2021 Joyent, Inc.
  * Copyright 2018 Nexenta Systems, Inc.  All rights reserved.
  */
 

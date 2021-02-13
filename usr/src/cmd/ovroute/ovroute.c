@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2020 Joyent, Inc.
+ * Copyright 2021 Joyent, Inc.
  */
 
 #include <sys/overlay_router.h>
@@ -290,6 +290,7 @@ dispatch(int argc, char **argv, const dispatch_tbl_t *tbl, size_t ntbl)
 	}
 
 	for (size_t i = 0; i < ntbl; i++) {
+		/* strcmp() is safe due to db_subcmd being bounded */
 		if (strcmp(argv[1], tbl[i].dt_subcmd) == 0)
 			return (tbl[i].dt_cmd(argc - 1, argv + 1));
 	}
