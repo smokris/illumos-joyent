@@ -36,7 +36,9 @@ __FBSDID("$FreeBSD$");
 #include <sys/param.h>
 #include <sys/linker_set.h>
 #include <sys/uio.h>
+#ifdef __FreeBSD__
 #include <sys/capsicum.h>
+#endif
 
 #include <errno.h>
 #include <fcntl.h>
@@ -48,7 +50,7 @@ __FBSDID("$FreeBSD$");
 #include <pthread.h>
 
 #include <lib9p.h>
-#include <backend/fs.h>
+#include "fs.h"
 
 #include "bhyverun.h"
 #include "pci_emul.h"

@@ -22,7 +22,7 @@
 #
 # Copyright (c) 1989, 2010, Oracle and/or its affiliates. All rights reserved.
 # Copyright (c) 2012 by Delphix. All rights reserved.
-# Copyright 2020 Joyent, Inc.
+# Copyright 2021 Joyent, Inc.
 # Copyright (c) 2013 Gary Mills
 # Copyright 2014 Garrett D'Amore <garrett@damore.org>
 # Copyright (c) 2015 Gary Mills
@@ -87,6 +87,7 @@ SUBDIRS +=				\
 	hbaapi		\
 	iconv_modules	\
 	krb5		\
+	lib9p		\
 	libadm		\
 	libads		\
 	libadt_jni	\

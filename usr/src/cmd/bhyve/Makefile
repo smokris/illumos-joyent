@@ -129,10 +129,13 @@ CPPFLAGS =	-I$(COMPAT)/bhyve -I$(CONTRIB)/bhyve \
 		-I$(SRC)/uts/common \
 		-I$(SRC)/uts/i86pc \
 		-I$(SRC)/lib/libdladm/common \
+		-I$(SRC)/lib/lib9p \
 		-DWITHOUT_CAPSICUM
 
 pci_nvme.o := CERRWARN += -_gcc=-Wno-pointer-sign
 pci_nvme.o := SMOFF += kmalloc_wrong_size
+
+pci_virtio_9p.o := SMOFF += kmalloc_wrong_size
 
 SMOFF += all_func_returns,leaks,no_if_block
 
