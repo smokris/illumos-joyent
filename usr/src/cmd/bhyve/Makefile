@@ -11,7 +11,7 @@
 
 #
 # Copyright 2014 Pluribus Networks Inc.
-# Copyright 2020 Joyent, Inc.
+# Copyright 2021 Joyent, Inc.
 # Copyright 2020 Oxide Computer Company
 #
 
@@ -55,6 +55,7 @@ SRCS =	acpi.c			\
 	pci_nvme.c		\
 	pci_passthru.c		\
 	pci_uart.c		\
+	pci_virtio_9p.c		\
 	pci_virtio_block.c	\
 	pci_virtio_console.c	\
 	pci_virtio_net.c	\
@@ -140,6 +141,7 @@ CSTD=		$(CSTD_GNU99)
 C99MODE=	-xc99=%all
 
 $(PROG) := LDLIBS += \
+	-l9p \
 	-lsocket \
 	-lnsl \
 	-ldlpi \
