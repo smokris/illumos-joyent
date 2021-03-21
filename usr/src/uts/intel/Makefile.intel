@@ -22,7 +22,7 @@
 # Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
 # Copyright (c) 2013 Andrew Stormont.  All rights reserved.
 # Copyright (c) 2014 by Delphix. All rights reserved.
-# Copyright 2019 Joyent, Inc.
+# Copyright 2021 Joyent, Inc.
 # Copyright 2016 Garrett D'Amore <garrett@damore.org>
 # Copyright 2018 Nexenta Systems, Inc.
 # Copyright 2019 RackTop Systems
@@ -358,6 +358,7 @@ DRV_KMODS	+= vmxnet
 DRV_KMODS	+= vnd
 DRV_KMODS	+= vnic
 DRV_KMODS	+= vscan
+DRV_KMODS	+= vsock
 DRV_KMODS	+= wc
 DRV_KMODS	+= winlock
 DRV_KMODS	+= wpi
