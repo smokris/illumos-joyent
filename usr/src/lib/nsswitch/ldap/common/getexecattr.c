@@ -546,16 +546,16 @@ getbynam(ldap_backend_ptr be, void *a)
 	const char	*policy = _priv_exec->policy;
 	const char	*type = _priv_exec->type;
 
-	if (strpbrk(policy, "*()\\") != NULL ||
+	if (policy != NULL && strpbrk(policy, "*()\\") != NULL ||
 	    type != NULL && strpbrk(type, "*()\\") != NULL ||
 	    _ldap_filter_name(name, _priv_exec->name, sizeof (name)) != 0)
 		return ((nss_status_t)NSS_NOTFOUND);
 	ret = snprintf(searchfilter, sizeof (searchfilter),
-	    _EXEC_GETEXECNAME, name, policy, ISWILD(type));
+	    _EXEC_GETEXECNAME, name, ISWILD(policy), ISWILD(type));
 	if (ret >= sizeof (searchfilter) || ret < 0)
 		return ((nss_status_t)NSS_NOTFOUND);
 	ret = snprintf(userdata, sizeof (userdata),
-	    _EXEC_GETEXECNAME_SSD, name, policy, ISWILD(type));
+	    _EXEC_GETEXECNAME_SSD, name, ISWILD(policy), ISWILD(type));
 	if (ret >= sizeof (userdata) || ret < 0)
 		return ((nss_status_t)NSS_NOTFOUND);
 
