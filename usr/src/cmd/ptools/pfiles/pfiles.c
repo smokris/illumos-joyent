@@ -371,7 +371,7 @@ dofcntl(struct ps_prochandle *Pr, const prfdinfo_t *info, int mandatory,
 static void
 show_fileflags(int flags)
 {
-	char buffer[136];
+	char buffer[147];
 	char *str = buffer;
 
 	switch (flags & O_ACCMODE) {
