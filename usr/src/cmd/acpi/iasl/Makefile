@@ -132,15 +132,20 @@ prparserlex.c prparserparse.c prparser.y.h := PARSER = PrParser
 prparserlex.c prparserparse.c prparser.y.h := LY_BASE = prparser
 
 $(LEX_C_FILES) := LEXFILE = $(LY_BASE).l
-$(LEX_C_FILES) := LEXFILE = $(LY_BASE).l
+
 $(YACC_FILES) := YTABC = $(LY_BASE)parse.c
 
 $(YACC_C_FILES:.c=.o) := CERRWARN += -_gcc=-Wno-char-subscripts
 
 OBJS += $(LEX_C_FILES:.c=.o) $(YACC_C_FILES:.c=.o)
 
+# intel isal has
+#  LFLAGS +=   -i -s
+#  DLFLAGS +=   -i
+#  MFLAGS=     -P -I$(ASL_COMPILER)
 GM4FLAGS = -P
-LFLAGS = -i -s
+LFLAGS = -i
+aslcompilerlex.c prparserlex.c := LFLAGS += -s
 
 .KEEP_STATE:
 
