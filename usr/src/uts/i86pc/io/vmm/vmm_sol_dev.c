@@ -2186,7 +2186,7 @@ vmm_is_supported(intptr_t arg)
 	}
 
 	if (r != 0 && arg != (intptr_t)NULL) {
-		if (copyoutstr(msg, (char *)arg, strlen(msg), NULL) != 0)
+		if (copyoutstr(msg, (char *)arg, strlen(msg) + 1, NULL) != 0)
 			return (EFAULT);
 	}
 	return (r);
